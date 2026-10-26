@@ -1,0 +1,253 @@
+name: Build signed CLI draft
+run-name: Signed CLI draft (${{ inputs.tag }})
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing vX.Y.Z tag contained in main
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: synck-cli-release
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    if: github.repository == 'synergyos/synck' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      commit: ${{ steps.release.outputs.commit }}
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate source, version and environment protection
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: python3 scripts/cli_release.py validate "$RELEASE_TAG"
+
+  build:
+    needs: validate
+    name: Compile ${{ matrix.target }} (no signing credentials)
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-24.04
+            binary: synck
+            python: python3
+          - target: aarch64-apple-darwin
+            runner: macos-15
+            binary: synck
+            python: python3
+          - target: x86_64-apple-darwin
+            runner: macos-15-intel
+            binary: synck
+            python: python3
+          - target: x86_64-pc-windows-msvc
+            runner: windows-2025
+            binary: synck.exe
+            python: python
+    defaults:
+      run:
+        shell: bash
+    env:
+      RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+      RELEASE_TARGET: ${{ matrix.target }}
+      RELEASE_BINARY: ${{ matrix.binary }}
+      RELEASE_PYTHON: ${{ matrix.python }}
+      MACOSX_DEPLOYMENT_TARGET: '12.0'
+    steps:
+      # Release tooling comes from the reviewed main workflow, source from the tag.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.validate.outputs.commit }}
+          path: source
+          persist-credentials: false
+      - name: Install the pinned Rust toolchain
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.91.1 --profile minimal --target "$RELEASE_TARGET"
+      - name: Build and smoke-test the CLI
+        run: |
+          set -euo pipefail
+          cargo +1.91.1 build --locked --release --manifest-path source/Cargo.toml \
+            --target-dir target --target "$RELEASE_TARGET" -p synck-local --bin synck
+          binary="target/$RELEASE_TARGET/release/$RELEASE_BINARY"
+          test "$("$binary" --version)" = "synck $RELEASE_VERSION"
+          "$binary" --help > /dev/null
+          mkdir unsigned
+          cp "$binary" "unsigned/$RELEASE_BINARY"
+          cp source/LICENSE-APACHE source/NOTICE unsigned/
+      - name: Package Linux CLI
+        if: runner.os == 'Linux'
+        run: |
+          "$RELEASE_PYTHON" scripts/cli_release.py package unsigned release "$RELEASE_VERSION" "$RELEASE_TARGET"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: runner.os != 'Linux'
+        with:
+          name: unsigned-${{ matrix.target }}
+          path: unsigned/
+          if-no-files-found: error
+          retention-days: 1
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: runner.os == 'Linux'
+        with:
+          name: release-${{ matrix.target }}
+          path: release/
+          if-no-files-found: error
+          retention-days: 1
+
+  sign_macos:
+    needs: [validate, build]
+    name: Sign and notarize ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    environment: synck-release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            runner: macos-15
+          - target: x86_64-apple-darwin
+            runner: macos-15-intel
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: unsigned-${{ matrix.target }}
+          path: unsigned
+      # Do not execute the downloaded CLI in a job with signing access.
+      - name: Sign CLI, package and require accepted notarization
+        shell: bash
+        env:
+          MACOS_DEVELOPER_ID_P12_BASE64: ${{ secrets.MACOS_DEVELOPER_ID_P12_BASE64 }}
+          MACOS_DEVELOPER_ID_P12_PASSWORD: ${{ secrets.MACOS_DEVELOPER_ID_P12_PASSWORD }}
+          MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+          ASC_KEY_P8_BASE64: ${{ secrets.ASC_KEY_P8_BASE64 }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+          RELEASE_TARGET: ${{ matrix.target }}
+        run: bash scripts/sign_cli_macos.sh unsigned release "$RELEASE_VERSION" "$RELEASE_TARGET"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-${{ matrix.target }}
+          path: release/
+          if-no-files-found: error
+          retention-days: 1
+
+  sign_windows:
+    needs: [validate, build]
+    name: Sign Windows CLI with Azure Artifact Signing
+    runs-on: windows-2025
+    timeout-minutes: 20
+    environment: synck-release
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: unsigned-x86_64-pc-windows-msvc
+          path: unsigned
+      - name: Azure login
+        uses: azure/login@8216e11d8cd9b42fe925c852af8e76311ff067ac # v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+      - name: Sign and verify standalone executable
+        shell: pwsh
+        env:
+          SIGNING_ENDPOINT: ${{ vars.AZURE_ARTIFACT_SIGNING_ENDPOINT }}
+          SIGNING_ACCOUNT_NAME: ${{ vars.AZURE_ARTIFACT_SIGNING_ACCOUNT_NAME }}
+          SIGNING_CERTIFICATE_PROFILE: ${{ vars.AZURE_ARTIFACT_SIGNING_CERTIFICATE_PROFILE_NAME }}
+        run: ./scripts/sign_cli_windows.ps1 -Binary unsigned/synck.exe
+      - name: Package signed executable
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          python scripts/cli_release.py package unsigned release $env:RELEASE_VERSION x86_64-pc-windows-msvc
+          if ($LASTEXITCODE -ne 0) { throw 'CLI packaging failed' }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-x86_64-pc-windows-msvc
+          path: release/
+          if-no-files-found: error
+          retention-days: 1
+
+  draft:
+    needs: [validate, build, sign_macos, sign_windows]
+    name: Create draft only (never publish)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: release-*
+          path: release
+          merge-multiple: true
+      - name: Revalidate tag and exact release asset set
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_COMMIT: ${{ needs.validate.outputs.commit }}
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" = "$RELEASE_COMMIT"
+          python3 scripts/cli_release.py validate "$RELEASE_TAG"
+          python3 scripts/cli_release.py checksums release "$RELEASE_VERSION"
+      - name: Create draft with signed assets and post-sign checksums
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_COMMIT: ${{ needs.validate.outputs.commit }}
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/release-notes.md" <<EOF
+          Synck CLI $RELEASE_TAG, built from $RELEASE_COMMIT.
+
+          macOS executables are Developer ID signed and notarized. Windows executables
+          are Authenticode signed and timestamped using Azure Artifact Signing.
+          Linux archives include an unsigned executable. Verify SHA256SUMS.txt before use.
+
+          Extract the archive for your platform and place synck (synck.exe on Windows)
+          on PATH. Linux x86_64 requires glibc 2.39 or newer; macOS requires 12 or newer.
+          Standalone macOS executables require an online Gatekeeper notarization check.
+
+          This draft requires manual installation QA before a maintainer publishes it.
+          EOF
+          test "$(gh api "repos/$GITHUB_REPOSITORY/commits/$RELEASE_TAG" --jq .sha)" = "$RELEASE_COMMIT"
+          gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --verify-tag --draft --title "Synck $RELEASE_TAG" \
+            --notes-file "$RUNNER_TEMP/release-notes.md" release/*

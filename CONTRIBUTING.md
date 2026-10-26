@@ -47,6 +47,13 @@ request. For documentation-only changes, reviewing the diff is usually enough;
 say when no tests or builds were run. Report security vulnerabilities through
 [SECURITY.md](SECURITY.md).
 
+## CLI releases
+
+Signed CLI releases use a separate manual workflow and a protected signing
+environment. The workflow creates a draft only. See the
+[release procedure](docs/cli-releases.md) before provisioning credentials or
+dispatching a release.
+
 ## Developer Certificate of Origin
 
 Sign off each contributed commit to attest to the

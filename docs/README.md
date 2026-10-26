@@ -1,5 +1,7 @@
 # Synck documentation
 
+- [CLI releases](cli-releases.md): manual draft releases, platform signing and
+  protected signing-environment setup.
 - [Core engine](core.md) defines items, attached refs, sequences, structural
   invariants, append/ingest, canonical JSON and commit hashing.
 - [Local checkouts and the CLI](local-repository.md) defines `.synck/`,
