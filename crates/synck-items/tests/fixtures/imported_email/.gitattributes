@@ -1,0 +1,2 @@
+# Preserve exact fixture bytes used by source-hash assertions.
+*.eml -text

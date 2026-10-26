@@ -1,0 +1,10 @@
+# Keep LF line endings on every platform: hashes, canonical vectors and
+# text compiled into the binary must be byte-identical everywhere.
+* text=auto eol=lf
+
+# Test fixtures, email sources and Office templates are exact bytes.
+**/tests/fixtures/** -text
+crates/synck-local/assets/** -text
+*.eml -text
+*.msg -text
+*.b64 -text
