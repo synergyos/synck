@@ -1,0 +1,302 @@
+{
+  "repo_id": "0198e8fa-664e-7e80-b134-94ea7ecec437",
+  "cases": [
+    {
+      "name": "create_tree",
+      "proposal": {
+        "message": "Create tree",
+        "intents": [
+          {
+            "kind": "create_folder",
+            "item_id": "0198e901-d208-7670-ae29-000000000001",
+            "location": {"parent_item_id": null, "name": "Folder"}
+          },
+          {
+            "kind": "create_file",
+            "item_id": "0198e901-d208-7670-ae29-000000000002",
+            "location": {
+              "parent_item_id": "0198e901-d208-7670-ae29-000000000001",
+              "name": "a.txt"
+            },
+            "content": {
+              "blob_id": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+              "size": 1
+            }
+          }
+        ]
+      },
+      "current": [],
+      "expected_error": null
+    },
+    {
+      "name": "relocate_folder_and_file",
+      "proposal": {
+        "message": "Relocate",
+        "intents": [
+          {
+            "kind": "update_folder",
+            "item_id": "0198e901-d208-7670-ae29-000000000010",
+            "base_seq": 3,
+            "location": {
+              "parent_item_id": "0198e901-d208-7670-ae29-000000000011",
+              "name": "Source"
+            }
+          },
+          {
+            "kind": "update_file",
+            "item_id": "0198e901-d208-7670-ae29-000000000012",
+            "base_seq": 7,
+            "location": {
+              "parent_item_id": "0198e901-d208-7670-ae29-000000000011",
+              "name": "renamed.txt"
+            }
+          }
+        ]
+      },
+      "current": [
+        {
+          "item_id": "0198e901-d208-7670-ae29-000000000010",
+          "item_type": "FOLDER",
+          "parent_item_id": null,
+          "name": "Source",
+          "name_key": "source",
+          "head_seq": 3,
+          "lifecycle_state": "LIVE"
+        },
+        {
+          "item_id": "0198e901-d208-7670-ae29-000000000011",
+          "item_type": "FOLDER",
+          "parent_item_id": null,
+          "name": "Destination",
+          "name_key": "destination",
+          "head_seq": 5,
+          "lifecycle_state": "LIVE"
+        },
+        {
+          "item_id": "0198e901-d208-7670-ae29-000000000012",
+          "item_type": "FILE",
+          "parent_item_id": "0198e901-d208-7670-ae29-000000000010",
+          "name": "document.txt",
+          "name_key": "document.txt",
+          "head_seq": 7,
+          "lifecycle_state": "LIVE",
+          "content": {
+            "blob_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "size": 2
+          }
+        }
+      ],
+      "expected_error": null
+    },
+    {
+      "name": "trash_retains_independently_trashed_descendant",
+      "proposal": {
+        "message": "Trash folder",
+        "intents": [
+          {
+            "kind": "trash",
+            "root": {
+              "item_id": "0198e901-d208-7670-ae29-000000000020",
+              "base_seq": 4
+            },
+            "descendants": [
+              {
+                "item_id": "0198e901-d208-7670-ae29-000000000021",
+                "base_seq": 6
+              }
+            ]
+          }
+        ]
+      },
+      "current": [
+        {
+          "item_id": "0198e901-d208-7670-ae29-000000000020",
+          "item_type": "FOLDER",
+          "parent_item_id": null,
+          "name": "Folder",
+          "name_key": "folder",
+          "head_seq": 4,
+          "lifecycle_state": "LIVE"
+        },
+        {
+          "item_id": "0198e901-d208-7670-ae29-000000000021",
+          "item_type": "FILE",
+          "parent_item_id": "0198e901-d208-7670-ae29-000000000020",
+          "name": "live.txt",
+          "name_key": "live.txt",
+          "head_seq": 6,
+          "lifecycle_state": "LIVE",
+          "content": {
+            "blob_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "size": 2
+          }
+        },
+        {
+          "item_id": "0198e901-d208-7670-ae29-000000000022",
+          "item_type": "FILE",
+          "parent_item_id": "0198e901-d208-7670-ae29-000000000020",
+          "name": "independent.txt",
+          "name_key": "independent.txt",
+          "head_seq": 3,
+          "lifecycle_state": "TRASH",
+          "trash_commit_id": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "content": {
+            "blob_id": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+            "size": 3
+          }
+        }
+      ],
+      "expected_error": null
+    },
+    {
+      "name": "restore_retains_other_trash_provenance",
+      "proposal": {
+        "message": "Restore folder",
+        "intents": [
+          {
+            "kind": "restore",
+            "root": {
+              "item_id": "0198e901-d208-7670-ae29-000000000030",
+              "base_seq": 5
+            },
+            "trash_commit_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "descendants": [
+              {
+                "item_id": "0198e901-d208-7670-ae29-000000000031",
+                "base_seq": 7
+              }
+            ],
+            "location": {"parent_item_id": null, "name": "Restored"}
+          }
+        ]
+      },
+      "current": [
+        {
+          "item_id": "0198e901-d208-7670-ae29-000000000030",
+          "item_type": "FOLDER",
+          "parent_item_id": null,
+          "name": "Archived",
+          "name_key": "archived",
+          "head_seq": 5,
+          "lifecycle_state": "TRASH",
+          "trash_commit_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        {
+          "item_id": "0198e901-d208-7670-ae29-000000000031",
+          "item_type": "FILE",
+          "parent_item_id": "0198e901-d208-7670-ae29-000000000030",
+          "name": "owned.txt",
+          "name_key": "owned.txt",
+          "head_seq": 7,
+          "lifecycle_state": "TRASH",
+          "trash_commit_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "content": {
+            "blob_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "size": 2
+          }
+        },
+        {
+          "item_id": "0198e901-d208-7670-ae29-000000000032",
+          "item_type": "FILE",
+          "parent_item_id": "0198e901-d208-7670-ae29-000000000030",
+          "name": "independent.txt",
+          "name_key": "independent.txt",
+          "head_seq": 9,
+          "lifecycle_state": "TRASH",
+          "trash_commit_id": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "content": {
+            "blob_id": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+            "size": 3
+          }
+        }
+      ],
+      "expected_error": null
+    },
+    {
+      "name": "nested_reserved_component_is_refused",
+      "proposal": {
+        "intents": [
+          {
+            "kind": "create_folder",
+            "item_id": "0198e901-d208-7670-ae29-000000000041",
+            "location": {
+              "parent_item_id": "0198e901-d208-7670-ae29-000000000040",
+              "name": ".SyNcK"
+            }
+          }
+        ]
+      },
+      "current": [
+        {
+          "item_id": "0198e901-d208-7670-ae29-000000000040",
+          "item_type": "FOLDER",
+          "parent_item_id": null,
+          "name": "Parent",
+          "name_key": "parent",
+          "head_seq": 2,
+          "lifecycle_state": "LIVE"
+        }
+      ],
+      "expected_error": "RESERVED_WORKTREE_PATH"
+    },
+    {
+      "name": "reserved_trashed_root_cannot_be_exposed",
+      "proposal": {
+        "intents": [
+          {
+            "kind": "restore",
+            "root": {
+              "item_id": "0198e901-d208-7670-ae29-000000000050",
+              "base_seq": 4
+            },
+            "trash_commit_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "descendants": []
+          }
+        ]
+      },
+      "current": [
+        {
+          "item_id": "0198e901-d208-7670-ae29-000000000050",
+          "item_type": "FOLDER",
+          "parent_item_id": null,
+          "name": ".synck",
+          "name_key": ".synck",
+          "head_seq": 4,
+          "lifecycle_state": "TRASH",
+          "trash_commit_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ],
+      "expected_error": "RESERVED_WORKTREE_PATH"
+    },
+    {
+      "name": "reserved_trashed_root_can_be_renamed_on_restore",
+      "proposal": {
+        "intents": [
+          {
+            "kind": "restore",
+            "root": {
+              "item_id": "0198e901-d208-7670-ae29-000000000050",
+              "base_seq": 4
+            },
+            "trash_commit_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "descendants": [],
+            "location": {"parent_item_id": null, "name": "Recovered"}
+          }
+        ]
+      },
+      "current": [
+        {
+          "item_id": "0198e901-d208-7670-ae29-000000000050",
+          "item_type": "FOLDER",
+          "parent_item_id": null,
+          "name": ".synck",
+          "name_key": ".synck",
+          "head_seq": 4,
+          "lifecycle_state": "TRASH",
+          "trash_commit_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ],
+      "expected_error": null
+    }
+  ]
+}

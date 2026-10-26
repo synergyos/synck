@@ -1,0 +1,23 @@
+{
+  "protocol_version": 1,
+  "server_id": "0198e8f8-8a52-7b10-9d31-07b09cf80978",
+  "profile": "synck-file-folder-v1",
+  "hash": "sha256",
+  "limits": {
+    "max_json_bytes": 20971520,
+    "max_intents_per_commit": 3333,
+    "max_events_per_commit": 10000,
+    "max_lifecycle_events_per_commit": 10000,
+    "max_lifecycle_descendants": 9999,
+    "max_event_payload_bytes": 1048576,
+    "max_commit_event_payload_bytes": 16777216,
+    "max_manifest_entries_per_page": 512,
+    "max_commits_per_change_page": 128,
+    "max_projected_group_bytes": 16777216,
+    "max_blob_bytes": 9007199254740991
+  },
+  "transfer": {
+    "upload_resume": false,
+    "download_single_range": true
+  }
+}

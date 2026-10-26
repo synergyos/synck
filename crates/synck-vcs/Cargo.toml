@@ -1,0 +1,31 @@
+[package]
+authors.workspace = true
+name = "synck-vcs"
+version.workspace = true
+edition.workspace = true
+license = "Apache-2.0"
+repository.workspace = true
+description = "VCS library: items/events/commits, invariants, storage"
+rust-version.workspace = true
+
+[features]
+default = []
+
+[dependencies]
+tokio.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json = { workspace = true, features = ["arbitrary_precision"] }
+uuid.workspace = true
+chrono.workspace = true
+sha2.workspace = true
+hex.workspace = true
+num-bigint.workspace = true
+async-trait.workspace = true
+serde_json_canonicalizer = "0.3.1"
+unicode-normalization = "0.1"
+
+# Existing Clippy allowances. These do not set the level of unlisted lints.
+[lints.clippy]
+too_many_arguments = "allow"

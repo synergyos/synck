@@ -1,0 +1,17 @@
+//! SQLite storage backend for Synck VCS.
+
+pub mod bundle;
+mod state;
+mod storage;
+
+pub use state::SqliteStateStore;
+pub use storage::{SqliteStorage, format_timestamp, parse_timestamp};
+
+#[test]
+fn bundled_sqlite_includes_wal_reset_fix() {
+    assert!(
+        rusqlite::version_number() >= 3_051_003,
+        "bundled SQLite {} predates the WAL-reset corruption fix",
+        rusqlite::version()
+    );
+}

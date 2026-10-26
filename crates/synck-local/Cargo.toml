@@ -1,0 +1,60 @@
+[package]
+authors.workspace = true
+name = "synck-local"
+version.workspace = true
+edition.workspace = true
+license = "Apache-2.0"
+repository.workspace = true
+description = "Synck repositories, checkouts, verified copies and the synck command-line tool"
+rust-version.workspace = true
+
+[[bin]]
+name = "synck"
+path = "src/main.rs"
+
+[dependencies]
+synck-vcs = { path = "../synck-vcs" }
+synck-items = { path = "../synck-items" }
+synck-vcs-sqlite = { path = "../synck-vcs-sqlite" }
+synck-file-folder = { path = "../synck-file-folder" }
+anstream = "1"
+anstyle = "1"
+clap = { version = "4", features = ["derive"] }
+tokio = { workspace = true, features = ["signal", "time"] }
+tokio-util = { version = "0.7", features = ["io"] }
+cap-std.workspace = true
+cap-fs-ext.workspace = true
+chrono.workspace = true
+diffy = "0.4"
+fastcdc = "3.2.1"
+hex.workspace = true
+ignore.workspace = true
+notify = "8.2.0"
+rawzip = "0.5.1"
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+zstd = "0.13"
+
+[dev-dependencies]
+base64 = "0.22"
+tempfile = "3"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Pipes",
+    "Win32_System_Threading",
+    "Wdk_Storage_FileSystem",
+] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+rustix = { version = "1.1.4", features = ["fs", "net", "process"] }

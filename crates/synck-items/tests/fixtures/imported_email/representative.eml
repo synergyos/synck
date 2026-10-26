@@ -1,0 +1,40 @@
+From: Visible Author <visible@example.test>
+Sender: Delegate Sender <delegate@example.test>
+To: Primary Recipient <to@example.test>
+Cc: Copy Recipient <cc@example.test>
+Bcc: Blind Recipient <bcc@example.test>
+Reply-To: Reply Desk <reply@example.test>
+Subject: Imported fixture ✓
+Message-ID: <fixture-1@example.test>
+Date: Wed, 15 Jul 2026 11:00:00 +0000
+Received: from fixture.example.test; Wed, 15 Jul 2026 11:01:00 +0000
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="outer"
+
+--outer
+Content-Type: multipart/alternative; boundary="alternative"
+
+--alternative
+Content-Type: text/plain; charset=utf-8
+
+Fixture body.
+--alternative
+Content-Type: text/html; charset=utf-8
+
+<p>Fixture body.</p><img src="cid:inline-image">
+--alternative--
+--outer
+Content-Type: image/png; name="inline.png"
+Content-Disposition: inline; filename="inline.png"
+Content-ID: <inline-image>
+Content-Transfer-Encoding: base64
+
+aW1hZ2U=
+--outer
+Content-Type: application/pdf; name="ordinary.pdf"
+Content-Disposition: attachment; filename="ordinary.pdf"
+Content-ID: <ordinary-document>
+Content-Transfer-Encoding: base64
+
+JVBERg==
+--outer--

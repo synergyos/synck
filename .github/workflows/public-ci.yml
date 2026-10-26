@@ -1,0 +1,37 @@
+name: Public source CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  public-packages:
+    name: Public packages (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.91.1
+        with:
+          components: rustfmt
+      - name: Install constructor-audit dependency
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y ripgrep
+      - name: Audit public FILE/FOLDER constructors
+        if: runner.os == 'Linux'
+        shell: bash
+        run: bash scripts/check_file_folder_write_boundary.sh
+      - name: Check selected package formatting
+        run: cargo fmt -p synck-vcs -p synck-vcs-sqlite -p synck-vcs-replica -p synck-file-folder -p synck-items -p synck-remote-protocol -p synck-local -- --check
+      - name: Verify selected public packages
+        run: cargo test --locked -p synck-vcs -p synck-vcs-sqlite -p synck-vcs-replica -p synck-file-folder -p synck-items -p synck-remote-protocol -p synck-local --features synck-vcs-replica/sqlite
+      - name: Run local library example
+        shell: bash
+        run: cargo run --locked -p synck-local --example local_repository -- "$RUNNER_TEMP/synck-library-example"

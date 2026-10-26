@@ -1,0 +1,24 @@
+Synck
+Copyright 2026 Jaime Rivas
+
+Synck source is licensed under the Apache License, Version 2.0.
+See LICENSE-APACHE for the full license text.
+
+Third-party test fixtures
+
+The following files are base64 encodings of test fixtures from msg_parser 0.3.6:
+
+  crates/synck-items/tests/fixtures/imported_email/ascii.msg.b64
+  crates/synck-items/tests/fixtures/imported_email/test_email_3.msg.b64
+
+Copyright (c) 2021 marirs
+
+These fixtures retain their MIT license, reproduced in:
+
+  crates/synck-items/tests/fixtures/imported_email/LICENSE.msg_parser
+
+Their provenance is documented in:
+
+  crates/synck-items/tests/fixtures/imported_email/README.md
+
+Third-party dependencies retain their own licenses.

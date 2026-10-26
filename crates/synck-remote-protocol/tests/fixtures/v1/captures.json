@@ -1,0 +1,36 @@
+{
+  "clone_request": {
+    "protocol_version": 1,
+    "profile": "synck-file-folder-v1",
+    "kind": "clone"
+  },
+  "pull_request": {
+    "protocol_version": 1,
+    "profile": "synck-file-folder-v1",
+    "kind": "pull",
+    "from_checkpoint": {
+      "repo_seq": 17,
+      "tip_commit_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  },
+  "clone_response": {
+    "protocol_version": 1,
+    "profile": "synck-file-folder-v1",
+    "kind": "clone",
+    "target_checkpoint": {
+      "repo_seq": 42,
+      "tip_commit_id": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    "page_cursor": "opaque-clone-page-state"
+  },
+  "pull_response": {
+    "protocol_version": 1,
+    "profile": "synck-file-folder-v1",
+    "kind": "pull",
+    "target_checkpoint": {
+      "repo_seq": 42,
+      "tip_commit_id": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    "page_cursor": "opaque-pull-page-state"
+  }
+}

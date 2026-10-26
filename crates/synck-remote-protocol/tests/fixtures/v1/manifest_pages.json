@@ -1,0 +1,54 @@
+{
+  "request": {
+    "protocol_version": 1,
+    "profile": "synck-file-folder-v1",
+    "cursor": "opaque-clone-page-state"
+  },
+  "response": {
+    "protocol_version": 1,
+    "profile": "synck-file-folder-v1",
+    "target_checkpoint": {
+      "repo_seq": 42,
+      "tip_commit_id": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    "entries": [
+      {
+        "item_id": "0198e901-d208-7670-ae29-6834da5adfc1",
+        "item_type": "FOLDER",
+        "parent_item_id": null,
+        "name": "Contracts",
+        "lifecycle": "LIVE",
+        "head_seq": 3,
+        "trash_commit_id": null,
+        "content": null
+      },
+      {
+        "item_id": "0198e901-d208-7670-ae29-6834da5adfc2",
+        "item_type": "FILE",
+        "parent_item_id": "0198e901-d208-7670-ae29-6834da5adfc1",
+        "name": "contract.pdf",
+        "lifecycle": "LIVE",
+        "head_seq": 7,
+        "trash_commit_id": null,
+        "content": {
+          "blob_id": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "size": 12345
+        }
+      },
+      {
+        "item_id": "0198e901-d208-7670-ae29-6834da5adfc3",
+        "item_type": "FILE",
+        "parent_item_id": null,
+        "name": "old.txt",
+        "lifecycle": "TRASH",
+        "head_seq": 4,
+        "trash_commit_id": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "content": {
+          "blob_id": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "size": 7
+        }
+      }
+    ],
+    "next_cursor": null
+  }
+}

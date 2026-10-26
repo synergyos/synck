@@ -1,0 +1,8 @@
+[
+  {"kind":"create_folder","item_id":"0198e901-d208-7670-ae29-6834da5adfc1","location":{"parent_item_id":null,"name":"Folder"}},
+  {"kind":"create_file","item_id":"0198e901-d208-7670-ae29-6834da5adfc2","location":{"parent_item_id":"0198e901-d208-7670-ae29-6834da5adfc1","name":"a.txt"},"content":{"blob_id":"sha256:0000000000000000000000000000000000000000000000000000000000000000","size":1}},
+  {"kind":"update_folder","item_id":"0198e901-d208-7670-ae29-6834da5adfc3","base_seq":4,"location":{"parent_item_id":null,"name":"Renamed"}},
+  {"kind":"update_file","item_id":"0198e901-d208-7670-ae29-6834da5adfc4","base_seq":7,"location":{"parent_item_id":null,"name":"b.txt"},"content":{"blob_id":"sha256:1111111111111111111111111111111111111111111111111111111111111111","size":2}},
+  {"kind":"trash","root":{"item_id":"0198e901-d208-7670-ae29-6834da5adfc5","base_seq":8},"descendants":[]},
+  {"kind":"restore","root":{"item_id":"0198e901-d208-7670-ae29-6834da5adfc6","base_seq":9},"trash_commit_id":"sha256:2222222222222222222222222222222222222222222222222222222222222222","descendants":[],"location":{"parent_item_id":null,"name":"Restored"}}
+]

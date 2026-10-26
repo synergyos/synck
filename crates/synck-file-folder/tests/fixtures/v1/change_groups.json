@@ -1,0 +1,50 @@
+{
+  "mixed_group": {
+    "repo_id": "0198e8fa-664e-7e80-b134-94ea7ecec437",
+    "repo_seq": 1,
+    "commit_id": "sha256:cc89ae846fdf8f7db3ba24e4713a010b01b45f21e2bd12d1cc581e8d9877b449",
+    "message": "mixed",
+    "accepted_at": "2026-08-20T12:00:00Z",
+    "changes": [
+      {
+        "item_id": "0198e901-d208-7670-ae29-000000000001",
+        "item_type": "FILE",
+        "item_seq": 1,
+        "event": {
+          "item_id": "0198e901-d208-7670-ae29-000000000001",
+          "event_type": "FILE::CREATE",
+          "create_item": {
+            "item_type": "FILE",
+            "name": "file.txt"
+          }
+        }
+      }
+    ],
+    "item_heads": [
+      {
+        "item_id": "0198e901-d208-7670-ae29-000000000001",
+        "item_type": "FILE",
+        "head_seq": 2
+      }
+    ]
+  },
+  "head_only_group": {
+    "repo_id": "0198e8fa-664e-7e80-b134-94ea7ecec437",
+    "repo_seq": 1,
+    "commit_id": "sha256:fbaf38bd4442608bcc7b3b9498a5001c480953db99ed7d901ae3f124be270c29",
+    "accepted_at": "2026-08-20T12:00:00Z",
+    "changes": [],
+    "item_heads": [
+      {
+        "item_id": "0198e901-d208-7670-ae29-000000000001",
+        "item_type": "FILE",
+        "head_seq": 5
+      },
+      {
+        "item_id": "0198e901-d208-7670-ae29-000000000002",
+        "item_type": "FOLDER",
+        "head_seq": 8
+      }
+    ]
+  }
+}

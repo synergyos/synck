@@ -1,0 +1,34 @@
+[package]
+authors.workspace = true
+name = "synck-items"
+version.workspace = true
+edition.workspace = true
+license = "Apache-2.0"
+repository.workspace = true
+description = "Shared Synck item vocabulary, event-derived state and body encoding"
+rust-version.workspace = true
+
+[dependencies]
+synck-file-folder = { path = "../synck-file-folder" }
+synck-vcs = { path = "../synck-vcs" }
+chrono.workspace = true
+chrono-tz.workspace = true
+uuid.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+sha2.workspace = true
+ring = "0.17"
+
+rrule.workspace = true
+url = "2"
+
+base64 = "0.22"
+mailparse = "0.15"
+msg_parser = "0.3.6"
+cfb = "0.14"
+encoding_rs = "0.8"
+lol_html = "3"
+
+[dev-dependencies]
+hex.workspace = true

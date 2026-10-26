@@ -1,0 +1,95 @@
+SYNCK OPERATING INSTRUCTIONS
+
+Synck keeps complete, append-only history in a local directory. There is no
+staging area or add command. Items keep their IDs through moves and renames.
+Never edit anything inside .synck.
+
+CREATE AND COMMIT
+
+    synck init [DIR] --author "<author>"
+
+Init creates a format-6 CHUNKED repository with an independent local checkout.
+It creates or preserves .synckignore and commits only that file. Existing files
+remain uncommitted. Defaults ignore OS/editor junk and unambiguous caches, not
+ordinary target/, dist/ or build/ folders. Hidden files default to ignore. To
+include them:
+    synck config set-hidden-files track
+Ordinary ignore rules still apply; tracked files are never hidden by ignores.
+The repository init command is an alias. Both accept --storage-mode WHOLE_FILE.
+
+    synck --json context
+    synck --json status
+    synck diff
+    synck commit -m "<what changed and why>" [PATH...]
+
+Review and test a coherent change before committing it. Select paths when other
+unrelated work is present. For large trees use synck commit --batch. It creates
+bounded commits and reports accepted IDs if interrupted; inspect log before
+retrying. Leave .synck untouched so the next command can resume recovery.
+
+Status markers: A added, M modified, D deleted, RN renamed, MV moved, MV+RN
+moved and renamed. Modified moves have an M+ prefix.
+    synck mv <source> <destination> -m "<reason>"
+An external move can instead be recorded by ordinary commit.
+
+HISTORY AND RECOVERY
+
+    synck log [--oneline|--events]
+    synck show <revision> [--events]
+    synck history <path>
+    synck diff [<from> <to>]
+    synck compare <from> <to>
+    synck revert <revision> -m "<reason>"
+    synck deleted
+    synck recover <path-or-item-id> -m "<reason>"
+    synck versions <path>
+    synck restore <path> [--item-seq N]
+    synck restore-tree
+
+Revert and recover append commits. Restore and restore-tree change files on disk;
+review and commit the result when wanted. Revert/recover require a clean tree.
+Revert accepts filesystem commits; mixed typed-item commits are refused atomically.
+Widen sparse checkout selection before operating outside it. Use --json for
+machine-readable inspection and commit/revert receipts, including commit IDs.
+
+VERIFY, STORE AND COPY
+
+    synck fsck
+    synck storage
+    synck storage optimize
+    synck gc
+    synck archive <new-directory> [--storage-mode WHOLE_FILE|CHUNKED]
+    synck repository import <source-directory> <new-directory> [--storage-mode WHOLE_FILE|CHUNKED]
+
+Copies retain complete history, exact content and IDs. They preserve storage mode
+unless conversion is requested. Optimize changes whole-file storage to chunks;
+it never changes logical IDs. GC preserves every object referenced by history.
+Copies start as bare followers and require no author to read or verify:
+    synck repository verify <directory>
+    synck repository log <directory>
+    synck item list --path <directory>
+    synck item show <item-id> --path <directory> [--through <repo-seq>]
+    synck item export <file-or-email-id> <new-file> --path <directory>
+
+Enable an independent filesystem checkout:
+    synck repository checkout <directory> --author <author> [--include <path>...]
+This is a separate continuation; there is no merging or synchronization.
+For a writer handoff instead, retire the former writer explicitly:
+    synck repository activate <directory> --author <author> --source-retired
+If acceptance succeeded but indexing failed, inspect the accepted ID and run
+synck repository finalize <directory> rather than repeating the write.
+
+EMAIL AND CHATS
+
+Commit .eml/.msg files to import EMAIL items with exact originals and
+attachments. Malformed email is rejected. A recorded email never changes and
+revert does not remove it. Deleting its source file changes nothing; an edited
+source is refused under the same name, so save it under a new file name to
+record a second email.
+    synck repository create-file <name> <email-or-file-source> --path <directory>
+    synck repository create-chat <title> --path <directory>
+    synck repository append-chat <chat-id> <body-file> --path <directory> [--attachment <file>...]
+Chats and email are read with item show; they are not ordinary filesystem folders.
+
+All work is local. There are no network, synchronization or parallel-workspace
+commands; work in one checkout and copy with archive or repository import.
