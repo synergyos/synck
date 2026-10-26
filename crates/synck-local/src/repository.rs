@@ -590,6 +590,8 @@ impl Repository {
             .at("open", &config_path)?;
         let mut config_bytes = Vec::new();
         std::io::Read::read_to_end(&mut config_file, &mut config_bytes).at("read", &config_path)?;
+        // Close the reader before recovery replaces config.json on Windows.
+        drop(config_file);
         let config: Config = serde_json::from_slice(&config_bytes)?;
         if config.format_version != FORMAT_VERSION
             || config.checkout.is_none()
