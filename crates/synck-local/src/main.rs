@@ -642,7 +642,6 @@ async fn run(cli: Cli) -> Result<ExitCode, (LocalError, bool)> {
             false,
         ));
     }
-    let json = cli.json;
     if let Command::Init {
         directory,
         author,
@@ -695,7 +694,7 @@ async fn run(cli: Cli) -> Result<ExitCode, (LocalError, bool)> {
         }
     }
     let integrity_command = matches!(cli.command, Command::Fsck { .. });
-    let mut repository = Repository::discover_complete(&current)
+    let repository = Repository::discover_complete(&current)
         .await
         .map_err(|error| (error, integrity_command))?;
     if uses_worktree(&cli.command)
@@ -703,12 +702,24 @@ async fn run(cli: Cli) -> Result<ExitCode, (LocalError, bool)> {
     {
         let _ = repository.start_monitor(&executable);
     }
+    run_checkout(cli, repository, current, align_change_markers).await
+}
+
+async fn run_checkout(
+    cli: Cli,
+    mut repository: Repository,
+    current: PathBuf,
+    align_change_markers: bool,
+) -> Result<ExitCode, (LocalError, bool)> {
+    let json = cli.json;
+    // Separate poll frames keep handler temporaries off the dispatcher's stack.
+    // A single large async match overflows the Windows main stack in debug builds.
     match cli.command {
         Command::Repository { .. } | Command::Item { .. } => unreachable!(),
         Command::MonitorServer { .. } => unreachable!(),
         Command::Instructions => unreachable!(),
         Command::Init { .. } => unreachable!(),
-        Command::Info => {
+        Command::Info => async {
             let info = repository.info();
             let head = repository
                 .log(Some(1))
@@ -743,8 +754,10 @@ async fn run(cli: Cli) -> Result<ExitCode, (LocalError, bool)> {
                     println!("head none");
                 }
             }
+            Ok(ExitCode::SUCCESS)
         }
-        Command::Context => {
+        .await,
+        Command::Context => async {
             let info = repository.info();
             let recent_commits = repository
                 .log(Some(CONTEXT_COMMIT_LIMIT))
@@ -790,79 +803,87 @@ async fn run(cli: Cli) -> Result<ExitCode, (LocalError, bool)> {
                     align_change_markers,
                 );
             }
+            Ok(ExitCode::SUCCESS)
         }
-        Command::Config { command } => match command {
-            ConfigCommand::Author => {
-                let author = repository.info().author;
-                if json {
-                    println!(
-                        "{}",
-                        json!({
-                            "schema_version": cli_json::SCHEMA_VERSION,
-                            "author": author,
-                        })
-                    );
-                } else {
-                    println!("author {author}");
+        .await,
+        Command::Config { command } => async {
+            match command {
+                ConfigCommand::Author => {
+                    let author = repository.info().author;
+                    if json {
+                        println!(
+                            "{}",
+                            json!({
+                                "schema_version": cli_json::SCHEMA_VERSION,
+                                "author": author,
+                            })
+                        );
+                    } else {
+                        println!("author {author}");
+                    }
+                }
+                ConfigCommand::SetAuthor { author } => {
+                    repository
+                        .set_author(&author)
+                        .map_err(|error| (error, false))?;
+                    if json {
+                        println!(
+                            "{}",
+                            json!({
+                                "schema_version": cli_json::SCHEMA_VERSION,
+                                "author": author,
+                            })
+                        );
+                    } else {
+                        println!("author {author}");
+                    }
+                }
+                ConfigCommand::HiddenFiles => {
+                    let mode = repository.hidden_files_mode().as_str();
+                    if json {
+                        println!(
+                            "{}",
+                            json!({
+                                "schema_version": cli_json::SCHEMA_VERSION,
+                                "hidden_files": mode,
+                            })
+                        );
+                    } else {
+                        println!("hidden-files {mode}");
+                    }
+                }
+                ConfigCommand::SetHiddenFiles { mode } => {
+                    let mode = HiddenFilesMode::from(mode);
+                    repository
+                        .set_hidden_files_mode(mode)
+                        .map_err(|error| (error, false))?;
+                    if json {
+                        println!(
+                            "{}",
+                            json!({
+                                "schema_version": cli_json::SCHEMA_VERSION,
+                                "hidden_files": mode.as_str(),
+                            })
+                        );
+                    } else {
+                        println!("hidden-files {}", mode.as_str());
+                    }
                 }
             }
-            ConfigCommand::SetAuthor { author } => {
-                repository
-                    .set_author(&author)
-                    .map_err(|error| (error, false))?;
-                if json {
-                    println!(
-                        "{}",
-                        json!({
-                            "schema_version": cli_json::SCHEMA_VERSION,
-                            "author": author,
-                        })
-                    );
-                } else {
-                    println!("author {author}");
-                }
-            }
-            ConfigCommand::HiddenFiles => {
-                let mode = repository.hidden_files_mode().as_str();
-                if json {
-                    println!(
-                        "{}",
-                        json!({
-                            "schema_version": cli_json::SCHEMA_VERSION,
-                            "hidden_files": mode,
-                        })
-                    );
-                } else {
-                    println!("hidden-files {mode}");
-                }
-            }
-            ConfigCommand::SetHiddenFiles { mode } => {
-                let mode = HiddenFilesMode::from(mode);
-                repository
-                    .set_hidden_files_mode(mode)
-                    .map_err(|error| (error, false))?;
-                if json {
-                    println!(
-                        "{}",
-                        json!({
-                            "schema_version": cli_json::SCHEMA_VERSION,
-                            "hidden_files": mode.as_str(),
-                        })
-                    );
-                } else {
-                    println!("hidden-files {}", mode.as_str());
-                }
-            }
-        },
-        Command::Status => {
+            Ok(ExitCode::SUCCESS)
+        }
+        .await,
+        Command::Status => async {
             let changes = repository.status().await.map_err(|error| (error, false))?;
             if json {
                 println!("{}", status_json(&changes));
             } else {
                 print_status(&changes, align_change_markers);
             }
+            Ok(ExitCode::SUCCESS)
         }
-        Command::Monitor { command } => {
+        .await,
+        Command::Monitor { command } => async {
             let status = match command {
                 MonitorCommand::Start => {
                     let executable = std::env::current_exe().map_err(|source| {
@@ -885,12 +906,14 @@ async fn run(cli: Cli) -> Result<ExitCode, (LocalError, bool)> {
                 }
             };
             print_monitor_status(&status, json);
+            Ok(ExitCode::SUCCESS)
         }
+        .await,
         Command::Commit {
             batch,
             message,
             paths,
-        } => {
+        } => async {
             if batch {
                 let outcome = repository
                     .commit_selected_batch(&current, &paths, message.as_deref())
@@ -947,8 +970,10 @@ async fn run(cli: Cli) -> Result<ExitCode, (LocalError, bool)> {
                     }
                 }
             }
+            Ok(ExitCode::SUCCESS)
         }
-        Command::Revert { revision, message } => {
+        .await,
+        Command::Revert { revision, message } => async {
             let commit_id = repository
                 .revert(&revision, &message)
                 .await
@@ -961,23 +986,27 @@ async fn run(cli: Cli) -> Result<ExitCode, (LocalError, bool)> {
             } else {
                 println!("committed {commit_id}");
             }
+            Ok(ExitCode::SUCCESS)
         }
+        .await,
         Command::Mv {
             source,
             destination,
             message,
-        } => {
+        } => async {
             let commit_id = repository
                 .move_path(&current, &source, &destination, &message)
                 .await
                 .map_err(|error| (error, false))?;
             println!("committed {commit_id}");
+            Ok(ExitCode::SUCCESS)
         }
+        .await,
         Command::Log {
             limit,
             oneline,
             events,
-        } => {
+        } => async {
             if events {
                 let commits = repository
                     .detailed_event_log(limit)
@@ -1046,8 +1075,10 @@ async fn run(cli: Cli) -> Result<ExitCode, (LocalError, bool)> {
                     }
                 }
             }
+            Ok(ExitCode::SUCCESS)
         }
-        Command::Show { revision, events } => {
+        .await,
+        Command::Show { revision, events } => async {
             if events {
                 let commit = repository
                     .show_events(&revision)
@@ -1081,8 +1112,10 @@ async fn run(cli: Cli) -> Result<ExitCode, (LocalError, bool)> {
                     print_history_commit(&commit, align_change_markers);
                 }
             }
+            Ok(ExitCode::SUCCESS)
         }
-        Command::History { path } => {
+        .await,
+        Command::History { path } => async {
             let commits = repository
                 .history(&current, &path)
                 .await
@@ -1100,8 +1133,10 @@ async fn run(cli: Cli) -> Result<ExitCode, (LocalError, bool)> {
                     print_history_commit(&commit, align_change_markers);
                 }
             }
+            Ok(ExitCode::SUCCESS)
         }
-        Command::Compare { from, to } => {
+        .await,
+        Command::Compare { from, to } => async {
             let comparison = repository
                 .compare(&from, &to)
                 .await
@@ -1129,8 +1164,10 @@ async fn run(cli: Cli) -> Result<ExitCode, (LocalError, bool)> {
             } else {
                 print_changes(&comparison.changes, align_change_markers);
             }
+            Ok(ExitCode::SUCCESS)
         }
-        Command::Diff { revisions } => {
+        .await,
+        Command::Diff { revisions } => async {
             let entries = match revisions.as_slice() {
                 [] => repository.diff_worktree().await,
                 [from, to] => repository.diff_revisions(from, to).await,
@@ -1153,8 +1190,10 @@ async fn run(cli: Cli) -> Result<ExitCode, (LocalError, bool)> {
                     print_text_diff(entry);
                 }
             }
+            Ok(ExitCode::SUCCESS)
         }
-        Command::Deleted => {
+        .await,
+        Command::Deleted => async {
             let items = repository.deleted().await.map_err(|error| (error, false))?;
             if json {
                 println!(
@@ -1177,15 +1216,19 @@ async fn run(cli: Cli) -> Result<ExitCode, (LocalError, bool)> {
                     );
                 }
             }
+            Ok(ExitCode::SUCCESS)
         }
-        Command::Recover { item_id, message } => {
+        .await,
+        Command::Recover { item_id, message } => async {
             let commit_id = repository
                 .recover_item(&item_id, &message)
                 .await
                 .map_err(|error| (error, false))?;
             println!("committed {commit_id}");
+            Ok(ExitCode::SUCCESS)
         }
-        Command::Versions { path } => {
+        .await,
+        Command::Versions { path } => async {
             let versions = repository
                 .versions(&current, &path)
                 .await
@@ -1210,133 +1253,141 @@ async fn run(cli: Cli) -> Result<ExitCode, (LocalError, bool)> {
                     );
                 }
             }
+            Ok(ExitCode::SUCCESS)
         }
-        Command::Version { command } => match command {
-            VersionCommand::List { path, all } => {
-                let versions = repository
-                    .named_versions(&current, &path, all)
-                    .await
-                    .map_err(|error| (error, false))?;
-                if json {
-                    println!(
-                        "{}",
-                        json!({
-                            "schema_version": cli_json::SCHEMA_VERSION,
-                            "versions": versions
-                                .iter()
-                                .map(cli_json::named_version_entry)
-                                .collect::<Vec<_>>(),
-                        })
-                    );
-                } else {
-                    for version in versions {
+        .await,
+        Command::Version { command } => async {
+            match command {
+                VersionCommand::List { path, all } => {
+                    let versions = repository
+                        .named_versions(&current, &path, all)
+                        .await
+                        .map_err(|error| (error, false))?;
+                    if json {
                         println!(
-                            "{} {} {} {} {} {} {} {} {} {} {}",
-                            version.label.as_deref().unwrap_or("-"),
-                            version.version_id,
-                            version.lifecycle_state,
-                            version.kind,
-                            version.label_source,
-                            version.source_item_seq,
-                            version.version_set_seq,
-                            version.created_at.to_rfc3339(),
-                            version.blob_id,
-                            version.size,
-                            version.description.as_deref().unwrap_or("-")
+                            "{}",
+                            json!({
+                                "schema_version": cli_json::SCHEMA_VERSION,
+                                "versions": versions
+                                    .iter()
+                                    .map(cli_json::named_version_entry)
+                                    .collect::<Vec<_>>(),
+                            })
                         );
+                    } else {
+                        for version in versions {
+                            println!(
+                                "{} {} {} {} {} {} {} {} {} {} {}",
+                                version.label.as_deref().unwrap_or("-"),
+                                version.version_id,
+                                version.lifecycle_state,
+                                version.kind,
+                                version.label_source,
+                                version.source_item_seq,
+                                version.version_set_seq,
+                                version.created_at.to_rfc3339(),
+                                version.blob_id,
+                                version.size,
+                                version.description.as_deref().unwrap_or("-")
+                            );
+                        }
                     }
                 }
+                VersionCommand::Create {
+                    path,
+                    item_seq,
+                    major,
+                    description,
+                    message,
+                } => {
+                    let commit_id = repository
+                        .create_named_version(
+                            &current,
+                            &path,
+                            item_seq,
+                            if major { "MAJOR" } else { "MINOR" },
+                            description.as_deref(),
+                            &message,
+                        )
+                        .await
+                        .map_err(|error| (error, false))?;
+                    println!("committed {commit_id}");
+                }
+                VersionCommand::SetDescription {
+                    path,
+                    version_id,
+                    description,
+                    message,
+                } => {
+                    let commit_id = repository
+                        .set_named_version_description(
+                            &current,
+                            &path,
+                            &version_id,
+                            &description,
+                            &message,
+                        )
+                        .await
+                        .map_err(|error| (error, false))?;
+                    println!("committed {commit_id}");
+                }
+                VersionCommand::Promote {
+                    path,
+                    version_id,
+                    message,
+                } => {
+                    let commit_id = repository
+                        .set_named_version_kind(&current, &path, &version_id, "MAJOR", &message)
+                        .await
+                        .map_err(|error| (error, false))?;
+                    println!("committed {commit_id}");
+                }
+                VersionCommand::Demote {
+                    path,
+                    version_id,
+                    message,
+                } => {
+                    let commit_id = repository
+                        .set_named_version_kind(&current, &path, &version_id, "MINOR", &message)
+                        .await
+                        .map_err(|error| (error, false))?;
+                    println!("committed {commit_id}");
+                }
+                VersionCommand::Tombstone {
+                    path,
+                    version_id,
+                    message,
+                } => {
+                    let commit_id = repository
+                        .tombstone_named_version(&current, &path, &version_id, &message)
+                        .await
+                        .map_err(|error| (error, false))?;
+                    println!("committed {commit_id}");
+                }
+                VersionCommand::Restore { path, version_id } => {
+                    repository
+                        .restore_named_version(&current, &path, &version_id)
+                        .await
+                        .map_err(|error| (error, false))?;
+                    println!(
+                        "restored {} from named version {version_id}",
+                        path.display()
+                    );
+                }
             }
-            VersionCommand::Create {
-                path,
-                item_seq,
-                major,
-                description,
-                message,
-            } => {
-                let commit_id = repository
-                    .create_named_version(
-                        &current,
-                        &path,
-                        item_seq,
-                        if major { "MAJOR" } else { "MINOR" },
-                        description.as_deref(),
-                        &message,
-                    )
-                    .await
-                    .map_err(|error| (error, false))?;
-                println!("committed {commit_id}");
-            }
-            VersionCommand::SetDescription {
-                path,
-                version_id,
-                description,
-                message,
-            } => {
-                let commit_id = repository
-                    .set_named_version_description(
-                        &current,
-                        &path,
-                        &version_id,
-                        &description,
-                        &message,
-                    )
-                    .await
-                    .map_err(|error| (error, false))?;
-                println!("committed {commit_id}");
-            }
-            VersionCommand::Promote {
-                path,
-                version_id,
-                message,
-            } => {
-                let commit_id = repository
-                    .set_named_version_kind(&current, &path, &version_id, "MAJOR", &message)
-                    .await
-                    .map_err(|error| (error, false))?;
-                println!("committed {commit_id}");
-            }
-            VersionCommand::Demote {
-                path,
-                version_id,
-                message,
-            } => {
-                let commit_id = repository
-                    .set_named_version_kind(&current, &path, &version_id, "MINOR", &message)
-                    .await
-                    .map_err(|error| (error, false))?;
-                println!("committed {commit_id}");
-            }
-            VersionCommand::Tombstone {
-                path,
-                version_id,
-                message,
-            } => {
-                let commit_id = repository
-                    .tombstone_named_version(&current, &path, &version_id, &message)
-                    .await
-                    .map_err(|error| (error, false))?;
-                println!("committed {commit_id}");
-            }
-            VersionCommand::Restore { path, version_id } => {
-                repository
-                    .restore_named_version(&current, &path, &version_id)
-                    .await
-                    .map_err(|error| (error, false))?;
-                println!(
-                    "restored {} from named version {version_id}",
-                    path.display()
-                );
-            }
-        },
-        Command::Restore { path, item_seq } => {
+            Ok(ExitCode::SUCCESS)
+        }
+        .await,
+        Command::Restore { path, item_seq } => async {
             repository
                 .restore(&current, &path, item_seq)
                 .await
                 .map_err(|error| (error, false))?;
             println!("restored {}", path.display());
+            Ok(ExitCode::SUCCESS)
         }
-        Command::RestoreTree => {
+        .await,
+        Command::RestoreTree => async {
             if repository
                 .restore_worktree()
                 .await
@@ -1346,32 +1397,38 @@ async fn run(cli: Cli) -> Result<ExitCode, (LocalError, bool)> {
             } else {
                 println!("nothing to restore");
             }
+            Ok(ExitCode::SUCCESS)
         }
+        .await,
         Command::Export {
             path,
             destination,
             item_seq,
-        } => {
+        } => async {
             repository
                 .export(&current, &path, &destination, item_seq)
                 .await
                 .map_err(|error| (error, false))?;
             println!("exported {} to {}", path.display(), destination.display());
+            Ok(ExitCode::SUCCESS)
         }
+        .await,
         Command::ExportTree {
             revision,
             destination,
             folder,
-        } => {
+        } => async {
             repository
                 .export_tree(&current, &revision, folder.as_deref(), &destination)
                 .await
                 .map_err(|error| (error, false))?;
             println!("exported {revision} to {}", destination.display());
+            Ok(ExitCode::SUCCESS)
         }
+        .await,
         Command::Fsck {
             rebuild_state_index,
-        } => {
+        } => async {
             if rebuild_state_index {
                 repository
                     .rebuild_state_index()
@@ -1421,60 +1478,69 @@ async fn run(cli: Cli) -> Result<ExitCode, (LocalError, bool)> {
                 eprintln!("fsck: {finding_count} finding(s)");
                 return Ok(ExitCode::from(2));
             }
+            Ok(ExitCode::SUCCESS)
         }
-        Command::Storage { command } => match command {
-            None => {
-                let report = repository
-                    .storage_report()
-                    .await
-                    .map_err(|error| (error, false))?;
-                if json {
-                    println!(
-                        "{}",
-                        json!({
-                            "schema_version": cli_json::SCHEMA_VERSION,
-                            "referenced_objects": report.referenced_objects,
-                            "referenced_bytes": report.referenced_bytes,
-                            "unreachable_objects": report.unreachable_objects,
-                            "unreachable_bytes": report.unreachable_bytes,
-                        })
-                    );
-                } else {
-                    println!("referenced_objects {}", report.referenced_objects);
-                    println!("referenced_bytes {}", report.referenced_bytes);
-                    println!("unreachable_objects {}", report.unreachable_objects);
-                    println!("unreachable_bytes {}", report.unreachable_bytes);
+        .await,
+        Command::Storage { command } => async {
+            match command {
+                None => {
+                    let report = repository
+                        .storage_report()
+                        .await
+                        .map_err(|error| (error, false))?;
+                    if json {
+                        println!(
+                            "{}",
+                            json!({
+                                "schema_version": cli_json::SCHEMA_VERSION,
+                                "referenced_objects": report.referenced_objects,
+                                "referenced_bytes": report.referenced_bytes,
+                                "unreachable_objects": report.unreachable_objects,
+                                "unreachable_bytes": report.unreachable_bytes,
+                            })
+                        );
+                    } else {
+                        println!("referenced_objects {}", report.referenced_objects);
+                        println!("referenced_bytes {}", report.referenced_bytes);
+                        println!("unreachable_objects {}", report.unreachable_objects);
+                        println!("unreachable_bytes {}", report.unreachable_bytes);
+                    }
+                }
+                Some(StorageCommand::Optimize) => {
+                    if repository
+                        .optimize_storage()
+                        .await
+                        .map_err(|error| (error, false))?
+                    {
+                        println!("storage optimized");
+                    } else {
+                        println!("storage already optimized");
+                    }
                 }
             }
-            Some(StorageCommand::Optimize) => {
-                if repository
-                    .optimize_storage()
-                    .await
-                    .map_err(|error| (error, false))?
-                {
-                    println!("storage optimized");
-                } else {
-                    println!("storage already optimized");
-                }
-            }
-        },
-        Command::Gc => {
+            Ok(ExitCode::SUCCESS)
+        }
+        .await,
+        Command::Gc => async {
             let report = repository.gc().await.map_err(|error| (error, false))?;
             println!("removed_objects {}", report.removed_objects);
             println!("removed_bytes {}", report.removed_bytes);
+            Ok(ExitCode::SUCCESS)
         }
+        .await,
         Command::Archive {
             destination,
             storage_mode,
-        } => {
+        } => async {
             repository
                 .archive_complete(&destination, storage_mode)
                 .await
                 .map_err(|error| (error, false))?;
             println!("archived {}", destination.display());
+            Ok(ExitCode::SUCCESS)
         }
+        .await,
     }
-    Ok(ExitCode::SUCCESS)
 }
 
 fn parse_storage_mode(value: &str) -> Result<synck_local::StorageMode, String> {
@@ -1491,12 +1557,13 @@ fn portable_item_id(value: &str) -> synck_local::Result<synck_vcs::types::ItemId
 
 async fn run_portable(command: &PortableCommand) -> synck_local::Result<()> {
     use synck_local::portable::{PortableRepository, import_repository};
+    // Keep command temporaries in separate poll frames, as in run_checkout().
     match command {
         PortableCommand::Init {
             destination,
             author,
             storage_mode,
-        } => {
+        } => async {
             let repo_id = synck_local::portable::init_repository_with_mode(
                 destination,
                 author,
@@ -1507,32 +1574,38 @@ async fn run_portable(command: &PortableCommand) -> synck_local::Result<()> {
                 "{}",
                 json!({"schema_version":1,"repo_id":repo_id,"path":destination})
             );
+            Ok(())
         }
+        .await,
         PortableCommand::Checkout {
             path,
             author,
             paths,
-        } => {
+        } => async {
             let mut repository = PortableRepository::open(path)?;
             repository.enable_checkout(author, paths).await?;
             println!(
                 "{}",
                 json!({"schema_version":1,"repo_id":repository.repo_id(),"checkout_paths":repository.checkout_paths(),"authority":repository.authority()})
             );
+            Ok(())
         }
-        PortableCommand::CheckoutSelection { path, paths, .. } => {
+        .await,
+        PortableCommand::CheckoutSelection { path, paths, .. } => async {
             let mut repository = Repository::discover(path).await?;
             repository.set_checkout_paths(paths).await?;
             println!(
                 "{}",
                 json!({"schema_version":1,"repo_id":repository.repository_id(),"checkout_paths":repository.checkout_paths()})
             );
+            Ok(())
         }
+        .await,
         PortableCommand::Import {
             source,
             destination,
             storage_mode,
-        } => {
+        } => async {
             if let Some(mode) = storage_mode {
                 synck_local::portable::import_repository_with_mode(source, destination, *mode)
                     .await?;
@@ -1540,39 +1613,49 @@ async fn run_portable(command: &PortableCommand) -> synck_local::Result<()> {
                 import_repository(source, destination).await?;
             }
             println!("{}", json!({"schema_version":1,"imported":destination}));
+            Ok(())
         }
-        PortableCommand::Verify { path } => {
+        .await,
+        PortableCommand::Verify { path } => async {
             let report = match synck_local::portable::verify_complete_repository(path).await? {
                 Some(report) => report,
                 None => PortableRepository::open(path)?.verify().await?,
             };
             println!("{}", serde_json::to_string(&report)?);
+            Ok(())
         }
+        .await,
         PortableCommand::Log {
             path,
             limit,
             before,
-        } => println!(
-            "{}",
-            serde_json::to_string(&PortableRepository::open(path)?.log(*before, *limit).await?)?
-        ),
+        } => async {
+            println!(
+                "{}",
+                serde_json::to_string(&PortableRepository::open(path)?.log(*before, *limit).await?)?
+            );
+            Ok(())
+        }
+        .await,
         PortableCommand::Activate {
             path,
             author,
             source_retired,
-        } => {
+        } => async {
             let mut repository = PortableRepository::open(path)?;
             repository.activate(author, *source_retired).await?;
             println!(
                 "{}",
                 json!({"schema_version":1,"repo_id":repository.repo_id(),"authority":repository.authority()})
             );
+            Ok(())
         }
+        .await,
         PortableCommand::Archive {
             path,
             destination,
             storage_mode,
-        } => {
+        } => async {
             let repository = PortableRepository::open(path)?;
             repository
                 .archive_with_mode(
@@ -1581,17 +1664,21 @@ async fn run_portable(command: &PortableCommand) -> synck_local::Result<()> {
                 )
                 .await?;
             println!("{}", json!({"schema_version":1,"archive":destination}));
+            Ok(())
         }
-        PortableCommand::Finalize { path } => {
+        .await,
+        PortableCommand::Finalize { path } => async {
             PortableRepository::open(path)?.finalize().await?;
             println!("{}", json!({"schema_version":1,"finalized":path}));
+            Ok(())
         }
+        .await,
         PortableCommand::CreateFile {
             path,
             parent,
             name,
             source,
-        } => {
+        } => async {
             let outcome = PortableRepository::open(path)?
                 .create_file(
                     parent.as_deref().map(portable_item_id).transpose()?,
@@ -1603,30 +1690,36 @@ async fn run_portable(command: &PortableCommand) -> synck_local::Result<()> {
                 "{}",
                 json!({"schema_version":1,"item_id":outcome.0,"commit_id":outcome.1})
             );
+            Ok(())
         }
+        .await,
         PortableCommand::SaveFile {
             path,
             item_id,
             source,
-        } => {
+        } => async {
             let commit = PortableRepository::open(path)?
                 .save_file(&portable_item_id(item_id)?, source)
                 .await?;
             println!("{}", json!({"schema_version":1,"commit_id":commit}));
+            Ok(())
         }
-        PortableCommand::CreateChat { path, title } => {
+        .await,
+        PortableCommand::CreateChat { path, title } => async {
             let (id, commit_id) = PortableRepository::open(path)?.create_chat(title).await?;
             println!(
                 "{}",
                 json!({"schema_version":1,"item_id":id,"commit_id":commit_id})
             );
+            Ok(())
         }
+        .await,
         PortableCommand::AppendChat {
             path,
             item_id,
             body_file,
             attachments,
-        } => {
+        } => async {
             let body = std::fs::read_to_string(body_file).map_err(|source| LocalError::Io {
                 action: "read chat body",
                 path: body_file.clone(),
@@ -1640,20 +1733,22 @@ async fn run_portable(command: &PortableCommand) -> synck_local::Result<()> {
                 )
                 .await?;
             println!("{}", json!({"schema_version":1,"commit_id":commit}));
+            Ok(())
         }
+        .await,
     }
-    Ok(())
 }
 
 async fn run_portable_item(command: &ItemCommand) -> synck_local::Result<()> {
     use synck_local::portable::{NamespaceCursor, PortableRepository};
+    // Keep command temporaries in separate poll frames, as in run_checkout().
     match command {
         ItemCommand::Export {
             path,
             item_id,
             destination,
             through,
-        } => {
+        } => async {
             let bytes = PortableRepository::open(path)?
                 .export_file(&portable_item_id(item_id)?, destination, *through)
                 .await?;
@@ -1661,26 +1756,32 @@ async fn run_portable_item(command: &ItemCommand) -> synck_local::Result<()> {
                 "{}",
                 json!({"schema_version":1,"item_id":item_id,"destination":destination,"bytes":bytes})
             );
+            Ok(())
         }
+        .await,
         ItemCommand::Show {
             path,
             item_id,
             through,
-        } => println!(
-            "{}",
-            serde_json::to_string(
-                &PortableRepository::open(path)?
-                    .show_item(&portable_item_id(item_id)?, *through)
-                    .await?
-            )?
-        ),
+        } => async {
+            println!(
+                "{}",
+                serde_json::to_string(
+                    &PortableRepository::open(path)?
+                        .show_item(&portable_item_id(item_id)?, *through)
+                        .await?
+                )?
+            );
+            Ok(())
+        }
+        .await,
         ItemCommand::List {
             path,
             parent,
             after,
             through,
             limit,
-        } => {
+        } => async {
             let repository = PortableRepository::open(path)?;
             let parent = parent.as_deref().map(portable_item_id).transpose()?;
             let after = after
@@ -1706,9 +1807,10 @@ async fn run_portable_item(command: &ItemCommand) -> synck_local::Result<()> {
                 }
             };
             println!("{}", serde_json::to_string(&page)?);
+            Ok(())
         }
+        .await,
     }
-    Ok(())
 }
 
 fn supports_json(command: &Command) -> bool {
