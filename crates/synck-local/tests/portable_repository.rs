@@ -2214,8 +2214,26 @@ async fn email_sources_use_current_ownership_for_tracked_files() {
         .await
         .unwrap();
 
+    #[cfg(windows)]
+    let draft_creation = fs::metadata(root.join("draft.txt"))
+        .unwrap()
+        .created()
+        .unwrap();
     fs::remove_file(root.join("mail/message.eml")).unwrap();
     fs::rename(root.join("draft.txt"), root.join("mail/message.eml")).unwrap();
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::FileTimesExt;
+
+        // This test requires an exact tracked identity. NTFS can tunnel the
+        // deleted email source's creation time onto the renamed draft.
+        fs::OpenOptions::new()
+            .write(true)
+            .open(root.join("mail/message.eml"))
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_created(draft_creation))
+            .unwrap();
+    }
     let changes = repository.status().await.unwrap();
     assert_eq!(changes.len(), 1, "{changes:?}");
     assert_eq!(changes[0].kind, synck_local::ChangeKind::MoveRename);

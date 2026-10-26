@@ -3029,6 +3029,23 @@ mod tests {
         assert_eq!(matched.get(&moved_id).map(String::as_str), Some("A.txt"));
         assert!(!matched.contains_key(&displaced_id));
         assert_eq!(blocked_paths, HashSet::from(["A.txt".to_string()]));
+
+        // An untracked destination has no stored incarnation to authenticate
+        // tunneling. Its creation time cannot establish the source's identity.
+        matched.clear();
+        claimed_paths.clear();
+        blocked_paths.clear();
+        reconcile_windows_tunneled_relocations(
+            &committed_by_id,
+            &working,
+            &records[1..],
+            &mut matched,
+            &mut claimed_paths,
+            &mut blocked_paths,
+        );
+        assert!(matched.is_empty());
+        assert!(claimed_paths.is_empty());
+        assert_eq!(blocked_paths, HashSet::from(["A.txt".to_string()]));
     }
 
     #[test]
