@@ -524,12 +524,31 @@ impl Config {
     }
 }
 
+pub(crate) struct RepositoryLock {
+    file: File,
+}
+
+impl RepositoryLock {
+    pub(crate) fn acquire(file: File) -> std::result::Result<Arc<Self>, std::fs::TryLockError> {
+        file.try_lock()?;
+        Ok(Arc::new(Self { file }))
+    }
+}
+
+impl Drop for RepositoryLock {
+    fn drop(&mut self) {
+        // Closing alone can leave a Unix flock held by a child between fork
+        // and exec. Release it explicitly when the last owning view is gone.
+        let _ = self.file.unlock();
+    }
+}
+
 pub struct Repository {
     root_path: PathBuf,
     metadata_path: PathBuf,
     root: Dir,
     config: Config,
-    _lock: File,
+    _lock: Arc<RepositoryLock>,
     storage: SqliteStorage,
     repo: Repo,
     pub(crate) storage_mode: StorageMode,
@@ -570,8 +589,8 @@ impl Repository {
             .open_with("lock", &lock_options)
             .at("open", &lock_path)?
             .into_std();
-        match lock.try_lock() {
-            Ok(()) => {}
+        let lock = match RepositoryLock::acquire(lock) {
+            Ok(lock) => lock,
             Err(std::fs::TryLockError::WouldBlock) => return Err(LocalError::Busy),
             Err(std::fs::TryLockError::Error(source)) => {
                 return Err(LocalError::Io {
@@ -580,7 +599,7 @@ impl Repository {
                     source,
                 });
             }
-        }
+        };
 
         let config_path = metadata_path.join("config.json");
         let mut read_options = CapOpenOptions::new();
@@ -700,9 +719,7 @@ impl Repository {
         crate::portable::PortableRepository::from_locked_checkout(
             &self.root_path,
             self.storage.clone(),
-            self._lock
-                .try_clone()
-                .at("duplicate repository lock", self.metadata_path.join("lock"))?,
+            Arc::clone(&self._lock),
             &self.config,
         )
     }
@@ -710,7 +727,7 @@ impl Repository {
     pub(crate) fn from_portable(
         root_path: &Path,
         storage: SqliteStorage,
-        lock: File,
+        lock: Arc<RepositoryLock>,
         config: Config,
     ) -> Result<Self> {
         let storage_mode = config.storage_mode.unwrap_or_default();
@@ -2357,6 +2374,69 @@ mod tests {
     use super::*;
     use crate::init;
     use synck_vcs::types::{CommitProposal, CreateItem, EventProposal};
+
+    #[tokio::test]
+    async fn repository_lock_is_held_until_the_last_view_drops() {
+        let temporary = tempfile::tempdir().unwrap();
+        init(temporary.path(), "author").await.unwrap();
+        let repository = Repository::discover(temporary.path()).await.unwrap();
+        let view = repository.portable_view().unwrap();
+        drop(repository);
+        assert!(matches!(
+            Repository::discover(temporary.path()).await,
+            Err(LocalError::Busy)
+        ));
+        drop(view);
+        Repository::discover(temporary.path()).await.unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn repository_lock_is_released_while_a_forked_child_retains_its_descriptor() {
+        use std::os::fd::AsRawFd;
+        use std::os::unix::net::UnixStream;
+
+        struct Child {
+            pid: libc::pid_t,
+            release: UnixStream,
+        }
+        impl Drop for Child {
+            fn drop(&mut self) {
+                let _ = self.release.shutdown(std::net::Shutdown::Write);
+                unsafe {
+                    while libc::waitpid(self.pid, std::ptr::null_mut(), 0) < 0
+                        && io::Error::last_os_error().kind() == io::ErrorKind::Interrupted
+                    {
+                    }
+                }
+            }
+        }
+
+        let temporary = tempfile::tempdir().unwrap();
+        init(temporary.path(), "author").await.unwrap();
+        let repository = Repository::discover(temporary.path()).await.unwrap();
+        let (release, inherited) = UnixStream::pair().unwrap();
+        let release_fd = release.as_raw_fd();
+        let inherited_fd = inherited.as_raw_fd();
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0);
+        if pid == 0 {
+            // Only async-signal-safe calls are allowed after a multithreaded
+            // fork. Keep inherited descriptors alive until the parent is done.
+            unsafe {
+                libc::close(release_fd);
+                let mut byte = 0_u8;
+                while libc::read(inherited_fd, (&mut byte as *mut u8).cast(), 1) < 0 {}
+                libc::_exit(0);
+            }
+        }
+        drop(inherited);
+        let child = Child { pid, release };
+        drop(repository);
+        let reopened = Repository::discover(temporary.path()).await;
+        drop(child);
+        reopened.unwrap();
+    }
 
     #[test]
     fn directory_publication_never_replaces_an_existing_target() {

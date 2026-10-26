@@ -246,7 +246,10 @@ All repository commands acquire one exclusive nonblocking advisory lock on
 `repository busy`. Lock-file contents carry no state.
 
 A library caller holds the repository lock for the lifetime of its `Repository`
-handle and releases it by dropping the handle. Library callers may query an
+or `PortableRepository` handle. Internal adapters share the same lock owner;
+the last owning view explicitly unlocks before closing the descriptor. A Unix
+child retaining an inherited descriptor between fork and exec must not prolong
+the parent's operation lock. Library callers may query an
 already-running monitor, but do not locate an executable or start one. Only the
 `synck` CLI starts the installed `synck` binary in its hidden foreground
 monitor-server mode.

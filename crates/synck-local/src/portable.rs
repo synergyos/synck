@@ -43,9 +43,9 @@ use uuid::Uuid;
 use crate::chunk_store::{ChunkStore, OBJECT_STORE_FILE, StorageMode};
 use crate::error::{IoContext, LocalError, Result};
 use crate::repository::{
-    is_cap_link_or_reparse, is_link_or_reparse, open_regular_file_nofollow, remove_tree_nofollow,
-    rename_between_noreplace, rename_noreplace, replace_file, sync_directory, sync_file,
-    sync_open_directory,
+    RepositoryLock, is_cap_link_or_reparse, is_link_or_reparse, open_regular_file_nofollow,
+    remove_tree_nofollow, rename_between_noreplace, rename_noreplace, replace_file, sync_directory,
+    sync_file, sync_open_directory,
 };
 
 pub const FORMAT_VERSION: u32 = 6;
@@ -153,7 +153,7 @@ pub struct PortableRepository {
     metadata: Dir,
     config: Config,
     storage: SqliteStorage,
-    _lock: File,
+    _lock: Arc<RepositoryLock>,
 }
 
 fn invalid(error: impl std::fmt::Display) -> LocalError {
@@ -327,11 +327,11 @@ impl PortableRepository {
         #[cfg(test)]
         crate::repository::run_open_lock_hook();
         let lock = regular_with_access(&metadata, "lock", &root.join(".synck/lock"), true)?;
-        match lock.try_lock() {
-            Ok(()) => {}
+        let lock = match RepositoryLock::acquire(lock) {
+            Ok(lock) => lock,
             Err(std::fs::TryLockError::WouldBlock) => return Err(LocalError::Busy),
             Err(std::fs::TryLockError::Error(error)) => return Err(invalid(error)),
-        }
+        };
         let bytes = read_small(
             &metadata,
             "config.json",
@@ -380,7 +380,7 @@ impl PortableRepository {
     pub(crate) fn from_locked_checkout(
         root: &Path,
         storage: SqliteStorage,
-        lock: File,
+        lock: Arc<RepositoryLock>,
         config: &crate::repository::Config,
     ) -> Result<Self> {
         Ok(Self {
@@ -412,7 +412,7 @@ impl PortableRepository {
         crate::Repository::from_portable(
             &self.root,
             self.storage.clone(),
-            self._lock.try_clone().map_err(corrupt)?,
+            Arc::clone(&self._lock),
             config,
         )
     }
@@ -648,8 +648,8 @@ impl PortableRepository {
                 previous_paths: None,
             }),
         };
-        // Construct a temporary adapter using a duplicate of this exact locked
-        // descriptor. No second opener or lock gap is involved.
+        // Share this exact lock with the temporary adapter. No second opener
+        // or lock gap is involved.
         let config = crate::repository::Config::complete(
             self.repo_id().clone(),
             author.to_string(),
@@ -660,7 +660,7 @@ impl PortableRepository {
         let mut working = crate::repository::Repository::from_portable(
             &self.root,
             self.storage.clone(),
-            self._lock.try_clone().map_err(invalid)?,
+            Arc::clone(&self._lock),
             config,
         )?;
         working.recover_current().await?;
