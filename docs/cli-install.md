@@ -13,7 +13,13 @@ a manual build as described in [CLI builds](cli-builds.md).
 
 ## macOS and Linux
 
-Download and inspect the script, then run it:
+Quick install from the repository:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/synergyos/synck/main/install.sh | sh
+```
+
+Or download and inspect the release's copy of the script before running it:
 
 ```sh
 curl --proto '=https' --proto-redir '=https' -fLsS \
@@ -41,7 +47,13 @@ export PATH="$HOME/.local/bin:$PATH"
 
 ## Windows
 
-Download and inspect the script, then run it in PowerShell 5.1 or newer:
+Quick install in PowerShell 5.1 or newer:
+
+```powershell
+irm https://raw.githubusercontent.com/synergyos/synck/main/install.ps1 | iex
+```
+
+Or download and inspect the release's copy of the script before running it:
 
 ```powershell
 Invoke-WebRequest -UseBasicParsing `

@@ -79,12 +79,30 @@ databases](https://synckhub.com/synck/internals/trade-offs).
 
 ## Install
 
-Version-selecting installers for published binaries are documented in
-[CLI installation](docs/cli-install.md). They become usable when the first binary
-release is published. For now, install from source or download a
-[manual CLI build](docs/cli-builds.md).
+### Quick install
 
-Synck 0.1 is installed from source. You need Git,
+These commands install the latest published binary release. They become usable
+when the first binary release is published. Until then, install from source or
+download a [manual CLI build](docs/cli-builds.md).
+
+Windows (PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/synergyos/synck/main/install.ps1 | iex
+```
+
+macOS / Linux:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/synergyos/synck/main/install.sh | sh
+```
+
+See [CLI installation](docs/cli-install.md) for version selection, installation
+directories, and adding the executable to `PATH`.
+
+### From source
+
+You need Git,
 [Rust through rustup](https://rustup.rs) (this repository pins the toolchain in
 `rust-toolchain.toml`) and a C compiler: the Xcode Command Line Tools on macOS,
 your distribution's build tools on Linux, or the Microsoft C++ Build Tools on

@@ -93,7 +93,11 @@ function Invoke-WebRequest {
     Copy-Item -LiteralPath (Join-Path $env:FIXTURE ($Uri.Split('/')[-1])) -Destination $OutFile
 }
 try {
-    & $env:TEST_INSTALLER -Version $env:TEST_VERSION -InstallDir $env:TEST_INSTALL_DIR
+    if ($env:TEST_PIPE -eq '1') {
+        Get-Content -LiteralPath $env:TEST_INSTALLER -Raw | Invoke-Expression
+    } else {
+        & $env:TEST_INSTALLER -Version $env:TEST_VERSION -InstallDir $env:TEST_INSTALL_DIR
+    }
 } catch {
     Write-Host $_
     exit 1
@@ -105,8 +109,9 @@ try {
         path.write_text(f"#!{sys.executable}\n" + script)
         path.chmod(0o755)
 
-    def run_installer(self, platform, version=None):
+    def run_installer(self, platform, version=None, piped=False):
         env = {**self.env}
+        env["TEST_PIPE"] = "1" if piped else "0"
         if version is not None:
             env["TEST_VERSION"] = version
         if platform == "windows":
@@ -115,7 +120,21 @@ try {
         else:
             command = ["sh", str(ROOT / "install.sh"), "--version", env["TEST_VERSION"],
                        "--install-dir", str(self.install)]
-        return subprocess.run(command, env=env, capture_output=True, text=True)
+            if piped:
+                command = ["sh", "-s", "--", "--install-dir", str(self.install)]
+        return subprocess.run(
+            command, env=env, capture_output=True, text=True,
+            input=(ROOT / "install.sh").read_text() if piped and platform == "unix" else None,
+        )
+
+    def test_quick_install_pipeline_entry_points(self):
+        for platform in self.platforms():
+            with self.subTest(platform=platform):
+                result = self.run_installer(platform, piped=True)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                destination = (self.root / "Synck" / "bin" / "synck.exe"
+                               if platform == "windows" else self.install / "synck")
+                self.assertEqual(destination.read_bytes(), self.binary)
 
     def platforms(self):
         return ("unix", "windows") if POWERSHELL else ("unix",)
