@@ -36,7 +36,7 @@ sh install.sh --version 0.1.0 --install-dir "$HOME/bin"
 
 Both `0.1.0` and `v0.1.0` select tag `v0.1.0`. Linux x86_64 and macOS Apple
 Silicon/Intel are supported; see [platform requirements](cli-builds.md).
-The script requires `curl`, `unzip`, and either `sha256sum` or `shasum`.
+The script requires `curl` and either `sha256sum` or `shasum`.
 
 Ensure the chosen directory is on `PATH`. For the default destination, add this
 line to your shell's startup file if needed:
@@ -86,9 +86,10 @@ assets and manifest are both obtained over HTTPS from the same repository.
 
 Both installers use the existing release assets:
 
-- `synck-<version>-<target>.zip`, containing `synck` or `synck.exe` at the root.
-- `SHA256SUMS.txt`, containing exactly one SHA-256 entry for the selected archive.
+- `synck-<version>-<target>` (`.exe` on Windows), the executable itself.
+- `SHA256SUMS.txt`, containing exactly one SHA-256 entry for the selected executable.
 
-The manual draft workflow also attaches `install.sh` and `install.ps1` and adds
-their checksums to the manifest. Release creation and publication remain manual.
-Review the exact assets before publishing.
+The manual draft workflows also attach `install.sh` and `install.ps1` and add
+their checksums to the manifest. See [CLI builds](cli-builds.md) for creating a
+draft. Release creation and publication remain manual. Review the exact assets
+before publishing.

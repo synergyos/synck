@@ -1,34 +1,40 @@
 name: Build CLI
-run-name: CLI build (${{ github.ref_name }})
+run-name: CLI draft (${{ inputs.tag }})
 
 on:
   workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing vX.Y.Z tag contained in main
+        required: true
+        type: string
 
 permissions:
   contents: read
 
+concurrency:
+  group: synck-cli-release
+  cancel-in-progress: false
+
 jobs:
   metadata:
+    if: github.repository == 'synergyos/synck' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
-      version: ${{ steps.version.outputs.version }}
+      version: ${{ steps.release.outputs.version }}
+      commit: ${{ steps.release.outputs.commit }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
-      - name: Read workspace version
-        id: version
-        run: |
-          python3 - <<'PY'
-          import os
-          import tomllib
-          from pathlib import Path
-
-          version = tomllib.loads(Path("Cargo.toml").read_text())["workspace"]["package"]["version"]
-          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
-              output.write(f"version={version}\n")
-          PY
+      - name: Validate release tag and source
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: python3 scripts/cli_release.py validate-build "$RELEASE_TAG"
 
   build:
     needs: metadata
@@ -62,6 +68,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ needs.metadata.outputs.commit }}
           persist-credentials: false
       - name: Install the pinned Rust toolchain
         run: rustup toolchain install 1.91.1 --profile minimal --target "$BUILD_TARGET"
@@ -82,3 +89,53 @@ jobs:
           archive: false
           if-no-files-found: error
           retention-days: 1
+
+  draft:
+    needs: [metadata, build]
+    name: Create draft release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: synck-*
+          path: binaries
+          merge-multiple: true
+      - name: Assemble and validate release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_COMMIT: ${{ needs.metadata.outputs.commit }}
+          RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" = "$RELEASE_COMMIT"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/commits/$RELEASE_TAG" --jq .sha)" = "$RELEASE_COMMIT"
+          python3 scripts/cli_release.py validate-build "$RELEASE_TAG"
+          python3 scripts/cli_release.py assemble-build binaries release "$RELEASE_VERSION"
+      - name: Create draft for manual review
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_COMMIT: ${{ needs.metadata.outputs.commit }}
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/release-notes.md" <<EOF
+          Synck CLI $RELEASE_TAG, built from $RELEASE_COMMIT.
+
+          Download the executable for your platform and verify SHA256SUMS.txt,
+          or use install.sh / install.ps1 to download and verify it automatically.
+          Linux x86_64 requires glibc 2.39 or newer; macOS requires 12 or newer.
+
+          This draft requires manual installation QA before publication.
+          EOF
+          gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --verify-tag --draft --title "Synck $RELEASE_TAG" \
+            --notes-file "$RUNNER_TEMP/release-notes.md" release/*

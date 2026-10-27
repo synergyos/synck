@@ -8,7 +8,6 @@ import subprocess
 import sys
 import tempfile
 import unittest
-import zipfile
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -45,12 +44,9 @@ class InstallerTests(unittest.TestCase):
             "x86_64-unknown-linux-gnu", "aarch64-apple-darwin",
             "x86_64-apple-darwin", "x86_64-pc-windows-msvc",
         ):
-            asset = self.root / f"synck-1.2.3-{target}.zip"
-            name = "synck.exe" if "windows" in target else "synck"
-            with zipfile.ZipFile(asset, "w") as archive:
-                archive.writestr(name, self.binary)
-                # Unrelated entries must never be extracted into the filesystem.
-                archive.writestr("../escaped", b"must not extract")
+            suffix = ".exe" if "windows" in target else ""
+            asset = self.root / f"synck-1.2.3-{target}{suffix}"
+            asset.write_bytes(self.binary)
             lines.append(f"{hashlib.sha256(asset.read_bytes()).hexdigest()}  {asset.name}\n")
         self.manifest = self.root / "SHA256SUMS.txt"
         self.manifest.write_text("".join(lines))
@@ -152,7 +148,6 @@ try {
                     result = self.run_installer(platform, version)
                     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                     self.assertEqual(destination.read_bytes(), self.binary)
-                    self.assertFalse((self.root / "escaped").exists())
                     if platform == "unix":
                         self.assertEqual(destination.stat().st_mode & 0o777, 0o755)
         urls = self.requests.read_text().splitlines()
@@ -184,7 +179,7 @@ try {
         self.assertFalse(self.requests.exists())
 
     def test_unavailable_download_preserves_existing_installation(self):
-        for asset in self.root.glob("synck-*.zip"):
+        for asset in self.root.glob("synck-1.2.3-*"):
             asset.unlink()
         for platform in self.platforms():
             with self.subTest(platform=platform):
@@ -202,22 +197,19 @@ try {
         self.env.update(TEST_OS="Linux", TEST_ARCH="aarch64")
         self.assertNotEqual(self.run_installer("unix").returncode, 0)
 
-    def test_invalid_archive_preserves_existing_installation(self):
-        for empty in (False, True):
-            lines = []
-            for asset in self.root.glob("synck-*.zip"):
-                binary = "synck.exe" if "windows" in asset.name else "synck"
-                with zipfile.ZipFile(asset, "w") as archive:
-                    archive.writestr(binary if empty else "wrong-entry", b"")
-                lines.append(f"{hashlib.sha256(asset.read_bytes()).hexdigest()}  {asset.name}\n")
-            self.manifest.write_text("".join(lines))
-            for platform in self.platforms():
-                with self.subTest(platform=platform, empty=empty):
-                    destination = self.destination(platform)
-                    destination.write_bytes(b"keep existing")
-                    result = self.run_installer(platform)
-                    self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
-                    self.assertEqual(destination.read_bytes(), b"keep existing")
+    def test_empty_executable_preserves_existing_installation(self):
+        lines = []
+        for asset in self.root.glob("synck-1.2.3-*"):
+            asset.write_bytes(b"")
+            lines.append(f"{hashlib.sha256(asset.read_bytes()).hexdigest()}  {asset.name}\n")
+        self.manifest.write_text("".join(lines))
+        for platform in self.platforms():
+            with self.subTest(platform=platform):
+                destination = self.destination(platform)
+                destination.write_bytes(b"keep existing")
+                result = self.run_installer(platform)
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(destination.read_bytes(), b"keep existing")
 
     def test_latest_tag_is_validated_before_asset_downloads(self):
         self.env["TEST_TAG"] = "v1.2.3-rc.1"

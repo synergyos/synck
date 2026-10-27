@@ -49,8 +49,9 @@ say when no tests or builds were run. Report security vulnerabilities through
 
 ## CLI builds
 
-Run the manual **Build CLI** workflow for downloadable executables. See the
-[build instructions](docs/cli-builds.md) for downloads and installation.
+Run the manual **Build CLI** workflow with an existing version tag to create a
+draft release with executable downloads and installers. See the
+[build instructions](docs/cli-builds.md) for review and manual publication.
 
 ## CLI releases
 

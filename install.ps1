@@ -27,16 +27,16 @@ if ($Version -eq 'latest') {
     $Version = $release.tag_name
     if ($Version -cnotmatch $versionPattern) { throw 'Latest release does not have a supported vX.Y.Z tag.' }
 }
-$asset = "synck-$($Version.Substring(1))-x86_64-pc-windows-msvc.zip"
+$asset = "synck-$($Version.Substring(1))-x86_64-pc-windows-msvc.exe"
 $url = "https://github.com/synergyos/synck/releases/download/$Version"
 $temporary = Join-Path ([IO.Path]::GetTempPath()) ("synck-" + [guid]::NewGuid().ToString('N'))
 $staged = $null
 try {
     New-Item -ItemType Directory -Path $temporary | Out-Null
     $manifest = Join-Path $temporary 'SHA256SUMS.txt'
-    $archive = Join-Path $temporary $asset
+    $binary = Join-Path $temporary $asset
     Invoke-WebRequest -UseBasicParsing -Uri "$url/SHA256SUMS.txt" -OutFile $manifest
-    Invoke-WebRequest -UseBasicParsing -Uri "$url/$asset" -OutFile $archive
+    Invoke-WebRequest -UseBasicParsing -Uri "$url/$asset" -OutFile $binary
     $lines = @(Get-Content -LiteralPath $manifest | Where-Object {
         $_ -cmatch ('\s' + [regex]::Escape($asset) + '$')
     })
@@ -45,25 +45,11 @@ try {
         throw 'Missing, duplicate or malformed checksum.'
     }
     $expected = $Matches[1]
-    if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash -ne $expected) {
+    if ((Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash -ne $expected) {
         throw 'Checksum verification failed; installation unchanged.'
     }
 
-    # Read only the executable entry; never extract paths supplied by the archive.
-    Add-Type -AssemblyName System.IO.Compression.FileSystem
-    $zip = [IO.Compression.ZipFile]::OpenRead($archive)
-    $binary = Join-Path $temporary 'synck.exe'
-    try {
-        $entries = @($zip.Entries | Where-Object { $_.FullName -ceq 'synck.exe' })
-        if ($entries.Count -ne 1 -or $entries[0].Length -eq 0) {
-            throw 'Archive must contain exactly one nonempty synck.exe executable.'
-        }
-        $source = $entries[0].Open()
-        try {
-            $destination = [IO.File]::Create($binary)
-            try { $source.CopyTo($destination) } finally { $destination.Dispose() }
-        } finally { $source.Dispose() }
-    } finally { $zip.Dispose() }
+    if ((Get-Item -LiteralPath $binary).Length -eq 0) { throw 'Downloaded executable is empty.' }
 
     $InstallDir = [IO.Path]::GetFullPath($InstallDir)
     New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null

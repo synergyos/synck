@@ -33,8 +33,10 @@ Each ZIP contains `synck` (`synck.exe` on Windows), `LICENSE-APACHE`, and `NOTIC
 | `x86_64-pc-windows-msvc` | Windows 2025 | Azure Authenticode signed and RFC3161 timestamped executable |
 
 Archives are named `synck-<version>-<target>.zip`. `SHA256SUMS.txt` covers the
-final, signed archives. Every uploaded release asset must be nonempty and
-strictly smaller than 2 GiB; packaging and draft assembly both enforce this.
+final archives and the equivalent raw `synck-<version>-<target>` executables
+(`.exe` on Windows). The installers use the raw executables. Every uploaded
+release asset must be nonempty and strictly smaller than 2 GiB; packaging and
+draft assembly both enforce this.
 ZIP Unix mode bits preserve the executable permission when using `unzip`.
 Place the extracted executable in a directory on `PATH`.
 

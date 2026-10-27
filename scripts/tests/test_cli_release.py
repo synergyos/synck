@@ -108,20 +108,54 @@ class ReleaseTests(unittest.TestCase):
             with self.assertRaises(subprocess.CalledProcessError):
                 release.validate_tag("v1.2.4")
 
-    def test_release_lookup_accepts_only_a_confirmed_404(self):
-        with patch.object(release.subprocess, "run") as run:
-            run.return_value = subprocess.CompletedProcess([], 1, "HTTP/2.0 404 Not Found\n")
+    def test_release_lookup_includes_drafts_and_fails_on_network_errors(self):
+        with patch.object(release, "command") as command:
+            command.return_value = '[[]]'
             release.check_release_absent("v1.2.3")
-            for response in (
-                subprocess.CompletedProcess([], 1, "HTTP/2.0 403 Forbidden\n"),
-                subprocess.CompletedProcess([], 1, "", "network failure"),
-                subprocess.CompletedProcess([], 0, "HTTP/2.0 200 OK\n"),
-            ):
-                run.return_value = response
-                with self.subTest(response=response), self.assertRaisesRegex(
-                    ValueError, "absence could not be confirmed",
-                ):
+            for draft in (False, True):
+                import json
+                command.return_value = json.dumps([[], [{"tag_name": "v1.2.3", "draft": draft}]])
+                with self.subTest(draft=draft), self.assertRaisesRegex(ValueError, "already exists"):
                     release.check_release_absent("v1.2.3")
+            command.side_effect = subprocess.CalledProcessError(1, "gh")
+            with self.assertRaises(subprocess.CalledProcessError):
+                release.check_release_absent("v1.2.3")
+
+    def test_build_validation_does_not_access_an_environment(self):
+        with patch.object(release, "validate_source_tag", return_value=("abc123", "1.2.3")), \
+             patch.object(release, "check_release_absent") as absent, \
+             patch.object(release, "write_release_output") as output, \
+             patch.object(release, "check_environment") as environment:
+            release.validate_build("v1.2.3")
+            absent.assert_called_once_with("v1.2.3")
+            output.assert_called_once_with("v1.2.3", "abc123", "1.2.3")
+            environment.assert_not_called()
+
+    def test_build_assembly_requires_all_targets_and_checksums_final_assets(self):
+        directory = self.root / "binaries"
+        directory.mkdir()
+        for target in release.TARGETS:
+            suffix = ".exe" if target.endswith("windows-msvc") else ""
+            (directory / f"synck-{target}{suffix}").write_bytes(target.encode())
+        output = self.root / "release"
+        release.assemble_build(directory, output, "1.2.3")
+        import hashlib
+        for target in release.TARGETS:
+            name = release.executable_name("1.2.3", target)
+            self.assertEqual((output / name).read_bytes(), target.encode())
+        manifest = (output / "SHA256SUMS.txt").read_text()
+        for asset in output.iterdir():
+            if asset.name != "SHA256SUMS.txt":
+                self.assertIn(f"{hashlib.sha256(asset.read_bytes()).hexdigest()}  {asset.name}\n", manifest)
+        (directory / "unexpected").write_bytes(b"must not ship")
+        with self.assertRaises(ValueError):
+            release.assemble_build(directory, self.root / "extra", "1.2.3")
+        (directory / "unexpected").unlink()
+        for asset in directory.iterdir():
+            asset.unlink()
+            break
+        with self.assertRaises(ValueError):
+            release.assemble_build(directory, self.root / "missing", "1.2.3")
 
     def input_files(self, target):
         directory = self.root / target
@@ -140,6 +174,8 @@ class ReleaseTests(unittest.TestCase):
         with zipfile.ZipFile(archive) as bundle:
             self.assertEqual(bundle.read("synck"), b"signed final CLI bytes")
             self.assertEqual(bundle.getinfo("synck").external_attr >> 16 & 0o777, 0o755)
+        executable = output / release.executable_name("1.2.3", "aarch64-apple-darwin")
+        self.assertEqual(executable.read_bytes(), b"signed final CLI bytes")
         release.checksums(output, "1.2.3")
         import hashlib
         self.assertIn(

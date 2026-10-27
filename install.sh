@@ -38,7 +38,7 @@ case "$(uname -s)/$(uname -m)" in
     Darwin/x86_64) target=x86_64-apple-darwin ;;
     *) fail 'Supported platforms: Linux x86_64, macOS Apple Silicon and Intel' ;;
 esac
-for tool in curl unzip awk; do
+for tool in curl awk; do
     command -v "$tool" >/dev/null 2>&1 || fail "Required command not found: $tool"
 done
 if command -v sha256sum >/dev/null 2>&1; then
@@ -59,7 +59,7 @@ if [ "$version" = latest ]; then
     version=${resolved##*/}
     valid_version "$version" || fail 'Latest release does not have a supported vX.Y.Z tag'
 fi
-asset="synck-${version#v}-$target.zip"
+asset="synck-${version#v}-$target"
 url="$releases/download/$version"
 temporary=$(mktemp -d)
 staged=
@@ -86,15 +86,11 @@ else
 fi
 [ "${actual%% *}" = "$expected" ] || fail 'Checksum verification failed; installation unchanged'
 
-# Read only the executable entry; never extract paths supplied by the archive.
-entries=$(unzip -Z1 "$temporary/$asset" | awk '$0 == "synck" { count++ } END { print count+0 }')
-[ "$entries" = 1 ] || fail 'Archive must contain exactly one synck executable'
-unzip -p "$temporary/$asset" synck > "$temporary/synck"
-[ -s "$temporary/synck" ] || fail 'Downloaded executable is empty'
+[ -s "$temporary/$asset" ] || fail 'Downloaded executable is empty'
 mkdir -p "$install_dir"
 [ ! -d "$install_dir/synck" ] || fail 'Install destination is a directory'
 staged=$(mktemp "$install_dir/.synck.XXXXXXXX")
-cp "$temporary/synck" "$staged"
+cp "$temporary/$asset" "$staged"
 chmod 755 "$staged"
 mv -f "$staged" "$install_dir/synck"
 staged=
