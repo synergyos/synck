@@ -25,14 +25,16 @@ use synck_vcs::bundle::{
     validate_bundle_event_payload_json_and_digest,
     validate_bundle_ref_event_payload_json_and_digest,
 };
-use synck_vcs::config::{CoreConfig, SYNCKHUB_MAX_AUTHOR_ID_BYTES};
+use synck_vcs::config::{
+    CoreConfig, SYNCKHUB_MAX_AUTHOR_ID_BYTES, SYNCKHUB_MAX_COMMIT_MESSAGE_BYTES,
+};
 use synck_vcs::repo::Repo;
 use synck_vcs::state::{NamespaceKey, StateIndexStore, StateTree};
 use synck_vcs::storage::{Storage, StorageBackend};
 use synck_vcs::types::{
     AcceptedCommit, BlobId, CommitEventRow, CommitId, CommitProposal, ContentId, EventContent,
     EventProposal, ItemCursor, ItemId, ItemRow, LifecycleState, RefEventRow, RepoEventCursor,
-    RepoId, SequencingMode,
+    RepoId, SequencingMode, Timestamp,
 };
 use synck_vcs::verify::{
     SemanticVerifier, VerifyCommit, VerifyCommitEvent, VerifyEvent, VerifyItem, VerifyRefEvent,
@@ -314,6 +316,39 @@ fn author_valid(author: &str) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+/// Commit attribution and idempotency for one direct FILE write.
+///
+/// The repository author always remains the committer. A repeated
+/// `operation_id` returns the write already accepted under it.
+#[derive(Clone, Debug, Default)]
+pub struct WriteOptions {
+    pub message: Option<String>,
+    pub author: Option<String>,
+    pub occurred_at: Option<Timestamp>,
+    pub operation_id: Option<Uuid>,
+}
+
+impl WriteOptions {
+    fn validate(&self) -> Result<()> {
+        if let Some(message) = &self.message
+            && (message.is_empty() || message.len() > SYNCKHUB_MAX_COMMIT_MESSAGE_BYTES)
+        {
+            return Err(invalid(format!(
+                "message must be 1 to {SYNCKHUB_MAX_COMMIT_MESSAGE_BYTES} UTF-8 bytes"
+            )));
+        }
+        if let Some(author) = &self.author {
+            author_valid(author)?;
+        }
+        Ok(())
+    }
+}
+
+/// Caller operation IDs share the namespace of other direct repository writes.
+pub(crate) fn stored_operation_id(id: &Uuid) -> String {
+    format!("portable:{id}")
 }
 
 impl PortableRepository {
@@ -1799,13 +1834,76 @@ impl PortableRepository {
     }
 
     fn proposal(&self, events: Vec<EventProposal>) -> CommitProposal {
+        self.proposal_with(events, &WriteOptions::default())
+    }
+
+    fn proposal_with(&self, events: Vec<EventProposal>, options: &WriteOptions) -> CommitProposal {
+        let committer = self.config.author.clone().expect("validated local author");
         CommitProposal {
-            author_id: self.config.author.clone().expect("validated local author"),
-            committer_id: self.config.author.clone().expect("validated local author"),
-            message: None,
-            occurred_at: None,
-            operation_id: Some(format!("portable:{}", Uuid::now_v7())),
+            author_id: options.author.clone().unwrap_or_else(|| committer.clone()),
+            committer_id: committer,
+            message: options.message.clone(),
+            occurred_at: options.occurred_at,
+            operation_id: Some(stored_operation_id(
+                &options.operation_id.unwrap_or_else(Uuid::now_v7),
+            )),
             events,
+        }
+    }
+
+    /// Find the FILE write already accepted under `operation_id`.
+    ///
+    /// A reused ID must name the same FILE (or, for a creation, the same
+    /// location) and the same bytes; anything else is a caller error.
+    async fn replayed_file_write(
+        &self,
+        operation_id: Option<Uuid>,
+        item: Option<&ItemId>,
+        location: Option<&Location>,
+        content: &BlobRef,
+    ) -> Result<Option<(ItemId, CommitId)>> {
+        let Some(operation_id) = operation_id else {
+            return Ok(None);
+        };
+        let core = self.core();
+        let Some(commit) = core
+            .get_commit_by_operation_id(self.repo_id().clone(), &stored_operation_id(&operation_id))
+            .await?
+        else {
+            return Ok(None);
+        };
+        let events = core
+            .list_events_for_commit(
+                self.repo_id().clone(),
+                commit.commit_id.clone(),
+                synck_file_folder::MAX_EVENTS,
+            )
+            .await?
+            .iter()
+            .map(|row| serde_json::from_slice::<EventProposal>(&row.payload))
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let written = events.iter().find_map(|event| {
+            let blob = synck_file_folder::file_blob_reference(event).ok()??;
+            let id = event.item_id.as_ref()?;
+            let same_item = match (item, location) {
+                (Some(item), _) => id == item,
+                (None, Some(location)) => events.iter().any(|create| {
+                    create.item_id.as_ref() == Some(id)
+                        && create.create_item.as_ref().is_some_and(|created| {
+                            created.item_type == "FILE"
+                                && created.name == location.name
+                                && created.parent_folder_id == location.parent_item_id
+                        })
+                }),
+                (None, None) => false,
+            };
+            (same_item && blob == *content).then(|| id.clone())
+        });
+        match written {
+            Some(id) => Ok(Some((id, commit.commit_id))),
+            None => Err(invalid(
+                "operation ID was already used for a different write",
+            )),
         }
     }
 
@@ -1928,6 +2026,7 @@ impl PortableRepository {
         parent: Option<&ItemId>,
         name: &str,
         content: &BlobRef,
+        options: &WriteOptions,
     ) -> Result<(ItemId, CommitId)> {
         if self
             .config
@@ -2006,7 +2105,7 @@ impl PortableRepository {
             return Err(invalid("injected failure before file acceptance"));
         }
         let outcome = working
-            .commit_selected(working.root_path(), &[PathBuf::from(&path)], None)
+            .commit_selected_with(working.root_path(), &[PathBuf::from(&path)], options)
             .await?;
         let commit = match outcome {
             crate::CommitOutcome::Committed(id) => CommitId::parse(id).map_err(corrupt)?,
@@ -2040,7 +2139,21 @@ impl PortableRepository {
         name: &str,
         source: &Path,
     ) -> Result<(ItemId, CommitId)> {
+        self.create_file_with(parent, name, source, &WriteOptions::default())
+            .await
+    }
+
+    /// Create a FILE, or import an EML/MSG source as an EMAIL, with caller
+    /// attribution. Email imports do not accept an operation ID.
+    pub async fn create_file_with(
+        &mut self,
+        parent: Option<ItemId>,
+        name: &str,
+        source: &Path,
+        options: &WriteOptions,
+    ) -> Result<(ItemId, CommitId)> {
         self.writable()?;
+        options.validate()?;
         let filename = source.file_name();
         let original_name = filename.map(|name| name.to_string_lossy());
         if original_name.as_deref().is_some_and(|name| {
@@ -2050,9 +2163,23 @@ impl PortableRepository {
             let original_name = filename.and_then(|name| name.to_str()).ok_or_else(|| {
                 invalid("EMAIL_IMPORT_INVALID_FORMAT: email source filename must be UTF-8")
             })?;
+            if options.operation_id.is_some() {
+                return Err(invalid("email imports do not accept an operation ID"));
+            }
             return self
-                .import_email_named(parent, original_name, name, source)
+                .import_email_with(parent, original_name, name, source, options)
                 .await;
+        }
+        let location = Location {
+            parent_item_id: parent.clone(),
+            name: name.into(),
+        };
+        let content = self.store_file(source)?;
+        if let Some(replayed) = self
+            .replayed_file_write(options.operation_id, None, Some(&location), &content)
+            .await?
+        {
+            return Ok(replayed);
         }
         if let Some(parent) = parent.as_ref() {
             self.local_owner(parent, "FOLDER").await?;
@@ -2067,17 +2194,13 @@ impl PortableRepository {
             .profile_current(parent.iter().cloned().collect())
             .await?;
         let id = ItemId::new();
-        let content = self.store_file(source)?;
         let materialized = synck_file_folder::validate_and_materialize(
             self.repo_id(),
             &IntentProposal {
                 message: None,
                 intents: vec![Intent::CreateFile {
                     item_id: id.clone(),
-                    location: Location {
-                        parent_item_id: parent.clone(),
-                        name: name.into(),
-                    },
+                    location,
                     content: content.clone(),
                 }],
             },
@@ -2085,14 +2208,14 @@ impl PortableRepository {
         )?;
         if self.config.checkout.is_some() {
             return self
-                .write_checkout_file(None, parent.as_ref(), name, &content)
+                .write_checkout_file(None, parent.as_ref(), name, &content, options)
                 .await;
         }
         let commit = self
             .core()
             .append_file_folder_checked(
                 self.repo_id().clone(),
-                self.proposal(materialized.events),
+                self.proposal_with(materialized.events, options),
                 &[],
                 &materialized.subtree_guards,
             )
@@ -2119,6 +2242,24 @@ impl PortableRepository {
         source_filename: &str,
         requested_name: &str,
         source: &Path,
+    ) -> Result<(ItemId, CommitId)> {
+        self.import_email_with(
+            parent,
+            source_filename,
+            requested_name,
+            source,
+            &WriteOptions::default(),
+        )
+        .await
+    }
+
+    async fn import_email_with(
+        &mut self,
+        parent: Option<ItemId>,
+        source_filename: &str,
+        requested_name: &str,
+        source: &Path,
+        options: &WriteOptions,
     ) -> Result<(ItemId, CommitId)> {
         self.writable()?;
         if let Some(parent) = parent.as_ref() {
@@ -2149,35 +2290,79 @@ impl PortableRepository {
         }
         let commit = self
             .core()
-            .append(self.repo_id().clone(), self.proposal(prepared.events))
+            .append(
+                self.repo_id().clone(),
+                self.proposal_with(prepared.events, options),
+            )
             .await?;
         Ok((id, self.accepted(commit).await?))
     }
 
     pub async fn save_file(&mut self, id: &ItemId, source: &Path) -> Result<CommitId> {
-        let item = self.local_owner(id, "FILE").await?;
-        crate::email_import::reject_file_email_update(&item.name)?;
+        self.save_file_with(id, source, None, &WriteOptions::default())
+            .await
+    }
+
+    /// Record new FILE content with caller attribution.
+    ///
+    /// With `base_content`, the save is accepted only while the FILE's current
+    /// content is exactly that blob; otherwise it fails with
+    /// `LocalError::Conflict` carrying the current head. A replayed operation
+    /// ID returns its original commit before any base comparison.
+    pub async fn save_file_with(
+        &mut self,
+        id: &ItemId,
+        source: &Path,
+        base_content: Option<&BlobId>,
+        options: &WriteOptions,
+    ) -> Result<CommitId> {
+        self.writable()?;
+        options.validate()?;
         if let Some(filename) = source.file_name() {
             crate::email_import::reject_file_email_update(&filename.to_string_lossy())?;
         }
         let content = self.store_file(source)?;
-        if self.config.checkout.is_some() {
-            return self
-                .write_checkout_file(Some(id), None, &item.name, &content)
-                .await
-                .map(|(_, commit)| commit);
+        if let Some((_, commit)) = self
+            .replayed_file_write(options.operation_id, Some(id), None, &content)
+            .await?
+        {
+            return Ok(commit);
         }
+        let item = self.local_owner(id, "FILE").await?;
+        crate::email_import::reject_file_email_update(&item.name)?;
         let readable = self.show_item(id, None).await?;
-        let mut current = self.profile_current(vec![id.clone()]).await?;
-        if let (Some(blob), Some(size)) = (
+        let head = match (
             readable.item.projection.content_blob_id,
             readable.item.projection.size,
         ) {
-            current.get_mut(id).expect("target loaded").content = Some(BlobRef {
+            (Some(blob), Some(size)) => Some(BlobRef {
                 blob_id: BlobId::parse(blob).map_err(corrupt)?,
                 size: u64::try_from(size).map_err(corrupt)?,
-            });
+            }),
+            _ => None,
+        };
+        if let Some(expected) = base_content {
+            let head = head
+                .as_ref()
+                .ok_or_else(|| corrupt("FILE has no current content"))?;
+            if *expected != head.blob_id {
+                return Err(LocalError::Conflict {
+                    item_id: id.to_string(),
+                    head_seq: item.head_seq,
+                    blob_id: head.blob_id.to_string(),
+                    size: head.size,
+                    expected: expected.to_string(),
+                });
+            }
         }
+        if self.config.checkout.is_some() {
+            return self
+                .write_checkout_file(Some(id), None, &item.name, &content, options)
+                .await
+                .map(|(_, commit)| commit);
+        }
+        let mut current = self.profile_current(vec![id.clone()]).await?;
+        current.get_mut(id).expect("target loaded").content = head;
         let materialized = synck_file_folder::validate_and_materialize(
             self.repo_id(),
             &IntentProposal {
@@ -2195,7 +2380,7 @@ impl PortableRepository {
             .core()
             .append_file_folder_checked(
                 self.repo_id().clone(),
-                self.proposal(materialized.events),
+                self.proposal_with(materialized.events, options),
                 &[],
                 &materialized.subtree_guards,
             )

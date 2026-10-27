@@ -310,6 +310,9 @@ current commit without adding history. If acceptance fails after writing the
 file, the supplied bytes remain as an uncommitted edit: inspect status and commit
 them normally. Finish pending checkout recovery with `synck status` before using
 these direct file writers. Bare repository writes retain their existing behavior.
+Both writers accept a message, author, origin time and operation ID, and
+`save-file` accepts a content base; [Integrating an application](integration.md)
+defines those options and their errors.
 
 Revert operates on filesystem commits and refuses a commit that also changes
 non-filesystem items, rather than applying only part of its inverse.

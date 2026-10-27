@@ -1041,7 +1041,9 @@ typed semantic code and detail from the shared profile.
 An interrupted batch uses kind `BATCH_COMMIT_INCOMPLETE` and adds exactly one
 `accepted_commit_ids` array containing the canonical IDs accepted during that
 invocation or recovery pass. Other runtime error objects do not contain that
-field.
+field. A refused `repository save-file --base-content` uses kind `CONFLICT`
+and adds exactly one `current` object with the FILE's `item_id`, `head_seq`,
+`blob_id` and `size`.
 Command-line parsing failures use kind `USAGE`. Other commands routed through
 the checkout JSON check reject `--json` with kind `INVALID` before the
 requested operation.

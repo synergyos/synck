@@ -170,6 +170,7 @@ pub(crate) fn error(value: &LocalError) -> Value {
         LocalError::Integrity(_) => "INTEGRITY",
         LocalError::MonitorUnavailable(_) => "MONITOR_UNAVAILABLE",
         LocalError::AcceptedNeedsRecovery { .. } => "ACCEPTED_NEEDS_RECOVERY",
+        LocalError::Conflict { .. } => "CONFLICT",
         LocalError::BatchCommitIncomplete { .. } => "BATCH_COMMIT_INCOMPLETE",
         LocalError::MoveNeedsRecovery { .. } => "MOVE_NEEDS_RECOVERY",
         LocalError::PublishedNeedsDurability { .. } => "PUBLISHED_NEEDS_DURABILITY",
@@ -189,6 +190,21 @@ pub(crate) fn error(value: &LocalError) -> Value {
     } = value
     {
         error["accepted_commit_ids"] = json!(accepted_commit_ids);
+    }
+    if let LocalError::Conflict {
+        item_id,
+        head_seq,
+        blob_id,
+        size,
+        ..
+    } = value
+    {
+        error["current"] = json!({
+            "item_id": item_id,
+            "head_seq": head_seq,
+            "blob_id": blob_id,
+            "size": size,
+        });
     }
     json!({
         "schema_version": SCHEMA_VERSION,
@@ -213,6 +229,23 @@ mod tests {
         assert_eq!(
             value["error"]["message"],
             "FILE/FOLDER semantic error: NAME_CONFLICT: conflict"
+        );
+    }
+
+    #[test]
+    fn conflicts_carry_the_current_file_head() {
+        let value = error(&LocalError::Conflict {
+            item_id: "item".to_string(),
+            head_seq: 4,
+            blob_id: "sha256:current".to_string(),
+            size: 7,
+            expected: "sha256:base".to_string(),
+        });
+
+        assert_eq!(value["error"]["kind"], "CONFLICT");
+        assert_eq!(
+            value["error"]["current"],
+            json!({"item_id":"item","head_seq":4,"blob_id":"sha256:current","size":7})
         );
     }
 

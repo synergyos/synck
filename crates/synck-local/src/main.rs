@@ -353,6 +353,8 @@ enum PortableCommand {
         /// Folder item ID to create it in; the top level by default.
         #[arg(long)]
         parent: Option<String>,
+        #[command(flatten)]
+        write: WriteArgs,
         /// Repository directory.
         #[arg(long, default_value = ".")]
         path: PathBuf,
@@ -363,6 +365,11 @@ enum PortableCommand {
         item_id: String,
         /// Local file to read.
         source: PathBuf,
+        /// Refuse with CONFLICT unless the current content is this blob ID.
+        #[arg(long)]
+        base_content: Option<String>,
+        #[command(flatten)]
+        write: WriteArgs,
         /// Repository directory.
         #[arg(long, default_value = ".")]
         path: PathBuf,
@@ -388,6 +395,55 @@ enum PortableCommand {
         #[arg(long, default_value = ".")]
         path: PathBuf,
     },
+}
+
+/// Attribution and idempotency for direct FILE writes.
+#[derive(Debug, clap::Args)]
+struct WriteArgs {
+    /// Commit message.
+    #[arg(short = 'm', long)]
+    message: Option<String>,
+    /// Author of this revision; the repository author stays the committer.
+    #[arg(long)]
+    author: Option<String>,
+    /// When the change happened, as an RFC 3339 timestamp.
+    #[arg(long)]
+    occurred_at: Option<String>,
+    /// Canonical UUID naming this write; a repeat returns the original commit.
+    #[arg(long)]
+    operation_id: Option<String>,
+}
+
+impl WriteArgs {
+    fn options(&self) -> Result<synck_local::portable::WriteOptions, LocalError> {
+        let occurred_at = self
+            .occurred_at
+            .as_deref()
+            .map(|value| {
+                chrono::DateTime::parse_from_rfc3339(value)
+                    .map(|time| time.with_timezone(&chrono::Utc))
+                    .map_err(|error| {
+                        LocalError::Invalid(format!("--occurred-at must be RFC 3339: {error}"))
+                    })
+            })
+            .transpose()?;
+        let operation_id = self
+            .operation_id
+            .as_deref()
+            .map(|value| match uuid::Uuid::parse_str(value) {
+                Ok(id) if id.to_string() == value => Ok(id),
+                _ => Err(LocalError::Invalid(
+                    "--operation-id must be a canonical lowercase UUID".to_string(),
+                )),
+            })
+            .transpose()?;
+        Ok(synck_local::portable::WriteOptions {
+            message: self.message.clone(),
+            author: self.author.clone(),
+            occurred_at,
+            operation_id,
+        })
+    }
 }
 
 #[derive(Debug, Subcommand)]
@@ -1678,12 +1734,15 @@ async fn run_portable(command: &PortableCommand) -> synck_local::Result<()> {
             parent,
             name,
             source,
+            write,
         } => async {
+            let options = write.options()?;
             let outcome = PortableRepository::open(path)?
-                .create_file(
+                .create_file_with(
                     parent.as_deref().map(portable_item_id).transpose()?,
                     name,
                     source,
+                    &options,
                 )
                 .await?;
             println!(
@@ -1697,9 +1756,25 @@ async fn run_portable(command: &PortableCommand) -> synck_local::Result<()> {
             path,
             item_id,
             source,
+            base_content,
+            write,
         } => async {
+            let options = write.options()?;
+            let base_content = base_content
+                .as_deref()
+                .map(|value| {
+                    synck_vcs::types::BlobId::parse(value).map_err(|error| {
+                        LocalError::Invalid(format!("--base-content must be a blob ID: {error}"))
+                    })
+                })
+                .transpose()?;
             let commit = PortableRepository::open(path)?
-                .save_file(&portable_item_id(item_id)?, source)
+                .save_file_with(
+                    &portable_item_id(item_id)?,
+                    source,
+                    base_content.as_ref(),
+                    &options,
+                )
                 .await?;
             println!("{}", json!({"schema_version":1,"commit_id":commit}));
             Ok(())

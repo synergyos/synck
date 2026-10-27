@@ -79,6 +79,14 @@ For a writer handoff instead, retire the former writer explicitly:
 If acceptance succeeded but indexing failed, inspect the accepted ID and run
 synck repository finalize <directory> rather than repeating the write.
 
+APPLICATION SAVES
+
+Applications record saved revisions directly. Pass the content they started
+from and a UUID per write; a repeated operation ID returns the original commit,
+and a changed base fails with JSON error kind CONFLICT and the current head:
+    synck --json repository save-file <file-id> <source> --path <directory> --base-content <blob-id> --operation-id <uuid> [-m <message>] [--author <author>] [--occurred-at <rfc3339>]
+create-file accepts the same message, author, time and operation ID options.
+
 EMAIL AND CHATS
 
 Commit .eml/.msg files to import EMAIL items with exact originals and

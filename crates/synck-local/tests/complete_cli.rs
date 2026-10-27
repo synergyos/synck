@@ -560,3 +560,122 @@ fn an_edited_email_source_reports_how_to_keep_both_messages() {
         .count();
     assert_eq!(emails, 2);
 }
+
+#[tokio::test]
+async fn direct_file_writes_carry_attribution_base_checks_and_replay() {
+    use sha2::{Digest, Sha256};
+    use synck_local::LocalError;
+    use synck_local::portable::{
+        PortableRepository, WriteOptions, import_repository, init_repository,
+    };
+    use synck_vcs::types::BlobId;
+
+    let temp = tempfile::tempdir().unwrap();
+    let checkout = temp.path().join("checkout");
+    init_repository(&checkout, "integration").await.unwrap();
+    let transfer = temp.path().join("transfer");
+    PortableRepository::open(&checkout)
+        .unwrap()
+        .archive(&transfer)
+        .await
+        .unwrap();
+    let bare = temp.path().join("bare");
+    import_repository(&transfer, &bare).await.unwrap();
+    PortableRepository::open(&bare)
+        .unwrap()
+        .activate("integration", true)
+        .await
+        .unwrap();
+
+    for root in [checkout, bare] {
+        let source = temp.path().join("source.txt");
+        let blob = |bytes: &[u8]| {
+            BlobId::parse(format!("sha256:{}", hex::encode(Sha256::digest(bytes)))).unwrap()
+        };
+        let options = |operation: u128| WriteOptions {
+            message: Some("Saved from the app".into()),
+            author: Some("user:alex".into()),
+            occurred_at: Some("2026-10-27T09:30:00Z".parse().unwrap()),
+            operation_id: Some(uuid::Uuid::from_u128(operation)),
+        };
+        let mut repo = PortableRepository::open(&root).unwrap();
+
+        fs::write(&source, b"first").unwrap();
+        let created = repo
+            .create_file_with(None, "doc.txt", &source, &options(1))
+            .await
+            .unwrap();
+        assert_eq!(
+            repo.create_file_with(None, "doc.txt", &source, &options(1))
+                .await
+                .unwrap(),
+            created
+        );
+        let id = created.0;
+
+        fs::write(&source, b"second").unwrap();
+        let error = repo
+            .save_file_with(&id, &source, Some(&blob(b"stale")), &options(2))
+            .await
+            .unwrap_err();
+        let LocalError::Conflict {
+            head_seq,
+            blob_id,
+            size,
+            ..
+        } = &error
+        else {
+            panic!("expected conflict, got {error}");
+        };
+        assert_eq!((blob_id.as_str(), *size), (blob(b"first").as_str(), 5));
+        assert!(*head_seq >= 2);
+
+        let saved = repo
+            .save_file_with(&id, &source, Some(&blob(b"first")), &options(2))
+            .await
+            .unwrap();
+        // A retry after acceptance returns the original commit even though its
+        // base is no longer current.
+        assert_eq!(
+            repo.save_file_with(&id, &source, Some(&blob(b"first")), &options(2))
+                .await
+                .unwrap(),
+            saved
+        );
+        fs::write(&source, b"different").unwrap();
+        assert!(
+            repo.save_file_with(&id, &source, None, &options(2))
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("different write")
+        );
+
+        if root.ends_with("checkout") {
+            assert_eq!(fs::read(root.join("doc.txt")).unwrap(), b"second");
+        }
+        let log = repo.log(None, 512).await.unwrap();
+        let head = &log.commits[0];
+        assert_eq!(head.commit_id, saved);
+        assert_eq!(head.author, "user:alex");
+        assert_eq!(head.committer, "integration");
+        assert_eq!(head.message.as_deref(), Some("Saved from the app"));
+        assert_eq!(log.commits[1].commit_id, created.1);
+        assert_eq!(log.commits.len(), 3);
+        drop(repo);
+        let occurred: String = rusqlite::Connection::open(root.join(".synck/repository.sqlite3"))
+            .unwrap()
+            .query_row(
+                "SELECT occurred_at FROM vcs_commits ORDER BY repo_seq DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(occurred.starts_with("2026-10-27T09:30:00"));
+        PortableRepository::open(&root)
+            .unwrap()
+            .verify()
+            .await
+            .unwrap();
+    }
+}

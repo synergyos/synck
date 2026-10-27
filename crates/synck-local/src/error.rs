@@ -44,6 +44,14 @@ pub enum LocalError {
     MonitorUnavailable(String),
     #[error("commit {commit_id} was accepted; local recovery is pending: {detail}")]
     AcceptedNeedsRecovery { commit_id: String, detail: String },
+    #[error("FILE {item_id} content is {blob_id}, not the expected base {expected}")]
+    Conflict {
+        item_id: String,
+        head_seq: i64,
+        blob_id: String,
+        size: u64,
+        expected: String,
+    },
     #[error("batch accepted commits {accepted_commit_ids:?}; batch did not complete: {detail}")]
     BatchCommitIncomplete {
         accepted_commit_ids: Vec<String>,

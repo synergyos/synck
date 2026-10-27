@@ -417,6 +417,22 @@ impl Repository {
         inputs: &[PathBuf],
         message: Option<&str>,
     ) -> Result<CommitOutcome> {
+        let options = crate::portable::WriteOptions {
+            message: message.map(str::to_string),
+            ..Default::default()
+        };
+        self.commit_selected_with(caller, inputs, &options).await
+    }
+
+    /// Selected commit with direct-writer attribution; the configured author
+    /// remains the committer.
+    pub(crate) async fn commit_selected_with(
+        &self,
+        caller: &Path,
+        inputs: &[PathBuf],
+        options: &crate::portable::WriteOptions,
+    ) -> Result<CommitOutcome> {
+        let message = options.message.as_deref();
         validate_commit_message(message)?;
         let (committed, working, all_changes, working_ids) = self.changes().await?;
         let changes = select_changes(
@@ -453,11 +469,20 @@ impl Repository {
             .append_file_folder_checked_with_refs(
                 self.config().repo_id().clone(),
                 CommitProposal {
-                    author_id: self.config().author().to_string(),
+                    author_id: options
+                        .author
+                        .clone()
+                        .unwrap_or_else(|| self.config().author().to_string()),
                     committer_id: self.config().author().to_string(),
                     message: message.map(str::to_string),
-                    occurred_at: None,
-                    operation_id: Some(Uuid::new_v4().to_string()),
+                    occurred_at: options.occurred_at,
+                    operation_id: Some(
+                        options
+                            .operation_id
+                            .as_ref()
+                            .map(crate::portable::stored_operation_id)
+                            .unwrap_or_else(|| Uuid::new_v4().to_string()),
+                    ),
                     events: prepared.events,
                 },
                 prepared.ref_events,
