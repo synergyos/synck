@@ -14,7 +14,7 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Read workspace version
@@ -42,19 +42,15 @@ jobs:
           - target: x86_64-unknown-linux-gnu
             runner: ubuntu-24.04
             binary: synck
-            python: python3
           - target: aarch64-apple-darwin
             runner: macos-15
             binary: synck
-            python: python3
           - target: x86_64-apple-darwin
             runner: macos-15-intel
             binary: synck
-            python: python3
           - target: x86_64-pc-windows-msvc
             runner: windows-2025
             binary: synck.exe
-            python: python
     defaults:
       run:
         shell: bash
@@ -62,10 +58,9 @@ jobs:
       BUILD_VERSION: ${{ needs.metadata.outputs.version }}
       BUILD_TARGET: ${{ matrix.target }}
       BUILD_BINARY: ${{ matrix.binary }}
-      BUILD_PYTHON: ${{ matrix.python }}
       MACOSX_DEPLOYMENT_TARGET: '12.0'
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Install the pinned Rust toolchain
@@ -77,41 +72,13 @@ jobs:
           binary="target/$BUILD_TARGET/release/$BUILD_BINARY"
           test "$("$binary" --version)" = "synck $BUILD_VERSION"
           "$binary" --help > /dev/null
-          mkdir package
-          cp "$binary" "package/$BUILD_BINARY"
-          cp LICENSE-APACHE NOTICE package/
-      - name: Package executable
-        run: '"$BUILD_PYTHON" scripts/cli_release.py package package archives "$BUILD_VERSION" "$BUILD_TARGET"'
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+          test -s "$binary"
+          test "$(wc -c < "$binary")" -lt 2147483648
+          mkdir dist
+          cp "$binary" "dist/synck-$BUILD_TARGET${BUILD_BINARY#synck}"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: build-${{ matrix.target }}
-          path: archives/
-          if-no-files-found: error
-          retention-days: 1
-
-  bundle:
-    needs: [metadata, build]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          persist-credentials: false
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          pattern: build-*
-          path: archives
-          merge-multiple: true
-      - name: Check archives and generate checksums
-        env:
-          BUILD_VERSION: ${{ needs.metadata.outputs.version }}
-        run: |
-          python3 scripts/cli_release.py checksums archives "$BUILD_VERSION"
-          printf 'Synck CLI %s\nSource commit: %s\n' \
-            "$BUILD_VERSION" "$GITHUB_SHA" > archives/BUILD.txt
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: synck-cli-${{ github.sha }}
-          path: archives/
+          path: dist/*
+          archive: false
           if-no-files-found: error
           retention-days: 1

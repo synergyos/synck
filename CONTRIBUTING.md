@@ -50,7 +50,7 @@ say when no tests or builds were run. Report security vulnerabilities through
 ## CLI builds
 
 Run the manual **Build CLI** workflow for downloadable executables. See the
-[build instructions](docs/cli-builds.md) for artifacts and checksums.
+[build instructions](docs/cli-builds.md) for downloads and installation.
 
 ## CLI releases
 
