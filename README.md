@@ -79,6 +79,11 @@ databases](https://synckhub.com/synck/internals/trade-offs).
 
 ## Install
 
+Version-selecting installers for published binaries are documented in
+[CLI installation](docs/cli-install.md). They become usable when the first binary
+release is published. For now, install from source or download a
+[manual CLI build](docs/cli-builds.md).
+
 Synck 0.1 is installed from source. You need Git,
 [Rust through rustup](https://rustup.rs) (this repository pins the toolchain in
 `rust-toolchain.toml`) and a C compiler: the Xcode Command Line Tools on macOS,

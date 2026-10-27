@@ -1,5 +1,6 @@
 # Synck documentation
 
+- [CLI installation](cli-install.md): version selection and verified downloads.
 - [CLI builds](cli-builds.md): manual executable builds and downloadable artifacts.
 - [CLI releases](cli-releases.md): manual draft releases, platform signing and
   protected signing-environment setup.

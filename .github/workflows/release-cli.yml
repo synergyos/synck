@@ -227,6 +227,8 @@ jobs:
           test "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" = "$RELEASE_COMMIT"
           python3 scripts/cli_release.py validate "$RELEASE_TAG"
           python3 scripts/cli_release.py checksums release "$RELEASE_VERSION"
+          cp install.sh install.ps1 release/
+          (cd release && sha256sum install.sh install.ps1 >> SHA256SUMS.txt)
       - name: Create draft with signed assets and post-sign checksums
         env:
           GH_TOKEN: ${{ github.token }}
