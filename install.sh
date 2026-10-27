@@ -55,7 +55,12 @@ fetch() {
 }
 releases=https://github.com/synergyos/synck/releases
 if [ "$version" = latest ]; then
-    resolved=$(fetch --head --output /dev/null --write-out '%{url_effective}' "$releases/latest")
+    resolved=$(fetch --head --output /dev/null --write-out '%{url_effective}' "$releases/latest") ||
+        fail "Cannot resolve the latest published release at $releases"
+    case "$resolved" in
+        "$releases/tag/"*) ;;
+        *) fail "No published release is available at $releases" ;;
+    esac
     version=${resolved##*/}
     valid_version "$version" || fail 'Latest release does not have a supported vX.Y.Z tag'
 fi

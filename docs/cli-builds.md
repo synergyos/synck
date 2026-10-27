@@ -12,8 +12,10 @@ The tag must be contained in the selected `main` revision, and its workspace
 version must match the tag. The workflow builds the tagged source, not the
 latest code on `main`. It refuses an existing release, including a draft, and
 never creates or moves tags. Use a new version and tag to release newer source.
+Release-helper and installer tests run before the platform builds.
 
-The workflow checks `synck --version` and `synck --help` on each platform:
+The workflow checks `synck --version` and `synck --help`, initializes a temporary
+repository, commits a file and runs `synck fsck` on each platform:
 
 | Target | Requirements |
 | --- | --- |
@@ -44,3 +46,7 @@ explicitly publish through GitHub Releases. Drafts are visible only to users
 with repository write access. Until publication, public release downloads and
 the quick-install commands cannot use them. Check the exact assets before
 publishing; do not replace a published release in place.
+
+If draft creation or asset upload fails partway through, inspect the draft and
+explicitly delete that unpublished draft before retrying. The workflow refuses
+to overwrite a draft or published release.

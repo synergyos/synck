@@ -23,7 +23,11 @@ if ($Version -ne 'latest') {
 
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 if ($Version -eq 'latest') {
-    $release = Invoke-RestMethod -Uri 'https://api.github.com/repos/synergyos/synck/releases/latest'
+    try {
+        $release = Invoke-RestMethod -Uri 'https://api.github.com/repos/synergyos/synck/releases/latest'
+    } catch {
+        throw "Cannot resolve the latest published release at https://github.com/synergyos/synck/releases. $_"
+    }
     $Version = $release.tag_name
     if ($Version -cnotmatch $versionPattern) { throw 'Latest release does not have a supported vX.Y.Z tag.' }
 }

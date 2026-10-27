@@ -32,6 +32,10 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+      - name: Check release tooling and installers
+        env:
+          SYNCK_TEST_PWSH: pwsh
+        run: python3 -m unittest discover -s scripts/tests -p 'test_*.py' -v
       - name: Validate source, version and environment protection
         id: release
         env:
@@ -92,9 +96,17 @@ jobs:
           set -euo pipefail
           cargo +1.91.1 build --locked --release --manifest-path source/Cargo.toml \
             --target-dir target --target "$RELEASE_TARGET" -p synck-local --bin synck
-          binary="target/$RELEASE_TARGET/release/$RELEASE_BINARY"
+          binary="$(pwd)/target/$RELEASE_TARGET/release/$RELEASE_BINARY"
           test "$("$binary" --version)" = "synck $RELEASE_VERSION"
           "$binary" --help > /dev/null
+          smoke="$(mktemp -d)"
+          "$binary" init "$smoke/repo" --author "Release smoke test"
+          printf 'Release smoke test\n' > "$smoke/repo/notes.txt"
+          (
+            cd "$smoke/repo"
+            "$binary" commit -m "Record release smoke test"
+            "$binary" fsck
+          )
           mkdir unsigned
           cp "$binary" "unsigned/$RELEASE_BINARY"
           cp source/LICENSE-APACHE source/NOTICE unsigned/

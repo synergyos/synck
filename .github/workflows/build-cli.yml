@@ -29,6 +29,10 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+      - name: Check release tooling and installers
+        env:
+          SYNCK_TEST_PWSH: pwsh
+        run: python3 -m unittest discover -s scripts/tests -p 'test_*.py' -v
       - name: Validate release tag and source
         id: release
         env:
@@ -76,9 +80,17 @@ jobs:
         run: |
           set -euo pipefail
           cargo +1.91.1 build --locked --release --target "$BUILD_TARGET" -p synck-local --bin synck
-          binary="target/$BUILD_TARGET/release/$BUILD_BINARY"
+          binary="$(pwd)/target/$BUILD_TARGET/release/$BUILD_BINARY"
           test "$("$binary" --version)" = "synck $BUILD_VERSION"
           "$binary" --help > /dev/null
+          smoke="$(mktemp -d)"
+          "$binary" init "$smoke/repo" --author "Release smoke test"
+          printf 'Release smoke test\n' > "$smoke/repo/notes.txt"
+          (
+            cd "$smoke/repo"
+            "$binary" commit -m "Record release smoke test"
+            "$binary" fsck
+          )
           test -s "$binary"
           test "$(wc -c < "$binary")" -lt 2147483648
           mkdir dist

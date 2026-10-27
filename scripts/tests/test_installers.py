@@ -1,6 +1,7 @@
 """Exercise installers with local release fixtures and mocked HTTP commands."""
 
 import hashlib
+import importlib.util
 import os
 from pathlib import Path
 import shutil
@@ -11,6 +12,9 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[2]
+SPEC = importlib.util.spec_from_file_location("cli_release", ROOT / "scripts/cli_release.py")
+release = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(release)
 POWERSHELL = os.environ.get("SYNCK_TEST_PWSH") or shutil.which("pwsh")
 
 
@@ -66,7 +70,10 @@ url = args[-1]
 with (root / 'requests').open('a') as log:
     log.write(url + '\\n')
 if url == 'https://github.com/synergyos/synck/releases/latest':
-    print('https://github.com/synergyos/synck/releases/tag/' + os.environ['TEST_TAG'], end='')
+    if os.environ.get('TEST_NO_RELEASE') == '1':
+        print('https://github.com/synergyos/synck/releases', end='')
+    else:
+        print('https://github.com/synergyos/synck/releases/tag/' + os.environ['TEST_TAG'], end='')
 else:
     assert url.startswith('https://github.com/synergyos/synck/releases/download/v1.2.3/')
     shutil.copyfile(root / url.rsplit('/', 1)[1], args[args.index('--output') + 1])
@@ -77,6 +84,7 @@ $ErrorActionPreference = 'Stop'
 function Invoke-RestMethod {
     param($Uri)
     Add-Content -LiteralPath (Join-Path $env:FIXTURE 'requests') -Value $Uri
+    if ($env:TEST_NO_RELEASE -eq '1') { throw 'HTTP 404 Not Found' }
     return @{ tag_name = $env:TEST_TAG }
 }
 function Invoke-WebRequest {
@@ -131,6 +139,38 @@ try {
                 destination = (self.root / "Synck" / "bin" / "synck.exe"
                                if platform == "windows" else self.install / "synck")
                 self.assertEqual(destination.read_bytes(), self.binary)
+
+    def test_installers_consume_release_assembler_output(self):
+        directory = self.root / "binaries"
+        directory.mkdir()
+        expected = {}
+        for target in release.TARGETS:
+            suffix = ".exe" if target.endswith("windows-msvc") else ""
+            name = f"synck-{target}{suffix}"
+            expected[target] = target.encode() + b"\nfixture CLI bytes\n"
+            (directory / name).write_bytes(expected[target])
+        output = self.root / "release"
+        release.assemble_build(directory, output, "1.2.3")
+        self.env["FIXTURE"] = str(output)
+        for platform in self.platforms():
+            with self.subTest(platform=platform):
+                result = self.run_installer(platform)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                target = ("x86_64-pc-windows-msvc" if platform == "windows"
+                          else "x86_64-unknown-linux-gnu")
+                self.assertEqual(self.destination(platform).read_bytes(), expected[target])
+
+    def test_no_published_release_has_an_actionable_error(self):
+        self.env["TEST_NO_RELEASE"] = "1"
+        for platform in self.platforms():
+            with self.subTest(platform=platform):
+                destination = self.destination(platform)
+                destination.write_bytes(b"keep existing")
+                result = self.run_installer(platform, "latest")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("published release", result.stdout + result.stderr)
+                self.assertEqual(destination.read_bytes(), b"keep existing")
+        self.assertNotIn("/download/", self.requests.read_text())
 
     def platforms(self):
         return ("unix", "windows") if POWERSHELL else ("unix",)
