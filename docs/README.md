@@ -1,5 +1,6 @@
 # Synck documentation
 
+- [CLI builds](cli-builds.md): manual executable builds and downloadable artifacts.
 - [CLI releases](cli-releases.md): manual draft releases, platform signing and
   protected signing-environment setup.
 - [Core engine](core.md) defines items, attached refs, sequences, structural

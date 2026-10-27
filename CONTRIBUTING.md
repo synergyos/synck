@@ -47,6 +47,11 @@ request. For documentation-only changes, reviewing the diff is usually enough;
 say when no tests or builds were run. Report security vulnerabilities through
 [SECURITY.md](SECURITY.md).
 
+## CLI builds
+
+Run the manual **Build CLI** workflow for downloadable executables. See the
+[build instructions](docs/cli-builds.md) for artifacts and checksums.
+
 ## CLI releases
 
 Signed CLI releases use a separate manual workflow and a protected signing
