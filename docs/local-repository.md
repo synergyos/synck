@@ -304,35 +304,17 @@ The SQLite backend implements the complete `StorageBackend` and `StorageTxn`
 contracts. Local commands exercise VCS mutations through `Repo`; they do not
 reimplement commit construction, sequencing, hashing, or structural invariants.
 
-The database has a fixed `application_id`. `user_version` versions the core
-SQLite schema; `local_schema_meta` independently versions the local projection
-schema. Supported Core migrations run transactionally. Unknown versions fail
-closed. Every repository-owned table is a SQLite `STRICT` table; physical type
-mismatches are not accepted as dynamically typed substitutes.
-Opening any supported version requires the exact declared table and index
-definitions; version markers do not excuse missing constraints, indexes, or
-`STRICT` tables.
+The core SQLite schema uses `application_id = 0x53594E4B` (`SYNK`) and
+`user_version = 6`. Only that schema is accepted; there are no upgrade or
+compatibility paths. Initialization creates the current schema directly.
+`local_schema_meta` independently identifies local projection schema 11; older
+local schemas are also refused without migration. Repository-owned tables are
+SQLite `STRICT` tables. Format and schema markers do not excuse missing required tables, columns,
+unique keys or foreign keys. Definitions are checked structurally; see the
+[format specification](spec/format.md#sqlite-schema-version-policy).
 
-Core SQLite `application_id` remains `0x53594E4B` (`SYNK`). Core version 2 adds
-the historical-state relations, version 3 adds commit import provenance,
-version 4 removes the redundant event repository-sequence copy, and current
-`user_version = 5` adds attached ref ledgers. Writable activation, while holding
-the repository lock, accepts only an exact Core version-1, version-2,
-version-3, or version-4 schema under `BEGIN IMMEDIATE`, applies the intervening
-migrations in order, validates the complete version-5 fingerprint before
-commit, and rolls back DDL and version stamp together on failure. The version-4
-step rebuilds `vcs_events` with all retained columns and constraints; schema
-migration does not rewrite payloads, renumber history, or rebuild projections.
-A read-only open never migrates. The independent
-local projection schema accepts version 11. Exact version-8, version-9 and
-version-10 schemas migrate transactionally to version 11; versions 1 through 7
-and damaged or unknown schemas fail closed. Version 8 introduced the worktree
-and storage authority tables, version 9 added durable import jobs, and version
-10 added repository hidden-files authority and bound each import job to the
-policy used for its inventory. Version 11 adds only
-`local_email_import_sources`, recording retained source-file observations for
-complete checkouts. It carries no canonical EMAIL data and is stripped from
-complete repository copies. The schema also contains the object-storage table:
+The local schema includes `local_email_import_sources` for source-file
+observations and `local_object_storage`:
 
 ```sql
 CREATE TABLE local_object_storage (

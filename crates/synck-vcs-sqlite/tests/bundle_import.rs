@@ -308,7 +308,7 @@ async fn mixed_history_import_preserves_ids_ref_heads_gaps_and_next_append() {
         connection
             .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
             .unwrap(),
-        5
+        6
     );
     let mut state = target.state_index_store(repo_id.clone()).unwrap();
     assert_eq!(

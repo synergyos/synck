@@ -2420,7 +2420,7 @@ async fn repository_open_rejects_unknown_local_schema_objects() {
 
 #[tokio::test]
 async fn repository_open_rejects_all_old_local_schema_versions_without_migration() {
-    for version in 1..=7 {
+    for version in 1..=10 {
         let temporary = tempfile::tempdir().unwrap();
         init(temporary.path(), "author").await.unwrap();
         let database = temporary.path().join(".synck/repository.sqlite3");
@@ -2453,91 +2453,6 @@ async fn repository_open_rejects_all_old_local_schema_versions_without_migration
             .unwrap();
         assert_eq!(stored, version);
     }
-}
-
-#[tokio::test]
-async fn repository_open_migrates_exact_local_schema_v8_to_v11() {
-    let temporary = tempfile::tempdir().unwrap();
-    init(temporary.path(), "author").await.unwrap();
-    let database = temporary.path().join(".synck/repository.sqlite3");
-    let connection = rusqlite::Connection::open(&database).unwrap();
-    connection
-        .execute_batch(
-            "DROP TABLE local_repository_settings;
-             DROP TABLE local_import_commits;
-             DROP INDEX local_import_entries_sibling_name_key;
-             DROP TABLE local_import_entries;
-             DROP TABLE local_import_jobs;
-             DROP TABLE local_email_import_sources;
-             UPDATE local_schema_meta SET version = 8 WHERE singleton = 1;",
-        )
-        .unwrap();
-    drop(connection);
-
-    drop(Repository::discover(temporary.path()).await.unwrap());
-
-    let connection = rusqlite::Connection::open(database).unwrap();
-    let version: i64 = connection
-        .query_row(
-            "SELECT version FROM local_schema_meta WHERE singleton = 1",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(version, 11);
-    for table in [
-        "local_import_jobs",
-        "local_import_entries",
-        "local_import_commits",
-    ] {
-        let exists: i64 = connection
-            .query_row(
-                "SELECT count(*) FROM sqlite_schema WHERE type = 'table' AND name = ?1",
-                [table],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(exists, 1, "missing {table}");
-    }
-    let hidden_files: String = connection
-        .query_row(
-            "SELECT hidden_files FROM local_repository_settings",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(hidden_files, "IGNORE");
-}
-
-#[tokio::test]
-async fn repository_open_migrates_exact_local_schema_v9_to_v11() {
-    let temporary = tempfile::tempdir().unwrap();
-    init(temporary.path(), "author").await.unwrap();
-    let database = temporary.path().join(".synck/repository.sqlite3");
-    let connection = rusqlite::Connection::open(&database).unwrap();
-    connection
-        .execute_batch(
-            "DROP TABLE local_repository_settings;
-             ALTER TABLE local_import_jobs DROP COLUMN hidden_files;
-             DROP TABLE local_email_import_sources;
-             UPDATE local_schema_meta SET version = 9 WHERE singleton = 1;",
-        )
-        .unwrap();
-    drop(connection);
-
-    let repository = Repository::discover(temporary.path()).await.unwrap();
-    assert_eq!(repository.hidden_files_mode(), HiddenFilesMode::Ignore);
-    drop(repository);
-
-    let connection = rusqlite::Connection::open(database).unwrap();
-    let version: i64 = connection
-        .query_row(
-            "SELECT version FROM local_schema_meta WHERE singleton = 1",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(version, 11);
 }
 
 #[tokio::test]

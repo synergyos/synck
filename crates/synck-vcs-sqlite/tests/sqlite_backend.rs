@@ -494,104 +494,6 @@ async fn owner_create_and_first_ref_are_one_atomic_commit() {
     ));
 }
 
-fn downgrade_events_to_v3(connection: &Connection) {
-    connection
-        .execute_batch(
-            r#"
-ALTER TABLE vcs_events RENAME TO vcs_events_v4_source;
-
-CREATE TABLE vcs_events (
-    repo_id TEXT NOT NULL,
-    commit_pk TEXT NOT NULL,
-    repo_seq INTEGER,
-    commit_event_idx INTEGER NOT NULL CHECK (commit_event_idx >= 0),
-    item_id TEXT NOT NULL,
-    item_seq INTEGER NOT NULL CHECK (item_seq >= 1),
-    event_type TEXT NOT NULL,
-    payload BLOB NOT NULL,
-    event_payload_digest BLOB NOT NULL CHECK (length(event_payload_digest) = 32),
-    created_at TEXT NOT NULL,
-    parent_folder_id TEXT,
-    parent_folder_id_before TEXT,
-    PRIMARY KEY (repo_id, item_id, item_seq),
-    UNIQUE (repo_id, commit_pk, commit_event_idx),
-    CHECK (repo_seq IS NULL OR repo_seq >= 1),
-    FOREIGN KEY (repo_id, commit_pk) REFERENCES vcs_commits (repo_id, commit_pk)
-) STRICT;
-
-INSERT INTO vcs_events (
-    repo_id, commit_pk, repo_seq, commit_event_idx, item_id, item_seq,
-    event_type, payload, event_payload_digest, created_at, parent_folder_id,
-    parent_folder_id_before
-)
-SELECT
-    repo_id, commit_pk, NULL, commit_event_idx, item_id, item_seq,
-    event_type, payload, event_payload_digest, created_at, parent_folder_id,
-    parent_folder_id_before
-FROM vcs_events_v4_source;
-
-DROP TABLE vcs_events_v4_source;
-
-CREATE UNIQUE INDEX idx_vcs_events_repo_repo_seq_commit_event_idx
-ON vcs_events (repo_id, repo_seq, commit_event_idx) WHERE repo_seq IS NOT NULL;
-"#,
-        )
-        .unwrap();
-}
-
-fn downgrade_ref_ledger_to_v4(connection: &Connection) {
-    connection
-        .execute_batch(
-            "DROP TABLE vcs_ref_events;
-             ALTER TABLE vcs_items DROP COLUMN ref_head_seq;",
-        )
-        .unwrap();
-}
-
-fn assert_v4_event_schema(connection: &Connection) {
-    let repo_seq_columns: i64 = connection
-        .query_row(
-            "SELECT count(*) FROM pragma_table_info('vcs_events') WHERE name = 'repo_seq'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(repo_seq_columns, 0);
-    let old_indexes: i64 = connection
-        .query_row(
-            "SELECT count(*) FROM sqlite_schema WHERE type = 'index' AND name = 'idx_vcs_events_repo_repo_seq_commit_event_idx'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(old_indexes, 0);
-    let foreign_key_violations: i64 = connection
-        .query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |row| {
-            row.get(0)
-        })
-        .unwrap();
-    assert_eq!(foreign_key_violations, 0);
-}
-
-fn assert_v5_ref_schema(connection: &Connection) {
-    let ref_head_columns: i64 = connection
-        .query_row(
-            "SELECT count(*) FROM pragma_table_info('vcs_items') WHERE name = 'ref_head_seq'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(ref_head_columns, 1);
-    let ref_event_tables: i64 = connection
-        .query_row(
-            "SELECT count(*) FROM pragma_table_list WHERE name = 'vcs_ref_events' AND strict = 1",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(ref_event_tables, 1);
-}
-
 #[tokio::test]
 async fn replay_reads_use_exact_operation_and_commit_bounds() {
     let (_directory, storage) = backend();
@@ -956,7 +858,7 @@ async fn schema_init_is_idempotent_and_rejects_unknown_version() {
         )
         .unwrap();
     assert_eq!(strict, 1);
-    conn.pragma_update(None, "user_version", 6).unwrap();
+    conn.pragma_update(None, "user_version", 7).unwrap();
     drop(conn);
 
     let error = storage.init_schema().await.unwrap_err();
@@ -964,218 +866,36 @@ async fn schema_init_is_idempotent_and_rejects_unknown_version() {
 }
 
 #[tokio::test]
-async fn schema_v1_migrates_transactionally_to_v5() {
-    let (_dir, storage) = backend();
-    storage.init_schema().await.unwrap();
-
-    let connection = storage.open_writable().unwrap();
-    downgrade_ref_ledger_to_v4(&connection);
-    downgrade_events_to_v3(&connection);
-    connection
-        .execute_batch(
-            "DROP TABLE vcs_state_projection_heads;
-             DROP TABLE vcs_state_roots;
-             DROP TABLE vcs_state_nodes;
-             ALTER TABLE vcs_commits DROP COLUMN import_job_id;
-             PRAGMA user_version = 1;",
-        )
-        .unwrap();
-    drop(connection);
-
-    assert!(storage.open_readonly().is_err());
-    storage.init_schema().await.unwrap();
-
-    let connection = storage.open_readonly().unwrap();
-    let version: i64 = connection
-        .pragma_query_value(None, "user_version", |row| row.get(0))
-        .unwrap();
-    assert_eq!(version, 5);
-    assert_v4_event_schema(&connection);
-    assert_v5_ref_schema(&connection);
-    for table in [
-        "vcs_state_nodes",
-        "vcs_state_roots",
-        "vcs_state_projection_heads",
-    ] {
-        let (strict, rows): (i64, i64) = connection
-            .query_row(
-                "SELECT strict, (SELECT count(*) FROM pragma_table_info(?1))
-                 FROM pragma_table_list WHERE name = ?1",
-                [table],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
+async fn old_schema_versions_are_rejected_without_mutation() {
+    for version in 1..6 {
+        let (_directory, storage) = backend();
+        storage.init_schema().await.unwrap();
+        let connection = storage.open_writable().unwrap();
+        connection
+            .pragma_update(None, "user_version", version)
             .unwrap();
-        assert_eq!(strict, 1, "{table} must be STRICT");
-        assert!(rows > 0, "{table} must have columns");
-        let count: i64 = connection
-            .query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
+        let before: String = connection
+            .query_row("SELECT group_concat(sql) FROM sqlite_schema", [], |row| {
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(count, 0, "migration must not backfill {table}");
+        drop(connection);
+        assert!(storage.open_readonly().is_err());
+        assert!(storage.init_schema().await.is_err());
+        let connection = Connection::open(storage.path()).unwrap();
+        assert_eq!(
+            connection
+                .pragma_query_value(None, "user_version", |row| row.get::<_, i32>(0))
+                .unwrap(),
+            version
+        );
+        let after: String = connection
+            .query_row("SELECT group_concat(sql) FROM sqlite_schema", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(before, after);
     }
-
-    let import_job_column_count: i64 = connection
-        .query_row(
-            "SELECT count(*) FROM pragma_table_info('vcs_commits') WHERE name = 'import_job_id'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(import_job_column_count, 1);
-}
-
-#[tokio::test]
-async fn schema_v2_migrates_transactionally_to_v5() {
-    let (_dir, storage) = backend();
-    storage.init_schema().await.unwrap();
-
-    let connection = storage.open_writable().unwrap();
-    downgrade_ref_ledger_to_v4(&connection);
-    downgrade_events_to_v3(&connection);
-    connection
-        .execute_batch(
-            "ALTER TABLE vcs_commits DROP COLUMN import_job_id;
-             PRAGMA user_version = 2;",
-        )
-        .unwrap();
-    drop(connection);
-
-    assert!(storage.open_readonly().is_err());
-    storage.init_schema().await.unwrap();
-
-    let connection = storage.open_readonly().unwrap();
-    let version: i64 = connection
-        .pragma_query_value(None, "user_version", |row| row.get(0))
-        .unwrap();
-    assert_eq!(version, 5);
-    assert_v4_event_schema(&connection);
-    assert_v5_ref_schema(&connection);
-    let import_job_column_count: i64 = connection
-        .query_row(
-            "SELECT count(*) FROM pragma_table_info('vcs_commits') WHERE name = 'import_job_id'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(import_job_column_count, 1);
-}
-
-#[tokio::test]
-async fn schema_v3_event_rebuild_preserves_history_and_derived_sequence() {
-    let (_dir, storage) = backend();
-    storage.init_schema().await.unwrap();
-    let repo_id = RepoId::new();
-    let repo = Repo::new(
-        Storage::new(Arc::new(storage.clone())),
-        CoreConfig::default(),
-    );
-    repo.append(
-        repo_id.clone(),
-        CommitProposal {
-            author_id: "author".to_string(),
-            committer_id: "author".to_string(),
-            message: Some("schema migration fixture".to_string()),
-            occurred_at: None,
-            operation_id: Some("schema-v3-event-rebuild".to_string()),
-            events: vec![create_event("one"), create_event("two")],
-        },
-    )
-    .await
-    .unwrap();
-    repo.sequence_repo_activity(repo_id.clone(), 1)
-        .await
-        .unwrap();
-    let before = storage
-        .list_repo_events_readonly(&repo_id, None, 10)
-        .await
-        .unwrap();
-    assert_eq!(before.len(), 2);
-
-    let connection = storage.open_writable().unwrap();
-    downgrade_ref_ledger_to_v4(&connection);
-    downgrade_events_to_v3(&connection);
-    connection
-        .execute(
-            "UPDATE vcs_events SET repo_seq = 1 WHERE commit_event_idx = 0",
-            [],
-        )
-        .unwrap();
-    connection.pragma_update(None, "user_version", 3).unwrap();
-    drop(connection);
-
-    assert!(storage.open_readonly().is_err());
-    storage.init_schema().await.unwrap();
-
-    let after = storage
-        .list_repo_events_readonly(&repo_id, None, 10)
-        .await
-        .unwrap();
-    assert_eq!(
-        serde_json::to_value(&after).unwrap(),
-        serde_json::to_value(&before).unwrap()
-    );
-    assert!(after.iter().all(|event| event.repo_seq == Some(1)));
-    let connection = storage.open_readonly().unwrap();
-    let version: i64 = connection
-        .pragma_query_value(None, "user_version", |row| row.get(0))
-        .unwrap();
-    assert_eq!(version, 5);
-    assert_v4_event_schema(&connection);
-    assert_v5_ref_schema(&connection);
-}
-
-#[tokio::test]
-async fn schema_v4_migrates_transactionally_to_v5() {
-    let (_dir, storage) = backend();
-    storage.init_schema().await.unwrap();
-
-    let connection = storage.open_writable().unwrap();
-    downgrade_ref_ledger_to_v4(&connection);
-    connection.pragma_update(None, "user_version", 4).unwrap();
-    drop(connection);
-
-    assert!(storage.open_readonly().is_err());
-    storage.init_schema().await.unwrap();
-
-    let connection = storage.open_readonly().unwrap();
-    let version: i64 = connection
-        .pragma_query_value(None, "user_version", |row| row.get(0))
-        .unwrap();
-    assert_eq!(version, 5);
-    assert_v4_event_schema(&connection);
-    assert_v5_ref_schema(&connection);
-}
-
-#[tokio::test]
-async fn schema_v3_migration_rejects_damage_without_mutation() {
-    let (_dir, storage) = backend();
-    storage.init_schema().await.unwrap();
-    let connection = storage.open_writable().unwrap();
-    downgrade_ref_ledger_to_v4(&connection);
-    downgrade_events_to_v3(&connection);
-    connection
-        .execute_batch(
-            "DROP INDEX idx_vcs_events_repo_repo_seq_commit_event_idx;
-             PRAGMA user_version = 3;",
-        )
-        .unwrap();
-    drop(connection);
-
-    assert!(storage.init_schema().await.is_err());
-    let connection = Connection::open(storage.path()).unwrap();
-    let version: i64 = connection
-        .pragma_query_value(None, "user_version", |row| row.get(0))
-        .unwrap();
-    assert_eq!(version, 3);
-    let repo_seq_columns: i64 = connection
-        .query_row(
-            "SELECT count(*) FROM pragma_table_info('vcs_events') WHERE name = 'repo_seq'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(repo_seq_columns, 1);
 }
 
 #[tokio::test]

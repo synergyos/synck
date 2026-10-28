@@ -21,13 +21,13 @@ use synck_vcs::types::{
 };
 
 const APPLICATION_ID: i32 = 0x5359_4E4B;
-const SCHEMA_VERSION: i32 = 5;
+const SCHEMA_VERSION: i32 = 6;
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const GET_ITEMS_CHUNK: usize = 500;
 const USER_SCHEMA_OBJECT_COUNT_SQL: &str =
     "SELECT count(*) FROM sqlite_schema WHERE sql IS NOT NULL AND name NOT GLOB 'sqlite_*'";
 
-type SchemaObject = (String, String, String, String);
+use crate::schema::SchemaShape;
 
 #[cfg(test)]
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -38,219 +38,9 @@ struct AppendMetrics {
     descendant_batches: Vec<(usize, usize)>,
 }
 
-static EXPECTED_SCHEMA_V1: OnceLock<Vec<SchemaObject>> = OnceLock::new();
-static EXPECTED_SCHEMA_V2: OnceLock<Vec<SchemaObject>> = OnceLock::new();
-static EXPECTED_SCHEMA_V3: OnceLock<Vec<SchemaObject>> = OnceLock::new();
-static EXPECTED_SCHEMA_V4: OnceLock<Vec<SchemaObject>> = OnceLock::new();
-static EXPECTED_SCHEMA_V5: OnceLock<Vec<SchemaObject>> = OnceLock::new();
-
-const SCHEMA_V1: &str = r#"
-CREATE TABLE vcs_items (
-    repo_id TEXT NOT NULL,
-    item_id TEXT NOT NULL,
-    item_type TEXT NOT NULL,
-    parent_folder_id TEXT,
-    name TEXT NOT NULL,
-    name_key TEXT NOT NULL,
-    head_seq INTEGER NOT NULL CHECK (head_seq >= 1),
-    lifecycle_state TEXT NOT NULL CHECK (lifecycle_state IN ('LIVE','TRASH','TOMBSTONED')),
-    created_at TEXT NOT NULL,
-    created_by TEXT NOT NULL,
-    sequencing_mode TEXT NOT NULL CHECK (sequencing_mode IN ('LOCAL','FEDERATED')),
-    federation_stream_id TEXT,
-    PRIMARY KEY (repo_id, item_id)
-) STRICT;
-
-CREATE TABLE vcs_commits (
-    repo_id TEXT NOT NULL,
-    commit_pk TEXT NOT NULL,
-    commit_id BLOB,
-    repo_seq INTEGER,
-    operation_id TEXT,
-    format_version INTEGER NOT NULL CHECK (format_version >= 1),
-    author_id TEXT NOT NULL,
-    committer_id TEXT NOT NULL,
-    message TEXT,
-    occurred_at TEXT,
-    created_at TEXT NOT NULL,
-    event_count INTEGER,
-    events_digest BLOB,
-    PRIMARY KEY (repo_id, commit_pk),
-    UNIQUE (repo_id, commit_id),
-    CHECK (repo_seq IS NULL OR repo_seq >= 1),
-    CHECK (operation_id IS NULL OR trim(operation_id) <> ''),
-    CHECK (commit_id IS NULL OR length(commit_id) = 32),
-    CHECK (events_digest IS NULL OR length(events_digest) = 32),
-    CHECK (
-        (commit_id IS NULL AND events_digest IS NULL AND event_count IS NULL)
-        OR
-        (commit_id IS NOT NULL AND events_digest IS NOT NULL AND event_count IS NOT NULL AND event_count >= 1)
-    )
-) STRICT;
-
-CREATE TABLE vcs_events (
-    repo_id TEXT NOT NULL,
-    commit_pk TEXT NOT NULL,
-    repo_seq INTEGER,
-    commit_event_idx INTEGER NOT NULL CHECK (commit_event_idx >= 0),
-    item_id TEXT NOT NULL,
-    item_seq INTEGER NOT NULL CHECK (item_seq >= 1),
-    event_type TEXT NOT NULL,
-    payload BLOB NOT NULL,
-    event_payload_digest BLOB NOT NULL CHECK (length(event_payload_digest) = 32),
-    created_at TEXT NOT NULL,
-    parent_folder_id TEXT,
-    parent_folder_id_before TEXT,
-    PRIMARY KEY (repo_id, item_id, item_seq),
-    UNIQUE (repo_id, commit_pk, commit_event_idx),
-    CHECK (repo_seq IS NULL OR repo_seq >= 1),
-    FOREIGN KEY (repo_id, commit_pk) REFERENCES vcs_commits (repo_id, commit_pk)
-) STRICT;
-
-CREATE TABLE vcs_repo_activity_heads (
-    repo_id TEXT PRIMARY KEY,
-    next_repo_seq INTEGER NOT NULL CHECK (next_repo_seq >= 1),
-    updated_at TEXT NOT NULL
-) STRICT;
-
-CREATE TABLE vcs_federation_domains (
-    repo_id TEXT NOT NULL,
-    domain_id TEXT NOT NULL,
-    last_domain_seq INTEGER NOT NULL CHECK (last_domain_seq >= 0),
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    PRIMARY KEY (repo_id, domain_id)
-) STRICT;
-
-CREATE UNIQUE INDEX idx_vcs_commits_repo_repo_seq
-ON vcs_commits (repo_id, repo_seq) WHERE repo_seq IS NOT NULL;
-
-CREATE UNIQUE INDEX idx_vcs_events_repo_repo_seq_commit_event_idx
-ON vcs_events (repo_id, repo_seq, commit_event_idx) WHERE repo_seq IS NOT NULL;
-
-CREATE INDEX idx_vcs_commits_repo_unsequenced_created_at_commit_pk
-ON vcs_commits (repo_id, created_at, commit_pk)
-WHERE repo_seq IS NULL AND commit_id IS NOT NULL;
-
-CREATE UNIQUE INDEX idx_vcs_items_unique_name_key
-ON vcs_items (repo_id, COALESCE(parent_folder_id, ''), name_key)
-WHERE lifecycle_state = 'LIVE';
-
-CREATE UNIQUE INDEX idx_vcs_items_federated_unique
-ON vcs_items (repo_id, federation_stream_id)
-WHERE sequencing_mode = 'FEDERATED' AND federation_stream_id IS NOT NULL;
-
-CREATE INDEX idx_vcs_items_repo_created_at_item_id
-ON vcs_items (repo_id, created_at, item_id);
-
-CREATE INDEX idx_vcs_items_repo_lifecycle_created_at_item_id
-ON vcs_items (repo_id, lifecycle_state, created_at, item_id);
-
-CREATE UNIQUE INDEX idx_vcs_commits_repo_operation_id
-ON vcs_commits (repo_id, operation_id) WHERE operation_id IS NOT NULL;
-"#;
-
-pub(crate) const STATE_SCHEMA_V2: &str = r#"
-CREATE TABLE vcs_state_nodes (
-    repo_id TEXT NOT NULL,
-    node_hash BLOB NOT NULL CHECK (length(node_hash) = 32),
-    payload BLOB NOT NULL,
-    PRIMARY KEY (repo_id, node_hash)
-) STRICT;
-
-CREATE TABLE vcs_state_roots (
-    repo_id TEXT NOT NULL,
-    repo_seq INTEGER NOT NULL CHECK (repo_seq >= 1),
-    commit_id BLOB NOT NULL CHECK (length(commit_id) = 32),
-    state_root BLOB NOT NULL CHECK (length(state_root) = 32),
-    PRIMARY KEY (repo_id, repo_seq),
-    UNIQUE (repo_id, commit_id),
-    FOREIGN KEY (repo_id, commit_id)
-        REFERENCES vcs_commits (repo_id, commit_id) ON DELETE RESTRICT,
-    FOREIGN KEY (repo_id, state_root)
-        REFERENCES vcs_state_nodes (repo_id, node_hash) ON DELETE RESTRICT
-) STRICT;
-
-CREATE TABLE vcs_state_projection_heads (
-    repo_id TEXT PRIMARY KEY,
-    applied_repo_seq INTEGER NOT NULL CHECK (applied_repo_seq >= 0),
-    state_root BLOB NOT NULL CHECK (length(state_root) = 32),
-    FOREIGN KEY (repo_id, state_root)
-        REFERENCES vcs_state_nodes (repo_id, node_hash) ON DELETE RESTRICT
-) STRICT;
-"#;
-
-const COMMIT_PROVENANCE_SCHEMA_V3: &str = "ALTER TABLE vcs_commits ADD COLUMN import_job_id TEXT;";
-
-const EVENT_SEQUENCE_SCHEMA_V4: &str = r#"
-CREATE TABLE vcs_events_v4 (
-    repo_id TEXT NOT NULL,
-    commit_pk TEXT NOT NULL,
-    commit_event_idx INTEGER NOT NULL CHECK (commit_event_idx >= 0),
-    item_id TEXT NOT NULL,
-    item_seq INTEGER NOT NULL CHECK (item_seq >= 1),
-    event_type TEXT NOT NULL,
-    payload BLOB NOT NULL,
-    event_payload_digest BLOB NOT NULL CHECK (length(event_payload_digest) = 32),
-    created_at TEXT NOT NULL,
-    parent_folder_id TEXT,
-    parent_folder_id_before TEXT,
-    PRIMARY KEY (repo_id, item_id, item_seq),
-    UNIQUE (repo_id, commit_pk, commit_event_idx),
-    FOREIGN KEY (repo_id, commit_pk) REFERENCES vcs_commits (repo_id, commit_pk)
-) STRICT;
-
-INSERT INTO vcs_events_v4 (
-    repo_id, commit_pk, commit_event_idx, item_id, item_seq, event_type,
-    payload, event_payload_digest, created_at, parent_folder_id,
-    parent_folder_id_before
-)
-SELECT
-    repo_id, commit_pk, commit_event_idx, item_id, item_seq, event_type,
-    payload, event_payload_digest, created_at, parent_folder_id,
-    parent_folder_id_before
-FROM vcs_events;
-
-DROP TABLE vcs_events;
-ALTER TABLE vcs_events_v4 RENAME TO vcs_events;
-"#;
-
-const REF_EVENT_SCHEMA_V5: &str = r#"
-ALTER TABLE vcs_items
-ADD COLUMN ref_head_seq INTEGER NOT NULL DEFAULT 0 CHECK (ref_head_seq >= 0);
-
-CREATE TABLE vcs_ref_events (
-    repo_id TEXT NOT NULL,
-    commit_pk TEXT NOT NULL,
-    commit_event_idx INTEGER NOT NULL CHECK (commit_event_idx >= 0),
-    owner_item_id TEXT NOT NULL,
-    ref_seq INTEGER NOT NULL CHECK (ref_seq >= 1),
-    event_type TEXT NOT NULL CHECK (trim(event_type) <> ''),
-    payload BLOB NOT NULL,
-    event_payload_digest BLOB NOT NULL CHECK (length(event_payload_digest) = 32),
-    created_at TEXT NOT NULL,
-    PRIMARY KEY (repo_id, owner_item_id, ref_seq),
-    UNIQUE (repo_id, commit_pk, commit_event_idx),
-    FOREIGN KEY (repo_id, commit_pk) REFERENCES vcs_commits (repo_id, commit_pk)
-) STRICT;
-
-CREATE INDEX idx_vcs_ref_events_repo_owner_event_type_ref_seq
-ON vcs_ref_events (repo_id, owner_item_id, event_type, ref_seq DESC);
-
-CREATE TABLE vcs_history_generations (
-    repo_id TEXT PRIMARY KEY,
-    generation TEXT NOT NULL
-) STRICT;
-
-CREATE TABLE vcs_checkpoints (
-    repo_id TEXT NOT NULL,
-    repo_seq INTEGER NOT NULL CHECK (repo_seq >= 1),
-    commit_id BLOB NOT NULL CHECK (length(commit_id) = 32),
-    checkpoint BLOB NOT NULL CHECK (length(checkpoint) = 32),
-    PRIMARY KEY (repo_id, repo_seq),
-    FOREIGN KEY (repo_id, commit_id) REFERENCES vcs_commits (repo_id, commit_id)
-) STRICT;
-"#;
+static EXPECTED_SCHEMA: OnceLock<SchemaShape> = OnceLock::new();
+const SCHEMA: &str = include_str!("schema.sql");
+pub(crate) const STATE_SCHEMA: &str = include_str!("state-schema.sql");
 
 #[derive(Clone, Debug)]
 pub struct SqliteStorage {
@@ -609,9 +399,7 @@ fn prepare_schema_initialization(conn: &Connection) -> Result<(), StorageError> 
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .map_err(map_sqlite_error)?;
     if application_id != 0 || user_version != 0 {
-        if application_id != APPLICATION_ID
-            || !matches!(user_version, 1 | 2 | 3 | 4 | SCHEMA_VERSION)
-        {
+        if application_id != APPLICATION_ID || user_version != SCHEMA_VERSION {
             return Err(StorageError::Other {
                 detail: format!(
                     "unsupported SQLite schema: application_id={application_id} user_version={user_version}"
@@ -679,7 +467,7 @@ fn validate_initialization_schema(conn: &Connection) -> Result<(), StorageError>
             return Ok(());
         }
     }
-    if application_id != APPLICATION_ID || !matches!(user_version, 1 | 2 | 3 | 4 | SCHEMA_VERSION) {
+    if application_id != APPLICATION_ID || user_version != SCHEMA_VERSION {
         return Err(StorageError::Other {
             detail: format!(
                 "unsupported SQLite schema: application_id={application_id} user_version={user_version}"
@@ -699,18 +487,12 @@ fn validate_initialization_schema(conn: &Connection) -> Result<(), StorageError>
 
 fn validate_schema_version(conn: &Connection, version: i32) -> Result<(), StorageError> {
     let actual = schema_objects(conn)?;
-    let expected = match version {
-        1 => EXPECTED_SCHEMA_V1.get_or_init(|| expected_schema(1)),
-        2 => EXPECTED_SCHEMA_V2.get_or_init(|| expected_schema(2)),
-        3 => EXPECTED_SCHEMA_V3.get_or_init(|| expected_schema(3)),
-        4 => EXPECTED_SCHEMA_V4.get_or_init(|| expected_schema(4)),
-        5 => EXPECTED_SCHEMA_V5.get_or_init(|| expected_schema(5)),
-        _ => {
-            return Err(StorageError::Other {
-                detail: format!("unsupported SQLite schema version {version}"),
-            });
-        }
-    };
+    if version != SCHEMA_VERSION {
+        return Err(StorageError::Other {
+            detail: format!("unsupported SQLite schema version {version}"),
+        });
+    }
+    let expected = EXPECTED_SCHEMA.get_or_init(expected_schema);
     if &actual != expected {
         return Err(StorageError::Other {
             detail: format!("SQLite schema definition does not match version {version}"),
@@ -719,51 +501,19 @@ fn validate_schema_version(conn: &Connection, version: i32) -> Result<(), Storag
     Ok(())
 }
 
-fn expected_schema(version: i32) -> Vec<SchemaObject> {
+fn expected_schema() -> SchemaShape {
     let expected = Connection::open_in_memory().expect("open expected SQLite schema");
     expected
-        .execute_batch(SCHEMA_V1)
+        .execute_batch(SCHEMA)
         .expect("install expected SQLite schema");
-    if version >= 2 {
-        expected
-            .execute_batch(STATE_SCHEMA_V2)
-            .expect("install expected SQLite state schema");
-    }
-    if version >= 3 {
-        expected
-            .execute_batch(COMMIT_PROVENANCE_SCHEMA_V3)
-            .expect("install expected SQLite commit provenance schema");
-    }
-    if version >= 4 {
-        expected
-            .execute_batch(EVENT_SEQUENCE_SCHEMA_V4)
-            .expect("install expected SQLite event sequence schema");
-    }
-    if version >= 5 {
-        expected
-            .execute_batch(REF_EVENT_SCHEMA_V5)
-            .expect("install expected SQLite ref-event schema");
-    }
+    expected
+        .execute_batch(STATE_SCHEMA)
+        .expect("install expected state cache");
     schema_objects(&expected).expect("read expected SQLite schema")
 }
 
-fn schema_objects(conn: &Connection) -> Result<Vec<SchemaObject>, StorageError> {
-    let mut statement = conn
-        .prepare(
-            "SELECT type, name, tbl_name, sql
-             FROM sqlite_schema
-             WHERE sql IS NOT NULL
-               AND (name GLOB 'vcs_*' OR tbl_name GLOB 'vcs_*')
-             ORDER BY type, name",
-        )
-        .map_err(map_sqlite_error)?;
-    statement
-        .query_map([], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
-        })
-        .map_err(map_sqlite_error)?
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(map_sqlite_error)
+fn schema_objects(conn: &Connection) -> Result<SchemaShape, StorageError> {
+    crate::schema::inspect(conn, "vcs_").map_err(map_sqlite_error)
 }
 
 fn map_sqlite_error(error: rusqlite::Error) -> StorageError {
@@ -1011,58 +761,11 @@ fn initialize_schema(conn: &Connection) -> Result<(), StorageError> {
                     detail: "unversioned SQLite database is not empty".to_string(),
                 });
             }
-            conn.execute_batch(SCHEMA_V1).map_err(map_sqlite_error)?;
-            conn.execute_batch(STATE_SCHEMA_V2)
-                .map_err(map_sqlite_error)?;
-            conn.execute_batch(COMMIT_PROVENANCE_SCHEMA_V3)
-                .map_err(map_sqlite_error)?;
-            conn.execute_batch(EVENT_SEQUENCE_SCHEMA_V4)
-                .map_err(map_sqlite_error)?;
-            conn.execute_batch(REF_EVENT_SCHEMA_V5)
-                .map_err(map_sqlite_error)?;
+            conn.execute_batch(SCHEMA).map_err(map_sqlite_error)?;
+            conn.execute_batch(STATE_SCHEMA).map_err(map_sqlite_error)?;
             validate_schema_version(conn, SCHEMA_VERSION)?;
             conn.pragma_update(None, "application_id", APPLICATION_ID)
                 .map_err(map_sqlite_error)?;
-            conn.pragma_update(None, "user_version", SCHEMA_VERSION)
-                .map_err(map_sqlite_error)?;
-        } else if application_id == APPLICATION_ID && user_version == 1 {
-            validate_schema_version(conn, 1)?;
-            conn.execute_batch(STATE_SCHEMA_V2)
-                .map_err(map_sqlite_error)?;
-            conn.execute_batch(COMMIT_PROVENANCE_SCHEMA_V3)
-                .map_err(map_sqlite_error)?;
-            conn.execute_batch(EVENT_SEQUENCE_SCHEMA_V4)
-                .map_err(map_sqlite_error)?;
-            conn.execute_batch(REF_EVENT_SCHEMA_V5)
-                .map_err(map_sqlite_error)?;
-            validate_schema_version(conn, SCHEMA_VERSION)?;
-            conn.pragma_update(None, "user_version", SCHEMA_VERSION)
-                .map_err(map_sqlite_error)?;
-        } else if application_id == APPLICATION_ID && user_version == 2 {
-            validate_schema_version(conn, 2)?;
-            conn.execute_batch(COMMIT_PROVENANCE_SCHEMA_V3)
-                .map_err(map_sqlite_error)?;
-            conn.execute_batch(EVENT_SEQUENCE_SCHEMA_V4)
-                .map_err(map_sqlite_error)?;
-            conn.execute_batch(REF_EVENT_SCHEMA_V5)
-                .map_err(map_sqlite_error)?;
-            validate_schema_version(conn, SCHEMA_VERSION)?;
-            conn.pragma_update(None, "user_version", SCHEMA_VERSION)
-                .map_err(map_sqlite_error)?;
-        } else if application_id == APPLICATION_ID && user_version == 3 {
-            validate_schema_version(conn, 3)?;
-            conn.execute_batch(EVENT_SEQUENCE_SCHEMA_V4)
-                .map_err(map_sqlite_error)?;
-            conn.execute_batch(REF_EVENT_SCHEMA_V5)
-                .map_err(map_sqlite_error)?;
-            validate_schema_version(conn, SCHEMA_VERSION)?;
-            conn.pragma_update(None, "user_version", SCHEMA_VERSION)
-                .map_err(map_sqlite_error)?;
-        } else if application_id == APPLICATION_ID && user_version == 4 {
-            validate_schema_version(conn, 4)?;
-            conn.execute_batch(REF_EVENT_SCHEMA_V5)
-                .map_err(map_sqlite_error)?;
-            validate_schema_version(conn, SCHEMA_VERSION)?;
             conn.pragma_update(None, "user_version", SCHEMA_VERSION)
                 .map_err(map_sqlite_error)?;
         } else if application_id != APPLICATION_ID || user_version != SCHEMA_VERSION {

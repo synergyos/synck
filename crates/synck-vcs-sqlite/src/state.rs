@@ -9,7 +9,7 @@ use synck_vcs::state::{
 use synck_vcs::types::{ItemId, RepoId, commit_id_from_digest_bytes, commit_id_to_digest_bytes};
 
 use crate::SqliteStorage;
-use crate::storage::STATE_SCHEMA_V2;
+use crate::storage::STATE_SCHEMA;
 
 const PROJECTOR_TEMP_SCHEMA: &str = "CREATE TEMP TABLE IF NOT EXISTS temp_state_nodes (
          node_hash BLOB PRIMARY KEY CHECK (length(node_hash) = 32),
@@ -121,9 +121,7 @@ impl SqliteStorage {
         connection
             .pragma_update(None, "temp_store", "FILE")
             .map_err(sql_error)?;
-        connection
-            .execute_batch(STATE_SCHEMA_V2)
-            .map_err(sql_error)?;
+        connection.execute_batch(STATE_SCHEMA).map_err(sql_error)?;
         connection
             .execute_batch(PROJECTOR_TEMP_SCHEMA)
             .map_err(sql_error)?;

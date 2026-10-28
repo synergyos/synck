@@ -131,3 +131,21 @@ call/time-tracking state machine is shipped for these absent local writers.
 FILE resource-fork presentation and `FILE_RESOURCE_FORK::*` typed events are
 not part of 0.2. Ordinary FILE bytes and explicitly supported content roles are
 the portable content boundary.
+
+## SQLite schema version policy
+
+Core SQLite uses application ID `0x53594E4B` and schema version 6. The adapter
+creates this schema directly and refuses prior schema versions without modifying
+their version stamps or definitions. There are no core or local schema migrations.
+The current local projection schema is 11. The canonical/cache separation is
+still being implemented; these version markers do not make this draft a release.
+
+Schema compatibility compares owned table names, STRICT typing, named columns
+and their declared types, nullability, defaults, primary-key positions, unique
+keys (including collations, sort direction, expressions and partial predicates),
+and foreign-key columns and actions. Physical column order, index names, DDL
+whitespace/comments/identifier quoting, and extra nonunique performance indexes
+are not format identity. `INT` and `INTEGER` are equivalent declared types.
+Owned views and triggers are rejected. Uniqueness expressions and defaults are
+compared as SQL tokens with string literals preserved exactly. Record validators
+remain responsible for semantic bounds; CHECK-clause spelling is not compared.
