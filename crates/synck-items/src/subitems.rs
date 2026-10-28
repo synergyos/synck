@@ -861,7 +861,7 @@ pub fn extract_email_attachment_fields(
     Ok((blob_id, meta.clone()))
 }
 
-#[derive(Clone, Debug, serde::Serialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ChatProfileEvent {
     pub chat_kind: String,
     pub human_a_principal_key: Option<String>,
@@ -871,7 +871,7 @@ pub struct ChatProfileEvent {
     pub room_key: Option<String>,
 }
 
-#[derive(Clone, Debug, serde::Serialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ChatUserParticipantEvent {
     pub tenant_id: String,
     pub user_id: String,
@@ -1144,7 +1144,7 @@ pub fn validate_file_version_ref_description(
 }
 
 
-#[derive(Clone, Debug, serde::Serialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ItemDataLink {
     pub link_key: String,
     pub database_key: String,

@@ -449,3 +449,38 @@ fn owner_refs_keep_uuid_identity_and_independent_positions() {
     assert!(version.metadata.get("source_commit_event_idx").is_none());
     assert!(version.metadata.get("source_commit_id").is_none());
 }
+
+
+#[test]
+fn reader_cache_restores_private_maps_and_continues_both_ledgers() {
+    let (mut chat,chat_id)=create("CHAT");
+    apply(&mut chat,&event(&chat_id,"CHAT::MESSAGE::CREATE",json!({}),json_body("before\0restart")),"alice");
+    let cache=chat.export_cache().unwrap();
+    let mut restored=ItemReader::from_cache(chat_id.clone(),&cache).unwrap();
+    assert_eq!(serde_json::to_value(chat.snapshot().unwrap()).unwrap(),serde_json::to_value(restored.snapshot().unwrap()).unwrap());
+    let edit=event(&chat_id,"CHAT::MESSAGE::SET_CONTENT",json!({"item_seq":2}),json_body("after restart"));
+    apply(&mut chat,&edit,"alice");apply(&mut restored,&edit,"alice");
+    assert_eq!(chat.export_cache().unwrap(),restored.export_cache().unwrap());
+    let (mut file,id)=create("FILE");
+    apply(&mut file,&event(&id,"FILE::SET_CONTENT",json!({"content":{"size":7}}),Some(EventContent::bytes(ObjectId::parse(A).unwrap()))),"alice");
+    let mut restored=ItemReader::from_cache(id.clone(),&file.export_cache().unwrap()).unwrap();
+    let reference=synck_file_folder::file_versions::automatic_initial_ref_event(&RepoId::new(),&id,&Uuid::now_v7().to_string(),0,2,1).unwrap();
+    for reader in [&mut file,&mut restored]{reader.apply_ref(&reference,RefReadContext{ref_seq:1,created_at:now(),author:"alice",committer:"alice"}).unwrap();}
+    assert_eq!(file.export_cache().unwrap(),restored.export_cache().unwrap());
+    assert_eq!(restored.snapshot().unwrap().subitems[0].blob_id.as_deref(),Some(A));
+    let empty=ItemReader::new(ItemId::new());
+    assert_eq!(ItemReader::from_cache(empty.item_id.clone(),&empty.export_cache().unwrap()).unwrap().latest_item_seq(),0);
+}
+#[test]
+fn reader_cache_rejects_damage_wrong_identity_version_and_poison() {
+    let (mut reader,id)=create("CHAT");let cache=reader.export_cache().unwrap();
+    assert!(ItemReader::from_cache(ItemId::new(),&cache).is_err());
+    let mut parsed:Value=serde_json::from_slice(&cache).unwrap();parsed["state"]["ref_seq"]=1.into();
+    assert!(ItemReader::from_cache(id.clone(),&serde_json::to_vec(&parsed).unwrap()).is_err());
+    let mut parsed:Value=serde_json::from_slice(&cache).unwrap();parsed["version"]=2.into();
+    assert!(ItemReader::from_cache(id.clone(),&serde_json::to_vec(&parsed).unwrap()).is_err());
+    assert!(ItemReader::from_cache(id.clone(),&cache[..cache.len()/2]).is_err());
+    let bad=event(&id,"CHAT::MESSAGE::SET_CONTENT",json!({"item_seq":999}),json_body("missing"));
+    assert!(reader.apply(&bad,ReadContext{item_seq:2,created_at:now(),occurred_at:None,author:"alice",committer:"alice"}).is_err());
+    assert!(reader.export_cache().is_err());
+}

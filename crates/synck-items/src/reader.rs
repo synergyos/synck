@@ -7,7 +7,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{DateTime, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+mod cache;
 use serde_json::Value;
 use synck_vcs::types::{ObjectId, EventContent, EventProposal, ItemId, RefEventProposal, RepoId};
 use uuid::Uuid;
@@ -44,7 +45,7 @@ pub struct ReadContext<'a> {
     pub committer: &'a str,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum SubitemLifecycle {
     Live,
@@ -55,7 +56,7 @@ pub enum SubitemLifecycle {
     Merged,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "value", rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum SubitemIdentity {
     Sequence(i64),
@@ -69,14 +70,14 @@ pub struct RefReadContext<'a> {
     pub committer: &'a str,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum HistoryLedger {
     Item,
     Ref,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ReadablePosition {
     pub item_id: ItemId,
     pub ledger: HistoryLedger,
@@ -84,7 +85,7 @@ pub struct ReadablePosition {
 }
 
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ReadableSubitem {
     pub family: String,
     pub identity: SubitemIdentity,
@@ -111,7 +112,7 @@ pub struct ReadableSubitem {
     pub content: Value,
 }
 
-#[derive(Clone, Debug, Default, Serialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ChatDetails {
     pub title: Option<String>,
     pub profile: Option<subitems::ChatProfileEvent>,
@@ -122,7 +123,7 @@ pub struct ChatDetails {
 
 
 /// Preserved supplemental application data; it is not executed by public replay.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AncillaryEvent {
     pub item_seq: i64,
     pub event_type: String,

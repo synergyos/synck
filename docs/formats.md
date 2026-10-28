@@ -37,3 +37,13 @@ The 0.2 typed scope is FILE/FOLDER, CHAT and EMAIL. Hosted-only readers and old
 FILE sidecars/resource forks were removed. Generic envelopes still provide
 structural integrity for uninterpreted families. No cross-machine sync protocol
 is included in this release.
+
+`ItemReader::export_cache` / `ItemReader::from_cache` persist a disposable
+versioned incremental reader snapshot, including independent ref positions and
+historical FILE revisions. This is plaintext derived state, not a repository
+format, canonical archive or authorization proof. A checksum detects damage;
+callers must bind trusted storage to repository/item identity and a separately
+verified history checkpoint, bound input size, and discard/replay unsupported or
+invalid cache versions. Export and restore cost O(item state size); use periodic
+snapshots with a verified replay tail rather than exporting the whole chat for
+every message. No Core, event, hash or wire format changes.
