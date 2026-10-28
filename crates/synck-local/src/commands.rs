@@ -1484,8 +1484,9 @@ impl Repository {
         self.clear_intent(REVERT_INTENT_NAME)
     }
 
-    pub(crate) fn validate_pending_operations(&self) -> Result<()> {
+    pub(crate) fn validate_pending_operations(&self) -> Result<Option<&'static str>> {
         let intent_names = [
+            crate::name_repair_journal::JOURNAL,
             MOVE_INTENT_NAME,
             RECOVER_INTENT_NAME,
             REVERT_INTENT_NAME,
@@ -1609,7 +1610,7 @@ impl Repository {
             }
         }
 
-        Ok(())
+        Ok(present.first().copied())
     }
 
     pub(crate) fn write_json_intent<T: Serialize>(

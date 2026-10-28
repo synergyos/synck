@@ -3211,3 +3211,18 @@ async fn init_reports_all_invalid_names_with_noncolliding_fixes() {
     assert_eq!(fs::read(root.join("bad:name")).unwrap(), b"bad:name");
     assert_eq!(fs::read(root.join("folder?/NUL.txt")).unwrap(), b"keep");
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn normalization_only_name_repair_preserves_bytes_and_is_idempotent() {
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path();
+    init(root, "author").await.unwrap();
+    fs::write(root.join("e\u{301}.txt"), b"normalization").unwrap();
+    let repository = Repository::discover(root).await.unwrap();
+    let repairs = repository.fix_names().await.unwrap();
+    assert_eq!(repairs.len(), 1);
+    assert_eq!(repairs[0].to, "é.txt");
+    assert_eq!(fs::read(root.join("é.txt")).unwrap(), b"normalization");
+    assert!(repository.fix_names().await.unwrap().is_empty());
+}

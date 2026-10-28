@@ -204,3 +204,25 @@ the lexicographically first spelling. Remaining conflicts receive ` (2)`,
 Suggestions also avoid existing ignored filesystem entries. A renamed ancestor
 is reflected in every reported descendant destination. Diagnostics do not rename
 files or publish a repository when initialization fails.
+
+## Explicit filesystem name repair
+
+`init --fix-names` initializes repository metadata and then repairs non-portable
+names. As with ordinary initialization, existing user files remain uncommitted.
+`commit --fix-names` repairs names throughout the observed checkout, remaps any
+selected paths, and records the selected changes in one ordinary commit. Both
+commands report every rename. Ignored entries are never renamed or overwritten.
+The JSON commit result includes `renamed` when this flag is used.
+
+Repairs are local filesystem operations, not history rewrites. A local journal
+records file and parent identities before mutation. Descendants move before
+ancestors, through temporary sibling names, using no-replace renames. Each
+completed rename is directory-synced before its progress record is synced.
+Interrupted repairs resume on the next locked checkout open, checking identities
+and refusing an occupied destination. Existing history and content IDs remain
+unchanged until the subsequent ordinary commit. Initialization publishes its
+metadata before repair so an interruption leaves recoverable state.
+
+Importing working files uses these same initialization/commit commands. A
+complete repository import preserves canonical names and hashes; it does not
+repair or rewrite imported history.

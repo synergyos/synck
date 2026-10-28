@@ -310,7 +310,8 @@ impl Repository {
             storage_mode,
             hidden_files_mode,
         };
-        repository.validate_pending_operations()?;
+        let _ = repository.validate_pending_operations()?;
+        repository.recover_name_repairs()?;
         if repository
             .config
             .checkout

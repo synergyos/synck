@@ -3206,3 +3206,25 @@ fn log_limit_counts_commits_across_repository_sequence_gaps() {
     assert!(lines[1].starts_with("2 | "), "{stdout}");
     assert!(lines[1].ends_with(" | initial"), "{stdout}");
 }
+
+#[cfg(unix)]
+#[test]
+fn fix_names_initializes_and_commits_selected_renamed_paths() {
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path();
+    fs::create_dir(root.join("folder?")).unwrap();
+    fs::write(root.join("folder?/NUL.txt"), b"initial").unwrap();
+    let output = synck(root, &["init", "--author", "author", "--fix-names"]);
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("folder_/_NUL.txt"));
+    assert_eq!(fs::read(root.join("folder_/_NUL.txt")).unwrap(), b"initial");
+    fs::write(root.join("bad?name"), b"selected").unwrap();
+    let output = synck(root, &["commit", "--fix-names", "bad?name", "-m", "selected", "--json"]);
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["renamed"][0]["from"], "bad?name");
+    assert_eq!(value["renamed"][0]["to"], "bad_name");
+    assert!(value["commit_id"].as_str().unwrap().starts_with("sha256:"));
+    assert_eq!(fs::read(root.join("bad_name")).unwrap(), b"selected");
+    assert!(synck(root, &["status"]).status.success());
+}

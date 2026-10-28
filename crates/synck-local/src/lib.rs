@@ -13,6 +13,7 @@ mod integrity;
 mod local_database;
 mod monitor;
 mod name_repairs;
+mod name_repair_journal;
 mod objects;
 mod ooxml;
 pub mod portable;
@@ -39,6 +40,7 @@ pub use inspection::{
 pub use integrity::FsckReport;
 pub use monitor::{MonitorStatus, run_monitor_server};
 pub use objects::{GcReport, StorageReport};
+pub use name_repairs::NameRepair;
 pub use repository::{HiddenFilesMode, Repository, create_default_synckignore};
 pub use versions::NamedVersionEntry;
 pub use working_tree_edit::{WorkingTreeEntry, WorkingTreeEntryKind, WorkingTreeSnapshot};

@@ -2672,6 +2672,20 @@ pub async fn init_repository_with_mode(
     author: &str,
     storage_mode: StorageMode,
 ) -> Result<RepoId> {
+    Ok(init_repository_with_name_repair(destination, author, storage_mode, false)
+        .await?
+        .0)
+}
+
+/// Initialize a checkout and optionally repair its existing filesystem names.
+/// Repairs run after publishing metadata, so an interruption leaves a recoverable
+/// journal in the initialized repository rather than untracked temporary files.
+pub async fn init_repository_with_name_repair(
+    destination: &Path,
+    author: &str,
+    storage_mode: StorageMode,
+    fix_names: bool,
+) -> Result<(RepoId, Vec<crate::NameRepair>)> {
     author_valid(author)?;
     let existing = match fs::symlink_metadata(destination) {
         Ok(_) => Some(
@@ -2770,7 +2784,7 @@ pub async fn init_repository_with_mode(
             crate::repository::create_default_synckignore(&staging)?;
         }
         if let Some(root) = &existing {
-            crate::worktree::validate_initial_tree(&directory(root)?, &directory(&staging)?)?;
+            crate::worktree::validate_initial_tree(&directory(root)?, &directory(&staging)?, fix_names)?;
         }
         let working = crate::Repository::discover(&staging).await?;
         if !matches!(
@@ -2846,7 +2860,12 @@ pub async fn init_repository_with_mode(
             "complete repository initialization",
         )?;
     }
-    Ok(repo_id)
+    let repairs = if fix_names {
+        crate::Repository::discover(destination).await?.fix_names().await?
+    } else {
+        Vec::new()
+    };
+    Ok((repo_id, repairs))
 }
 
 #[cfg(test)]

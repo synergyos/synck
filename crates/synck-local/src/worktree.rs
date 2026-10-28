@@ -197,6 +197,16 @@ impl ChangeKind {
 }
 
 impl Repository {
+    pub(crate) async fn scan_for_name_repairs(&self) -> Result<BTreeMap<String, WorkingNode>> {
+        self.recover_current().await?;
+        let committed = self.committed_tree().await?;
+        let (ignore, _) = load_ignore(self.root())?;
+        scan_tree_unvalidated(
+            self.root(), &committed, &ignore, self.discovery_hidden_mode(), true,
+            self.config().reserves_file_version_namespace(),
+        )
+    }
+
     fn discovery_hidden_mode(&self) -> NativeHiddenMode {
         match self.hidden_files_mode() {
             HiddenFilesMode::Ignore => NativeHiddenMode::Ignore,
@@ -983,17 +993,15 @@ pub(crate) fn scan_canonical_without_ignore(
 
 // Validate the destination with the ignore rules being initialized, before
 // publishing either its metadata or its ignore file.
-pub(crate) fn validate_initial_tree(root: &Dir, ignore_root: &Dir) -> Result<()> {
+pub(crate) fn validate_initial_tree(
+    root: &Dir, ignore_root: &Dir, fix_names: bool,
+) -> Result<()> {
     let (ignore, _) = load_ignore(ignore_root)?;
-    scan_tree(
-        root,
-        &BTreeMap::new(),
-        &ignore,
-        NativeHiddenMode::Ignore,
-        true,
-        true,
-    )
-    .map(|_| ())
+    let working = scan_tree_unvalidated(root, &BTreeMap::new(), &ignore, NativeHiddenMode::Ignore, true, true)?;
+    if !fix_names {
+        crate::name_repairs::validate(root, &working)?;
+    }
+    Ok(())
 }
 
 fn scan_without_ignore(
@@ -1023,6 +1031,21 @@ fn scan_tree(
     repository_root: bool,
     reserve_file_version_namespace: bool,
 ) -> Result<BTreeMap<String, WorkingNode>> {
+    let working = scan_tree_unvalidated(
+        root, committed, ignore, native_hidden_mode, repository_root, reserve_file_version_namespace,
+    )?;
+    crate::name_repairs::validate(root, &working)?;
+    Ok(working)
+}
+
+fn scan_tree_unvalidated(
+    root: &Dir,
+    committed: &BTreeMap<String, CommittedNode>,
+    ignore: &Gitignore,
+    native_hidden_mode: NativeHiddenMode,
+    repository_root: bool,
+    reserve_file_version_namespace: bool,
+) -> Result<BTreeMap<String, WorkingNode>> {
     let tracked: BTreeSet<String> = committed.keys().cloned().collect();
     let mut working = BTreeMap::new();
     let cache = BTreeMap::new();
@@ -1043,7 +1066,6 @@ fn scan_tree(
         normalized_time(SystemTime::now())?,
         &mut working,
     )?;
-    crate::name_repairs::validate(root, &working)?;
     Ok(working)
 }
 
@@ -3099,23 +3121,17 @@ mod tests {
     }
 
     #[test]
-    fn incremental_root_validation_honors_the_repository_format() {
+    fn reserved_root_validation_applies_after_ignore_filtering() {
         let temporary = tempfile::tempdir().unwrap();
         let name = ".__synck_file_version_set_visible";
         std::fs::write(temporary.path().join(name), b"content").unwrap();
         let root = Dir::open_ambient_dir(temporary.path(), ambient_authority()).unwrap();
         let ignore = GitignoreBuilder::new(".").build().unwrap();
-        let tracked = BTreeSet::new();
-
-        assert!(
-            validate_root_names(&root, &tracked, &ignore, NativeHiddenMode::Ignore, false,).is_ok()
-        );
-        assert!(
-            validate_root_names(&root, &tracked, &ignore, NativeHiddenMode::Ignore, true,)
-                .unwrap_err()
-                .to_string()
-                .contains("reserved internal root name")
-        );
+        let tracked = BTreeMap::new();
+        assert!(scan_tree(&root, &tracked, &ignore, NativeHiddenMode::Ignore, true, true).is_ok());
+        assert!(scan_tree(&root, &tracked, &ignore, NativeHiddenMode::Skip, true, false).is_ok());
+        assert!(scan_tree(&root, &tracked, &ignore, NativeHiddenMode::Skip, true, true)
+            .unwrap_err().to_string().contains("reserved internal root name"));
     }
 
     #[test]

@@ -97,6 +97,9 @@ enum Command {
         /// Name recorded on your commits.
         #[arg(long)]
         author: String,
+        /// Rename non-portable names and report every change.
+        #[arg(long)]
+        fix_names: bool,
         /// CHUNKED (compact, the default) or WHOLE_FILE (one plain file per version).
         #[arg(long, default_value = "CHUNKED", value_parser = parse_storage_mode)]
         storage_mode: synck_local::StorageMode,
@@ -119,6 +122,9 @@ enum Command {
     },
     /// Commit the complete delta or only the selected paths.
     Commit {
+        /// Repair non-portable names throughout the observed checkout before committing.
+        #[arg(long)]
+        fix_names: bool,
         /// Commit message.
         #[arg(short = 'm', long)]
         message: Option<String>,
@@ -251,6 +257,9 @@ enum PortableCommand {
         /// Name recorded on your commits.
         #[arg(long)]
         author: String,
+        /// Rename non-portable names and report every change.
+        #[arg(long)]
+        fix_names: bool,
         /// CHUNKED (compact, the default) or WHOLE_FILE (one plain file per version).
         #[arg(long, default_value = "CHUNKED", value_parser = parse_storage_mode)]
         storage_mode: synck_local::StorageMode,
@@ -688,12 +697,13 @@ async fn run(cli: Cli) -> Result<ExitCode, (LocalError, bool)> {
         directory,
         author,
         storage_mode,
+        fix_names,
     } = &cli.command
     {
-        let repo_id =
-            synck_local::portable::init_repository_with_mode(directory, author, *storage_mode)
-                .await
-                .map_err(|error| (error, false))?;
+        let (repo_id, repairs) = synck_local::portable::init_repository_with_name_repair(
+            directory, author, *storage_mode, *fix_names,
+        ).await.map_err(|error| (error, false))?;
+        print_name_repairs(&repairs);
         println!("initialized Synck repository {repo_id}");
         return Ok(ExitCode::SUCCESS);
     }
@@ -954,9 +964,15 @@ async fn run_checkout(
         Command::Commit {
             message,
             paths,
+            fix_names,
         } => async {
+                let (repairs, paths) = if fix_names {
+                    repository.fix_names_and_remap_paths(&current, &paths).await.map_err(|error| (error, false))?
+                } else { (Vec::new(), paths) };
+                print_name_repairs(&repairs);
+                let caller = if fix_names { repository.repository_root() } else { &current };
                 let outcome = repository
-                    .commit_selected(&current, &paths, message.as_deref())
+                    .commit_selected(caller, &paths, message.as_deref())
                     .await
                     .map_err(|error| (error, false))?;
                 if json {
@@ -964,13 +980,12 @@ async fn run_checkout(
                         CommitOutcome::Clean => None,
                         CommitOutcome::Committed(commit_id) => Some(commit_id),
                     };
-                    println!(
-                        "{}",
-                        json!({
-                            "schema_version": cli_json::SCHEMA_VERSION,
-                            "commit_id": commit_id,
-                        })
-                    );
+                    let mut result = json!({
+                        "schema_version": cli_json::SCHEMA_VERSION,
+                        "commit_id": commit_id,
+                    });
+                    if fix_names { result["renamed"] = json!(repairs); }
+                    println!("{result}");
                 } else {
                     match outcome {
                         CommitOutcome::Clean => println!("nothing to commit"),
@@ -1558,6 +1573,12 @@ fn parse_storage_mode(value: &str) -> Result<synck_local::StorageMode, String> {
     }
 }
 
+fn print_name_repairs(repairs: &[synck_local::NameRepair]) {
+    for repair in repairs {
+        eprintln!("renamed {:?} -> {:?}", repair.from, repair.to);
+    }
+}
+
 fn portable_item_id(value: &str) -> synck_local::Result<synck_vcs::types::ItemId> {
     synck_vcs::types::ItemId::parse(value).map_err(|error| LocalError::Invalid(error.to_string()))
 }
@@ -1570,16 +1591,19 @@ async fn run_portable(command: &PortableCommand) -> synck_local::Result<()> {
             destination,
             author,
             storage_mode,
+            fix_names,
         } => async {
-            let repo_id = synck_local::portable::init_repository_with_mode(
+            let (repo_id, repairs) = synck_local::portable::init_repository_with_name_repair(
                 destination,
                 author,
                 *storage_mode,
+                *fix_names,
             )
             .await?;
+            print_name_repairs(&repairs);
             println!(
                 "{}",
-                json!({"schema_version":1,"repo_id":repo_id,"path":destination})
+                json!({"schema_version":1,"repo_id":repo_id,"path":destination,"renamed":repairs})
             );
             Ok(())
         }

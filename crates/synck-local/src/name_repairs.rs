@@ -4,14 +4,15 @@ use std::path::Path;
 
 use cap_fs_ext::{DirExt, FollowSymlinks, OpenOptionsFollowExt};
 use cap_std::fs::{Dir, OpenOptions};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use synck_vcs::naming::{compute_name_key, portable_name, suffixed_name};
 
 use crate::error::{IoContext, LocalError, Result};
 use crate::repository::is_cap_link_or_reparse;
 use crate::worktree::{WorkingNode, directory_identity, file_identity};
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct NameRepair {
     pub from: String,
     pub to: String,

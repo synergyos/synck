@@ -257,6 +257,21 @@ without following links. Unique temporary files are created with create-new
 semantics. A file already installed at its final digest path is not temporary
 and is never removed automatically.
 
+### Portable-name repair
+
+Use `synck init --fix-names --author NAME` to repair names while initializing, or
+`synck commit --fix-names -m MESSAGE` to repair and record existing checkout
+changes. Every rename is printed to stderr; JSON commit output also includes a
+`renamed` array. Valid names take precedence over repaired spellings and ignored
+entries are preserved. Selected paths follow their renamed ancestors. The flag
+repairs all observed checkout names, including names outside an explicit commit
+selection; only the selected changes are committed.
+
+The `.synck/name-repair.jsonl` journal makes approved repairs resumable. The next
+locked checkout command completes an interrupted repair before scanning files.
+If a destination appeared meanwhile, recovery stops and preserves both that
+entry and the staged original. No repair modifies existing history.
+
 ## 4. SQLite storage
 
 The bundled SQLite library must include the WAL-reset corruption fix (SQLite
