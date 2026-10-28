@@ -2091,6 +2091,17 @@ async fn storage_modes_preserve_canonical_history_ids_and_exact_closure() {
         (report.objects, report.metadata),
         (original.objects, original.metadata)
     );
+    let preserved = fixture.root.join("preserved");
+    copy.archive(&preserved).await.unwrap();
+    let preserved = PortableRepository::open(&preserved).unwrap();
+    assert_eq!(preserved.storage_mode(), StorageMode::Chunked);
+    assert_eq!(
+        serde_json::to_value(preserved.log(None, 512).await.unwrap()).unwrap(),
+        history
+    );
+    let preserved_report = preserved.verify().await.unwrap();
+    assert_eq!(preserved_report.objects, original.objects);
+    assert!(preserved_report.missing_objects.is_empty());
     for id in [&fixture.primary_blob, &fixture.body_blob] {
         let id = synck_vcs::types::ObjectId::parse(id).unwrap();
         let mut expected = Vec::new();
@@ -2098,12 +2109,10 @@ async fn storage_modes_preserve_canonical_history_ids_and_exact_closure() {
         source.copy_blob(&id, &mut expected).unwrap();
         copy.copy_blob(&id, &mut actual).unwrap();
         assert_eq!(actual, expected);
+        actual.clear();
+        preserved.copy_blob(&id, &mut actual).unwrap();
+        assert_eq!(actual, expected);
     }
-    let preserved = fixture.root.join("preserved");
-    copy.archive(&preserved).await.unwrap();
-    let preserved = PortableRepository::open(&preserved).unwrap();
-    assert_eq!(preserved.storage_mode(), StorageMode::Chunked);
-    preserved.verify().await.unwrap();
     let whole = fixture.root.join("whole-again");
     copy.archive_with_mode(&whole, StorageMode::WholeFile)
         .await

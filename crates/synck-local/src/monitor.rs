@@ -183,6 +183,13 @@ impl Repository {
     }
 
     pub fn start_monitor(&self, executable: &Path) -> Result<MonitorStatus> {
+        // A checkout can be deeper than the Unix socket address limit. Refuse
+        // before spawning: the scanner can fall back immediately instead of
+        // waiting for a server that cannot bind its endpoint.
+        #[cfg(unix)]
+        rustix::net::SocketAddrUnix::new(self.metadata_path().join(SOCKET_FILE))
+            .map_err(std::io::Error::from)
+            .at("address monitor connection", self.metadata_path().join(SOCKET_FILE))?;
         if let MonitorStatus::Running { instance_id } = self.monitor_status() {
             return Ok(MonitorStatus::Running { instance_id });
         }
@@ -1711,6 +1718,26 @@ fn io_would_block(error: &std::io::Error) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn overlong_socket_path_is_rejected_before_spawning() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().join("a".repeat(120));
+        fs::create_dir(&root).unwrap();
+        crate::portable::init_repository(&root, "author").await.unwrap();
+        let repository = Repository::discover(&root).await.unwrap();
+        // A nonexistent executable makes the ordering observable without a
+        // timing assertion: endpoint validation must precede process creation.
+        let error = repository.start_monitor(&root.join("does-not-exist")).unwrap_err();
+        assert!(error.to_string().contains("address monitor connection"), "{error}");
+        fs::write(root.join("file.txt"), b"one").unwrap();
+        assert_eq!(repository.status().await.unwrap().len(), 1);
+        repository.commit("record file").await.unwrap();
+        assert!(repository.status().await.unwrap().is_empty());
+        fs::write(root.join("file.txt"), b"two").unwrap();
+        assert_eq!(repository.status().await.unwrap().len(), 1);
+    }
 
     #[test]
     fn event_history_returns_deduplicated_changes_after_token() {

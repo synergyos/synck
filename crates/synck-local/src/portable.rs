@@ -1638,7 +1638,10 @@ impl PortableRepository {
                 },
             };
             if !present { missing_objects.push(id); continue; }
-            self.copy_blob(&id, &mut std::io::sink())?;
+            // ChunkStore::verify_all already checked the frame and every chunk.
+            if inventory.is_none() {
+                self.copy_blob(&id, &mut std::io::sink())?;
+            }
         }
         let mut missing_metadata = Vec::new();
         for name in &metadata {
@@ -2404,7 +2407,7 @@ impl PortableRepository {
             }
             sync_directory(&objects)?;
             let mut repository = PortableRepository::open(&staging)?;
-            if mode == StorageMode::Chunked {
+            if mode == StorageMode::Chunked && !preserve_chunks {
                 repository.optimize_storage().await?;
             }
             repository.verify().await?;

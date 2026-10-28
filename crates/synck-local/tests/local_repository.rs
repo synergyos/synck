@@ -2745,8 +2745,12 @@ async fn fsck_reports_corrupt_object_bytes() {
     let repository = Repository::discover(temporary.path()).await.unwrap();
     repository.commit("initial").await.unwrap();
 
-    let digest = hex::encode(Sha256::digest(b"content"));
-    corrupt_blob(temporary.path(), &digest);
+    let version = repository
+        .versions(temporary.path(), Path::new("file"))
+        .await
+        .unwrap()
+        .remove(0);
+    corrupt_blob(temporary.path(), version.blob_id.strip_prefix("sha256:").unwrap());
     let findings = repository.fsck().await.unwrap();
     assert!(
         findings

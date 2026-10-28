@@ -620,8 +620,15 @@ impl ChunkStore {
 
     fn verify_all_from(&self, connection: &Connection) -> Result<BTreeMap<String, u64>> {
         self.validate_physical(connection)?;
-        let mut chunks = connection
-            .prepare("SELECT digest, raw_size, codec, payload FROM chunks ORDER BY digest")?;
+        // Complete blobs verify their chunks below. Check the remaining chunks
+        // here too, including those belonging only to interrupted writes.
+        let mut chunks = connection.prepare(
+            "SELECT digest, raw_size, codec, payload FROM chunks
+             WHERE NOT EXISTS (
+                 SELECT 1 FROM blob_chunks bc JOIN blobs b ON b.digest = bc.blob_digest
+                 WHERE bc.chunk_digest = chunks.digest AND b.complete = 1
+             ) ORDER BY digest",
+        )?;
         let rows = chunks.query_map([], |row| {
             Ok((
                 row.get::<_, Vec<u8>>(0)?,
@@ -643,12 +650,18 @@ impl ChunkStore {
         for (digest, size) in &inventory {
             let blob_id = ObjectId::parse(format!("sha256:{digest}"))
                 .map_err(|error| LocalError::Integrity(error.to_string()))?;
-            self.copy_blob_from(connection, &blob_id, *size, &mut std::io::sink())?;
+            let mut decoder = synck_vcs::object::Decoder::new(blob_id.clone(), std::io::sink());
+            self.copy_blob_from(connection, &blob_id, *size, &mut decoder)?;
+            decoder
+                .finish()
+                .map_err(|error| LocalError::Integrity(error.to_string()))?;
         }
         Ok(inventory)
     }
 
-    pub(crate) fn verify_archive_closure(&self) -> Result<BTreeMap<String, u64>> {
+    // The destination repository verifier checks the payloads before publication.
+    // This additional check enforces the archive-only physical closure rules.
+    pub(crate) fn verify_archive_closure(&self) -> Result<()> {
         let connection = self.open_readonly()?;
         let incomplete: i64 =
             connection.query_row("SELECT count(*) FROM blobs WHERE complete = 0", [], |row| {
@@ -667,7 +680,7 @@ impl ChunkStore {
                 "archive object database contains incomplete blobs or orphan chunks".to_string(),
             ));
         }
-        self.verify_all_from(&connection)
+        Ok(())
     }
 
     pub(crate) fn gc(&self, reachable: &BTreeSet<String>) -> Result<(u64, u64)> {
@@ -729,7 +742,9 @@ impl ChunkStore {
                 | OpenFlags::SQLITE_OPEN_NOFOLLOW,
         )?;
         let backup = rusqlite::backup::Backup::new(&source, &mut destination_connection)?;
-        backup.run_to_completion(128, Duration::from_millis(10), None)?;
+        // The caller holds the repository lock and the destination is private.
+        // Do not throttle every 512 KiB as if this were an online service backup.
+        backup.run_to_completion(i32::MAX, Duration::from_millis(10), None)?;
         drop(backup);
         drop(destination_connection);
         drop(source);
@@ -1216,6 +1231,73 @@ impl<R: Read> StreamingChunker<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn verify_all_checks_framing_even_with_matching_physical_digests() {
+        use synck_vcs::object::{Codec, Header};
+        let valid = [Header::new(Codec::Raw).unwrap().as_bytes().as_slice(), b"payload"].concat();
+        let invalid_utf8 = [Header::new(Codec::Utf8).unwrap().as_bytes().as_slice(), &[0xff]].concat();
+        for bytes in [valid.clone(), b"unframed".to_vec(), invalid_utf8] {
+            let temporary = tempfile::tempdir().unwrap();
+            let path = temporary.path().join("objects.sqlite3");
+            let repo_id = RepoId::new();
+            ChunkStore::create(&path, &repo_id).unwrap();
+            let store = ChunkStore::new(path, &repo_id);
+            let digest = Sha256::digest(&bytes).into();
+            store.stage_blob(digest, bytes.len() as u64, Cursor::new(&bytes)).unwrap();
+            store.complete_blob(&digest, bytes.len() as u64).unwrap();
+            assert_eq!(store.verify_all().is_ok(), bytes == valid);
+        }
+    }
+
+    #[test]
+    fn verify_all_checks_chunks_outside_complete_blobs() {
+        for orphan in [false, true] {
+            let temporary = tempfile::tempdir().unwrap();
+            let path = temporary.path().join("objects.sqlite3");
+            let repo_id = RepoId::new();
+            ChunkStore::create(&path, &repo_id).unwrap();
+            let store = ChunkStore::new(path, &repo_id);
+            let bytes = b"interrupted payload";
+            let digest = Sha256::digest(bytes).into();
+            store.stage_blob(digest, bytes.len() as u64, Cursor::new(bytes)).unwrap();
+            let connection = store.open_writable().unwrap();
+            if orphan {
+                // Leave a valid, unreferenced chunk rather than an incomplete blob.
+                connection.execute("DELETE FROM blobs", []).unwrap();
+            }
+            assert!(store.verify_all().is_ok());
+            assert!(store.verify_archive_closure().is_err());
+            connection.execute("UPDATE chunks SET payload = zeroblob(raw_size), codec = 'RAW'", []).unwrap();
+            assert!(store.verify_all().unwrap_err().to_string().contains("chunk digest mismatch"));
+        }
+    }
+
+    #[test]
+    fn backup_includes_committed_wal_pages() {
+        let temporary = tempfile::tempdir().unwrap();
+        let source = temporary.path().join("source.sqlite3");
+        let destination = temporary.path().join("copy.sqlite3");
+        let repo_id = RepoId::new();
+        ChunkStore::create(&source, &repo_id).unwrap();
+        let store = ChunkStore::new(source, &repo_id);
+        let connection = store.open_writable().unwrap();
+        connection.execute_batch("PRAGMA wal_autocheckpoint = 0").unwrap();
+        let bytes = b"committed only in WAL";
+        let digest: [u8; 32] = Sha256::digest(bytes).into();
+        connection.execute(
+            "INSERT INTO chunks(digest,raw_size,codec,payload) VALUES(?1,?2,'RAW',?3)",
+            params![digest.as_slice(), bytes.len() as i64, bytes.as_slice()],
+        ).unwrap();
+        // Keep the writer open so closing the last connection cannot checkpoint.
+        store.backup_to(&destination).unwrap();
+        let copy = ChunkStore::new(destination, &repo_id);
+        let actual: Vec<u8> = copy.open_readonly().unwrap().query_row(
+            "SELECT payload FROM chunks WHERE digest=?1", [digest.as_slice()], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(actual, bytes);
+        copy.verify_all().unwrap();
+    }
 
     struct ShortReader<'a> {
         bytes: &'a [u8],
