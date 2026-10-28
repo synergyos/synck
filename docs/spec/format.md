@@ -272,7 +272,7 @@ the portable content boundary.
 Core SQLite uses application ID `0x53594E4B` and schema version 7. The adapter
 creates this schema directly and refuses prior schema versions without modifying
 their version stamps or definitions. There are no core or local schema migrations.
-The current local projection schema is 11, in `repository.local.sqlite3`.
+The current local projection schema is 13, in `repository.local.sqlite3`.
 The state tree lives in `repository.state.sqlite3`. Neither database is copied
 into a portable repository. These version markers do not make this draft a release.
 
@@ -299,12 +299,20 @@ repairs damaged cache contents without modifying canonical history.
 
 ## Checkout database
 
-`repository.sqlite3` contains no `local_*` tables. Local settings, FILE-head
-projections, filesystem observations and imported-email source observations live
+`repository.sqlite3` contains no `local_*` tables. FILE-head projections,
+plaintext digests, filesystem observations and imported-email source observations live
 in `repository.local.sqlite3`. Local transactions may read canonical history
 through a read-only SQLite attachment; they cannot write it. Acceptance and local
 projection updates are separate transactions. Existing recovery replays accepted
-history after an interrupted projection update.
+history after an interrupted projection update. Missing cache databases are
+created and replayed under the checkout lock; existing malformed databases are
+refused rather than silently reset. Local import-source observations derive
+from EMAIL creation metadata, its original parent identity and source role;
+only matching filename and exact bytes are recognized as already imported.
+Changed working files are never promoted into history during cache rebuilding.
+The hidden-files preference is `checkout.hidden_files` (`ignore` or `track`,
+default `ignore`) in config.json. Durable operation intents and checkout
+configuration are not disposable caches.
 
 A complete portable copy backs up the canonical database and transfers referenced
 objects. It does not copy checkout observations, settings or the state-tree cache.

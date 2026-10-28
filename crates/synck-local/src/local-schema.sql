@@ -49,7 +49,7 @@ CREATE TABLE local_worktree_entries (
     mtime_nanos INTEGER,
     change_seconds INTEGER,
     change_nanos INTEGER,
-    observed_blob_id TEXT,
+    plain_sha256 TEXT,
     stat_valid INTEGER,
     CHECK (
         (birth_seconds IS NULL AND birth_nanos IS NULL)
@@ -63,10 +63,9 @@ CREATE TABLE local_worktree_entries (
             AND mtime_seconds IS NOT NULL
             AND mtime_nanos IS NOT NULL
             AND mtime_nanos BETWEEN 0 AND 999999999
-            AND observed_blob_id IS NOT NULL
-            AND length(observed_blob_id) = 71
-            AND substr(observed_blob_id, 1, 7) = 'sha256:'
-            AND substr(observed_blob_id, 8) NOT GLOB '*[^0-9a-f]*'
+            AND plain_sha256 IS NOT NULL
+            AND length(plain_sha256) = 64
+            AND plain_sha256 NOT GLOB '*[^0-9a-f]*'
             AND stat_valid IS NOT NULL AND stat_valid IN (0, 1)
             AND ((change_seconds IS NULL AND change_nanos IS NULL)
                 OR (change_seconds IS NOT NULL
@@ -78,18 +77,17 @@ CREATE TABLE local_worktree_entries (
             AND size_bytes IS NULL
             AND mtime_seconds IS NULL AND mtime_nanos IS NULL
             AND change_seconds IS NULL AND change_nanos IS NULL
-            AND observed_blob_id IS NULL AND stat_valid IS NULL)
+            AND plain_sha256 IS NULL AND stat_valid IS NULL)
     ),
     PRIMARY KEY (repo_id, path)
 ) STRICT;
 
 CREATE TABLE local_worktree_scan_state (
     repo_id TEXT PRIMARY KEY,
-    ignore_blob_id TEXT CHECK (
-        ignore_blob_id IS NULL
-        OR (length(ignore_blob_id) = 71
-            AND substr(ignore_blob_id, 1, 7) = 'sha256:'
-            AND substr(ignore_blob_id, 8) NOT GLOB '*[^0-9a-f]*')
+    ignore_sha256 TEXT CHECK (
+        ignore_sha256 IS NULL
+        OR (length(ignore_sha256) = 64
+            AND ignore_sha256 NOT GLOB '*[^0-9a-f]*')
     ),
     monitor_instance_id TEXT,
     monitor_sequence INTEGER,
@@ -100,11 +98,6 @@ CREATE TABLE local_worktree_scan_state (
             AND monitor_sequence IS NOT NULL
             AND monitor_sequence >= 0)
     )
-) STRICT;
-
-CREATE TABLE local_repository_settings (
-    repo_id TEXT PRIMARY KEY,
-    hidden_files TEXT NOT NULL CHECK (hidden_files IN ('IGNORE', 'TRACK'))
 ) STRICT;
 
 CREATE TABLE local_email_import_sources (
@@ -122,4 +115,4 @@ CREATE TABLE local_object_digests (
     PRIMARY KEY (repo_id, object_id)
 ) STRICT;
 
-INSERT INTO local_schema_meta(singleton, version) VALUES (1, 12);
+INSERT INTO local_schema_meta(singleton, version) VALUES (1, 13);

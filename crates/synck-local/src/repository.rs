@@ -27,7 +27,7 @@ use crate::chunk_store::{ChunkStore, OBJECT_STORE_FILE, StorageMode};
 use crate::error::{IoContext, LocalError, Result};
 
 const FORMAT_VERSION: u32 = 6;
-const LOCAL_SCHEMA_VERSION: i64 = 12;
+const LOCAL_SCHEMA_VERSION: i64 = 13;
 pub(crate) const MONITOR_LOCK_FILE: &str = "monitor.lock";
 const PAGE_SIZE: usize = 1_024;
 const SQLITE_ITEM_ID_CHUNK_SIZE: usize = 900;
@@ -74,8 +74,10 @@ __pycache__/
 
 const LOCAL_SCHEMA: &str = include_str!("local-schema.sql");
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum HiddenFilesMode {
+    #[default]
     Ignore,
     Track,
 }
@@ -88,22 +90,7 @@ impl HiddenFilesMode {
         }
     }
 
-    pub(crate) fn database_value(self) -> &'static str {
-        match self {
-            Self::Ignore => "IGNORE",
-            Self::Track => "TRACK",
-        }
-    }
 
-    pub(crate) fn from_database(value: &str) -> Result<Self> {
-        match value {
-            "IGNORE" => Ok(Self::Ignore),
-            "TRACK" => Ok(Self::Track),
-            _ => Err(LocalError::Integrity(format!(
-                "invalid hidden-files setting {value:?}"
-            ))),
-        }
-    }
 }
 
 /// Working-copy commands need a working tree. Name a bare complete repository
@@ -197,7 +184,6 @@ pub struct Repository {
     storage: SqliteStorage,
     repo: Repo,
     pub(crate) storage_mode: StorageMode,
-    hidden_files_mode: HiddenFilesMode,
 }
 
 impl Repository {
@@ -278,11 +264,10 @@ impl Repository {
         storage.open_readonly().map_err(|error| {
             LocalError::Integrity(format!("cannot read Core VCS schema: {error}"))
         })?;
+        initialize_checkout_schema(&storage)?;
         validate_local_schema_version(&storage)?;
         crate::checkout::validate_config(&config)?;
-        validate_local_schema(&crate::local_database::open_readonly(&storage)?)?;
         let storage_mode = config.storage_mode.unwrap_or_default();
-        let hidden_files_mode = read_hidden_files_mode(&storage, &config.repo_id)?;
         let object_store = ChunkStore::new(metadata_path.join(OBJECT_STORE_FILE), &config.repo_id);
         match storage_mode {
             StorageMode::WholeFile => validate_optional_object_store_path(object_store.path())?,
@@ -305,7 +290,6 @@ impl Repository {
             storage,
             repo,
             storage_mode,
-            hidden_files_mode,
         };
         let _ = repository.validate_pending_operations()?;
         repository.recover_name_repairs()?;
@@ -371,10 +355,9 @@ impl Repository {
         lock: Arc<RepositoryLock>,
         config: Config,
     ) -> Result<Self> {
+        initialize_checkout_schema(&storage)?;
         validate_local_schema_version(&storage)?;
-        validate_local_schema(&crate::local_database::open_readonly(&storage)?)?;
         let storage_mode = config.storage_mode.unwrap_or_default();
-        let hidden_files_mode = read_hidden_files_mode(&storage, &config.repo_id)?;
         let root_path = root_path
             .canonicalize()
             .at("resolve checkout root", root_path)?;
@@ -394,7 +377,6 @@ impl Repository {
             storage,
             repo,
             storage_mode,
-            hidden_files_mode,
         })
     }
 
@@ -461,38 +443,23 @@ impl Repository {
     }
 
     pub fn hidden_files_mode(&self) -> HiddenFilesMode {
-        self.hidden_files_mode
+        self.config.checkout.as_ref().expect("checkout adapter").hidden_files
     }
 
     pub fn set_hidden_files_mode(&mut self, mode: HiddenFilesMode) -> Result<()> {
-        if mode == self.hidden_files_mode {
-            return Ok(());
-        }
-        let connection = crate::local_database::open_writable(&self.storage).map_err(|error| {
-            LocalError::Integrity(format!("cannot update hidden-files setting: {error}"))
-        })?;
-        connection.execute_batch("BEGIN IMMEDIATE")?;
-        let changed = connection.execute(
-            "UPDATE local_repository_settings SET hidden_files = ?1
-             WHERE repo_id = ?2 AND hidden_files = ?3",
-            params![
-                mode.database_value(),
-                self.config.repo_id.as_str(),
-                self.hidden_files_mode.database_value(),
-            ],
-        )?;
-        if changed != 1 {
-            let _ = connection.execute_batch("ROLLBACK");
-            return Err(LocalError::Integrity(
-                "hidden-files setting changed unexpectedly".to_string(),
-            ));
-        }
-        connection.execute(
-            "DELETE FROM local_worktree_scan_state WHERE repo_id = ?1",
+        let previous = self.hidden_files_mode();
+        if mode == previous { return Ok(()); }
+        // Invalidate before publishing the preference: an interrupted update
+        // can cause an extra scan, but cannot reuse a scan under a new policy.
+        crate::local_database::open_writable(&self.storage)?.execute(
+            "DELETE FROM local_worktree_scan_state WHERE repo_id=?1",
             [self.config.repo_id.as_str()],
         )?;
-        connection.execute_batch("COMMIT")?;
-        self.hidden_files_mode = mode;
+        self.config.checkout.as_mut().expect("checkout adapter").hidden_files = mode;
+        if let Err(error) = self.publish_checkout_config() {
+            self.config.checkout.as_mut().expect("checkout adapter").hidden_files = previous;
+            return Err(error);
+        }
         Ok(())
     }
 
@@ -1075,6 +1042,9 @@ impl Repository {
             let CommitEventRow::Item(event) = event else {
                 continue;
             };
+            if event.event_type == "EMAIL::CREATE" {
+                crate::email_import::project_source_observation(transaction, event)?;
+            }
             if event.event_type != "FILE::SET_CONTENT" {
                 continue;
             }
@@ -1411,33 +1381,6 @@ fn validate_optional_object_store_path(path: &Path) -> Result<()> {
         }
     }
     Ok(())
-}
-
-fn read_hidden_files_mode(storage: &SqliteStorage, repo_id: &RepoId) -> Result<HiddenFilesMode> {
-    let connection = crate::local_database::open_readonly(storage).map_err(|error| {
-        LocalError::Integrity(format!("cannot read hidden-files setting: {error}"))
-    })?;
-    let row: Option<(String, String)> = connection
-        .query_row(
-            "SELECT repo_id, hidden_files FROM local_repository_settings",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .optional()?;
-    let count: i64 = connection.query_row(
-        "SELECT count(*) FROM local_repository_settings",
-        [],
-        |row| row.get(0),
-    )?;
-    let (stored_repo_id, value) = row.ok_or_else(|| {
-        LocalError::Integrity("local repository settings row is missing".to_string())
-    })?;
-    if count != 1 || stored_repo_id != repo_id.as_str() {
-        return Err(LocalError::Integrity(
-            "local repository settings do not match repository".to_string(),
-        ));
-    }
-    HiddenFilesMode::from_database(&value)
 }
 
 fn validate_local_schema(connection: &Connection) -> Result<()> {
@@ -2446,7 +2389,7 @@ mod tests {
 }
 
 /// Initialize the separate checkout database without modifying canonical history.
-pub(crate) fn initialize_checkout_schema(storage: &SqliteStorage, repo_id: &RepoId) -> Result<()> {
+pub(crate) fn initialize_checkout_schema(storage: &SqliteStorage) -> Result<()> {
     let mut connection = crate::local_database::create(storage)?;
     let transaction = connection.transaction()?;
     let exists: bool = transaction.query_row(
@@ -2456,10 +2399,6 @@ pub(crate) fn initialize_checkout_schema(storage: &SqliteStorage, repo_id: &Repo
     )?;
     if !exists {
         transaction.execute_batch(LOCAL_SCHEMA)?;
-        transaction.execute(
-            "INSERT INTO local_repository_settings VALUES(?1,'IGNORE')",
-            [repo_id.as_str()],
-        )?;
     }
     validate_local_schema(&transaction)?;
     transaction.commit()?;

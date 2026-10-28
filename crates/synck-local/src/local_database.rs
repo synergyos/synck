@@ -80,7 +80,6 @@ fn open(storage: &SqliteStorage, writable: bool, create: bool) -> Result<Connect
 mod tests {
     use super::*;
     use synck_vcs::storage::StorageBackend;
-    use synck_vcs::types::RepoId;
 
     #[tokio::test]
     async fn local_transactions_cannot_write_attached_history() {
@@ -89,7 +88,7 @@ mod tests {
         std::fs::create_dir(&root).unwrap();
         let storage = SqliteStorage::new(root.join("repository.sqlite3"));
         storage.init_schema().await.unwrap();
-        crate::repository::initialize_checkout_schema(&storage, &RepoId::new()).unwrap();
+        crate::repository::initialize_checkout_schema(&storage).unwrap();
         let local = open_writable(&storage).unwrap();
         local
             .execute("DELETE FROM local_worktree_entries", [])

@@ -333,7 +333,6 @@ struct PreparedWorkingCommit {
     ref_events: Vec<RefEventProposal>,
     subtree_guards: Vec<SubtreeClosureGuard>,
     email_objects: Vec<(String, Vec<u8>)>,
-    email_sources: Vec<(String, ItemId, String)>,
 }
 
 impl Repository {
@@ -396,7 +395,6 @@ impl Repository {
         let captured = self.capture_changed_files(&working, &changes, captured_file)?;
         let prepared = self.prepare_working_commit(&committed, &working, &changes, &working_ids, message, &captured)?;
         self.store_imported_email_objects(&prepared.email_objects)?;
-        self.record_imported_email_sources(&prepared.email_sources)?;
         let accepted = self
             .core()
             .append_file_folder_checked_with_refs(
@@ -478,7 +476,6 @@ impl Repository {
             ref_events: built.ref_events,
             subtree_guards: built.subtree_guards,
             email_objects: Vec::new(),
-            email_sources: Vec::new(),
         };
         let mut emails = HashMap::new();
         for change in changes
@@ -506,17 +503,12 @@ impl Repository {
                 &self.root_path().join(display_to_path(&change.path)),
             )?;
             self.reject_recorded_email_name(&change.path, &email.events[0])?;
-            let source_blob = email.events[0].set_content.as_ref()
-                .and_then(|content| content.get("source")).expect("EMAIL source object").as_str();
             if Some(email.source_plain_digest.as_str()) != working[&change.path].digest_hex.as_deref() {
                 return Err(LocalError::Invalid(format!(
                     "email source changed while parsing: {}",
                     change.path
                 )));
             }
-            prepared
-                .email_sources
-                .push((change.path.clone(), id.clone(), source_blob.to_string()));
             prepared.email_objects.extend(email.objects);
             emails.insert(id.clone(), email.events);
         }

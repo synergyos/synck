@@ -166,13 +166,13 @@ metadata directories before success. It preserves the repository ID and format
 version and never rewrites the author recorded by an accepted commit.
 
 The repository also stores one authoritative hidden-files discovery mode in
-SQLite. `IGNORE` is the default; `TRACK` makes untracked dot-prefixed and
+`config.json` as `checkout.hidden_files`. `ignore` is the default; `track` makes untracked dot-prefixed and
 platform-hidden entries eligible for discovery. Read it with
 `synck config hidden-files` and change it with
 `synck config set-hidden-files ignore|track`. A change invalidates the
 disposable worktree scan baseline before it returns, so the next status or
-commit is a complete observation under the new policy. Copies preserve this
-setting.
+commit is a complete observation under the new policy. Bare copies omit
+checkout settings; deleting a local cache does not reset this preference.
 
 ## 3. Metadata layout
 
@@ -300,12 +300,11 @@ The separate `repository.local.sqlite3` contains these local relations:
   birth_seconds, birth_nanos, path)`;
 - `local_worktree_entries(repo_id, path, node_kind, device_id, file_id,
   birth_seconds, birth_nanos, size_bytes, mtime_seconds, mtime_nanos,
-  change_seconds, change_nanos, observed_blob_id, stat_valid)`, the last
+  change_seconds, change_nanos, plain_sha256, stat_valid)`, the last
   coherent observation of every visible regular file and folder;
-- `local_worktree_scan_state(repo_id, ignore_blob_id, monitor_instance_id,
+- `local_worktree_scan_state(repo_id, ignore_sha256, monitor_instance_id,
   monitor_sequence)`, the ignore-rule and monitor boundary paired with those
   entries;
-- `local_repository_settings`, recording hidden-file discovery policy;
 - `local_email_import_sources`, recording disposable complete-checkout source
   observations rather than canonical EMAIL content.
 
@@ -314,25 +313,23 @@ contracts. Local commands exercise VCS mutations through `Repo`; they do not
 reimplement commit construction, sequencing, hashing, or structural invariants.
 
 The core SQLite schema uses `application_id = 0x53594E4B` (`SYNK`) and
-`user_version = 6`. Only that schema is accepted; there are no upgrade or
+`user_version = 7`. Only that schema is accepted; there are no upgrade or
 compatibility paths. Initialization creates the current schema directly.
-`local_schema_meta` independently identifies local projection schema 11; older
+`local_schema_meta` independently identifies local projection schema 13; older
 local schemas are also refused without migration. Repository-owned tables are
 SQLite `STRICT` tables. Format and schema markers do not excuse missing required tables, columns,
 unique keys or foreign keys. Definitions are checked structurally; see the
 [format specification](spec/format.md#sqlite-schema-version-policy).
 
-The local schema has exactly one repository-settings row:
-
-```sql
-CREATE TABLE local_repository_settings (
-    repo_id TEXT PRIMARY KEY,
-    hidden_files TEXT NOT NULL CHECK (hidden_files IN ('IGNORE', 'TRACK'))
-) STRICT;
-```
+A missing local database is recreated under the repository lock and its
+projections replay accepted history. Imported-email source observations come
+from the original EMAIL creation: source filename, original parent identity and
+source object. An observation hides only the unchanged matching source; edits
+and unrelated copies remain visible. Durable recovery intents and preferences
+live outside these disposable databases.
 
 FILE cache rows require exact eight-byte device and file identities,
-non-negative size, normalized modification time, a canonical SHA-256 blob ID,
+non-negative size, normalized modification time, a 64-digit lowercase plaintext SHA-256 digest,
 and `stat_valid` in `{0,1}`. Birth/incarnation and change-time pairs are each
 jointly null or present. Null change time requires `stat_valid = 0`.
 Birth/incarnation is identity evidence only; when unavailable, off-path identity
@@ -356,7 +353,7 @@ CREATE TABLE local_worktree_entries (
     mtime_nanos INTEGER,
     change_seconds INTEGER,
     change_nanos INTEGER,
-    observed_blob_id TEXT,
+    plain_sha256 TEXT,
     stat_valid INTEGER,
     CHECK (
         (birth_seconds IS NULL AND birth_nanos IS NULL)
@@ -370,10 +367,10 @@ CREATE TABLE local_worktree_entries (
             AND mtime_seconds IS NOT NULL
             AND mtime_nanos IS NOT NULL
             AND mtime_nanos BETWEEN 0 AND 999999999
-            AND observed_blob_id IS NOT NULL
-            AND length(observed_blob_id) = 71
-            AND substr(observed_blob_id, 1, 7) = 'sha256:'
-            AND substr(observed_blob_id, 8) NOT GLOB '*[^0-9a-f]*'
+            AND plain_sha256 IS NOT NULL
+            AND length(plain_sha256) = 71
+            AND substr(plain_sha256, 1, 7) = 'sha256:'
+            AND substr(plain_sha256, 8) NOT GLOB '*[^0-9a-f]*'
             AND stat_valid IS NOT NULL AND stat_valid IN (0, 1)
             AND ((change_seconds IS NULL AND change_nanos IS NULL)
                 OR (change_seconds IS NOT NULL
@@ -385,17 +382,17 @@ CREATE TABLE local_worktree_entries (
             AND size_bytes IS NULL
             AND mtime_seconds IS NULL AND mtime_nanos IS NULL
             AND change_seconds IS NULL AND change_nanos IS NULL
-            AND observed_blob_id IS NULL AND stat_valid IS NULL)
+            AND plain_sha256 IS NULL AND stat_valid IS NULL)
     ),
     PRIMARY KEY (repo_id, path)
 ) STRICT;
 CREATE TABLE local_worktree_scan_state (
     repo_id TEXT PRIMARY KEY,
-    ignore_blob_id TEXT CHECK (
-        ignore_blob_id IS NULL
-        OR (length(ignore_blob_id) = 71
-            AND substr(ignore_blob_id, 1, 7) = 'sha256:'
-            AND substr(ignore_blob_id, 8) NOT GLOB '*[^0-9a-f]*')
+    ignore_sha256 TEXT CHECK (
+        ignore_sha256 IS NULL
+        OR (length(ignore_sha256) = 71
+            AND substr(ignore_sha256, 1, 7) = 'sha256:'
+            AND substr(ignore_sha256, 8) NOT GLOB '*[^0-9a-f]*')
     ),
     monitor_instance_id TEXT,
     monitor_sequence INTEGER,

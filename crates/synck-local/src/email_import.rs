@@ -294,21 +294,31 @@ impl crate::repository::Repository {
         Ok(directories)
     }
 
-    pub(crate) fn record_imported_email_sources(
-        &self,
-        sources: &[(String, ItemId, String)],
-    ) -> Result<()> {
-        if sources.is_empty() {
-            return Ok(());
-        }
-        let mut connection = crate::local_database::open_writable(self.storage())
-            .map_err(|error| LocalError::Integrity(error.to_string()))?;
-        let transaction = connection.transaction()?;
-        for (path, id, blob) in sources {
-            transaction.execute("INSERT INTO local_email_import_sources(repo_id,path,item_id,source_blob_id) VALUES(?1,?2,?3,?4) ON CONFLICT(repo_id,path,item_id) DO UPDATE SET source_blob_id=excluded.source_blob_id",
-                rusqlite::params![self.repository_id().as_str(),path,id.as_str(),blob])?;
-        }
-        transaction.commit()?;
-        Ok(())
+ }
+
+/// Rebuild observations from accepted source identity, never from a scan that
+/// could accidentally bless changed working bytes as already imported.
+pub(crate) fn project_source_observation(
+    transaction: &rusqlite::Transaction<'_>,
+    event: &synck_vcs::types::EventRow,
+) -> Result<()> {
+    let proposal = event.proposal()?;
+    let Some(metadata) = proposal.set_metadata.as_ref().and_then(synck_vcs::metadata::MetadataRef::value) else {
+        // Erased metadata cannot authorize hiding a working file.
+        return Ok(());
+    };
+    if metadata.pointer("/mailcal/origin/kind").and_then(serde_json::Value::as_str) != Some("local_import") {
+        return Ok(());
     }
+    let filename = metadata.pointer("/mailcal/source/filename").and_then(serde_json::Value::as_str)
+        .ok_or_else(|| LocalError::Integrity("local EMAIL source filename is missing".into()))?;
+    if synck_vcs::naming::validate_display_name(filename).is_err() {
+        // External source filenames are original metadata, not checkout paths.
+        return Ok(());
+    }
+    let source = proposal.set_content.as_ref().and_then(|roles| roles.get("source"))
+        .ok_or_else(|| LocalError::Integrity("local EMAIL source role is missing".into()))?;
+    transaction.execute("INSERT INTO local_email_import_sources(repo_id,path,item_id,source_blob_id) VALUES(?1,?2,?3,?4) ON CONFLICT(repo_id,path,item_id) DO UPDATE SET source_blob_id=excluded.source_blob_id",
+        rusqlite::params![event.repo_id.as_str(),filename,event.item_id.as_str(),source.as_str()])?;
+    Ok(())
 }

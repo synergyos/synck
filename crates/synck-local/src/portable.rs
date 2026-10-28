@@ -694,8 +694,9 @@ impl PortableRepository {
                 Err(error) => return Err(invalid(error)),
             }
         }
-        crate::repository::initialize_checkout_schema(&self.storage, self.repo_id())?;
+        crate::repository::initialize_checkout_schema(&self.storage)?;
         let checkout = crate::checkout::Checkout {
+            hidden_files: Default::default(),
             paths,
             pending: Some(crate::checkout::Transition {
                 previous_paths: None,
@@ -2776,7 +2777,7 @@ pub async fn init_repository_with_name_repair(
             .project_imported_history(&repo_id)
             .await
             .map_err(corrupt)?;
-        crate::repository::initialize_checkout_schema(&storage, &repo_id)?;
+        crate::repository::initialize_checkout_schema(&storage)?;
         write_new(
             &metadata.join("config.json"),
             &serde_json::to_vec(&Config {
@@ -2786,6 +2787,7 @@ pub async fn init_repository_with_name_repair(
                 author: Some(author.into()),
                 authority: Authority::IndependentLocal,
                 checkout: Some(crate::checkout::Checkout {
+                    hidden_files: Default::default(),
                     paths: Vec::new(),
                     pending: None,
                 }),

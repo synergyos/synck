@@ -14,6 +14,8 @@ use crate::worktree::{CommittedNode, NodeKind, WorkingNode};
 #[serde(deny_unknown_fields)]
 pub(crate) struct Checkout {
     pub paths: Vec<String>,
+    #[serde(default)]
+    pub hidden_files: crate::repository::HiddenFilesMode,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending: Option<Transition>,
 }

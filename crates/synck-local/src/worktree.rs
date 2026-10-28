@@ -128,14 +128,14 @@ pub(crate) struct MonitorToken {
 #[derive(Clone, Debug, Default)]
 struct WorktreeCache {
     entries: BTreeMap<String, WorkingNode>,
-    ignore_blob_id: Option<String>,
+    ignore_sha256: Option<String>,
     monitor_token: Option<MonitorToken>,
     initialized: bool,
 }
 
 struct ScanResult {
     working: BTreeMap<String, WorkingNode>,
-    ignore_blob_id: Option<String>,
+    ignore_sha256: Option<String>,
     monitor_token: Option<MonitorToken>,
     incremental_scopes: Option<Vec<String>>,
 }
@@ -623,9 +623,9 @@ impl Repository {
         committed: &BTreeMap<String, CommittedNode>,
         cache: &WorktreeCache,
     ) -> Result<ScanResult> {
-        let (ignore, ignore_blob_id) = load_ignore(self.root())?;
+        let (ignore, ignore_sha256) = load_ignore(self.root())?;
         if cache.initialized
-            && cache.ignore_blob_id == ignore_blob_id
+            && cache.ignore_sha256 == ignore_sha256
             && let Some(token) = cache.monitor_token.as_ref()
         {
             match self.query_monitor(Some(token)) {
@@ -647,7 +647,7 @@ impl Repository {
                     )?;
                     return Ok(ScanResult {
                         working,
-                        ignore_blob_id,
+                        ignore_sha256,
                         monitor_token: Some(MonitorToken {
                             instance_id,
                             sequence,
@@ -659,7 +659,7 @@ impl Repository {
                     return self.scan_baseline(committed, cache);
                 }
                 Err(_) => {
-                    let (ignore, ignore_blob_id) = load_ignore(self.root())?;
+                    let (ignore, ignore_sha256) = load_ignore(self.root())?;
                     let working = self.scan_complete(
                         committed,
                         cache,
@@ -668,7 +668,7 @@ impl Repository {
                     )?;
                     return Ok(ScanResult {
                         working,
-                        ignore_blob_id,
+                        ignore_sha256,
                         monitor_token: None,
                         incremental_scopes: None,
                     });
@@ -705,14 +705,14 @@ impl Repository {
             let complete =
                 self.scan_complete(committed, cache, &no_ignore, NativeHiddenMode::Observe)?;
             let Some(baseline) = baseline else {
-                let (ignore, ignore_blob_id) = load_ignore(self.root())?;
+                let (ignore, ignore_sha256) = load_ignore(self.root())?;
                 let working =
                     filter_ignored_working(&complete, committed, &ignore, self.hidden_files_mode());
                 return Ok((
                     complete,
                     ScanResult {
                         working,
-                        ignore_blob_id,
+                        ignore_sha256,
                         monitor_token: None,
                         incremental_scopes: None,
                     },
@@ -726,7 +726,7 @@ impl Repository {
                 }) => {
                     let complete_cache = WorktreeCache {
                         entries: complete,
-                        ignore_blob_id: None,
+                        ignore_sha256: None,
                         monitor_token: Some(baseline),
                         initialized: true,
                     };
@@ -738,7 +738,7 @@ impl Repository {
                         NativeHiddenMode::Observe,
                         &scopes,
                     )?;
-                    let (ignore, ignore_blob_id) = load_ignore(self.root())?;
+                    let (ignore, ignore_sha256) = load_ignore(self.root())?;
                     let working = filter_ignored_working(
                         &complete,
                         committed,
@@ -749,7 +749,7 @@ impl Repository {
                         complete,
                         ScanResult {
                             working,
-                            ignore_blob_id,
+                            ignore_sha256,
                             monitor_token: Some(MonitorToken {
                                 instance_id,
                                 sequence,
@@ -760,7 +760,7 @@ impl Repository {
                 }
                 Ok(crate::monitor::QueryResult::Reset { .. }) if attempt == 0 => continue,
                 _ => {
-                    let (ignore, ignore_blob_id) = load_ignore(self.root())?;
+                    let (ignore, ignore_sha256) = load_ignore(self.root())?;
                     let working = filter_ignored_working(
                         &complete,
                         committed,
@@ -771,7 +771,7 @@ impl Repository {
                         complete,
                         ScanResult {
                             working,
-                            ignore_blob_id,
+                            ignore_sha256,
                             monitor_token: None,
                             incremental_scopes: None,
                         },
@@ -803,13 +803,13 @@ impl Repository {
                 }),
                 Err(_) => None,
             };
-            let (ignore, ignore_blob_id) = load_ignore(self.root())?;
+            let (ignore, ignore_sha256) = load_ignore(self.root())?;
             let working =
                 self.scan_complete(committed, cache, &ignore, self.discovery_hidden_mode())?;
             let Some(baseline) = baseline else {
                 return Ok(ScanResult {
                     working,
-                    ignore_blob_id,
+                    ignore_sha256,
                     monitor_token: None,
                     incremental_scopes: None,
                 });
@@ -824,7 +824,7 @@ impl Repository {
                         if attempt == 0 {
                             continue;
                         }
-                        let (ignore, ignore_blob_id) = load_ignore(self.root())?;
+                        let (ignore, ignore_sha256) = load_ignore(self.root())?;
                         let working = self.scan_complete(
                             committed,
                             cache,
@@ -833,14 +833,14 @@ impl Repository {
                         )?;
                         return Ok(ScanResult {
                             working,
-                            ignore_blob_id,
+                            ignore_sha256,
                             monitor_token: None,
                             incremental_scopes: None,
                         });
                     }
                     let complete_cache = WorktreeCache {
                         entries: working,
-                        ignore_blob_id: ignore_blob_id.clone(),
+                        ignore_sha256: ignore_sha256.clone(),
                         monitor_token: Some(baseline),
                         initialized: true,
                     };
@@ -854,7 +854,7 @@ impl Repository {
                     )?;
                     return Ok(ScanResult {
                         working,
-                        ignore_blob_id,
+                        ignore_sha256,
                         monitor_token: Some(MonitorToken {
                             instance_id,
                             sequence,
@@ -866,7 +866,7 @@ impl Repository {
                 _ => {
                     return Ok(ScanResult {
                         working,
-                        ignore_blob_id,
+                        ignore_sha256,
                         monitor_token: None,
                         incremental_scopes: None,
                     });
@@ -1359,13 +1359,20 @@ pub(crate) fn decode_incarnation(
     }
 }
 
+fn validate_plain_digest(digest: &str) -> Result<()> {
+    if digest.len() != 64 || !digest.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
+        return Err(LocalError::Integrity("invalid cached plaintext SHA-256 digest".into()));
+    }
+    Ok(())
+}
+
 fn load_worktree_cache(storage: &SqliteStorage, repo_id: &str) -> Result<WorktreeCache> {
     let connection = crate::local_database::open_readonly(storage)
         .map_err(|error| LocalError::Integrity(format!("cannot read worktree cache: {error}")))?;
     let mut statement = connection.prepare(
         "SELECT path, node_kind, device_id, file_id, birth_seconds, birth_nanos, size_bytes,
                 mtime_seconds, mtime_nanos, change_seconds, change_nanos,
-                observed_blob_id, stat_valid
+                plain_sha256, stat_valid
          FROM local_worktree_entries WHERE repo_id = ?1 ORDER BY path",
     )?;
     let rows = statement.query_map([repo_id], |row| {
@@ -1399,7 +1406,7 @@ fn load_worktree_cache(storage: &SqliteStorage, repo_id: &str) -> Result<Worktre
             mtime_nanos,
             change_seconds,
             change_nanos,
-            blob_id,
+            plain_digest,
             stat_valid,
         ) = row?;
         let identity = FileIdentity {
@@ -1415,22 +1422,13 @@ fn load_worktree_cache(storage: &SqliteStorage, repo_id: &str) -> Result<Worktre
                 .map_err(|_| {
                     LocalError::Integrity(format!("cached FILE {path} has invalid size"))
                 })?;
-                let blob_id = blob_id.ok_or_else(|| {
-                    LocalError::Integrity(format!("cached FILE {path} has no blob ID"))
+                let plain_digest = plain_digest.ok_or_else(|| {
+                    LocalError::Integrity(format!("cached FILE {path} has no plaintext digest"))
                 })?;
-                let blob = ObjectId::parse(blob_id).map_err(|error| {
-                    LocalError::Integrity(format!(
-                        "cached FILE {path} has invalid blob ID: {error}"
-                    ))
-                })?;
+                validate_plain_digest(&plain_digest)?;
                 WorkingNode {
                     kind: NodeKind::File,
-                    digest_hex: Some(
-                        blob.as_str()
-                            .strip_prefix("sha256:")
-                            .expect("validated SHA-256 blob ID")
-                            .to_string(),
-                    ),
+                    digest_hex: Some(plain_digest),
                     size: Some(size),
                     identity,
                     fingerprint: Some(FileFingerprint {
@@ -1486,22 +1484,20 @@ fn load_worktree_cache(storage: &SqliteStorage, repo_id: &str) -> Result<Worktre
 
     let state: Option<(Option<String>, Option<String>, Option<i64>)> = connection
         .query_row(
-            "SELECT ignore_blob_id, monitor_instance_id, monitor_sequence
+            "SELECT ignore_sha256, monitor_instance_id, monitor_sequence
              FROM local_worktree_scan_state WHERE repo_id = ?1",
             [repo_id],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .optional()?;
-    let Some((ignore_blob_id, monitor_instance_id, monitor_sequence)) = state else {
+    let Some((ignore_sha256, monitor_instance_id, monitor_sequence)) = state else {
         return Ok(WorktreeCache {
             entries,
             ..WorktreeCache::default()
         });
     };
-    if let Some(ignore_blob_id) = ignore_blob_id.as_deref() {
-        ObjectId::parse(ignore_blob_id).map_err(|error| {
-            LocalError::Integrity(format!("invalid cached ignore blob ID: {error}"))
-        })?;
+    if let Some(ignore_sha256) = ignore_sha256.as_deref() {
+        validate_plain_digest(ignore_sha256)?;
     }
     let monitor_token = match (monitor_instance_id, monitor_sequence) {
         (Some(instance_id), Some(sequence)) => {
@@ -1527,7 +1523,7 @@ fn load_worktree_cache(storage: &SqliteStorage, repo_id: &str) -> Result<Worktre
     };
     Ok(WorktreeCache {
         entries,
-        ignore_blob_id,
+        ignore_sha256,
         monitor_token,
         initialized: true,
     })
@@ -1606,24 +1602,19 @@ fn publish_worktree_observation(
             .is_none_or(|scopes| scopes.iter().any(|scope| path_in_scope(path, scope)))
     }) {
         let incarnation = node.identity.incarnation;
-        let (size, modified, changed, blob_id, stat_valid) = match node.kind {
+        let (size, modified, changed, plain_digest, stat_valid) = match node.kind {
             NodeKind::File => {
                 let fingerprint = node
                     .fingerprint
                     .expect("scanned FILE has a complete fingerprint");
-                let blob = format!(
-                    "sha256:{}",
-                    node.digest_hex
-                        .as_deref()
-                        .expect("scanned FILE has a digest")
-                );
+                let digest = node.digest_hex.clone().expect("scanned FILE has a digest");
                 (
                     Some(i64::try_from(fingerprint.size).map_err(|_| {
                         LocalError::Invalid(format!("file is too large for local storage: {path}"))
                     })?),
                     Some(fingerprint.modified),
                     fingerprint.changed,
-                    Some(blob),
+                    Some(digest),
                     Some(i64::from(node.stat_valid)),
                 )
             }
@@ -1634,7 +1625,7 @@ fn publish_worktree_observation(
                  repo_id, path, node_kind, device_id, file_id, birth_seconds, birth_nanos,
                  size_bytes,
                  mtime_seconds, mtime_nanos, change_seconds, change_nanos,
-                 observed_blob_id, stat_valid
+                 plain_sha256, stat_valid
              ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             rusqlite::params![
                 repo_id,
@@ -1652,22 +1643,22 @@ fn publish_worktree_observation(
                 modified.map(|time| time.nanos),
                 changed.map(|time| time.seconds),
                 changed.map(|time| time.nanos),
-                blob_id,
+                plain_digest,
                 stat_valid,
             ],
         )?;
     }
     transaction.execute(
         "INSERT INTO local_worktree_scan_state(
-             repo_id, ignore_blob_id, monitor_instance_id, monitor_sequence
+             repo_id, ignore_sha256, monitor_instance_id, monitor_sequence
          ) VALUES (?1, ?2, ?3, ?4)
          ON CONFLICT(repo_id) DO UPDATE SET
-             ignore_blob_id = excluded.ignore_blob_id,
+             ignore_sha256 = excluded.ignore_sha256,
              monitor_instance_id = excluded.monitor_instance_id,
              monitor_sequence = excluded.monitor_sequence",
         rusqlite::params![
             repo_id,
-            scan.ignore_blob_id.as_deref(),
+            scan.ignore_sha256.as_deref(),
             scan.monitor_token
                 .as_ref()
                 .map(|token| token.instance_id.to_string()),
@@ -1818,7 +1809,7 @@ pub(crate) fn load_ignore(root: &Dir) -> Result<(Gitignore, Option<String>)> {
             let text = std::str::from_utf8(&contents).map_err(|error| {
                 LocalError::Invalid(format!("invalid UTF-8 in .synckignore: {error}"))
             })?;
-            digest = Some(format!("sha256:{}", hex::encode(Sha256::digest(&contents))));
+            digest = Some(hex::encode(Sha256::digest(&contents)));
             for line in text.lines() {
                 builder
                     .add_line(Some(PathBuf::from(".synckignore")), line)

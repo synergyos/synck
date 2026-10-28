@@ -1847,12 +1847,6 @@ async fn repository_open_rejects_a_regular_orphan_object_database_sidecar() {
     let temporary = tempfile::tempdir().unwrap();
     let root = temporary.path();
     init(root, "author").await.unwrap();
-    let database = root.join(".synck/repository.local.sqlite3");
-    let connection = rusqlite::Connection::open(database).unwrap();
-    connection
-        .execute("UPDATE local_repository_settings SET hidden_files = 'IGNORE'", [])
-        .unwrap();
-    drop(connection);
     remove_object_database_family(root);
     let sidecar = root.join(".synck/object-store.sqlite3-shm");
     fs::write(&sidecar, b"sentinel").unwrap();
@@ -2374,7 +2368,7 @@ async fn repository_open_rejects_unknown_local_schema_objects() {
     let storage_tables: i64 = connection
         .query_row(
             "SELECT count(*) FROM sqlite_schema
-             WHERE type = 'table' AND name = 'local_repository_settings'",
+             WHERE type = 'table' AND name = 'local_projection_state'",
             [],
             |row| row.get(0),
         )
@@ -2387,14 +2381,14 @@ async fn repository_open_rejects_unknown_local_schema_objects() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(version, 11);
+    assert_eq!(version, 13);
     assert_eq!(storage_tables, 1);
     assert_eq!(foreign_views, 1);
 }
 
 #[tokio::test]
 async fn repository_open_rejects_all_old_local_schema_versions_without_migration() {
-    for version in 1..=10 {
+    for version in 1..13 {
         let temporary = tempfile::tempdir().unwrap();
         init(temporary.path(), "author").await.unwrap();
         let database = temporary.path().join(".synck/repository.local.sqlite3");
@@ -2436,7 +2430,7 @@ async fn worktree_cache_schema_rejects_incomplete_file_fingerprints() {
     let connection =
         rusqlite::Connection::open(temporary.path().join(".synck/repository.local.sqlite3")).unwrap();
     let repo_id: String = connection
-        .query_row("SELECT repo_id FROM local_repository_settings", [], |row| {
+        .query_row("SELECT repo_id FROM local_projection_state", [], |row| {
             row.get(0)
         })
         .unwrap();
@@ -2444,13 +2438,13 @@ async fn worktree_cache_schema_rejects_incomplete_file_fingerprints() {
         "INSERT INTO local_worktree_entries(
              repo_id, path, node_kind, device_id, file_id, size_bytes,
              mtime_seconds, mtime_nanos, change_seconds, change_nanos,
-             observed_blob_id, stat_valid
+             plain_sha256, stat_valid
          ) VALUES (?1, 'file', 'FILE', ?2, ?3, 1, 0, 0, 0, NULL, ?4, 1)",
         rusqlite::params![
             repo_id,
             1_u64.to_be_bytes().as_slice(),
             2_u64.to_be_bytes().as_slice(),
-            format!("sha256:{}", "0".repeat(64)),
+            "0".repeat(64),
         ],
     );
     assert!(result.is_err());
@@ -2469,7 +2463,7 @@ async fn worktree_cache_schema_rejects_incomplete_file_fingerprints() {
 
     let result = connection.execute(
         "INSERT INTO local_worktree_scan_state(
-             repo_id, ignore_blob_id, monitor_instance_id, monitor_sequence
+             repo_id, ignore_sha256, monitor_instance_id, monitor_sequence
          ) VALUES (?1, NULL, ?2, NULL)",
         rusqlite::params![repo_id, uuid::Uuid::new_v4().to_string()],
     );
@@ -3199,4 +3193,37 @@ async fn normalization_only_name_repair_preserves_bytes_and_is_idempotent() {
     assert_eq!(repairs[0].to, "é.txt");
     assert_eq!(fs::read(root.join("é.txt")).unwrap(), b"normalization");
     assert!(repository.fix_names().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn deleted_caches_rebuild_without_reimporting_sources_or_losing_preferences() {
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path();
+    init(root, "author").await.unwrap();
+    fs::create_dir(root.join("mail")).unwrap();
+    let original = b"From: sender@example.test\r\nSubject: Original\r\n\r\nbody";
+    fs::write(root.join("mail/message.eml"), original).unwrap();
+    fs::write(root.join("file.txt"), b"first").unwrap();
+    let mut repository = Repository::discover(root).await.unwrap();
+    repository.set_hidden_files_mode(HiddenFilesMode::Track).unwrap();
+    repository.commit("import files and mail").await.unwrap();
+    repository.move_path(root, Path::new("mail"), Path::new("renamed"), "move mail folder").await.unwrap();
+    let before = repository.log(None).await.unwrap().into_iter().map(|c| c.commit_id).collect::<Vec<_>>();
+    drop(repository);
+    for name in ["repository.local.sqlite3", "repository.state.sqlite3"] {
+        fs::remove_file(root.join(".synck").join(name)).unwrap();
+    }
+    fs::write(root.join("file.txt"), b"uncommitted edit").unwrap();
+    fs::write(root.join(".hidden-new"), b"new hidden file").unwrap();
+    let repository = Repository::discover(root).await.unwrap();
+    assert_eq!(repository.hidden_files_mode(), HiddenFilesMode::Track);
+    let changes = repository.status().await.unwrap();
+    assert_eq!(changes.len(), 2, "{changes:?}");
+    assert!(changes.iter().any(|c| c.path == "file.txt" && c.kind == ChangeKind::Modify));
+    assert!(changes.iter().any(|c| c.path == ".hidden-new" && c.kind == ChangeKind::Add));
+    assert_eq!(fs::read(root.join("renamed/message.eml")).unwrap(), original);
+    let after = repository.log(None).await.unwrap().into_iter().map(|c| c.commit_id).collect::<Vec<_>>();
+    assert_eq!(before, after);
+    fs::write(root.join("renamed/message.eml"), b"changed source").unwrap();
+    assert!(repository.status().await.unwrap().iter().any(|c| c.path == "renamed/message.eml"));
 }
