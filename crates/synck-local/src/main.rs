@@ -58,8 +58,7 @@ fn exit_quietly_when_output_is_closed() {
 #[command(
     name = "synck",
     version,
-    about = "Version control for knowledge work: files, email and chats with complete, verifiable history",
-    after_help = "For large trees use synck commit --batch."
+    about = "Version control for knowledge work: files, email and chats with complete, verifiable history"
 )]
 struct Cli {
     /// Emit one versioned JSON document for supported commands.
@@ -120,9 +119,6 @@ enum Command {
     },
     /// Commit the complete delta or only the selected paths.
     Commit {
-        /// Split independent bulk changes into bounded atomic commits.
-        #[arg(long)]
-        batch: bool,
         /// Commit message.
         #[arg(short = 'm', long)]
         message: Option<String>,
@@ -630,16 +626,6 @@ async fn main() -> ExitCode {
     match run(cli).await {
         Ok(code) => code,
         Err((error, integrity_command)) => {
-            if !json
-                && let LocalError::BatchCommitIncomplete {
-                    accepted_commit_ids,
-                    ..
-                } = &error
-            {
-                for commit_id in accepted_commit_ids {
-                    println!("committed {commit_id}");
-                }
-            }
             if json {
                 eprintln!("{}", cli_json::error(&error));
             } else {
@@ -966,43 +952,9 @@ async fn run_checkout(
         }
         .await,
         Command::Commit {
-            batch,
             message,
             paths,
         } => async {
-            if batch {
-                let outcome = repository
-                    .commit_selected_batch(&current, &paths, message.as_deref())
-                    .await
-                    .map_err(|error| (error, false))?;
-                if json {
-                    println!(
-                        "{}",
-                        json!({
-                            "schema_version": cli_json::SCHEMA_VERSION,
-                            "commit_ids": outcome.commit_ids,
-                            "items_changed": outcome.items_changed,
-                        })
-                    );
-                } else if outcome.commit_ids.is_empty() {
-                    println!("nothing to commit");
-                } else {
-                    for commit_id in &outcome.commit_ids {
-                        println!("committed {commit_id}");
-                    }
-                    println!(
-                        "committed {} item{} in {} commit{}",
-                        outcome.items_changed,
-                        if outcome.items_changed == 1 { "" } else { "s" },
-                        outcome.commit_ids.len(),
-                        if outcome.commit_ids.len() == 1 {
-                            ""
-                        } else {
-                            "s"
-                        }
-                    );
-                }
-            } else {
                 let outcome = repository
                     .commit_selected(&current, &paths, message.as_deref())
                     .await
@@ -1025,7 +977,6 @@ async fn run_checkout(
                         CommitOutcome::Committed(commit_id) => println!("committed {commit_id}"),
                     }
                 }
-            }
             Ok(ExitCode::SUCCESS)
         }
         .await,

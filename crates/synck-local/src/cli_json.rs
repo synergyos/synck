@@ -171,7 +171,6 @@ pub(crate) fn error(value: &LocalError) -> Value {
         LocalError::MonitorUnavailable(_) => "MONITOR_UNAVAILABLE",
         LocalError::AcceptedNeedsRecovery { .. } => "ACCEPTED_NEEDS_RECOVERY",
         LocalError::Conflict { .. } => "CONFLICT",
-        LocalError::BatchCommitIncomplete { .. } => "BATCH_COMMIT_INCOMPLETE",
         LocalError::MoveNeedsRecovery { .. } => "MOVE_NEEDS_RECOVERY",
         LocalError::PublishedNeedsDurability { .. } => "PUBLISHED_NEEDS_DURABILITY",
         LocalError::Io { .. } => "IO",
@@ -184,13 +183,6 @@ pub(crate) fn error(value: &LocalError) -> Value {
         "kind": kind,
         "message": value.to_string(),
     });
-    if let LocalError::BatchCommitIncomplete {
-        accepted_commit_ids,
-        ..
-    } = value
-    {
-        error["accepted_commit_ids"] = json!(accepted_commit_ids);
-    }
     if let LocalError::Conflict {
         item_id,
         head_seq,
@@ -246,20 +238,6 @@ mod tests {
         assert_eq!(
             value["error"]["current"],
             json!({"item_id":"item","head_seq":4,"blob_id":"sha256:current","size":7})
-        );
-    }
-
-    #[test]
-    fn incomplete_batch_errors_expose_every_accepted_commit() {
-        let value = error(&LocalError::BatchCommitIncomplete {
-            accepted_commit_ids: vec!["first".to_string(), "second".to_string()],
-            detail: "injected failure".to_string(),
-        });
-
-        assert_eq!(value["error"]["kind"], "BATCH_COMMIT_INCOMPLETE");
-        assert_eq!(
-            value["error"]["accepted_commit_ids"],
-            serde_json::json!(["first", "second"])
         );
     }
 

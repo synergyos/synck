@@ -1587,7 +1587,7 @@ async fn email_import_regression_rejected_reimport_keeps_earlier_source_mapping(
 }
 
 #[tokio::test]
-async fn email_import_regression_batch_keeps_email_and_file_in_one_accepted_commit() {
+async fn email_import_keeps_email_and_file_in_one_atomic_commit() {
     let temporary = tempfile::tempdir().unwrap();
     let root = temporary.path().join("local");
     synck_local::portable::init_repository(&root, "local-author")
@@ -1601,10 +1601,10 @@ async fn email_import_regression_batch_keeps_email_and_file_in_one_accepted_comm
     fs::write(root.join("file.txt"), b"ordinary file").unwrap();
     let repository = synck_local::Repository::discover(&root).await.unwrap();
     let outcome = repository
-        .commit_selected_batch(&root, &[], Some("Mixed import"))
+        .commit_selected(&root, &[], Some("Mixed import"))
         .await
         .unwrap();
-    assert_eq!(outcome.commit_ids.len(), 1);
+    assert!(matches!(outcome, synck_local::CommitOutcome::Committed(_)));
     assert!(repository.status().await.unwrap().is_empty());
     drop(repository);
     let portable = PortableRepository::open(&root).unwrap();

@@ -16,11 +16,8 @@ use crate::model::{
     Location, ProfileLifecycleState,
 };
 use crate::operation::{compute_operation_id, normalize_intents};
-use crate::project::check_projected_group_size;
-use crate::{
-    MAX_COMMIT_PAYLOAD_BYTES, MAX_EVENT_PAYLOAD_BYTES, MAX_EVENTS, MAX_MESSAGE_BYTES,
-    WORKTREE_CONTROL_NAME_KEY,
-};
+use crate::project::validate_projected_proposal;
+use crate::{MAX_EVENT_PAYLOAD_BYTES, MAX_MESSAGE_BYTES, WORKTREE_CONTROL_NAME_KEY};
 
 #[derive(Clone, Debug)]
 pub struct MaterializedProposal {
@@ -360,7 +357,7 @@ pub fn validate_and_materialize_with_content_revisions(
             }
         })
         .collect::<Vec<_>>();
-    check_projected_group_size(proposal.message.as_deref(), &events, &immutable_kinds)?;
+    validate_projected_proposal(proposal.message.as_deref(), &events, &immutable_kinds)?;
     let operation_id = compute_operation_id(repo_id, proposal.message.as_deref(), &intents)?;
     Ok(MaterializedProposal {
         operation_id,
@@ -948,13 +945,6 @@ fn record_blob(
 }
 
 fn validate_event_limits(events: &[EventProposal]) -> Result<(), SemanticError> {
-    if events.len() > MAX_EVENTS {
-        return Err(error(
-            SemanticErrorCode::TooManyEvents,
-            "materialized proposal exceeds the event limit",
-        ));
-    }
-    let mut total = 0usize;
     for event in events {
         let bytes = canonical_event_proposal_bytes(event).map_err(|failure| {
             error(
@@ -966,18 +956,6 @@ fn validate_event_limits(events: &[EventProposal]) -> Result<(), SemanticError> 
             return Err(error(
                 SemanticErrorCode::TooManyEvents,
                 "one event exceeds the payload byte limit",
-            ));
-        }
-        total = total.checked_add(bytes.len()).ok_or_else(|| {
-            error(
-                SemanticErrorCode::TooManyEvents,
-                "aggregate event payload length overflowed",
-            )
-        })?;
-        if total > MAX_COMMIT_PAYLOAD_BYTES {
-            return Err(error(
-                SemanticErrorCode::TooManyEvents,
-                "aggregate event payload exceeds the byte limit",
             ));
         }
     }

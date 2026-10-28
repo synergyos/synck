@@ -21,7 +21,7 @@ mod working_tree_edit;
 mod worktree;
 
 pub use commands::{
-    BatchCommitOutcome, CommitEvent, CommitEventPage, CommitOutcome, DeletedEntry,
+    CommitEvent, CommitEventPage, CommitOutcome, DeletedEntry,
     DetailedEventLogEntry, DetailedLogEntry, EventHistoryCommit, HistoryCommit, LogEntry,
     VersionEntry,
 };

@@ -12,7 +12,7 @@ use synck_vcs::bundle::{
     validate_bundle_event_payload_json_and_digest,
     validate_bundle_ref_event_payload_json_and_digest, validate_import_repo_seq,
 };
-use synck_vcs::config::{CoreConfig, SYNCKHUB_MAX_EVENTS_PER_COMMIT};
+use synck_vcs::config::CoreConfig;
 use synck_vcs::repo::Repo;
 use synck_vcs::state::catch_up_state_index;
 use synck_vcs::storage::{SealedCommitInsert, Storage, StorageBackend, StorageTxn};
@@ -59,7 +59,7 @@ struct PendingCommit {
 
 impl PendingCommit {
     fn new(record: BundleCommitRecord) -> Result<Self, String> {
-        if record.event_count < 1 || record.event_count as usize > SYNCKHUB_MAX_EVENTS_PER_COMMIT {
+        if record.event_count < 1 {
             return Err("commit event_count exceeds supported canonical bounds".into());
         }
         Ok(Self {

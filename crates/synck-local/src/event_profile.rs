@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 #[cfg(test)]
 use synck_file_folder::project_commit;
-use synck_file_folder::{ImmutableItemKind, check_projected_group_size, project_commit_events};
+use synck_file_folder::{ImmutableItemKind, validate_projected_proposal, project_commit_events};
 use synck_vcs::naming::compute_name_key;
 use synck_vcs::types::{
     BlobId, CommitEventRow, CommitRow, EventContent, EventProposal, EventRow, ItemId,
@@ -197,7 +197,7 @@ pub(crate) fn classify_proposal_commit(
                 .ok_or_else(|| format!("missing immutable item kind for {item_id}"))
         })
         .collect::<Result<Vec<_>, _>>()?;
-    check_projected_group_size(message, events, &immutable_kinds)
+    validate_projected_proposal(message, events, &immutable_kinds)
         .map_err(|error| error.to_string())?;
     events
         .iter()

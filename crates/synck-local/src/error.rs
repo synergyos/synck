@@ -52,11 +52,6 @@ pub enum LocalError {
         size: u64,
         expected: String,
     },
-    #[error("batch accepted commits {accepted_commit_ids:?}; batch did not complete: {detail}")]
-    BatchCommitIncomplete {
-        accepted_commit_ids: Vec<String>,
-        detail: String,
-    },
     #[error("move from {from_path} to {to_path} is pending recovery: {detail}")]
     MoveNeedsRecovery {
         from_path: String,

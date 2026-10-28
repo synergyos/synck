@@ -2,7 +2,7 @@
 //!
 //! The source schema in a header is provenance, not a target schema instruction.
 //! These records preserve the existing bundle v1-v4 wire representation.
-use crate::config::{SYNCKHUB_MAX_COMMIT_PAYLOAD_BYTES, SYNCKHUB_MAX_EVENT_PAYLOAD_BYTES};
+use crate::config::SYNCKHUB_MAX_EVENT_PAYLOAD_BYTES;
 use crate::types::{
     COMMIT_FORMAT_VERSION, EventProposal, IMPORT_COMMIT_FORMAT_VERSION,
     REF_IMPORT_COMMIT_FORMAT_VERSION, RefEventProposal, RepoId, Sha256Digest,
@@ -347,14 +347,13 @@ pub fn validate_import_repo_seq(prev: Option<i64>, current: i64) -> Result<i64, 
 }
 
 // Apply the same supported canonical limits as fsck before retaining a commit's
-// payloads. Imported declarations are untrusted, including with --skip-fsck.
+// payloads. Aggregate accounting checks integer overflow, not a commit-size cap.
 pub fn bounded_commit_payload_bytes(previous: usize, event: usize) -> Result<usize, String> {
     if event > SYNCKHUB_MAX_EVENT_PAYLOAD_BYTES {
         return Err("event payload exceeds supported canonical byte limit".into());
     }
     previous
         .checked_add(event)
-        .filter(|size| *size <= SYNCKHUB_MAX_COMMIT_PAYLOAD_BYTES)
         .ok_or_else(|| "commit payload exceeds supported canonical byte limit".into())
 }
 
@@ -430,17 +429,20 @@ mod bundle_tests {
     }
 
     #[test]
-    fn bundle_payload_budget_rejects_oversized_event_and_combined_commit() {
+    fn bundle_payload_budget_bounds_events_and_checks_integer_overflow() {
         assert_eq!(
             bounded_commit_payload_bytes(0, SYNCKHUB_MAX_EVENT_PAYLOAD_BYTES).unwrap(),
             SYNCKHUB_MAX_EVENT_PAYLOAD_BYTES
         );
         assert!(bounded_commit_payload_bytes(0, SYNCKHUB_MAX_EVENT_PAYLOAD_BYTES + 1).is_err());
         assert_eq!(
-            bounded_commit_payload_bytes(SYNCKHUB_MAX_COMMIT_PAYLOAD_BYTES - 1, 1).unwrap(),
-            SYNCKHUB_MAX_COMMIT_PAYLOAD_BYTES
+            bounded_commit_payload_bytes((16 * 1024 * 1024) - 1, 1).unwrap(),
+            (16 * 1024 * 1024)
         );
-        assert!(bounded_commit_payload_bytes(SYNCKHUB_MAX_COMMIT_PAYLOAD_BYTES, 1).is_err());
+        assert_eq!(
+            bounded_commit_payload_bytes(16 * 1024 * 1024, 1).unwrap(),
+            16 * 1024 * 1024 + 1
+        );
         assert!(bounded_commit_payload_bytes(usize::MAX, 1).is_err());
     }
 

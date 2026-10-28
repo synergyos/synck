@@ -1473,7 +1473,9 @@ impl PortableRepository {
     }
 
     pub async fn verify(&self) -> Result<VerificationReport> {
-        self.storage.verify_checkpoints(self.repo_id()).map_err(corrupt)?;
+        self.storage
+            .verify_checkpoints(self.repo_id())
+            .map_err(corrupt)?;
         let findings = if self.config.checkout.is_some() {
             crate::integrity::physical_findings(&self.storage, self.repo_id())?
         } else {
@@ -1879,7 +1881,7 @@ impl PortableRepository {
             .list_events_for_commit(
                 self.repo_id().clone(),
                 commit.commit_id.clone(),
-                synck_file_folder::MAX_EVENTS,
+                usize::try_from(commit.event_count).map_err(corrupt)?,
             )
             .await?
             .iter()

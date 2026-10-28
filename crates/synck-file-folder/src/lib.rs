@@ -21,7 +21,7 @@ pub use model::{
 };
 pub use operation::{canonical_operation_bytes, compute_operation_id, normalize_intents};
 pub use project::{
-    check_projected_group_size, project_commit, project_commit_events, project_proposal_events,
+    validate_projected_proposal, project_commit, project_commit_events, project_proposal_events,
 };
 
 /// Public profile identifier.
@@ -30,12 +30,8 @@ pub const PROFILE_ID: &str = "synck-file-folder-v1";
 /// Canonical name key reserved for checkout control state.
 pub const WORKTREE_CONTROL_NAME_KEY: &str = ".synck";
 
-pub const MAX_INTENTS: usize = 3_333;
-pub const MAX_EVENTS: usize = 10_000;
 pub const MAX_MESSAGE_BYTES: usize = 16_384;
 pub const MAX_EVENT_PAYLOAD_BYTES: usize = 1_048_576;
-pub const MAX_COMMIT_PAYLOAD_BYTES: usize = 16_777_216;
-pub const MAX_PROJECTED_GROUP_BYTES: usize = 16_777_216;
 pub const MAX_SAFE_JSON_INTEGER: u64 = 9_007_199_254_740_991;
 
 /// Parse the durable bytes referenced by one canonical FILE content event.

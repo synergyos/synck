@@ -32,9 +32,7 @@ impl CoreConfig {
     }
 }
 
-pub const SYNCKHUB_MAX_EVENTS_PER_COMMIT: usize = 10_000;
 pub const SYNCKHUB_MAX_EVENT_PAYLOAD_BYTES: usize = 1024 * 1024;
-pub const SYNCKHUB_MAX_COMMIT_PAYLOAD_BYTES: usize = 16 * 1024 * 1024;
 pub const SYNCKHUB_MAX_AUTHOR_ID_BYTES: usize = 256;
 pub const SYNCKHUB_MAX_COMMIT_MESSAGE_BYTES: usize = 4 * 1024;
 pub const SYNCKHUB_MAX_OPERATION_ID_BYTES: usize = 256;
@@ -43,9 +41,9 @@ impl Default for CoreConfig {
     fn default() -> Self {
         CoreConfig {
             default_sequencing_mode: SequencingMode::Local,
-            max_events_per_commit: Some(SYNCKHUB_MAX_EVENTS_PER_COMMIT),
+            max_events_per_commit: None,
             max_event_payload_bytes: Some(SYNCKHUB_MAX_EVENT_PAYLOAD_BYTES),
-            max_commit_payload_bytes: Some(SYNCKHUB_MAX_COMMIT_PAYLOAD_BYTES),
+            max_commit_payload_bytes: None,
             max_author_id_bytes: Some(SYNCKHUB_MAX_AUTHOR_ID_BYTES),
             max_commit_message_bytes: Some(SYNCKHUB_MAX_COMMIT_MESSAGE_BYTES),
             max_operation_id_bytes: Some(SYNCKHUB_MAX_OPERATION_ID_BYTES),

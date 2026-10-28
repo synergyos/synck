@@ -14,9 +14,8 @@ use rusqlite::{OptionalExtension, params, params_from_iter, types::Value as SqlV
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use synck_file_folder::{
-    BlobRef, CurrentItem, Intent, IntentProposal, ItemBase, Location, MAX_EVENTS,
-    ProfileLifecycleState, SemanticError, SemanticErrorCode, check_projected_group_size,
-    validate_and_materialize,
+    BlobRef, CurrentItem, Intent, IntentProposal, ItemBase, Location, ProfileLifecycleState,
+    SemanticError, SemanticErrorCode, validate_and_materialize, validate_projected_proposal,
 };
 use synck_vcs::naming::compute_name_key;
 use synck_vcs::state::{
@@ -43,23 +42,17 @@ use crate::objects::verify_object_file;
 use crate::repository::windows_extended_length_path_units;
 use crate::repository::{
     Repository, is_cap_link_or_reparse, is_link_or_reparse, remove_tree_nofollow, rename_noreplace,
-    replace_file, sync_directory,
+    sync_directory,
 };
 use crate::tree_materialization::{materialize_tree, validate_materialized_tree};
 use crate::working_tree_edit::{WORKING_TREE_EDIT_INTENT_NAME, WORKING_TREE_EDIT_STAGE_NAME};
-use crate::worktree::{
-    Change, ChangeKind, CommittedNode, FileIdentity, FileTime, IdentityRecord, NodeKind,
-    WorkingNode,
-};
+use crate::worktree::{Change, ChangeKind, CommittedNode, NodeKind, WorkingNode};
 
 const LOG_DEFAULT_LIMIT: usize = 20;
 const LOG_MAX_LIMIT: usize = 1_000;
 const LOG_CHANGE_LIMIT: usize = 100;
 const PAGE_SIZE: usize = 1_024;
-const BATCH_COMMIT_INTENT_VERSION: u32 = 1;
-const BATCH_COMMIT_INTENT_NAME: &str = "batch-commit.json";
-const BATCH_COMMIT_STATE_NAME: &str = "batch-commit-state.json";
-const BATCH_COMMIT_MAX_CHANGES: usize = 2_000;
+const MAX_EVENT_PAGE_SIZE: usize = 10_000;
 
 #[cfg(test)]
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -93,58 +86,6 @@ const REVERT_STAGE_NAME: &str = "revert-stage";
 const WORKTREE_RESTORE_INTENT_VERSION: u32 = 1;
 const WORKTREE_RESTORE_INTENT_NAME: &str = "worktree-restore.json";
 const WORKTREE_RESTORE_STAGE_NAME: &str = "worktree-restore-stage";
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-struct BatchWorkingEntry {
-    path: String,
-    kind: NodeKind,
-    digest_hex: Option<String>,
-    size: Option<u64>,
-    device_id: u64,
-    file_id: u64,
-    birth_seconds: Option<i64>,
-    birth_nanos: Option<i64>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-struct BatchIdentityRecord {
-    item_id: ItemId,
-    deleted: bool,
-    path: Option<String>,
-    kind: Option<NodeKind>,
-    device_id: Option<u64>,
-    file_id: Option<u64>,
-    birth_seconds: Option<i64>,
-    birth_nanos: Option<i64>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-struct PendingBatchCommit {
-    operation_id: String,
-    changes: Vec<Change>,
-    identities: Vec<BatchIdentityRecord>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-struct BatchCommitManifest {
-    version: u32,
-    message: Option<String>,
-    items_total: usize,
-    working: Vec<BatchWorkingEntry>,
-    changes: Vec<Change>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-struct BatchCommitState {
-    version: u32,
-    next_change: usize,
-    pending: Option<PendingBatchCommit>,
-}
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -253,12 +194,6 @@ pub(crate) struct WorktreeRestoreEntry {
 pub enum CommitOutcome {
     Clean,
     Committed(String),
-}
-
-#[derive(Debug)]
-pub struct BatchCommitOutcome {
-    pub commit_ids: Vec<String>,
-    pub items_changed: usize,
 }
 
 #[derive(Debug)]
@@ -447,15 +382,8 @@ impl Repository {
         if changes.is_empty() {
             return Ok(CommitOutcome::Clean);
         }
-        let batchable = validate_batch_changes(&changes, &committed).is_ok();
-        if batchable {
-            validate_atomic_batchable_limits(&changes, &working)
-                .map_err(|error| atomic_commit_error(error, true))?;
-        }
-
-        let prepared = self
-            .prepare_working_commit(&committed, &working, &changes, &working_ids, message)
-            .map_err(|error| atomic_commit_error(error, batchable))?;
+        let prepared =
+            self.prepare_working_commit(&committed, &working, &changes, &working_ids, message)?;
         let captured = self.capture_changed_files(&working, &changes)?;
         if captured != prepared.objects {
             return Err(LocalError::Integrity(
@@ -510,63 +438,6 @@ impl Repository {
             });
         }
         Ok(CommitOutcome::Committed(commit_id))
-    }
-
-    pub async fn commit_selected_batch(
-        &self,
-        caller: &Path,
-        inputs: &[PathBuf],
-        message: Option<&str>,
-    ) -> Result<BatchCommitOutcome> {
-        validate_commit_message(message)?;
-        let (committed, working, all_changes, working_ids) = self.changes().await?;
-        let selected = select_changes(
-            self.root_path(),
-            caller,
-            inputs,
-            &committed,
-            &working,
-            &working_ids,
-            &all_changes,
-        )?;
-        if selected.is_empty() {
-            return Ok(BatchCommitOutcome {
-                commit_ids: Vec::new(),
-                items_changed: 0,
-            });
-        }
-        validate_batch_changes(&selected, &committed)?;
-        let manifest = BatchCommitManifest {
-            version: BATCH_COMMIT_INTENT_VERSION,
-            message: message.map(str::to_string),
-            items_total: selected.len(),
-            working: batch_working_snapshot(&working, &selected),
-            changes: selected,
-        };
-        let state = BatchCommitState {
-            version: BATCH_COMMIT_INTENT_VERSION,
-            next_change: 0,
-            pending: None,
-        };
-        self.write_batch_commit(&manifest, &state)?;
-        let mut accepted_commit_ids = Vec::new();
-        match self
-            .run_batch_commit(
-                &manifest,
-                state,
-                committed,
-                &working,
-                working_ids,
-                &mut accepted_commit_ids,
-            )
-            .await
-        {
-            Ok(()) => Ok(BatchCommitOutcome {
-                commit_ids: accepted_commit_ids,
-                items_changed: manifest.items_total,
-            }),
-            Err(error) => Err(batch_commit_failure(accepted_commit_ids, error)),
-        }
     }
 
     fn prepare_working_commit(
@@ -705,292 +576,6 @@ impl Repository {
             ))),
             None => Ok(()),
         }
-    }
-
-    pub(crate) async fn recover_pending_batch_commit(&self) -> Result<()> {
-        let mut accepted_commit_ids = Vec::new();
-        let result = self
-            .recover_pending_batch_commit_inner(&mut accepted_commit_ids)
-            .await;
-        result.map_err(|error| batch_commit_failure(accepted_commit_ids, error))
-    }
-
-    async fn recover_pending_batch_commit_inner(
-        &self,
-        accepted_commit_ids: &mut Vec<String>,
-    ) -> Result<()> {
-        let Some((manifest, mut state)) = self.read_batch_commit()? else {
-            return Ok(());
-        };
-        validate_batch_commit(&manifest, &state)?;
-        if let Some(pending) = state.pending.take() {
-            if let Some(commit_id) = self.operation_commit_id(&pending.operation_id)? {
-                accepted_commit_ids.push(commit_id.clone());
-                if let Err(error) = self.recover_current().await {
-                    return Err(LocalError::AcceptedNeedsRecovery {
-                        commit_id,
-                        detail: error.to_string(),
-                    });
-                }
-                if let Err(error) = self.publish_batch_identities(&pending.identities) {
-                    return Err(LocalError::AcceptedNeedsRecovery {
-                        commit_id,
-                        detail: error.to_string(),
-                    });
-                }
-                state.next_change = state
-                    .next_change
-                    .checked_add(pending.changes.len())
-                    .ok_or_else(|| {
-                        LocalError::Integrity("batch item count overflow".to_string())
-                    })?;
-            }
-            self.replace_batch_commit_state(&state)?;
-        }
-
-        let (committed, working, changes, working_ids) = self.changes().await?;
-        if !batch_snapshot_matches(&manifest, &state, &working, &changes) {
-            self.clear_batch_commit()?;
-            return Err(LocalError::Invalid(
-                "working tree changed after the batch commit was interrupted; accepted commits remain accepted and the unaccepted remainder was left uncommitted"
-                    .to_string(),
-            ));
-        }
-        validate_remaining_batch_changes(&manifest, &state, &committed)?;
-        if state.next_change == manifest.changes.len() {
-            self.clear_batch_commit()?;
-            return Ok(());
-        }
-        self.run_batch_commit(
-            &manifest,
-            state,
-            committed,
-            &working,
-            working_ids,
-            accepted_commit_ids,
-        )
-        .await
-    }
-
-    async fn run_batch_commit(
-        &self,
-        manifest: &BatchCommitManifest,
-        mut state: BatchCommitState,
-        mut committed: BTreeMap<String, CommittedNode>,
-        working: &BTreeMap<String, WorkingNode>,
-        mut working_ids: HashMap<String, ItemId>,
-        accepted_commit_ids: &mut Vec<String>,
-    ) -> Result<()> {
-        loop {
-            let changes = manifest
-                .changes
-                .get(state.next_change..)
-                .ok_or_else(|| {
-                    LocalError::Integrity("batch progress exceeds its manifest".to_string())
-                })?
-                .iter()
-                .take(BATCH_COMMIT_MAX_CHANGES)
-                .cloned()
-                .collect::<Vec<_>>();
-            if changes.is_empty() {
-                self.clear_batch_commit()?;
-                return Ok(());
-            }
-
-            let mut prepared = self.prepare_working_commit(
-                &committed,
-                working,
-                &changes,
-                &working_ids,
-                manifest.message.as_deref(),
-            )?;
-            let identities = batch_identity_records(
-                &committed,
-                working,
-                &changes,
-                &working_ids,
-                &prepared.created_ids,
-            )?;
-            let operation_id = Uuid::new_v4().to_string();
-            state.pending = Some(PendingBatchCommit {
-                operation_id: operation_id.clone(),
-                changes,
-                identities,
-            });
-            self.replace_batch_commit_state(&state)?;
-            let pending = state
-                .pending
-                .as_ref()
-                .expect("batch pending state was just published");
-
-            let captured = self.capture_changed_files(working, &pending.changes)?;
-            if captured != prepared.objects {
-                return Err(LocalError::Integrity(
-                    "captured FILE objects differ from the validated batch commit".to_string(),
-                ));
-            }
-            self.store_imported_email_objects(&prepared.email_objects)?;
-            self.record_imported_email_sources(&prepared.email_sources)?;
-            let accepted = self
-                .core()
-                .append_file_folder_checked_with_refs(
-                    self.config().repo_id().clone(),
-                    CommitProposal {
-                        author_id: self.config().author().to_string(),
-                        committer_id: self.config().author().to_string(),
-                        message: manifest.message.clone(),
-                        occurred_at: None,
-                        operation_id: Some(operation_id),
-                        events: std::mem::take(&mut prepared.events),
-                    },
-                    std::mem::take(&mut prepared.ref_events),
-                    &[],
-                    &prepared.subtree_guards,
-                )
-                .await?;
-            let commit_id = accepted.commit_id.to_string();
-            accepted_commit_ids.push(commit_id.clone());
-            if let Err(error) = self.recover_current().await {
-                return Err(LocalError::AcceptedNeedsRecovery {
-                    commit_id,
-                    detail: error.to_string(),
-                });
-            }
-            if let Err(error) = self.publish_batch_identities(&pending.identities) {
-                return Err(LocalError::AcceptedNeedsRecovery {
-                    commit_id,
-                    detail: error.to_string(),
-                });
-            }
-            if let Err(error) = apply_batch_commit_state(
-                &mut committed,
-                working,
-                &mut working_ids,
-                &pending.changes,
-                &prepared,
-            ) {
-                return Err(LocalError::AcceptedNeedsRecovery {
-                    commit_id,
-                    detail: error.to_string(),
-                });
-            }
-
-            state.next_change = state
-                .next_change
-                .checked_add(pending.changes.len())
-                .ok_or_else(|| LocalError::AcceptedNeedsRecovery {
-                    commit_id: commit_id.clone(),
-                    detail: "batch item count overflow".to_string(),
-                })?;
-            state.pending = None;
-            self.replace_batch_commit_state(&state).map_err(|error| {
-                LocalError::AcceptedNeedsRecovery {
-                    commit_id,
-                    detail: error.to_string(),
-                }
-            })?;
-        }
-    }
-
-    fn write_batch_commit(
-        &self,
-        manifest: &BatchCommitManifest,
-        state: &BatchCommitState,
-    ) -> Result<()> {
-        self.write_json_intent(BATCH_COMMIT_STATE_NAME, "batch-commit-state", state)?;
-        if let Err(error) =
-            self.write_json_intent(BATCH_COMMIT_INTENT_NAME, "batch-commit", manifest)
-        {
-            let _ = self.clear_intent(BATCH_COMMIT_STATE_NAME);
-            return Err(error);
-        }
-        Ok(())
-    }
-
-    fn replace_batch_commit_state(&self, state: &BatchCommitState) -> Result<()> {
-        self.replace_json_intent(BATCH_COMMIT_STATE_NAME, "batch-commit-state", state)
-    }
-
-    fn read_batch_commit(&self) -> Result<Option<(BatchCommitManifest, BatchCommitState)>> {
-        let manifest = self.read_json_intent(BATCH_COMMIT_INTENT_NAME, "batch-commit")?;
-        let state = self.read_json_intent(BATCH_COMMIT_STATE_NAME, "batch-commit-state")?;
-        match (manifest, state) {
-            (None, None) => Ok(None),
-            (None, Some(_)) => {
-                self.clear_intent(BATCH_COMMIT_STATE_NAME)?;
-                Ok(None)
-            }
-            (Some(_), None) => Err(LocalError::Integrity(
-                "repository contains a batch commit manifest without its state".to_string(),
-            )),
-            (Some(manifest), Some(state)) => Ok(Some((manifest, state))),
-        }
-    }
-
-    fn clear_batch_commit(&self) -> Result<()> {
-        self.clear_intent(BATCH_COMMIT_INTENT_NAME)?;
-        self.clear_intent(BATCH_COMMIT_STATE_NAME)
-    }
-
-    fn publish_batch_identities(&self, records: &[BatchIdentityRecord]) -> Result<()> {
-        let mut deleted = BTreeSet::new();
-        let mut updated = BTreeMap::new();
-        for record in records {
-            if record.deleted {
-                deleted.insert(record.item_id.clone());
-                continue;
-            }
-            let incarnation = match (record.birth_seconds, record.birth_nanos) {
-                (None, None) => None,
-                (Some(seconds), Some(nanos)) => {
-                    let value = FileTime::from_parts(seconds, nanos);
-                    if !value.is_valid() {
-                        return Err(LocalError::Integrity(
-                            "batch identity has an invalid birth timestamp".to_string(),
-                        ));
-                    }
-                    Some(value)
-                }
-                _ => {
-                    return Err(LocalError::Integrity(
-                        "batch identity has an incomplete birth timestamp".to_string(),
-                    ));
-                }
-            };
-            let path = record.path.clone().ok_or_else(|| {
-                LocalError::Integrity("live batch identity has no path".to_string())
-            })?;
-            let kind = record.kind.ok_or_else(|| {
-                LocalError::Integrity("live batch identity has no kind".to_string())
-            })?;
-            let identity = FileIdentity::from_durable_parts(
-                record.device_id.ok_or_else(|| {
-                    LocalError::Integrity("live batch identity has no device ID".to_string())
-                })?,
-                record.file_id.ok_or_else(|| {
-                    LocalError::Integrity("live batch identity has no file ID".to_string())
-                })?,
-                incarnation,
-            );
-            if updated
-                .insert(
-                    record.item_id.clone(),
-                    IdentityRecord {
-                        item_id: record.item_id.clone(),
-                        kind,
-                        identity,
-                        path,
-                    },
-                )
-                .is_some()
-                || deleted.contains(&record.item_id)
-            {
-                return Err(LocalError::Integrity(
-                    "batch intent contains duplicate identity records".to_string(),
-                ));
-            }
-        }
-        self.publish_identity_records(&deleted, &updated)
     }
 
     pub async fn revert(&self, revision: &str, message: &str) -> Result<String> {
@@ -1901,7 +1486,6 @@ impl Repository {
 
     pub(crate) fn validate_pending_operations(&self) -> Result<()> {
         let intent_names = [
-            BATCH_COMMIT_INTENT_NAME,
             MOVE_INTENT_NAME,
             RECOVER_INTENT_NAME,
             REVERT_INTENT_NAME,
@@ -2104,51 +1688,6 @@ impl Repository {
         })?))
     }
 
-    fn replace_json_intent<T: Serialize>(
-        &self,
-        name: &str,
-        temporary_prefix: &str,
-        intent: &T,
-    ) -> Result<()> {
-        let intent_path = self.metadata_path().join(name);
-        let metadata =
-            std::fs::symlink_metadata(&intent_path).map_err(|source| LocalError::Io {
-                action: "inspect operation intent",
-                path: intent_path.clone(),
-                source,
-            })?;
-        if !metadata.file_type().is_file() || is_link_or_reparse(&metadata) {
-            return Err(LocalError::Integrity(format!(
-                "{temporary_prefix} intent is not a regular file: {}",
-                intent_path.display()
-            )));
-        }
-        let temporary_path = self
-            .metadata_path()
-            .join("tmp")
-            .join(format!("{temporary_prefix}-{}", Uuid::new_v4()));
-        let result = (|| -> Result<()> {
-            let mut file = StdOpenOptions::new()
-                .create_new(true)
-                .write(true)
-                .open(&temporary_path)
-                .at("create operation intent", &temporary_path)?;
-            serde_json::to_writer_pretty(&mut file, intent)?;
-            file.write_all(b"\n")
-                .at("write operation intent", &temporary_path)?;
-            file.sync_all()
-                .at("sync operation intent", &temporary_path)?;
-            replace_file(&temporary_path, &intent_path)
-                .at("replace operation intent", &intent_path)?;
-            sync_directory(&self.metadata_path().join("tmp"))?;
-            sync_directory(self.metadata_path())
-        })();
-        if result.is_err() {
-            let _ = std::fs::remove_file(&temporary_path);
-        }
-        result
-    }
-
     pub(crate) fn clear_intent(&self, name: &str) -> Result<()> {
         let path = self.metadata_path().join(name);
         std::fs::remove_file(&path).at("remove operation intent", &path)?;
@@ -2277,7 +1816,7 @@ impl Repository {
             .iter()
             .map(|entry| entry.commit.event_count)
             .sum::<usize>();
-        if event_total > MAX_EVENTS {
+        if event_total > MAX_EVENT_PAGE_SIZE {
             return Err(LocalError::Invalid(format!(
                 "event log selection contains {event_total} events; reduce --limit or inspect one commit with show --events"
             )));
@@ -2362,9 +1901,9 @@ impl Repository {
         after_commit_event_idx: Option<i32>,
         limit: usize,
     ) -> Result<CommitEventPage> {
-        if limit == 0 || limit > MAX_EVENTS {
+        if limit == 0 || limit > MAX_EVENT_PAGE_SIZE {
             return Err(LocalError::Invalid(format!(
-                "event page size must be between 1 and {MAX_EVENTS}"
+                "event page size must be between 1 and {MAX_EVENT_PAGE_SIZE}"
             )));
         }
         if after_commit_event_idx.is_some_and(|cursor| cursor < 0) {
@@ -6744,7 +6283,7 @@ pub(crate) fn checked_commit_event_count(event_count: i32, commit_id: &CommitId)
     let event_count = usize::try_from(event_count).map_err(|_| {
         LocalError::Integrity(format!("commit {commit_id} has a negative event count"))
     })?;
-    if event_count == 0 || event_count > MAX_EVENTS {
+    if event_count == 0 {
         return Err(LocalError::Integrity(format!(
             "commit {commit_id} event count {event_count} is outside the FILE/FOLDER profile limit"
         )));
@@ -7307,26 +6846,6 @@ fn sync_move_parents(root: &Path, source: &str, destination: &str) -> Result<()>
     Ok(())
 }
 
-fn atomic_commit_error(error: LocalError, batchable: bool) -> LocalError {
-    let LocalError::FileFolder(semantic) = &error else {
-        return error;
-    };
-    if !batchable
-        || !matches!(
-            semantic.code,
-            SemanticErrorCode::TooManyIntents
-                | SemanticErrorCode::TooManyEvents
-                | SemanticErrorCode::ProjectedGroupTooLarge
-        )
-    {
-        return error;
-    }
-    LocalError::Invalid(format!(
-        "atomic commit exceeds the FILE/FOLDER profile limit ({}: {}); use `synck commit --batch`",
-        semantic.code, semantic.detail
-    ))
-}
-
 pub(crate) fn validate_commit_message(message: Option<&str>) -> Result<()> {
     if message == Some("") {
         return Err(LocalError::Invalid(
@@ -7338,96 +6857,6 @@ pub(crate) fn validate_commit_message(message: Option<&str>) -> Result<()> {
             code: SemanticErrorCode::MessageTooLarge,
             detail: "message exceeds the UTF-8 byte limit".to_string(),
         }));
-    }
-    Ok(())
-}
-
-fn validate_atomic_batchable_limits(
-    changes: &[Change],
-    working: &BTreeMap<String, WorkingNode>,
-) -> Result<()> {
-    if changes.len() > synck_file_folder::MAX_INTENTS {
-        return Err(LocalError::FileFolder(SemanticError {
-            code: SemanticErrorCode::TooManyIntents,
-            detail: "proposal exceeds the intent limit".to_string(),
-        }));
-    }
-
-    let mut events = 0usize;
-    for change in changes {
-        let added = match change.kind {
-            ChangeKind::Add => match working.get(&change.path).map(|node| node.kind) {
-                // FILE create, content, and one attached initial-version ref.
-                Some(NodeKind::File) => 3,
-                Some(NodeKind::Folder) => 1,
-                None => {
-                    return Err(LocalError::Integrity(format!(
-                        "batch addition is missing from the working tree: {}",
-                        change.path
-                    )));
-                }
-            },
-            ChangeKind::Modify | ChangeKind::Delete => 1,
-            ChangeKind::Rename | ChangeKind::Move | ChangeKind::MoveRename => {
-                return Err(LocalError::Integrity(
-                    "structural change reached batchable profile admission".to_string(),
-                ));
-            }
-        };
-        events += added;
-        if events > synck_file_folder::MAX_EVENTS {
-            return Err(LocalError::FileFolder(SemanticError {
-                code: SemanticErrorCode::TooManyEvents,
-                detail: "complete proposal event count is outside the profile limit".to_string(),
-            }));
-        }
-    }
-    Ok(())
-}
-
-fn batch_commit_failure(accepted_commit_ids: Vec<String>, error: LocalError) -> LocalError {
-    if accepted_commit_ids.is_empty() {
-        error
-    } else {
-        LocalError::BatchCommitIncomplete {
-            accepted_commit_ids,
-            detail: error.to_string(),
-        }
-    }
-}
-
-fn validate_batch_changes(
-    changes: &[Change],
-    committed: &BTreeMap<String, CommittedNode>,
-) -> Result<()> {
-    let additions = changes
-        .iter()
-        .filter(|change| change.kind == ChangeKind::Add)
-        .map(|change| change.path.as_str())
-        .collect::<HashSet<_>>();
-    if let Some(change) = changes.iter().find(|change| {
-        change.kind == ChangeKind::Delete && additions.contains(change.path.as_str())
-    }) {
-        return Err(LocalError::Invalid(format!(
-            "synck commit --batch cannot split same-path delete and add {}; commit it atomically",
-            change.path
-        )));
-    }
-    for change in changes {
-        let supported = match change.kind {
-            ChangeKind::Add => true,
-            ChangeKind::Modify | ChangeKind::Delete => committed
-                .get(&change.path)
-                .is_some_and(|node| node.kind == NodeKind::File),
-            ChangeKind::Rename | ChangeKind::Move | ChangeKind::MoveRename => false,
-        };
-        if !supported {
-            return Err(LocalError::Invalid(format!(
-                "synck commit --batch cannot split structural change {} {}; commit moves, renames, same-path delete-and-add changes, and folder deletions atomically",
-                change.marker(),
-                change.path
-            )));
-        }
     }
     Ok(())
 }
@@ -7461,414 +6890,6 @@ fn expected_file_objects(
         objects.insert(change.path.clone(), blob_id);
     }
     Ok(objects)
-}
-
-fn batch_working_snapshot(
-    working: &BTreeMap<String, WorkingNode>,
-    changes: &[Change],
-) -> Vec<BatchWorkingEntry> {
-    changes
-        .iter()
-        .filter_map(|change| {
-            let node = working.get(&change.path)?;
-            let path = &change.path;
-            let (device_id, file_id, incarnation) = node.identity.durable_parts();
-            Some(BatchWorkingEntry {
-                path: path.clone(),
-                kind: node.kind,
-                digest_hex: node.digest_hex.clone(),
-                size: node.size,
-                device_id,
-                file_id,
-                birth_seconds: incarnation.map(FileTime::seconds),
-                birth_nanos: incarnation.map(FileTime::nanos),
-            })
-        })
-        .collect()
-}
-
-fn validate_batch_commit(manifest: &BatchCommitManifest, state: &BatchCommitState) -> Result<()> {
-    if manifest.version != BATCH_COMMIT_INTENT_VERSION
-        || state.version != BATCH_COMMIT_INTENT_VERSION
-    {
-        return Err(LocalError::Integrity(format!(
-            "unsupported batch commit versions {}/{}",
-            manifest.version, state.version
-        )));
-    }
-    if manifest.message.as_deref() == Some("")
-        || manifest
-            .message
-            .as_ref()
-            .is_some_and(|message| message.len() > synck_file_folder::MAX_MESSAGE_BYTES)
-        || manifest.items_total == 0
-        || manifest.items_total != manifest.changes.len()
-        || state.next_change > manifest.changes.len()
-        || (state.next_change != manifest.changes.len()
-            && !state.next_change.is_multiple_of(BATCH_COMMIT_MAX_CHANGES))
-    {
-        return Err(LocalError::Integrity(
-            "batch commit intent has invalid fixed fields".to_string(),
-        ));
-    }
-    let mut previous_path = None;
-    for entry in &manifest.working {
-        if entry.path.is_empty()
-            || previous_path.is_some_and(|previous: &String| previous >= &entry.path)
-            || matches!(entry.kind, NodeKind::File)
-                != (entry.digest_hex.is_some() && entry.size.is_some())
-            || matches!(
-                (entry.birth_seconds, entry.birth_nanos),
-                (Some(_), None) | (None, Some(_))
-            )
-        {
-            return Err(LocalError::Integrity(
-                "batch commit intent has an invalid working-tree snapshot".to_string(),
-            ));
-        }
-        if let (Some(seconds), Some(nanos)) = (entry.birth_seconds, entry.birth_nanos)
-            && !FileTime::from_parts(seconds, nanos).is_valid()
-        {
-            return Err(LocalError::Integrity(
-                "batch commit intent has an invalid working-tree timestamp".to_string(),
-            ));
-        }
-        previous_path = Some(&entry.path);
-    }
-    let mut previous_change_path = None;
-    for change in &manifest.changes {
-        let valid_shape = match change.kind {
-            ChangeKind::Add | ChangeKind::Delete => !change.content_changed,
-            ChangeKind::Modify => change.content_changed,
-            ChangeKind::Rename | ChangeKind::Move | ChangeKind::MoveRename => false,
-        };
-        if change.path.is_empty()
-            || change.source_path.is_some()
-            || !valid_shape
-            || previous_change_path.is_some_and(|previous: &String| previous >= &change.path)
-        {
-            return Err(LocalError::Integrity(
-                "batch commit intent contains invalid or unordered changes".to_string(),
-            ));
-        }
-        previous_change_path = Some(&change.path);
-    }
-    if !manifest
-        .working
-        .iter()
-        .map(|entry| entry.path.as_str())
-        .eq(manifest
-            .changes
-            .iter()
-            .filter(|change| change.kind != ChangeKind::Delete)
-            .map(|change| change.path.as_str()))
-    {
-        return Err(LocalError::Integrity(
-            "batch manifest working snapshot does not match its changes".to_string(),
-        ));
-    }
-    if let Some(pending) = &state.pending {
-        let operation_id = Uuid::parse_str(&pending.operation_id).map_err(|_| {
-            LocalError::Integrity("batch intent has an invalid operation ID".to_string())
-        })?;
-        if operation_id.to_string() != pending.operation_id {
-            return Err(LocalError::Integrity(
-                "batch intent has an invalid operation ID".to_string(),
-            ));
-        }
-        let remaining = manifest.changes.get(state.next_change..).ok_or_else(|| {
-            LocalError::Integrity("batch progress exceeds its manifest".to_string())
-        })?;
-        let expected = &remaining[..remaining.len().min(BATCH_COMMIT_MAX_CHANGES)];
-        if pending.changes.is_empty()
-            || pending.changes.len() > BATCH_COMMIT_MAX_CHANGES
-            || pending.changes != expected
-            || pending.identities.len() != pending.changes.len()
-        {
-            return Err(LocalError::Integrity(
-                "batch intent has an invalid pending commit".to_string(),
-            ));
-        }
-        validate_batch_identity_records(&pending.identities)?;
-        for (change, identity) in pending.changes.iter().zip(&pending.identities) {
-            let valid = if change.kind == ChangeKind::Delete {
-                identity.deleted
-            } else {
-                !identity.deleted
-                    && identity.path.as_deref() == Some(change.path.as_str())
-                    && manifest
-                        .working
-                        .binary_search_by_key(&change.path.as_str(), |entry| entry.path.as_str())
-                        .ok()
-                        .is_some_and(|index| identity.kind == Some(manifest.working[index].kind))
-            };
-            if !valid {
-                return Err(LocalError::Integrity(
-                    "batch pending identities do not match its changes".to_string(),
-                ));
-            }
-        }
-    }
-    Ok(())
-}
-
-fn validate_batch_identity_records(records: &[BatchIdentityRecord]) -> Result<()> {
-    let mut item_ids = HashSet::new();
-    for record in records {
-        if !item_ids.insert(&record.item_id) {
-            return Err(LocalError::Integrity(
-                "batch intent contains duplicate identity records".to_string(),
-            ));
-        }
-        let empty = record.path.is_none()
-            && record.kind.is_none()
-            && record.device_id.is_none()
-            && record.file_id.is_none()
-            && record.birth_seconds.is_none()
-            && record.birth_nanos.is_none();
-        if record.deleted != empty {
-            return Err(LocalError::Integrity(
-                "batch intent contains an invalid identity record".to_string(),
-            ));
-        }
-        if !record.deleted {
-            if record.path.as_deref().is_none_or(str::is_empty)
-                || record.kind.is_none()
-                || record.device_id.is_none()
-                || record.file_id.is_none()
-                || matches!(
-                    (record.birth_seconds, record.birth_nanos),
-                    (Some(_), None) | (None, Some(_))
-                )
-            {
-                return Err(LocalError::Integrity(
-                    "batch intent contains an incomplete identity record".to_string(),
-                ));
-            }
-            if let (Some(seconds), Some(nanos)) = (record.birth_seconds, record.birth_nanos)
-                && !FileTime::from_parts(seconds, nanos).is_valid()
-            {
-                return Err(LocalError::Integrity(
-                    "batch intent contains an invalid identity timestamp".to_string(),
-                ));
-            }
-        }
-    }
-    Ok(())
-}
-
-fn batch_snapshot_matches(
-    manifest: &BatchCommitManifest,
-    state: &BatchCommitState,
-    working: &BTreeMap<String, WorkingNode>,
-    changes: &[Change],
-) -> bool {
-    let Some(remaining) = manifest.changes.get(state.next_change..) else {
-        return false;
-    };
-    let completed_working = manifest.changes[..state.next_change]
-        .iter()
-        .filter(|change| change.kind != ChangeKind::Delete)
-        .count();
-    let Some(recorded_working) = manifest.working.get(completed_working..) else {
-        return false;
-    };
-    let mut recorded_working = recorded_working.iter();
-    for change in remaining {
-        if change.kind == ChangeKind::Delete {
-            if working.contains_key(&change.path) {
-                return false;
-            }
-            continue;
-        }
-        let (Some(recorded), Some(observed)) = (recorded_working.next(), working.get(&change.path))
-        else {
-            return false;
-        };
-        let (device_id, file_id, incarnation) = observed.identity.durable_parts();
-        if recorded.path != change.path
-            || recorded.kind != observed.kind
-            || recorded.digest_hex.as_deref() != observed.digest_hex.as_deref()
-            || recorded.size != observed.size
-            || recorded.device_id != device_id
-            || recorded.file_id != file_id
-            || recorded.birth_seconds != incarnation.map(FileTime::seconds)
-            || recorded.birth_nanos != incarnation.map(FileTime::nanos)
-        {
-            return false;
-        }
-    }
-    if recorded_working.next().is_some() {
-        return false;
-    }
-
-    let mut observed_changes = changes.iter().peekable();
-    for expected in remaining {
-        while observed_changes
-            .peek()
-            .is_some_and(|observed| observed.path.as_str() < expected.path.as_str())
-        {
-            observed_changes.next();
-        }
-        let Some(observed) = observed_changes.peek().copied() else {
-            return false;
-        };
-        if observed.path != expected.path || observed != expected {
-            return false;
-        }
-        observed_changes.next();
-    }
-    true
-}
-
-fn validate_remaining_batch_changes(
-    manifest: &BatchCommitManifest,
-    state: &BatchCommitState,
-    committed: &BTreeMap<String, CommittedNode>,
-) -> Result<()> {
-    let remaining = manifest
-        .changes
-        .get(state.next_change..)
-        .ok_or_else(|| LocalError::Integrity("batch progress exceeds its manifest".to_string()))?;
-    validate_batch_changes(remaining, committed)
-        .map_err(|error| LocalError::Integrity(error.to_string()))
-}
-
-fn batch_identity_records(
-    committed: &BTreeMap<String, CommittedNode>,
-    working: &BTreeMap<String, WorkingNode>,
-    changes: &[Change],
-    working_ids: &HashMap<String, ItemId>,
-    created_ids: &HashMap<String, ItemId>,
-) -> Result<Vec<BatchIdentityRecord>> {
-    let mut records = Vec::with_capacity(changes.len());
-    for change in changes {
-        if change.kind == ChangeKind::Delete {
-            let item_id = committed
-                .get(&change.path)
-                .ok_or_else(|| {
-                    LocalError::Integrity(format!(
-                        "batch delete source is missing: {}",
-                        change.path
-                    ))
-                })?
-                .item_id
-                .clone();
-            records.push(BatchIdentityRecord {
-                item_id,
-                deleted: true,
-                path: None,
-                kind: None,
-                device_id: None,
-                file_id: None,
-                birth_seconds: None,
-                birth_nanos: None,
-            });
-            continue;
-        }
-        let node = working.get(&change.path).ok_or_else(|| {
-            LocalError::Integrity(format!("batch target is missing: {}", change.path))
-        })?;
-        let item_id = match change.kind {
-            ChangeKind::Add => created_ids.get(&change.path),
-            ChangeKind::Modify => working_ids.get(&change.path),
-            _ => None,
-        }
-        .ok_or_else(|| {
-            LocalError::Integrity(format!("batch item identity is missing: {}", change.path))
-        })?
-        .clone();
-        let (device_id, file_id, incarnation) = node.identity.durable_parts();
-        records.push(BatchIdentityRecord {
-            item_id,
-            deleted: false,
-            path: Some(change.path.clone()),
-            kind: Some(node.kind),
-            device_id: Some(device_id),
-            file_id: Some(file_id),
-            birth_seconds: incarnation.map(FileTime::seconds),
-            birth_nanos: incarnation.map(FileTime::nanos),
-        });
-    }
-    validate_batch_identity_records(&records)?;
-    Ok(records)
-}
-
-fn apply_batch_commit_state(
-    committed: &mut BTreeMap<String, CommittedNode>,
-    working: &BTreeMap<String, WorkingNode>,
-    working_ids: &mut HashMap<String, ItemId>,
-    changes: &[Change],
-    prepared: &PreparedWorkingCommit,
-) -> Result<()> {
-    for change in changes {
-        match change.kind {
-            ChangeKind::Delete => {
-                let removed = committed.remove(&change.path).ok_or_else(|| {
-                    LocalError::Integrity(format!(
-                        "completed batch delete source is missing: {}",
-                        change.path
-                    ))
-                })?;
-                working_ids.retain(|_, item_id| item_id != &removed.item_id);
-            }
-            ChangeKind::Modify => {
-                let node = committed.get_mut(&change.path).ok_or_else(|| {
-                    LocalError::Integrity(format!(
-                        "completed batch modification source is missing: {}",
-                        change.path
-                    ))
-                })?;
-                let observed = &working[&change.path];
-                node.head_seq = node.head_seq.checked_add(1).ok_or_else(|| {
-                    LocalError::Integrity("batch item sequence overflow".to_string())
-                })?;
-                node.blob_id = Some(prepared.objects[&change.path].clone());
-                node.size = Some(
-                    i64::try_from(observed.size.expect("FILE has size")).map_err(|_| {
-                        LocalError::Integrity("batch FILE size exceeds i64".to_string())
-                    })?,
-                );
-            }
-            ChangeKind::Add => {
-                let observed = &working[&change.path];
-                let item_id = prepared.created_ids[&change.path].clone();
-                let head_seq = match observed.kind {
-                    NodeKind::Folder => 1,
-                    NodeKind::File => 2,
-                };
-                let blob_id = prepared.objects.get(&change.path).cloned();
-                let size = observed.size.map(i64::try_from).transpose().map_err(|_| {
-                    LocalError::Integrity("batch FILE size exceeds i64".to_string())
-                })?;
-                if committed
-                    .insert(
-                        change.path.clone(),
-                        CommittedNode {
-                            item_id: item_id.clone(),
-                            kind: observed.kind,
-                            head_seq,
-                            blob_id,
-                            size,
-                        },
-                    )
-                    .is_some()
-                {
-                    return Err(LocalError::Integrity(format!(
-                        "completed batch addition replaced an existing path: {}",
-                        change.path
-                    )));
-                }
-                working_ids.insert(change.path.clone(), item_id);
-            }
-            _ => {
-                return Err(LocalError::Integrity(
-                    "batch state contains an unsupported structural change".to_string(),
-                ));
-            }
-        }
-    }
-    Ok(())
 }
 
 pub(crate) fn select_changes(
@@ -8280,13 +7301,7 @@ pub(crate) fn materialize_events(
             }
         })
         .collect::<Vec<_>>();
-    check_projected_group_size(message, &events, &kinds)?;
-    if events.len() + ref_events.len() > synck_file_folder::MAX_EVENTS {
-        return Err(LocalError::FileFolder(SemanticError {
-            code: SemanticErrorCode::TooManyEvents,
-            detail: "complete proposal event count is outside the profile limit".to_string(),
-        }));
-    }
+    validate_projected_proposal(message, &events, &kinds)?;
     Ok(BuiltEvents {
         events,
         ref_events,
@@ -8532,19 +7547,16 @@ mod tests {
     #[cfg(windows)]
     use super::entry_matches_revert_state;
     use super::{
-        BATCH_COMMIT_INTENT_NAME, BATCH_COMMIT_INTENT_VERSION, BATCH_COMMIT_MAX_CHANGES,
-        BATCH_COMMIT_STATE_NAME, BatchCommitManifest, BatchCommitState, CommitOutcome,
-        PendingBatchCommit, RecoverIntentItem, RevertIntentItem, RevertItemState,
+        CommitOutcome, RecoverIntentItem, RevertIntentItem, RevertItemState,
         WORKTREE_RESTORE_INTENT_NAME, WORKTREE_RESTORE_INTENT_VERSION, WORKTREE_RESTORE_STAGE_NAME,
-        WorktreeRestoreIntent, batch_commit_failure, batch_identity_records,
-        batch_working_snapshot, build_recover_intent, build_revert_intent,
+        WorktreeRestoreIntent, build_recover_intent, build_revert_intent,
         build_worktree_restore_items, materialize_events, proposal_item_kind_requirements,
         reject_reserved_recover_items, reject_reserved_revert_items, worktree_restore_manifest,
     };
+    use crate::LocalError;
     use crate::event_profile::{LocalEvent, classify_commit};
     use crate::init;
     use crate::repository::{Repository, windows_extended_length_path_units};
-    use crate::{ChangeKind, LocalError};
 
     const CONFORMANCE_FIXTURE: &str =
         include_str!("../../synck-file-folder/tests/fixtures/v1/conformance.json");
@@ -8727,26 +7739,6 @@ mod tests {
                     }
                 ),
             }
-        }
-    }
-
-    #[test]
-    fn post_acceptance_batch_failure_keeps_every_receipt() {
-        let accepted_commit_ids = vec!["first".to_string(), "second".to_string()];
-        let error = batch_commit_failure(
-            accepted_commit_ids.clone(),
-            LocalError::Invalid("injected cleanup failure".to_string()),
-        );
-
-        match error {
-            LocalError::BatchCommitIncomplete {
-                accepted_commit_ids: actual,
-                detail,
-            } => {
-                assert_eq!(actual, accepted_commit_ids);
-                assert_eq!(detail, "injected cleanup failure");
-            }
-            error => panic!("unexpected error: {error}"),
         }
     }
 
@@ -9122,379 +8114,6 @@ mod tests {
         assert_eq!(repository.log(Some(1)).await.unwrap().len(), 1);
         assert_eq!(repository.state_index_catch_ups() - historical_before, 3);
         assert!(repository.status().await.unwrap().is_empty());
-    }
-
-    #[tokio::test]
-    async fn batch_commit_reconciles_once_across_multiple_core_commits() {
-        let temporary = tempfile::tempdir().unwrap();
-        let root = temporary.path();
-        init(root, "author").await.unwrap();
-        let repository = Repository::discover(root).await.unwrap();
-        repository.commit("baseline").await.unwrap();
-        fs::create_dir(root.join("bulk")).unwrap();
-        for index in 0..BATCH_COMMIT_MAX_CHANGES {
-            fs::write(root.join(format!("bulk/file-{index:04}")), b"").unwrap();
-        }
-
-        let before = repository.commit_work_counters();
-        let outcome = repository
-            .commit_selected_batch(root, &[], Some("folders"))
-            .await
-            .unwrap();
-        let after = repository.commit_work_counters();
-
-        assert_eq!(outcome.items_changed, BATCH_COMMIT_MAX_CHANGES + 1);
-        assert_eq!(outcome.commit_ids.len(), 2);
-        assert_eq!(after.0 - before.0, 1);
-        assert_eq!(after.1 - before.1, BATCH_COMMIT_MAX_CHANGES + 1);
-    }
-
-    #[tokio::test]
-    async fn discovery_discards_state_published_without_a_batch_manifest() {
-        let temporary = tempfile::tempdir().unwrap();
-        let root = temporary.path();
-        init(root, "author").await.unwrap();
-        let repository = Repository::discover(root).await.unwrap();
-        repository.commit("baseline").await.unwrap();
-        let state = BatchCommitState {
-            version: BATCH_COMMIT_INTENT_VERSION,
-            next_change: 0,
-            pending: None,
-        };
-        repository
-            .write_json_intent(BATCH_COMMIT_STATE_NAME, "batch-commit-state", &state)
-            .unwrap();
-        drop(repository);
-
-        let recovered = Repository::discover(root).await.unwrap();
-        assert!(!root.join(".synck").join(BATCH_COMMIT_STATE_NAME).exists());
-        let log = recovered.log(None).await.unwrap();
-        assert_eq!(log.len(), 1);
-        assert_eq!(
-            log[0].message.as_deref(),
-            Some("Initialize Synck repository")
-        );
-        assert!(recovered.status().await.unwrap().is_empty());
-    }
-
-    #[tokio::test]
-    async fn discovery_rejects_a_batch_manifest_without_its_state() {
-        let temporary = tempfile::tempdir().unwrap();
-        let root = temporary.path();
-        init(root, "author").await.unwrap();
-        let repository = Repository::discover(root).await.unwrap();
-        repository.commit("baseline").await.unwrap();
-        fs::write(root.join("document.bin"), b"content").unwrap();
-        let (_, working, changes, _) = repository.changes().await.unwrap();
-        let manifest = BatchCommitManifest {
-            version: BATCH_COMMIT_INTENT_VERSION,
-            message: Some("manifest only".to_string()),
-            items_total: changes.len(),
-            working: batch_working_snapshot(&working, &changes),
-            changes,
-        };
-        repository
-            .write_json_intent(BATCH_COMMIT_INTENT_NAME, "batch-commit", &manifest)
-            .unwrap();
-        drop(repository);
-
-        let error = match Repository::discover(root).await {
-            Ok(_) => panic!("manifest-only batch state unexpectedly opened"),
-            Err(error) => error,
-        };
-        assert!(error.to_string().contains("manifest without its state"));
-    }
-
-    #[tokio::test]
-    async fn discovery_rejects_an_oversized_message_in_a_batch_manifest() {
-        let temporary = tempfile::tempdir().unwrap();
-        let root = temporary.path();
-        init(root, "author").await.unwrap();
-        let repository = Repository::discover(root).await.unwrap();
-        fs::write(root.join("document.bin"), b"content").unwrap();
-        let (_, working, changes, _) = repository.changes().await.unwrap();
-        let manifest = BatchCommitManifest {
-            version: BATCH_COMMIT_INTENT_VERSION,
-            message: Some("x".repeat(synck_file_folder::MAX_MESSAGE_BYTES + 1)),
-            items_total: changes.len(),
-            working: batch_working_snapshot(&working, &changes),
-            changes,
-        };
-        let state = BatchCommitState {
-            version: BATCH_COMMIT_INTENT_VERSION,
-            next_change: 0,
-            pending: None,
-        };
-        repository.write_batch_commit(&manifest, &state).unwrap();
-        drop(repository);
-
-        let error = match Repository::discover(root).await {
-            Ok(_) => panic!("oversized batch message unexpectedly recovered"),
-            Err(error) => error,
-        };
-        assert!(error.to_string().contains("invalid fixed fields"));
-        assert!(root.join(".synck").join(BATCH_COMMIT_INTENT_NAME).is_file());
-        assert!(root.join(".synck").join(BATCH_COMMIT_STATE_NAME).is_file());
-    }
-
-    #[tokio::test]
-    async fn discovery_rejects_an_impossible_batch_checkpoint() {
-        let temporary = tempfile::tempdir().unwrap();
-        let root = temporary.path();
-        init(root, "author").await.unwrap();
-        let repository = Repository::discover(root).await.unwrap();
-        repository.commit("baseline").await.unwrap();
-        fs::write(root.join("one.bin"), b"one").unwrap();
-        fs::write(root.join("two.bin"), b"two").unwrap();
-        let (_, working, changes, _) = repository.changes().await.unwrap();
-        assert_eq!(changes.len(), 2);
-        let manifest = BatchCommitManifest {
-            version: BATCH_COMMIT_INTENT_VERSION,
-            message: Some("invalid checkpoint".to_string()),
-            items_total: changes.len(),
-            working: batch_working_snapshot(&working, &changes),
-            changes,
-        };
-        let state = BatchCommitState {
-            version: BATCH_COMMIT_INTENT_VERSION,
-            next_change: 1,
-            pending: None,
-        };
-        repository.write_batch_commit(&manifest, &state).unwrap();
-        drop(repository);
-
-        let error = match Repository::discover(root).await {
-            Ok(_) => panic!("impossible batch checkpoint unexpectedly recovered"),
-            Err(error) => error,
-        };
-        assert!(error.to_string().contains("invalid fixed fields"));
-        assert!(root.join(".synck").join(BATCH_COMMIT_INTENT_NAME).is_file());
-        assert!(root.join(".synck").join(BATCH_COMMIT_STATE_NAME).is_file());
-    }
-
-    #[tokio::test]
-    async fn discovery_rejects_a_noncanonical_batch_operation_id() {
-        let temporary = tempfile::tempdir().unwrap();
-        let root = temporary.path();
-        init(root, "author").await.unwrap();
-        let repository = Repository::discover(root).await.unwrap();
-        repository.commit("baseline").await.unwrap();
-        fs::write(root.join("document.bin"), b"content").unwrap();
-        let (committed, working, changes, working_ids) = repository.changes().await.unwrap();
-        let manifest = BatchCommitManifest {
-            version: BATCH_COMMIT_INTENT_VERSION,
-            message: Some("noncanonical operation".to_string()),
-            items_total: changes.len(),
-            working: batch_working_snapshot(&working, &changes),
-            changes: changes.clone(),
-        };
-        let prepared = repository
-            .prepare_working_commit(
-                &committed,
-                &working,
-                &changes,
-                &working_ids,
-                manifest.message.as_deref(),
-            )
-            .unwrap();
-        let identities = batch_identity_records(
-            &committed,
-            &working,
-            &changes,
-            &working_ids,
-            &prepared.created_ids,
-        )
-        .unwrap();
-        let state = BatchCommitState {
-            version: BATCH_COMMIT_INTENT_VERSION,
-            next_change: 0,
-            pending: Some(PendingBatchCommit {
-                operation_id: "123E4567-E89B-42D3-A456-426614174ABC".to_string(),
-                changes,
-                identities,
-            }),
-        };
-        repository.write_batch_commit(&manifest, &state).unwrap();
-        drop(repository);
-
-        let error = match Repository::discover(root).await {
-            Ok(_) => panic!("noncanonical operation ID unexpectedly recovered"),
-            Err(error) => error,
-        };
-        assert!(error.to_string().contains("invalid operation ID"));
-        assert!(root.join(".synck").join(BATCH_COMMIT_INTENT_NAME).is_file());
-        assert!(root.join(".synck").join(BATCH_COMMIT_STATE_NAME).is_file());
-    }
-
-    #[tokio::test]
-    async fn discovery_replays_a_pending_unaccepted_batch_once() {
-        let temporary = tempfile::tempdir().unwrap();
-        let root = temporary.path();
-        init(root, "author").await.unwrap();
-        let repository = Repository::discover(root).await.unwrap();
-        repository.commit("baseline").await.unwrap();
-        fs::write(root.join("document.bin"), b"content").unwrap();
-        let (committed, working, changes, working_ids) = repository.changes().await.unwrap();
-        let manifest = BatchCommitManifest {
-            version: BATCH_COMMIT_INTENT_VERSION,
-            message: Some("pending unaccepted".to_string()),
-            items_total: changes.len(),
-            working: batch_working_snapshot(&working, &changes),
-            changes: changes.clone(),
-        };
-        let prepared = repository
-            .prepare_working_commit(
-                &committed,
-                &working,
-                &changes,
-                &working_ids,
-                manifest.message.as_deref(),
-            )
-            .unwrap();
-        let identities = batch_identity_records(
-            &committed,
-            &working,
-            &changes,
-            &working_ids,
-            &prepared.created_ids,
-        )
-        .unwrap();
-        let state = BatchCommitState {
-            version: BATCH_COMMIT_INTENT_VERSION,
-            next_change: 0,
-            pending: Some(PendingBatchCommit {
-                operation_id: uuid::Uuid::new_v4().to_string(),
-                changes,
-                identities,
-            }),
-        };
-        repository.write_batch_commit(&manifest, &state).unwrap();
-        drop(repository);
-
-        let recovered = Repository::discover(root).await.unwrap();
-        assert!(recovered.status().await.unwrap().is_empty());
-        assert_eq!(
-            recovered
-                .log(None)
-                .await
-                .unwrap()
-                .iter()
-                .filter(|commit| commit.message.as_deref() == Some("pending unaccepted"))
-                .count(),
-            1
-        );
-        assert!(!root.join(".synck").join(BATCH_COMMIT_INTENT_NAME).exists());
-        assert!(!root.join(".synck").join(BATCH_COMMIT_STATE_NAME).exists());
-    }
-
-    #[tokio::test]
-    async fn batch_recovery_ignores_unselected_changes_around_the_manifest() {
-        let temporary = tempfile::tempdir().unwrap();
-        let root = temporary.path();
-        for name in ["a-unselected.bin", "m-selected.bin", "z-unselected.bin"] {
-            fs::write(root.join(name), b"before").unwrap();
-        }
-        init(root, "author").await.unwrap();
-        let repository = Repository::discover(root).await.unwrap();
-        repository.commit("baseline").await.unwrap();
-        for name in ["a-unselected.bin", "m-selected.bin", "z-unselected.bin"] {
-            fs::write(root.join(name), b"after").unwrap();
-        }
-        let (_, working, changes, _) = repository.changes().await.unwrap();
-        let selected = changes
-            .into_iter()
-            .filter(|change| change.path == "m-selected.bin")
-            .collect::<Vec<_>>();
-        assert_eq!(selected.len(), 1);
-        let manifest = BatchCommitManifest {
-            version: BATCH_COMMIT_INTENT_VERSION,
-            message: Some("recover selected change".to_string()),
-            items_total: selected.len(),
-            working: batch_working_snapshot(&working, &selected),
-            changes: selected,
-        };
-        let state = BatchCommitState {
-            version: BATCH_COMMIT_INTENT_VERSION,
-            next_change: 0,
-            pending: None,
-        };
-        repository.write_batch_commit(&manifest, &state).unwrap();
-        drop(repository);
-
-        let recovered = Repository::discover(root).await.unwrap();
-        let remaining = recovered.status().await.unwrap();
-        assert_eq!(
-            remaining
-                .iter()
-                .map(|change| change.path.as_str())
-                .collect::<Vec<_>>(),
-            ["a-unselected.bin", "z-unselected.bin"]
-        );
-        assert!(
-            remaining
-                .iter()
-                .all(|change| change.kind == ChangeKind::Modify)
-        );
-        assert_eq!(
-            recovered
-                .log(None)
-                .await
-                .unwrap()
-                .iter()
-                .filter(|commit| commit.message.as_deref() == Some("recover selected change"))
-                .count(),
-            1
-        );
-    }
-
-    #[tokio::test]
-    async fn discovery_resumes_after_a_finalized_batch_checkpoint() {
-        let temporary = tempfile::tempdir().unwrap();
-        let root = temporary.path();
-        init(root, "author").await.unwrap();
-        let repository = Repository::discover(root).await.unwrap();
-        repository.commit("baseline").await.unwrap();
-        for index in 0..=BATCH_COMMIT_MAX_CHANGES {
-            fs::create_dir(root.join(format!("folder-{index:04}"))).unwrap();
-        }
-        let (_, working, changes, _) = repository.changes().await.unwrap();
-        let manifest = BatchCommitManifest {
-            version: BATCH_COMMIT_INTENT_VERSION,
-            message: Some("checkpointed batch".to_string()),
-            items_total: changes.len(),
-            working: batch_working_snapshot(&working, &changes),
-            changes,
-        };
-        let first_batch_paths = manifest.changes[..BATCH_COMMIT_MAX_CHANGES]
-            .iter()
-            .map(|change| std::path::PathBuf::from(&change.path))
-            .collect::<Vec<_>>();
-        repository
-            .commit_selected(root, &first_batch_paths, manifest.message.as_deref())
-            .await
-            .unwrap();
-        let state = BatchCommitState {
-            version: BATCH_COMMIT_INTENT_VERSION,
-            next_change: BATCH_COMMIT_MAX_CHANGES,
-            pending: None,
-        };
-        repository.write_batch_commit(&manifest, &state).unwrap();
-        drop(repository);
-
-        let recovered = Repository::discover(root).await.unwrap();
-        assert!(recovered.status().await.unwrap().is_empty());
-        assert_eq!(
-            recovered
-                .log(None)
-                .await
-                .unwrap()
-                .iter()
-                .filter(|commit| commit.message.as_deref() == Some("checkpointed batch"))
-                .count(),
-            2
-        );
-        assert!(!root.join(".synck").join(BATCH_COMMIT_INTENT_NAME).exists());
-        assert!(!root.join(".synck").join(BATCH_COMMIT_STATE_NAME).exists());
     }
 
     #[tokio::test]

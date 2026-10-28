@@ -12,7 +12,6 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use synck_local::{LocalError, Repository};
 
 const CLEAN_STATUS_OUTPUT: &[u8] = b"nothing to commit, working tree clean\n";
 
@@ -97,7 +96,7 @@ fn cli_instructions_teach_the_complete_safe_workflow_without_a_repository() {
     let instructions = String::from_utf8(output.stdout).unwrap();
     assert_eq!(instructions, include_str!("../src/instructions.txt"));
     assert!(instructions.contains("synck init [DIR] --author"));
-    assert!(instructions.contains("synck commit --batch"));
+    assert!(!instructions.contains("--batch"));
     assert!(instructions.contains("synck config set-hidden-files track"));
     assert!(instructions.contains("synck recover <path-or-item-id>"));
     assert!(instructions.contains("Never edit anything inside .synck"));
@@ -1960,18 +1959,13 @@ fn cli_json_commit_and_revert_results_identify_accepted_history() {
     assert_eq!(committed["commit_id"], shown["commit"]["commit_id"]);
     assert_eq!(shown["commit"]["changes"].as_array().unwrap().len(), 1);
 
-    let batch = json_stdout(root, &["commit", "--batch", "-m", "remainder", "--json"]);
-    assert_keys(&batch, &["schema_version", "commit_ids", "items_changed"]);
-    assert_eq!(batch["schema_version"], 5);
-    assert_eq!(batch["items_changed"], 1);
+    let remainder = json_stdout(root, &["commit", "-m", "remainder", "--json"]);
+    assert_keys(&remainder, &["schema_version", "commit_id"]);
     let shown = json_stdout(root, &["show", "HEAD", "--json"]);
+    assert_eq!(remainder["commit_id"], shown["commit"]["commit_id"]);
     assert_eq!(
-        batch["commit_ids"],
-        serde_json::json!([shown["commit"]["commit_id"]])
-    );
-    assert_eq!(
-        json_stdout(root, &["commit", "--batch", "--json"]),
-        serde_json::json!({"schema_version": 5, "commit_ids": [], "items_changed": 0})
+        json_stdout(root, &["commit", "--json"]),
+        serde_json::json!({"schema_version": 5, "commit_id": null})
     );
 
     let reverted = json_stdout(root, &["revert", "HEAD", "-m", "undo", "--json"]);
@@ -1979,7 +1973,7 @@ fn cli_json_commit_and_revert_results_identify_accepted_history() {
     assert_eq!(reverted["schema_version"], 5);
     let shown = json_stdout(root, &["show", "HEAD", "--json"]);
     assert_eq!(reverted["commit_id"], shown["commit"]["commit_id"]);
-    assert_ne!(reverted["commit_id"], batch["commit_ids"][0]);
+    assert_ne!(reverted["commit_id"], remainder["commit_id"]);
     assert!(!root.join("other.txt").exists());
 
     for arguments in [
@@ -2467,133 +2461,6 @@ fn cli_smoke_and_fsck_exit_status() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-}
-
-#[test]
-fn cli_batch_commit_reports_its_explicit_transaction_boundary() {
-    let temporary = tempfile::tempdir().unwrap();
-    fs::write(temporary.path().join("file.txt"), b"content").unwrap();
-    assert!(
-        synck(temporary.path(), &["init", "--author", "author"])
-            .status
-            .success()
-    );
-
-    let output = synck(temporary.path(), &["commit", "--batch", "-m", "initial"]);
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let stdout = String::from_utf8(output.stdout).unwrap();
-    assert!(stdout.starts_with("committed sha256:"));
-    assert!(stdout.ends_with("committed 1 item in 1 commit\n"));
-    assert!(output.stderr.is_empty());
-}
-
-#[test]
-fn cli_batch_refuses_same_path_delete_and_add_before_committing() {
-    let temporary = tempfile::tempdir().unwrap();
-    let root = temporary.path();
-    fs::write(root.join("Entry"), b"file\n").unwrap();
-    assert!(
-        synck(root, &["init", "--author", "author"])
-            .status
-            .success()
-    );
-    assert!(synck(root, &["commit", "-m", "initial"]).status.success());
-
-    fs::create_dir(root.join("Replacement")).unwrap();
-    fs::remove_file(root.join("Entry")).unwrap();
-    fs::rename(root.join("Replacement"), root.join("Entry")).unwrap();
-    let output = synck(root, &["commit", "--batch", "-m", "invalid split"]);
-
-    assert_eq!(output.status.code(), Some(1));
-    assert!(output.stdout.is_empty());
-    assert_eq!(
-        String::from_utf8(output.stderr).unwrap(),
-        "synck: synck commit --batch cannot split same-path delete and add Entry; commit it atomically\n"
-    );
-    assert_eq!(
-        json_stdout(root, &["log", "--json"])["commits"]
-            .as_array()
-            .unwrap()
-            .len(),
-        2
-    );
-    assert_eq!(
-        String::from_utf8(synck(root, &["status"]).stdout).unwrap(),
-        "D Entry\nA Entry\n"
-    );
-}
-
-#[test]
-fn cli_batch_recovery_prints_every_commit_accepted_before_failure() {
-    let temporary = tempfile::tempdir().unwrap();
-    let root = temporary.path();
-    assert!(
-        synck(root, &["init", "--author", "author"])
-            .status
-            .success()
-    );
-    assert!(synck(root, &["commit", "-m", "baseline"]).status.success());
-    for index in 0..=2_000 {
-        fs::create_dir(root.join(format!("folder-{index:04}"))).unwrap();
-    }
-
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-    let accepted_commit_id = runtime.block_on(async {
-        let repository = Repository::discover(root).await.unwrap();
-        let database = root.join(".synck/repository.sqlite3");
-        let connection = rusqlite::Connection::open(&database).unwrap();
-        connection
-            .execute_batch(
-                "CREATE TRIGGER reject_batch_identity_update
-                 BEFORE INSERT ON local_worktree_identities
-                 BEGIN
-                     SELECT RAISE(ABORT, 'injected batch identity failure');
-                 END;",
-            )
-            .unwrap();
-        drop(connection);
-        let accepted_commit_id = match repository
-            .commit_selected_batch(root, &[], Some("interrupted batch"))
-            .await
-            .unwrap_err()
-        {
-            LocalError::BatchCommitIncomplete {
-                accepted_commit_ids,
-                ..
-            } => {
-                assert_eq!(accepted_commit_ids.len(), 1);
-                accepted_commit_ids.into_iter().next().unwrap()
-            }
-            error => panic!("unexpected batch error: {error}"),
-        };
-        let connection = rusqlite::Connection::open(&database).unwrap();
-        connection
-            .execute_batch("DROP TRIGGER reject_batch_identity_update")
-            .unwrap();
-        accepted_commit_id
-    });
-
-    fs::remove_dir(root.join("folder-2000")).unwrap();
-    fs::write(root.join("folder-2000"), b"changed after interruption").unwrap();
-    let output = synck(root, &["status"]);
-
-    assert_eq!(output.status.code(), Some(1));
-    assert_eq!(
-        String::from_utf8(output.stdout).unwrap(),
-        format!("committed {accepted_commit_id}\n")
-    );
-    let stderr = String::from_utf8(output.stderr).unwrap();
-    assert!(stderr.contains("batch did not complete"));
-    assert!(stderr.contains("unaccepted remainder was left uncommitted"));
-    assert!(!root.join(".synck/batch-commit.json").exists());
-    assert!(!root.join(".synck/batch-commit-state.json").exists());
 }
 
 #[test]
@@ -3097,11 +2964,7 @@ fn fsck_bounds_integrity_diagnostics() {
     for index in 0..101 {
         fs::create_dir(root.join(format!("folder-{index}"))).unwrap();
     }
-    assert!(
-        synck(root, &["commit", "--batch", "-m", "folders"])
-            .status
-            .success()
-    );
+    assert!(synck(root, &["commit", "-m", "folders"]).status.success());
     let db = rusqlite::Connection::open(root.join(".synck/repository.sqlite3")).unwrap();
     db.execute("UPDATE vcs_items SET created_at='invalid'", [])
         .unwrap();

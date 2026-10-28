@@ -66,3 +66,11 @@ A future administrative rewrite must replace the generation, validate its new
 history and rebuild checkpoints before publishing the replacement atomically.
 Client cursors must bind repository ID, generation, position and checkpoint;
 a generation mismatch cannot be treated as an ordinary forward extension.
+
+## Commit size
+
+The format imposes no fixed per-commit event-count or aggregate byte cap.
+Storage integers and available resources still bound representable commits.
+Local commits are atomic, including moves and renames; no batch command or
+batch recovery journal is part of 0.2. Pagination limits apply to individual
+read requests, never to the validity of a stored commit.

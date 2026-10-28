@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use synck_file_folder::{
     BlobRef, CurrentItem, ImmutableItemKind, Intent, IntentProposal, ItemBase, Location,
-    ProfileLifecycleState, SemanticErrorCode, check_projected_group_size, compute_operation_id,
+    ProfileLifecycleState, SemanticErrorCode, validate_projected_proposal, compute_operation_id,
     project_commit, project_proposal_events, validate_and_materialize,
 };
 use synck_vcs::types::{
@@ -1251,7 +1251,7 @@ fn projector_omits_an_out_of_profile_item_created_and_mutated_in_one_commit() {
     let mut mutation = event(record_id, "RECORD::SET_METADATA", None);
     mutation.set_metadata = Some(json!({"field": "value"}));
     let proposals = vec![create, mutation];
-    check_projected_group_size(None, &proposals, &[]).unwrap();
+    validate_projected_proposal(None, &proposals, &[]).unwrap();
     let (commit, rows) = accepted_commit(proposals, None);
     assert!(project_commit(&commit, &rows, &[]).unwrap().is_none());
 }
@@ -1328,7 +1328,7 @@ fn projector_strips_valid_content_decoration_and_rejects_unknown_keys() {
         item_id: file_id.clone(),
         item_type: "FILE".to_string(),
     }];
-    check_projected_group_size(None, &[content.clone()], &kinds).unwrap();
+    validate_projected_proposal(None, &[content.clone()], &kinds).unwrap();
     let projected = project_proposal_events(&[content.clone()], &kinds).unwrap();
     assert_eq!(
         projected[0].set_metadata,
@@ -1349,7 +1349,7 @@ fn projector_strips_valid_content_decoration_and_rejects_unknown_keys() {
         .unwrap()
         .insert("unknown".to_string(), Value::Bool(true));
     assert_eq!(
-        check_projected_group_size(None, &[content], &kinds)
+        validate_projected_proposal(None, &[content], &kinds)
             .unwrap_err()
             .code,
         SemanticErrorCode::MalformedProfileEvent
@@ -1380,7 +1380,7 @@ fn projector_accepts_only_the_deployed_product_omission_shapes() {
     ] {
         let mut proposal = event(file_id.clone(), event_type, Some(3));
         proposal.set_metadata = Some(json!({"contract": "product"}));
-        check_projected_group_size(None, &[proposal], &file_kind).unwrap();
+        validate_projected_proposal(None, &[proposal], &file_kind).unwrap();
     }
 
     let mut version_create = event(file_id.clone(), "FILE::VERSION::CREATE", Some(3));
@@ -1388,7 +1388,7 @@ fn projector_accepts_only_the_deployed_product_omission_shapes() {
     version_create.set_content = Some(EventContent::Blob {
         blob_id: digest('d'),
     });
-    check_projected_group_size(None, &[version_create], &file_kind).unwrap();
+    validate_projected_proposal(None, &[version_create], &file_kind).unwrap();
 
     for with_content in [false, true] {
         let mut version_metadata = event(file_id.clone(), "FILE::VERSION::SET_METADATA", Some(3));
@@ -1398,27 +1398,27 @@ fn projector_accepts_only_the_deployed_product_omission_shapes() {
                 blob_id: digest('e'),
             });
         }
-        check_projected_group_size(None, &[version_metadata], &file_kind).unwrap();
+        validate_projected_proposal(None, &[version_metadata], &file_kind).unwrap();
     }
 
     for event_type in ["FOLDER::SET_METADATA", "FOLDER::WORKFLOW_RUNTIME"] {
         let mut proposal = event(folder_id.clone(), event_type, Some(5));
         proposal.set_metadata = Some(json!({"contract": "product"}));
-        check_projected_group_size(None, &[proposal], &folder_kind).unwrap();
+        validate_projected_proposal(None, &[proposal], &folder_kind).unwrap();
     }
 
     for (is_federated, stream_id) in [(true, Some("stream")), (false, None)] {
         let mut proposal = event(file_id.clone(), "FILE::FEDERATE", Some(3));
         proposal.set_is_federated = Some(is_federated);
         proposal.set_federation_stream_id = stream_id.map(str::to_string);
-        check_projected_group_size(None, &[proposal], &file_kind).unwrap();
+        validate_projected_proposal(None, &[proposal], &file_kind).unwrap();
     }
 
     let mut malformed = event(file_id, "FILE::SET_METADATA", Some(3));
     malformed.set_metadata = Some(json!({"contract": "product"}));
     malformed.set_parent = Some(None);
     assert_eq!(
-        check_projected_group_size(None, &[malformed], &file_kind)
+        validate_projected_proposal(None, &[malformed], &file_kind)
             .unwrap_err()
             .code,
         SemanticErrorCode::MalformedProfileEvent
@@ -1429,7 +1429,7 @@ fn projector_accepts_only_the_deployed_product_omission_shapes() {
         "value": "x".repeat(synck_file_folder::MAX_EVENT_PAYLOAD_BYTES)
     }));
     assert_eq!(
-        check_projected_group_size(None, &[oversized], &file_kind)
+        validate_projected_proposal(None, &[oversized], &file_kind)
             .unwrap_err()
             .code,
         SemanticErrorCode::TooManyEvents
@@ -1446,7 +1446,7 @@ fn projector_fails_closed_on_move_kind_maps_prefixes_and_malformed_shapes() {
     let mut moved = event(file_id.clone(), "FILE::MOVE", Some(1));
     moved.set_name = Some("moved.txt".to_string());
     assert_eq!(
-        check_projected_group_size(None, &[moved], &kinds)
+        validate_projected_proposal(None, &[moved], &kinds)
             .unwrap_err()
             .code,
         SemanticErrorCode::UnknownProfileEvent
@@ -1455,13 +1455,13 @@ fn projector_fails_closed_on_move_kind_maps_prefixes_and_malformed_shapes() {
     let mut renamed = event(file_id.clone(), "FILE::SET_NAME", Some(1));
     renamed.set_name = Some("renamed.txt".to_string());
     assert_eq!(
-        check_projected_group_size(None, std::slice::from_ref(&renamed), &[])
+        validate_projected_proposal(None, std::slice::from_ref(&renamed), &[])
             .unwrap_err()
             .code,
         SemanticErrorCode::MalformedProfileEvent
     );
     assert_eq!(
-        check_projected_group_size(
+        validate_projected_proposal(
             None,
             std::slice::from_ref(&renamed),
             &[
@@ -1479,7 +1479,7 @@ fn projector_fails_closed_on_move_kind_maps_prefixes_and_malformed_shapes() {
 
     renamed.event_type = "FOLDER::SET_NAME".to_string();
     assert_eq!(
-        check_projected_group_size(None, std::slice::from_ref(&renamed), &kinds)
+        validate_projected_proposal(None, std::slice::from_ref(&renamed), &kinds)
             .unwrap_err()
             .code,
         SemanticErrorCode::MalformedProfileEvent
@@ -1487,7 +1487,7 @@ fn projector_fails_closed_on_move_kind_maps_prefixes_and_malformed_shapes() {
     renamed.event_type = "FILE::SET_NAME".to_string();
     renamed.set_in_trash = Some(true);
     assert_eq!(
-        check_projected_group_size(None, &[renamed], &kinds)
+        validate_projected_proposal(None, &[renamed], &kinds)
             .unwrap_err()
             .code,
         SemanticErrorCode::MalformedProfileEvent
@@ -1522,7 +1522,7 @@ fn projector_detects_noncanonical_payload_and_digest_or_envelope_corruption() {
     let mut missing_base = event(kinds[0].item_id.clone(), "FILE::SET_NAME", None);
     missing_base.set_name = Some("missing-base.txt".to_string());
     assert_eq!(
-        check_projected_group_size(None, &[missing_base], &kinds)
+        validate_projected_proposal(None, &[missing_base], &kinds)
             .unwrap_err()
             .code,
         SemanticErrorCode::MalformedProfileEvent

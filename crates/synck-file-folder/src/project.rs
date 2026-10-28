@@ -1,8 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use serde::Serialize;
 use serde_json::{Value, json};
-use serde_json_canonicalizer::to_vec as canonical_json_to_vec;
 use sha2::{Digest, Sha256};
 use synck_vcs::naming::compute_name_key;
 use synck_vcs::types::{
@@ -16,10 +14,7 @@ use synck_vcs::types::{
 
 use crate::error::{SemanticError, SemanticErrorCode};
 use crate::model::{ChangeGroup, FileFolderKind, ImmutableItemKind, ItemChange, ItemHead};
-use crate::{
-    MAX_COMMIT_PAYLOAD_BYTES, MAX_EVENT_PAYLOAD_BYTES, MAX_EVENTS, MAX_MESSAGE_BYTES,
-    MAX_PROJECTED_GROUP_BYTES, is_profile_event_type,
-};
+use crate::{MAX_EVENT_PAYLOAD_BYTES, MAX_MESSAGE_BYTES, is_profile_event_type};
 
 const KNOWN_FILE_OMISSIONS: &[&str] = &[
     "FILE::SET_METADATA",
@@ -107,7 +102,6 @@ fn project_commit_with_refs(
             | REF_COMMIT_FORMAT_VERSION
             | REF_IMPORT_COMMIT_FORMAT_VERSION
     ) || commit.event_count < 0
-        || commit.event_count as usize > MAX_EVENTS
         || commit.event_count as usize != total_events
         || ref_format == ref_events.is_empty()
     {
@@ -193,11 +187,10 @@ fn project_commit_with_refs(
         changes,
         item_heads: heads.into_values().collect(),
     };
-    require_group_size(&group)?;
     Ok(Some(group))
 }
 
-pub fn check_projected_group_size(
+pub fn validate_projected_proposal(
     message: Option<&str>,
     events: &[EventProposal],
     immutable_kinds: &[ImmutableItemKind],
@@ -208,36 +201,7 @@ pub fn check_projected_group_size(
             "message exceeds the UTF-8 byte limit",
         ));
     }
-    let (changes, heads) = classify_proposal_events(events, immutable_kinds)?;
-
-    #[derive(Serialize)]
-    struct ConservativeGroup<'a> {
-        repo_id: &'static str,
-        repo_seq: i64,
-        commit_id: &'static str,
-        message: Option<&'a str>,
-        accepted_at: &'static str,
-        changes: &'a [ItemChange],
-        item_heads: Vec<ItemHead>,
-    }
-    let conservative = ConservativeGroup {
-        repo_id: "ffffffff-ffff-7fff-bfff-ffffffffffff",
-        repo_seq: i64::MAX,
-        commit_id: "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
-        message,
-        accepted_at: "+262142-12-31T23:59:59.999999999Z",
-        changes: &changes,
-        item_heads: heads,
-    };
-    let value = serde_json::to_value(conservative).map_err(malformed_json)?;
-    let bytes = canonical_json_to_vec(&value).map_err(malformed_json)?;
-    if bytes.len() > MAX_PROJECTED_GROUP_BYTES {
-        return Err(error(
-            SemanticErrorCode::ProjectedGroupTooLarge,
-            "conservative projected change group exceeds the byte limit",
-        ));
-    }
-    Ok(())
+    classify_proposal_events(events, immutable_kinds).map(|_| ())
 }
 
 /// Validate a complete mixed proposal and return only its normalized public
@@ -257,7 +221,7 @@ fn classify_proposal_events(
     events: &[EventProposal],
     immutable_kinds: &[ImmutableItemKind],
 ) -> Result<(Vec<ItemChange>, Vec<ItemHead>), SemanticError> {
-    if events.is_empty() || events.len() > MAX_EVENTS {
+    if events.is_empty() {
         return Err(error(
             SemanticErrorCode::TooManyEvents,
             "complete proposal event count is outside the profile limit",
@@ -1010,25 +974,12 @@ fn no_federation_modifier(proposal: &EventProposal) -> bool {
 }
 
 fn validate_proposal_payload_limits(events: &[EventProposal]) -> Result<(), SemanticError> {
-    let mut aggregate = 0usize;
     for proposal in events {
         let payload = canonical_event_proposal_bytes(proposal).map_err(core_canonical_error)?;
         if payload.len() > MAX_EVENT_PAYLOAD_BYTES {
             return Err(error(
                 SemanticErrorCode::TooManyEvents,
                 "one event exceeds the payload byte limit",
-            ));
-        }
-        aggregate = aggregate.checked_add(payload.len()).ok_or_else(|| {
-            error(
-                SemanticErrorCode::TooManyEvents,
-                "aggregate event payload length overflowed",
-            )
-        })?;
-        if aggregate > MAX_COMMIT_PAYLOAD_BYTES {
-            return Err(error(
-                SemanticErrorCode::TooManyEvents,
-                "aggregate event payload exceeds the byte limit",
             ));
         }
     }
@@ -1051,22 +1002,6 @@ fn require_shape(valid: bool, detail: &'static str) -> Result<(), SemanticError>
     Ok(())
 }
 
-fn require_group_size(group: &ChangeGroup) -> Result<(), SemanticError> {
-    if canonical_group_size(group)? > MAX_PROJECTED_GROUP_BYTES {
-        return Err(error(
-            SemanticErrorCode::ProjectedGroupTooLarge,
-            "projected change group exceeds the byte limit",
-        ));
-    }
-    Ok(())
-}
-
-fn canonical_group_size(group: &ChangeGroup) -> Result<usize, SemanticError> {
-    let value = serde_json::to_value(group).map_err(malformed_json)?;
-    let bytes = canonical_json_to_vec(&value).map_err(malformed_json)?;
-    Ok(bytes.len())
-}
-
 fn core_canonical_error(failure: synck_vcs::errors::CoreError) -> SemanticError {
     error(
         SemanticErrorCode::MalformedProfileEvent,
@@ -1074,12 +1009,6 @@ fn core_canonical_error(failure: synck_vcs::errors::CoreError) -> SemanticError 
     )
 }
 
-fn malformed_json(failure: impl std::fmt::Display) -> SemanticError {
-    error(
-        SemanticErrorCode::MalformedProfileEvent,
-        format!("canonical JSON failed: {failure}"),
-    )
-}
 
 fn error(code: SemanticErrorCode, detail: impl Into<String>) -> SemanticError {
     SemanticError::new(code, detail)
@@ -1093,35 +1022,6 @@ mod tests {
     };
 
     use super::*;
-
-    fn group(message: String) -> ChangeGroup {
-        ChangeGroup {
-            repo_id: RepoId::parse("0198e8fa-664e-7e80-b134-94ea7ecec437").unwrap(),
-            repo_seq: 1,
-            commit_id: CommitId::parse(format!("sha256:{}", "a".repeat(64))).unwrap(),
-            message: Some(message),
-            accepted_at: "2026-08-20T12:00:00Z".parse().unwrap(),
-            changes: Vec::new(),
-            item_heads: Vec::new(),
-        }
-    }
-
-    #[test]
-    fn exact_projected_group_limit_is_inclusive() {
-        let base_size = canonical_group_size(&group(String::new())).unwrap();
-        let exact = group("x".repeat(MAX_PROJECTED_GROUP_BYTES - base_size));
-        assert_eq!(
-            canonical_group_size(&exact).unwrap(),
-            MAX_PROJECTED_GROUP_BYTES
-        );
-        require_group_size(&exact).unwrap();
-
-        let oversized = group("x".repeat(MAX_PROJECTED_GROUP_BYTES - base_size + 1));
-        assert_eq!(
-            require_group_size(&oversized).unwrap_err().code,
-            SemanticErrorCode::ProjectedGroupTooLarge
-        );
-    }
 
     #[test]
     fn ref_commit_requires_and_verifies_the_complete_tagged_envelope() {

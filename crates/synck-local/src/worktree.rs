@@ -73,17 +73,6 @@ pub struct FileIdentity {
 }
 
 impl FileIdentity {
-    pub(crate) fn from_durable_parts(
-        device_id: u64,
-        file_id: u64,
-        incarnation: Option<FileTime>,
-    ) -> Self {
-        Self {
-            device_id,
-            file_id,
-            incarnation,
-        }
-    }
     pub(crate) fn durable_parts(self) -> (u64, u64, Option<FileTime>) {
         (self.device_id, self.file_id, self.incarnation)
     }
@@ -96,10 +85,6 @@ pub(crate) struct FileTime {
 }
 
 impl FileTime {
-    pub(crate) fn from_parts(seconds: i64, nanos: i64) -> Self {
-        Self { seconds, nanos }
-    }
-
     pub(crate) fn is_valid(self) -> bool {
         (0..1_000_000_000).contains(&self.nanos)
     }

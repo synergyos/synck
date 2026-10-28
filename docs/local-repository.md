@@ -184,8 +184,6 @@ setting.
   lock
   monitor.lock                     # monitor lifetime lock target
   monitor.sock                     # Unix only, present while monitor runs
-  batch-commit.json                # immutable manifest during synck commit --batch
-  batch-commit-state.json          # bounded mutable progress for the manifest
   move.json                         # present only during an interrupted synck mv
   working-tree-edit.json            # interrupted library working-tree edit
   working-tree-edit-stage/          # quarantine owned by working-tree-edit.json
@@ -229,7 +227,7 @@ owner may replace a stale real `monitor.sock`, and it removes the socket on
 shutdown only when the path still names the socket it bound. The socket and
 monitor lock contain no repository state and are excluded from copies.
 
-`batch-commit.json` with `batch-commit-state.json`, `move.json`,
+`move.json`,
 `working-tree-edit.json`, `recover.json`,
 `revert.json` and `worktree-restore.json` are strict, durable
 operation intents and are absent outside their command's execution or recovery.
@@ -1002,7 +1000,7 @@ synck config set-author <author>
 synck config hidden-files
 synck config set-hidden-files ignore|track
 synck status
-synck commit [--batch] [-m <message>] [<path>...]
+synck commit [-m <message>] [<path>...]
 synck revert <revision> -m <message>
 synck log [-n <n>|--limit <n>] [--oneline|--events]
 synck show <revision> [--events]
@@ -1068,7 +1066,6 @@ command fields:
 
 - `commit` returns `commit_id`, the accepted canonical commit ID or `null` when
   nothing was committed. Path selection does not change the result shape.
-- `commit --batch` returns `commit_ids` in acceptance order and `items_changed`;
   a clean selection returns `[]` and `0` respectively.
 - `revert <revision>` returns the new inverse `commit_id`.
 
@@ -1149,18 +1146,15 @@ detail.
 All three commands support the ordinary schema-version-5 JSON envelope.
 Monitor state never appears in normal successful command output.
 
-### `synck commit [--batch] [-m <message>] [<path> ...]`
+### `synck commit [-m <message>] [<path> ...]`
 
 An omitted message records the commit's existing optional message field as
 `null`; Synck never invents one. If `-m` is supplied, its value must be
 non-empty and at most 16,384 UTF-8 bytes. Message validation precedes the
-working-tree scan and, in batch mode, journal publication. Without `--batch`,
-scan and validate before installing objects, then
-append exactly one commit or none. For a batch-compatible delta, exact intent
-and event-count admission precedes blob-map, item-ID, intent, and event
-construction. A delta outside an atomic profile limit is refused with the exact
-semantic limit code and an instruction to use `synck commit --batch`; it does
-not install objects. Success exits 0.
+working-tree scan. Scan and validate before installing objects, then append
+exactly one commit or none. There is no fixed event-count, intent-count or
+aggregate commit-byte cap. Individual event and field validation still applies.
+Success exits 0.
 Operational failure exits 1. A failure after authoritative append must name the
 accepted commit and pending recovery.
 
@@ -1181,41 +1175,6 @@ validation.
 
 Selection is an argument to this one command. There is no persistent index,
 `add` command, or staged/unstaged distinction.
-
-`--batch` explicitly changes only the transaction boundary: Synck records the
-selected delta as a deterministic sequence of independently atomic commits,
-each with the supplied optional message. It scans once, persists one strict
-`batch-commit.json` manifest containing only the selected changes and their exact
-observed working entries. A separate bounded `batch-commit-state.json` records
-only the next change and one in-flight operation. The manifest is immutable;
-only the bounded state file is atomically replaced and directory-synced after
-each batch. Its progress is either zero, an exact 2,000-change boundary, or the
-final manifest length, and its operation ID uses canonical UUID text; discovery
-rejects any other persisted representation. Repository discovery uses the
-in-flight operation ID to distinguish
-accepted from unaccepted work, publishes the exact committed filesystem
-identities idempotently, and resumes the remaining batches before another
-command runs. Unselected changes are never part of the manifest. If a remaining
-selected path changed after interruption, discovery finalizes any already
-accepted batch, durably clears both files, refuses that invocation, and leaves
-the unaccepted remainder as ordinary working-tree changes. Recovery never
-commits bytes or paths outside the recorded snapshot.
-
-Batch mode accepts additions, FILE modifications, and individual FILE
-deletions. It refuses renames, moves, same-path delete-and-add changes, and FOLDER
-deletions before writing the journal or accepting a commit; those structural
-changes retain the ordinary command's single atomic boundary. Batch packing
-uses deterministic change order, at most 2,000 changes per Core commit, and the
-shared intent, complete-event, event-payload, and projected-group bounds. New
-parent folders precede their children. It does not rescan the complete
-repository between batches.
-
-Plain output lists every accepted commit ID in acceptance order and prints the
-final commit and item totals. An interrupted invocation may already have
-accepted commits; every returned partial-batch error carries every commit ID
-accepted during that invocation or recovery pass. The CLI prints those IDs
-before reporting the failure. Recovery moves forward and never pretends to roll
-accepted commits back.
 
 ### `synck revert <revision> -m <message>`
 

@@ -5,19 +5,13 @@ use synck_vcs::types::{RepoId, Sha256Digest};
 
 use crate::error::{SemanticError, SemanticErrorCode};
 use crate::model::{BlobRef, Intent, ItemBase, Location};
-use crate::{MAX_INTENTS, MAX_MESSAGE_BYTES, MAX_SAFE_JSON_INTEGER, PROFILE_ID};
+use crate::{MAX_MESSAGE_BYTES, MAX_SAFE_JSON_INTEGER, PROFILE_ID};
 
 pub fn normalize_intents(intents: &[Intent]) -> Result<Vec<Intent>, SemanticError> {
     if intents.is_empty() {
         return Err(SemanticError::new(
             SemanticErrorCode::EmptyIntent,
             "proposal has no intents",
-        ));
-    }
-    if intents.len() > MAX_INTENTS {
-        return Err(SemanticError::new(
-            SemanticErrorCode::TooManyIntents,
-            "proposal exceeds the intent limit",
         ));
     }
 

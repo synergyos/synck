@@ -676,7 +676,6 @@ impl Repository {
             repository.finish_checkout_transition().await?;
         }
         repository.recover_pending_working_tree_edit()?;
-        repository.recover_pending_batch_commit().await?;
         repository.recover_pending_move().await?;
         repository.recover_pending_recover().await?;
         repository.recover_pending_revert().await?;

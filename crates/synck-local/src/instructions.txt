@@ -23,9 +23,8 @@ The repository init command is an alias. Both accept --storage-mode WHOLE_FILE.
     synck commit -m "<what changed and why>" [PATH...]
 
 Review and test a coherent change before committing it. Select paths when other
-unrelated work is present. For large trees use synck commit --batch. It creates
-bounded commits and reports accepted IDs if interrupted; inspect log before
-retrying. Leave .synck untouched so the next command can resume recovery.
+unrelated work is present. Each commit records its complete change atomically;
+there is no fixed event-count or aggregate commit-size cap.
 
 Status markers: A added, M modified, D deleted, RN renamed, MV moved, MV+RN
 moved and renamed. Modified moves have an M+ prefix.
