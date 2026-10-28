@@ -54,11 +54,12 @@ token proves ownership; keep it private. Listing never reveals tokens.
 
 Pass `--lock-token TOKEN` to every mutation during the edit, including
 `repository create-file` and `repository save-file`. Repeat the flag for multiple
-tokens. Credentialed writes require coverage for every affected path. Reserve
-both source and destination before a move; reservations remain on their original
-paths until released. Use selected commits so an agent does not collect another
+tokens. Credentialed writes require coverage for every affected path: a folder
+reservation covers its descendants, but a child reservation does not authorize
+moving or deleting its parent. Reserve both source and destination before a
+move; reservations remain on their original paths until released. Use selected commits so an agent does not collect another
 agent's unfinished changes. Agents may independently reserve and commit sibling
-new files under the same new folder.
+new files under the same new folder, including after another agent creates it.
 
 `synck lock renew TOKEN --ttl 600` extends a live lease. TTL is 1–86400 seconds;
 expiry is a UTC Unix timestamp. Renew before expiry. Expired reservations still

@@ -80,10 +80,14 @@ fn key(path: &str) -> Result<String> {
     }
     Ok(keys.join("/"))
 }
+fn covers(reservation: &str, path: &str) -> bool {
+    path == reservation
+        || path
+            .strip_prefix(reservation)
+            .is_some_and(|s| s.starts_with('/'))
+}
 fn overlaps(a: &str, b: &str) -> bool {
-    a == b
-        || a.strip_prefix(b).is_some_and(|s| s.starts_with('/'))
-        || b.strip_prefix(a).is_some_and(|s| s.starts_with('/'))
+    covers(a, b) || covers(b, a)
 }
 
 fn open(root: &Path, repo_id: &str, create: bool) -> Result<Option<Connection>> {
@@ -261,7 +265,7 @@ pub(crate) fn guard(
             for path in paths {
                 if !records
                     .iter()
-                    .any(|r| tokens.contains(&r.token) && overlaps(&path, &r.key))
+                    .any(|r| tokens.contains(&r.token) && covers(&r.key, &path))
                 {
                     return Err(LocalError::LockLost);
                 }
@@ -342,12 +346,18 @@ impl Repository {
             }
         }
         // Refuse to take over uncommitted work, including ignored/untracked files.
-        let (committed, _, changes, _) = self.changes().await?;
-        let changed_keys = changes
-            .iter()
-            .flat_map(|c| std::iter::once(c.path.as_str()).chain(c.source_path.as_deref()))
-            .map(key)
-            .collect::<Result<Vec<_>>>()?;
+        let (committed, working, changes, _) = self.changes().await?;
+        let mut changed_keys = Vec::new();
+        for change in &changes {
+            let new_folder = change.kind == crate::worktree::ChangeKind::Add
+                && working
+                    .get(&change.path)
+                    .is_some_and(|node| node.kind == crate::worktree::NodeKind::Folder);
+            changed_keys.push((key(&change.path)?, new_folder));
+            if let Some(source) = &change.source_path {
+                changed_keys.push((key(source)?, false));
+            }
+        }
         for (path, path_key) in paths.iter().zip(&keys) {
             let exists = self
                 .root_path()
@@ -359,7 +369,13 @@ impl Repository {
                     .keys()
                     .any(|p| !committed.contains_key(p));
             if untracked
-                || changed_keys.iter().any(|k| overlaps(k, path_key))
+                || changed_keys.iter().any(|(k, new_folder)| {
+                    // Creating a parent for one agent's file must not prevent
+                    // another agent reserving an absent sibling. Other ancestor
+                    // changes (including moves/deletions) still block acquisition.
+                    overlaps(k, path_key)
+                        && !(!exists && *new_folder && covers(k, path_key) && k != path_key)
+                })
                 || (!committed
                     .keys()
                     .any(|p| key(p).is_ok_and(|k| k == *path_key))
@@ -381,9 +397,7 @@ impl Repository {
             if keys.iter().any(|p| overlaps(p, &row.key)) {
                 // A child takeover must not drop the fence on the rest of an
                 // expired folder. Acquire the whole old scope or release it.
-                let covers_old_scope = keys.iter().any(|p| {
-                    row.key == *p || row.key.strip_prefix(p).is_some_and(|s| s.starts_with('/'))
-                });
+                let covers_old_scope = keys.iter().any(|p| covers(p, &row.key));
                 if row.info.expires_at > now() || !covers_old_scope {
                     return Err(LocalError::Locked {
                         path: row.info.path,

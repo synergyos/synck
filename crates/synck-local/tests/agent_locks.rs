@@ -465,9 +465,9 @@ fn sibling_new_files_can_commit_without_claiming_each_others_parent() {
     let temp = fixture();
     let root = temp.path();
     let a = acquire(root, &["folder/a.txt"], "A");
-    let b = acquire(root, &["folder/b.txt"], "B");
     fs::create_dir(root.join("folder")).unwrap();
     fs::write(root.join("folder/a.txt"), b"A").unwrap();
+    let b = acquire(root, &["folder/b.txt"], "B");
     fs::write(root.join("folder/b.txt"), b"B").unwrap();
     let out = race(
         root,
@@ -559,4 +559,76 @@ fn folder_takeover_refuses_ignored_unfinished_files() {
         fs::read(root.join("folder/.unfinished")).unwrap(),
         b"private work"
     );
+}
+
+#[tokio::test]
+async fn child_reservation_does_not_authorize_parent_mutations() {
+    let temp = fixture();
+    let root = temp.path();
+    fs::create_dir(root.join("folder")).unwrap();
+    fs::write(root.join("folder/a.txt"), b"A").unwrap();
+    fs::write(root.join("folder/b.txt"), b"B").unwrap();
+    ok(root, &["commit", "-m", "initial"]);
+    let token = acquire(root, &["folder/a.txt", "moved"], "A");
+    let mut repo = synck_local::Repository::discover(root).await.unwrap();
+    repo.set_agent_lock_tokens(&[token.clone()]).unwrap();
+    let entries = repo.working_tree().await.unwrap();
+    let folder = entries.iter().find(|e| e.path == "folder").unwrap();
+    assert!(matches!(
+        repo.delete_working_entry(folder).await,
+        Err(synck_local::LocalError::LockLost)
+    ));
+    assert!(matches!(
+        repo.rename_working_entry(folder, "moved").await,
+        Err(synck_local::LocalError::LockLost)
+    ));
+    assert!(matches!(
+        repo.move_path(root, Path::new("folder"), Path::new("moved"), "move")
+            .await,
+        Err(synck_local::LocalError::LockLost)
+    ));
+    assert_eq!(fs::read(root.join("folder/a.txt")).unwrap(), b"A");
+    assert_eq!(fs::read(root.join("folder/b.txt")).unwrap(), b"B");
+    assert!(!root.join("moved").exists());
+    assert!(repo.status().await.unwrap().is_empty());
+
+    repo.release_agent_locks(&token).unwrap();
+    let lease = repo
+        .acquire_agent_locks(root, &["folder".into(), "moved".into()], "A", 600)
+        .await
+        .unwrap();
+    repo.set_agent_lock_tokens(&[lease.token]).unwrap();
+    repo.move_path(root, Path::new("folder"), Path::new("moved"), "move")
+        .await
+        .unwrap();
+    assert_eq!(fs::read(root.join("moved/a.txt")).unwrap(), b"A");
+    assert_eq!(fs::read(root.join("moved/b.txt")).unwrap(), b"B");
+}
+
+#[test]
+fn absent_child_acquisition_preserves_parent_conflicts_and_structural_checks() {
+    let temp = fixture();
+    let root = temp.path();
+    acquire(root, &["folder"], "A");
+    fs::create_dir(root.join("folder")).unwrap();
+    fs::write(root.join("folder/a.txt"), b"unfinished").unwrap();
+    refused(
+        root,
+        &["lock", "acquire", "folder/b.txt", "--owner", "B"],
+        "LOCKED",
+    );
+    refused(
+        root,
+        &["lock", "acquire", "folder/a.txt", "--owner", "B"],
+        "INVALID",
+    );
+
+    fs::create_dir(root.join("tracked")).unwrap();
+    fs::write(root.join("tracked/file.txt"), b"tracked").unwrap();
+    ok(root, &["commit", "-m", "tracked folder", "tracked"]);
+    fs::rename(root.join("tracked"), root.join("renamed")).unwrap();
+    for path in ["tracked/new.txt", "renamed/new.txt"] {
+        refused(root, &["lock", "acquire", path, "--owner", "B"], "INVALID");
+    }
+    assert_eq!(fs::read(root.join("folder/a.txt")).unwrap(), b"unfinished");
 }
