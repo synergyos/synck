@@ -19,7 +19,11 @@ A repository is a directory containing `.synck/` with:
   readers must obtain a consistent snapshot, including SQLite WAL contents.
 
 `repository.local.sqlite3`, `repository.state.sqlite3`, their SQLite sidecars,
-and scan caches are disposable. Checkout configuration and recovery intents in
+and scan caches are disposable. Optional `agent-locks.sqlite3` holds local edit
+reservations; it is neither canonical history nor a disposable cache. Archives
+and imports omit it, and readers need not interpret it. See
+[local agents](../local-repository.md#local-agents-sharing-a-checkout).
+Checkout configuration and recovery intents in
 `tmp/` are not disposable. Never copy only a live SQLite main file: use SQLite's
 backup API or a quiescent, checkpointed snapshot. Treat repository paths as
 untrusted; do not follow object or database symlinks outside the repository.

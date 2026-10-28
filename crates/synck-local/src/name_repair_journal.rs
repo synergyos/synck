@@ -38,6 +38,7 @@ impl Repository {
     /// Rename non-portable paths throughout the observed checkout. No commit is
     /// appended. The repository lock covers planning, renaming and recovery.
     pub async fn fix_names(&self) -> Result<Vec<NameRepair>> {
+        self.guard_agent_all()?;
         if self
             .validate_pending_operations()?
             .is_some_and(|name| name != JOURNAL)

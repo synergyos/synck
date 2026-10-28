@@ -166,6 +166,8 @@ pub(crate) fn named_version_entry(value: &NamedVersionEntry) -> Value {
 pub(crate) fn error(value: &LocalError) -> Value {
     let kind = match value {
         LocalError::Busy => "BUSY",
+        LocalError::Locked { .. } => "LOCKED",
+        LocalError::LockLost => "LOCK_LOST",
         LocalError::Invalid(_) | LocalError::WorkingTree(_) => "INVALID",
         LocalError::Integrity(_) => "INTEGRITY",
         LocalError::MonitorUnavailable(_) => "MONITOR_UNAVAILABLE",
@@ -183,6 +185,10 @@ pub(crate) fn error(value: &LocalError) -> Value {
         "kind": kind,
         "message": value.to_string(),
     });
+    if let LocalError::Locked { path, owner } = value {
+        error["path"] = json!(path);
+        error["owner"] = json!(owner);
+    }
     if let LocalError::Conflict {
         item_id,
         head_seq,

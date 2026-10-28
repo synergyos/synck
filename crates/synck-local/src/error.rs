@@ -32,6 +32,10 @@ pub enum WorkingTreeEditError {
 
 #[derive(Debug, Error)]
 pub enum LocalError {
+    #[error("path {path} is reserved by {owner}")]
+    Locked { path: String, owner: String },
+    #[error("agent lock token is missing, expired, released, or does not cover this path")]
+    LockLost,
     #[error("repository busy")]
     Busy,
     #[error("{0}")]

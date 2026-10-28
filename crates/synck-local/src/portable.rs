@@ -164,6 +164,7 @@ pub struct VerificationReport {
 /// composed read on this same handle. Direct external database writes are not
 /// supported and bypass that consistency contract.
 pub struct PortableRepository {
+    agent_lock_tokens: Vec<String>,
     root: PathBuf,
     metadata: Dir,
     config: Config,
@@ -429,6 +430,7 @@ impl PortableRepository {
             );
         }
         Ok(Self {
+            agent_lock_tokens: Vec::new(),
             root: root.to_path_buf(),
             metadata,
             config,
@@ -442,8 +444,10 @@ impl PortableRepository {
         storage: SqliteStorage,
         lock: Arc<RepositoryLock>,
         config: &crate::repository::Config,
+        tokens: &[String],
     ) -> Result<Self> {
         Ok(Self {
+            agent_lock_tokens: tokens.to_vec(),
             root: root.to_path_buf(),
             metadata: directory(&root.join(".synck"))?,
             config: serde_json::from_value(serde_json::to_value(config)?)?,
@@ -469,12 +473,23 @@ impl PortableRepository {
             self.storage_mode(),
         );
         crate::checkout::validate_config(&config)?;
-        crate::Repository::from_portable(
+        let mut repository = crate::Repository::from_portable(
             &self.root,
             self.storage.clone(),
             Arc::clone(&self._lock),
             config,
-        )
+        )?;
+        repository.set_agent_lock_tokens(&self.agent_lock_tokens)?;
+        Ok(repository)
+    }
+
+    pub fn set_agent_lock_tokens(&mut self, tokens: &[String]) -> Result<()> {
+        if !tokens.is_empty() && self.config.checkout.is_none() {
+            return Err(invalid("agent reservations require a local checkout"));
+        }
+        crate::agent_locks::validate_tokens(tokens)?;
+        self.agent_lock_tokens = tokens.to_vec();
+        Ok(())
     }
 
     pub fn storage_mode(&self) -> StorageMode {
@@ -1271,6 +1286,7 @@ impl PortableRepository {
             .unwrap_or_else(|| Path::new("."))
             .canonicalize()
             .at("resolve file export parent", destination)?;
+        crate::agent_locks::guard_output(&self.root, self.repo_id().as_str(), &self.agent_lock_tokens, &parent_path.join(name))?;
         let parent = directory(&parent_path)?;
         match parent.symlink_metadata(name) {
             Ok(_) => return Err(invalid("export destination already exists")),
@@ -1907,6 +1923,7 @@ impl PortableRepository {
         } else {
             name.to_owned()
         };
+        working.guard_agent_paths(&[&path])?;
         if !working.checkout_observes(&path) {
             return Err(invalid(
                 "file is outside checkout selection; widen it first",
@@ -2331,6 +2348,7 @@ impl PortableRepository {
             return Err(invalid("complete export requires all referenced content and metadata objects"));
         }
         let (objects_to_copy, _) = self.references().await?;
+        crate::agent_locks::guard_output(&self.root, self.repo_id().as_str(), &self.agent_lock_tokens, destination)?;
         let (parent, parent_path, name, staging) = staging(destination)?;
         let result = async {
             let metadata = staging.join(".synck");

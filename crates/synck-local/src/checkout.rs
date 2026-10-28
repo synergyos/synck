@@ -181,6 +181,7 @@ impl Repository {
     /// Change literal subtree selection only after the present view is clean.
     /// A durable source manifest guards the existing restore journal.
     pub async fn set_checkout_paths(&mut self, paths: &[String]) -> Result<()> {
+        self.guard_agent_all()?;
         self.finish_checkout_transition().await?;
         let paths = normalize_paths(paths)?;
         let previous = self

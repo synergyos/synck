@@ -392,9 +392,27 @@ impl Repository {
         if changes.is_empty() {
             return Ok(CommitOutcome::Clean);
         }
+        // Implicit new parents do not alter a sibling's reserved file. The
+        // selected descendants still check reservations on the parent itself.
+        let mut changed_parents = BTreeSet::new();
+        for change in &changes {
+            let mut path = change.path.as_str();
+            while let Some((parent, _)) = path.rsplit_once('/') {
+                changed_parents.insert(parent);
+                path = parent;
+            }
+        }
+        let reserved_paths: Vec<&str> = changes.iter()
+            .filter(|c| !(c.kind == ChangeKind::Add
+                && working.get(&c.path).is_some_and(|n| n.kind == NodeKind::Folder)
+                && changed_parents.contains(c.path.as_str())))
+            .flat_map(|c| std::iter::once(c.path.as_str()).chain(c.source_path.as_deref()))
+            .collect();
+        self.guard_agent_paths(&reserved_paths)?;
         let captured = self.capture_changed_files(&working, &changes, captured_file)?;
         let prepared = self.prepare_working_commit(&committed, &working, &changes, &working_ids, message, &captured)?;
         self.store_imported_email_objects(&prepared.email_objects)?;
+        self.guard_agent_paths(&reserved_paths)?;
         let accepted = self
             .core()
             .append_file_folder_checked_with_refs(
@@ -571,6 +589,7 @@ impl Repository {
     }
 
     pub async fn revert(&self, revision: &str, message: &str) -> Result<String> {
+        self.guard_agent_all()?;
         if message.is_empty() {
             return Err(LocalError::Invalid(
                 "revert message must not be empty".to_string(),
@@ -1160,6 +1179,7 @@ impl Repository {
         }
         let source = normalize_input_path(self.root_path(), caller, source_input)?;
         let destination = normalize_input_path(self.root_path(), caller, destination_input)?;
+        self.guard_agent_paths(&[&source, &destination])?;
         if source == destination {
             return Err(LocalError::Invalid(
                 "move source and destination are the same".to_string(),
@@ -3392,6 +3412,7 @@ impl Repository {
     }
 
     pub async fn recover_item(&self, input: &str, message: &str) -> Result<String> {
+        self.guard_agent_all()?;
         if message.is_empty() {
             return Err(LocalError::Invalid(
                 "recovery message must not be empty".to_string(),
@@ -3853,11 +3874,13 @@ impl Repository {
         let (display, blob_id, size) = self
             .resolve_file_revision(caller, input, requested_seq)
             .await?;
+        self.guard_agent_paths(&[&display])?;
         self.write_working_file(&display, &blob_id, size, true)?;
         self.refresh_worktree_identities().await
     }
 
     pub async fn restore_worktree(&self) -> Result<bool> {
+        self.guard_agent_all()?;
         self.restore_worktree_checked(None).await
     }
 
@@ -4008,6 +4031,7 @@ impl Repository {
             .await?;
         let (parent, name, destination) =
             resolve_export_destination(caller, destination, self.metadata_path())?;
+        crate::agent_locks::guard_output(self.root_path(), self.repository_id().as_str(), &self.agent_lock_tokens, &destination)?;
         let parent_dir = Dir::open_ambient_dir(&parent, ambient_authority())
             .at("open export parent", &parent)?;
         match parent_dir.symlink_metadata(&name) {
@@ -4048,6 +4072,7 @@ impl Repository {
 
         let (parent, name, destination) =
             resolve_export_destination(caller, destination, self.metadata_path())?;
+        crate::agent_locks::guard_output(self.root_path(), self.repository_id().as_str(), &self.agent_lock_tokens, &destination)?;
         let temporary_name = OsString::from(format!(
             ".{}.synck-tmp-{}",
             name.to_string_lossy(),

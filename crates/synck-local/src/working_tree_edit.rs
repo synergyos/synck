@@ -166,6 +166,7 @@ impl Repository {
     }
 
     fn require_checkout_destination(&self, path: &str) -> Result<()> {
+        self.guard_agent_paths(&[path])?;
         if let Some(paths) = self.checkout_paths() {
             if !crate::checkout::selected(paths, path) {
                 return Err(LocalError::Invalid(
@@ -177,6 +178,7 @@ impl Repository {
     }
 
     fn require_checkout_entry_mutation(&self, entry: &WorkingTreeEntry) -> Result<()> {
+        self.guard_agent_paths(&[&entry.path])?;
         if let Some(paths) = self.checkout_paths() {
             if entry.kind == WorkingTreeEntryKind::Folder
                 && !paths.is_empty()

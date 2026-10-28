@@ -47,14 +47,15 @@ Item IDs are permanent, including across renames and moves.
   refused. Email sources (`.eml`, `.msg`) passed to `create-file` do not
   accept an operation ID.
 
-`--base-content <blob-id>` is the `sha256:<hex>` digest of the exact bytes the
-application started editing from. The save is accepted only while that is
+`--base-content <blob-id>` is the salted content object ID returned by Synck
+for the revision the application started editing from. It is not the plain
+SHA-256 of the exported bytes. The save is accepted only while that is
 still the document's current content; renames and moves do not affect it.
 
 ## Saving a revision
 
 1. Before editing, record the base: `item.projection.content_blob_id` from
-   `item show`, or the SHA-256 of the bytes the application loaded.
+   `item show`.
 2. On save, generate an operation ID and persist it with the pending save
    before calling Synck.
 3. Run `save-file` with `--base-content`, `--operation-id` and the
@@ -99,3 +100,14 @@ no history. See [Portable repositories](portable-repository.md#optional-editable
 - One process writes at a time. `BUSY` is returned immediately rather than
   waiting.
 - Writes require a FILE with local sequencing; federated items are refused.
+
+## Agents sharing a local checkout
+
+Before loading or editing a path, use `synck --json lock acquire PATH --owner
+SESSION`, including for new files. Pass the returned `result.token` through the
+global `--lock-token TOKEN` flag on `create-file`, `save-file` and checkout
+mutations; library callers use `set_agent_lock_tokens`. Keep the base-content and
+operation-ID checks above. Renew before expiry and release after the work is
+recorded. On `LOCKED` or `LOCK_LOST`, preserve pending content and stop the edit.
+See [local agent reservations](local-repository.md#local-agents-sharing-a-checkout)
+for path coverage, takeover and the boundary with direct filesystem writes.

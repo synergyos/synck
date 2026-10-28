@@ -31,6 +31,26 @@ moved and renamed. Modified moves have an M+ prefix.
     synck mv <source> <destination> -m "<reason>"
 An external move can instead be recorded by ordinary commit.
 
+LOCAL AGENT RESERVATIONS
+
+Reserve before reading/editing a tracked file or creating a new file:
+    synck --json lock acquire <path>... --owner <agent-session> [--ttl 600]
+Save result.token, then pass it to every mutation:
+    synck --lock-token <token> commit -m "<reason>" <path>...
+    synck lock renew <token> [--ttl 600]
+    synck lock release <token>
+    synck lock list
+Repeat --lock-token for multiple reservations. Reserve both paths before a move.
+Use selected commits. Parent/child paths and case aliases conflict. Acquire
+requires clean tracked or absent paths; new files must be reserved before creation.
+Expired tokens cannot write or renew. Preserve unfinished files and stop editing
+on lock loss. Expired reservations still block writes until clean takeover or
+explicit release. Inspect abandoned work before using lock break <path>...;
+never automatically break another agent's reservation. Release/break keep files.
+These are cooperative local locks, not OS access controls: raw filesystem writes
+bypass them. Every agent must participate. Cache rebuilding preserves locks;
+archives omit them. Concurrent commands may return BUSY; retry after completion.
+
 HISTORY AND RECOVERY
 
     synck log [--oneline|--events]

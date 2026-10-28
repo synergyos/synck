@@ -1,5 +1,5 @@
 use std::io::IsTerminal;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anstyle::{AnsiColor, Color, Style};
@@ -64,12 +64,49 @@ struct Cli {
     /// Emit one versioned JSON document for supported commands.
     #[arg(long, global = true)]
     json: bool,
+    /// Ownership token returned by lock acquire; repeat for multiple reservations.
+    #[arg(long, global = true)]
+    lock_token: Vec<String>,
     #[command(subcommand)]
     command: Command,
 }
 
 #[derive(Debug, Subcommand)]
+enum LockCommand {
+    /// Reserve clean existing paths or absent paths atomically.
+    Acquire {
+        #[arg(required = true)]
+        paths: Vec<PathBuf>,
+        /// Agent/session label for diagnostics; ownership is proved by the token.
+        #[arg(long)]
+        owner: String,
+        #[arg(long, default_value_t = 600)]
+        ttl: u64,
+    },
+    /// Extend an unexpired lease with the exact token returned by acquire.
+    Renew {
+        token: String,
+        #[arg(long, default_value_t = 600)]
+        ttl: u64,
+    },
+    /// Release exactly this token's reservations, preserving all working files.
+    Release { token: String },
+    /// List reservations, including expired ones; never reveals ownership tokens.
+    List,
+    /// Explicitly remove overlapping reservations after inspecting abandoned work.
+    Break {
+        #[arg(required = true)]
+        paths: Vec<PathBuf>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 enum Command {
+    /// Reserve local paths for cooperating agents, including new files.
+    Lock {
+        #[command(subcommand)]
+        command: LockCommand,
+    },
     /// Copy, verify, check out or write to a repository by its directory.
     Repository {
         #[command(subcommand)]
@@ -651,13 +688,13 @@ async fn main() -> ExitCode {
 
 async fn run(cli: Cli) -> Result<ExitCode, (LocalError, bool)> {
     if let Command::Repository { command } = &cli.command {
-        run_portable(command)
+        run_portable(command, &cli.lock_token)
             .await
             .map_err(|error| (error, matches!(command, PortableCommand::Verify { .. })))?;
         return Ok(ExitCode::SUCCESS);
     }
     if let Command::Item { command } = &cli.command {
-        run_portable_item(command)
+        run_portable_item(command, &cli.lock_token)
             .await
             .map_err(|error| (error, false))?;
         return Ok(ExitCode::SUCCESS);
@@ -746,9 +783,10 @@ async fn run(cli: Cli) -> Result<ExitCode, (LocalError, bool)> {
         }
     }
     let integrity_command = matches!(cli.command, Command::Fsck { .. });
-    let repository = Repository::discover_complete(&current)
+    let mut repository = Repository::discover_complete(&current)
         .await
         .map_err(|error| (error, integrity_command))?;
+    repository.set_agent_lock_tokens(&cli.lock_token).map_err(|e| (e, false))?;
     if uses_worktree(&cli.command)
         && let Ok(executable) = std::env::current_exe()
     {
@@ -767,6 +805,24 @@ async fn run_checkout(
     // Separate poll frames keep handler temporaries off the dispatcher's stack.
     // A single large async match overflows the Windows main stack in debug builds.
     match cli.command {
+        Command::Lock { command } => async {
+            let value = match command {
+                LockCommand::Acquire { paths, owner, ttl } => {
+                    let lease = repository.acquire_agent_locks(&current, &paths, &owner, ttl).await?;
+                    json!({"token":lease.token,"locks":lease.locks})
+                }
+                LockCommand::Renew { token, ttl } => {
+                    repository.renew_agent_locks(&token, ttl)?;
+                    json!({"renewed":true})
+                }
+                LockCommand::Release { token } => json!({"released":repository.release_agent_locks(&token)?}),
+                LockCommand::List => json!({"locks":repository.agent_locks()?}),
+                LockCommand::Break { paths } => json!({"released":repository.break_agent_locks(&current, &paths)?}),
+            };
+            println!("{}", json!({"schema_version":cli_json::SCHEMA_VERSION,"result":value}));
+            Ok::<_, LocalError>(ExitCode::SUCCESS)
+        }
+        .await.map_err(|error| (error, false)),
         Command::Repository { .. } | Command::Item { .. } => unreachable!(),
         Command::MonitorServer { .. } => unreachable!(),
         Command::Instructions => unreachable!(),
@@ -1584,8 +1640,13 @@ fn portable_item_id(value: &str) -> synck_local::Result<synck_vcs::types::ItemId
     synck_vcs::types::ItemId::parse(value).map_err(|error| LocalError::Invalid(error.to_string()))
 }
 
-async fn run_portable(command: &PortableCommand) -> synck_local::Result<()> {
+async fn run_portable(command: &PortableCommand, tokens: &[String]) -> synck_local::Result<()> {
     use synck_local::portable::{PortableRepository, import_repository};
+    let open = |path: &Path| -> synck_local::Result<PortableRepository> {
+        let mut repository = PortableRepository::open(path)?;
+        repository.set_agent_lock_tokens(tokens)?;
+        Ok(repository)
+    };
     // Keep command temporaries in separate poll frames, as in run_checkout().
     match command {
         PortableCommand::Init {
@@ -1614,7 +1675,7 @@ async fn run_portable(command: &PortableCommand) -> synck_local::Result<()> {
             author,
             paths,
         } => async {
-            let mut repository = PortableRepository::open(path)?;
+            let mut repository = open(path)?;
             repository.enable_checkout(author, paths).await?;
             print_path_warnings(&repository.checkout_path_warnings().await?);
             println!(
@@ -1626,6 +1687,7 @@ async fn run_portable(command: &PortableCommand) -> synck_local::Result<()> {
         .await,
         PortableCommand::CheckoutSelection { path, paths, .. } => async {
             let mut repository = Repository::discover(path).await?;
+            repository.set_agent_lock_tokens(tokens)?;
             repository.set_checkout_paths(paths).await?;
             print_path_warnings(&repository.checkout_path_warnings().await?);
             println!(
@@ -1653,7 +1715,7 @@ async fn run_portable(command: &PortableCommand) -> synck_local::Result<()> {
         PortableCommand::Verify { path } => async {
             let report = match synck_local::portable::verify_complete_repository(path).await? {
                 Some(report) => report,
-                None => PortableRepository::open(path)?.verify().await?,
+                None => open(path)?.verify().await?,
             };
             println!("{}", serde_json::to_string(&report)?);
             Ok(())
@@ -1666,7 +1728,7 @@ async fn run_portable(command: &PortableCommand) -> synck_local::Result<()> {
         } => async {
             println!(
                 "{}",
-                serde_json::to_string(&PortableRepository::open(path)?.log(*before, *limit).await?)?
+                serde_json::to_string(&open(path)?.log(*before, *limit).await?)?
             );
             Ok(())
         }
@@ -1676,7 +1738,7 @@ async fn run_portable(command: &PortableCommand) -> synck_local::Result<()> {
             author,
             source_retired,
         } => async {
-            let mut repository = PortableRepository::open(path)?;
+            let mut repository = open(path)?;
             repository.activate(author, *source_retired).await?;
             println!(
                 "{}",
@@ -1690,7 +1752,7 @@ async fn run_portable(command: &PortableCommand) -> synck_local::Result<()> {
             destination,
             storage_mode,
         } => async {
-            let repository = PortableRepository::open(path)?;
+            let repository = open(path)?;
             repository
                 .archive_with_mode(
                     destination,
@@ -1702,7 +1764,7 @@ async fn run_portable(command: &PortableCommand) -> synck_local::Result<()> {
         }
         .await,
         PortableCommand::Finalize { path } => async {
-            PortableRepository::open(path)?.finalize().await?;
+            open(path)?.finalize().await?;
             println!("{}", json!({"schema_version":1,"finalized":path}));
             Ok(())
         }
@@ -1715,7 +1777,7 @@ async fn run_portable(command: &PortableCommand) -> synck_local::Result<()> {
             write,
         } => async {
             let options = write.options()?;
-            let outcome = PortableRepository::open(path)?
+            let outcome = open(path)?
                 .create_file_with(
                     parent.as_deref().map(portable_item_id).transpose()?,
                     name,
@@ -1746,7 +1808,7 @@ async fn run_portable(command: &PortableCommand) -> synck_local::Result<()> {
                     })
                 })
                 .transpose()?;
-            let commit = PortableRepository::open(path)?
+            let commit = open(path)?
                 .save_file_with(
                     &portable_item_id(item_id)?,
                     source,
@@ -1759,7 +1821,7 @@ async fn run_portable(command: &PortableCommand) -> synck_local::Result<()> {
         }
         .await,
         PortableCommand::CreateChat { path, title } => async {
-            let (id, commit_id) = PortableRepository::open(path)?.create_chat(title).await?;
+            let (id, commit_id) = open(path)?.create_chat(title).await?;
             println!(
                 "{}",
                 json!({"schema_version":1,"item_id":id,"commit_id":commit_id})
@@ -1778,7 +1840,7 @@ async fn run_portable(command: &PortableCommand) -> synck_local::Result<()> {
                 path: body_file.clone(),
                 source,
             })?;
-            let commit = PortableRepository::open(path)?
+            let commit = open(path)?
                 .append_chat_message_with_attachments(
                     &portable_item_id(item_id)?,
                     &body,
@@ -1792,7 +1854,7 @@ async fn run_portable(command: &PortableCommand) -> synck_local::Result<()> {
     }
 }
 
-async fn run_portable_item(command: &ItemCommand) -> synck_local::Result<()> {
+async fn run_portable_item(command: &ItemCommand, tokens: &[String]) -> synck_local::Result<()> {
     use synck_local::portable::{NamespaceCursor, PortableRepository};
     // Keep command temporaries in separate poll frames, as in run_checkout().
     match command {
@@ -1802,7 +1864,9 @@ async fn run_portable_item(command: &ItemCommand) -> synck_local::Result<()> {
             destination,
             through,
         } => async {
-            let bytes = PortableRepository::open(path)?
+            let mut repository = PortableRepository::open(path)?;
+            repository.set_agent_lock_tokens(tokens)?;
+            let bytes = repository
                 .export_file(&portable_item_id(item_id)?, destination, *through)
                 .await?;
             println!(
@@ -1869,7 +1933,8 @@ async fn run_portable_item(command: &ItemCommand) -> synck_local::Result<()> {
 fn supports_json(command: &Command) -> bool {
     matches!(
         command,
-        Command::Info
+        Command::Lock { .. }
+            | Command::Info
             | Command::Context
             | Command::Monitor { .. }
             | Command::Config { .. }

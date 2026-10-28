@@ -176,6 +176,7 @@ impl Drop for RepositoryLock {
 }
 
 pub struct Repository {
+    pub(crate) agent_lock_tokens: Vec<String>,
     root_path: PathBuf,
     metadata_path: PathBuf,
     root: Dir,
@@ -282,6 +283,7 @@ impl Repository {
         let repo = Repo::new(Storage::new(Arc::new(storage.clone())), core_config);
 
         let mut repository = Self {
+            agent_lock_tokens: Vec::new(),
             root_path,
             metadata_path,
             root,
@@ -346,6 +348,7 @@ impl Repository {
             self.storage.clone(),
             Arc::clone(&self._lock),
             &self.config,
+            &self.agent_lock_tokens,
         )
     }
 
@@ -369,6 +372,7 @@ impl Repository {
             CoreConfig::default(),
         );
         Ok(Self {
+            agent_lock_tokens: Vec::new(),
             root_path,
             metadata_path,
             root,

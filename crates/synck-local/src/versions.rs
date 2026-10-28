@@ -256,6 +256,7 @@ impl Repository {
         let (display, file_item_id) = self.resolve_live_file(caller, input).await?;
         let state = self.load_version_set(&file_item_id).await?;
         let version = require_live_version(&state, version_id)?;
+        self.guard_agent_paths(&[&display])?;
         self.write_working_file(&display, &version.blob_id, version.size, true)?;
         self.refresh_worktree_identities().await
     }

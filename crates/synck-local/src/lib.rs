@@ -1,6 +1,8 @@
 //! Standalone, permanently local Synck VCS.
 
+mod agent_locks;
 mod archive;
+pub use agent_locks::{AgentLease, AgentLock};
 mod checkout;
 mod chunk_store;
 mod commands;

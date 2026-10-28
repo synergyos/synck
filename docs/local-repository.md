@@ -33,6 +33,62 @@ The root `.synck` control directory cannot be recorded as an ordinary item.
 Windows path warnings identify paths over 260 UTF-16 units; length is not a
 repository namespace rule because checkout locations vary by machine.
 
+## Local agents sharing a checkout
+
+Reserve paths before editing or creating them. No server is required:
+
+```sh
+synck --json lock acquire src/existing.rs src/new.rs --owner agent-a --ttl 600
+# Save result.token from the JSON response as TOKEN, then edit the reserved files.
+synck --lock-token "$TOKEN" commit -m "Implement the change" src/existing.rs src/new.rs
+synck lock release "$TOKEN"
+```
+
+Reservations cover files or entire folders, including paths that do not exist
+and children of folders that do not exist. Names use the VCS's portable case
+folding; parent and child reservations conflict. Multiple paths in one acquire
+succeed or fail together. Acquisition requires clean tracked paths or absent
+paths; existing untracked files, including ignored files under a requested
+folder, must be resolved first. The owner is a diagnostic label. Only the random
+token proves ownership; keep it private. Listing never reveals tokens.
+
+Pass `--lock-token TOKEN` to every mutation during the edit, including
+`repository create-file` and `repository save-file`. Repeat the flag for multiple
+tokens. Credentialed writes require coverage for every affected path. Reserve
+both source and destination before a move; reservations remain on their original
+paths until released. Use selected commits so an agent does not collect another
+agent's unfinished changes. Agents may independently reserve and commit sibling
+new files under the same new folder.
+
+`synck lock renew TOKEN --ttl 600` extends a live lease. TTL is 1–86400 seconds;
+expiry is a UTC Unix timestamp. Renew before expiry. Expired reservations still
+block writes: another agent can acquire a fresh token only after the path is
+clean. Takeover must cover the entire old reservation: acquiring one child
+cannot release its expired parent's protection of other children.
+Old tokens cannot write, renew, or release a newer reservation. A write
+with an expired, released or replaced token returns `LOCK_LOST`; a conflicting
+reservation returns `LOCKED`. Neither error discards working files.
+
+`lock list` includes expired reservations. To recover abandoned work, inspect
+and preserve its files first, then explicitly `lock break PATH...` or release
+its exact token. These commands remove reservations, never working files.
+Do not automate breaking another agent's reservation. Revert, item recovery,
+restore-tree, checkout selection and name repair conservatively require ownership
+of all reservations because they can affect an entire tree.
+
+These are cooperative locks enforced by Synck's checkout mutation APIs, including
+exports into the same checkout. Ordinary editors, shell writes, other repositories
+exporting into this checkout, and direct database access can bypass them. Every
+agent must acquire before reading/editing and stop editing when its lease is lost.
+For saves submitted through Synck, retain the `--base-content` check as well.
+The short repository OS lock serializes commands; it is not held during editing.
+Concurrent commands can return `BUSY`; retry after the other command finishes.
+
+Reservations live in `.synck/agent-locks.sqlite3`, separate from disposable
+projection caches and canonical history. Cache rebuilding preserves them;
+archives and repository imports omit them. Do not delete this database to clear
+locks. There is no canonical format change or server synchronization of leases.
+
 ## Content and imported email
 
 FILE content is a salted RAW object. Working-tree change detection uses plain
