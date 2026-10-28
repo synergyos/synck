@@ -22,3 +22,6 @@ Their provenance is documented in:
   crates/synck-items/tests/fixtures/imported_email/README.md
 
 Third-party dependencies retain their own licenses.
+
+Unicode case-folding data: Copyright © 1991-2026 Unicode, Inc.
+Distributed under Unicode License V3; see docs/spec/unicode-license.txt.

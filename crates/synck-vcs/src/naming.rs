@@ -28,8 +28,8 @@ pub enum NameErrorKind {
     EndsWithDotOrSpace,
     /// Contains an ASCII control character U+0000–U+001F or U+007F.
     ContainsControl(char),
-    /// Contains a disallowed invisible / format character.
-    ContainsInvisible(char),
+    /// Display names in canonical history must already be NFC.
+    NotNormalized,
     /// Contains a forbidden path / shell character.
     ContainsForbiddenChar(char),
     /// Matches a reserved Windows device name (case-insensitive).
@@ -49,9 +49,7 @@ impl fmt::Display for NameError {
             NameErrorKind::ContainsControl(ch) => {
                 write!(f, "name contains control character U+{:04X}", *ch as u32)
             }
-            NameErrorKind::ContainsInvisible(ch) => {
-                write!(f, "name contains invisible character U+{:04X}", *ch as u32)
-            }
+            NameErrorKind::NotNormalized => write!(f, "name must be NFC-normalized"),
             NameErrorKind::ContainsForbiddenChar(ch) => {
                 write!(f, "name contains forbidden character {:?}", ch)
             }
@@ -73,10 +71,10 @@ impl Error for NameError {}
 /// - non-empty, not just whitespace;
 /// - not "." or ".." after trimming;
 /// - no ASCII control chars U+0000–U+001F or U+007F;
-/// - no selected zero-width / format characters;
+/// - NFC-normalized UTF-8, at most 255 bytes;
 /// - no '/', '\\', '<', '>', ':', '\"', '|', '?', '*';
 /// - no trailing ASCII space or dot;
-/// - no Windows reserved device names (case-insensitive) as whole segment.
+/// - no Windows reserved device names (case-insensitive) including names with extensions.
 pub fn validate_display_name(name: &str) -> Result<(), NameError> {
     validate_display_name_inner(name, false)
 }
@@ -89,14 +87,13 @@ pub fn validate_display_name_allow_trailing_dot(name: &str) -> Result<(), NameEr
 }
 
 fn validate_display_name_inner(name: &str, allow_trailing_dot: bool) -> Result<(), NameError> {
-    let trimmed = name.trim();
-    if trimmed.is_empty() {
+    if name.is_empty() {
         return Err(NameError {
             kind: NameErrorKind::Empty,
         });
     }
 
-    if trimmed == "." || trimmed == ".." {
+    if name == "." || name == ".." {
         return Err(NameError {
             kind: NameErrorKind::DotOrDotDot,
         });
@@ -112,11 +109,6 @@ fn validate_display_name_inner(name: &str, allow_trailing_dot: bool) -> Result<(
         }
 
         match ch {
-            '\u{200B}' | '\u{200C}' | '\u{200D}' | '\u{2060}' | '\u{FEFF}' => {
-                return Err(NameError {
-                    kind: NameErrorKind::ContainsInvisible(ch),
-                });
-            }
             '/' | '\\' | '<' | '>' | ':' | '"' | '|' | '?' | '*' => {
                 return Err(NameError {
                     kind: NameErrorKind::ContainsForbiddenChar(ch),
@@ -139,6 +131,19 @@ fn validate_display_name_inner(name: &str, allow_trailing_dot: bool) -> Result<(
         }
     }
 
+    if !unicode_normalization::is_nfc(name) {
+        return Err(NameError {
+            kind: NameErrorKind::NotNormalized,
+        });
+    }
+    if name.len() > MAX_NAME_BYTES {
+        return Err(NameError {
+            kind: NameErrorKind::TooLong {
+                bytes: name.len(),
+                max: MAX_NAME_BYTES,
+            },
+        });
+    }
     let upper = name.to_ascii_uppercase();
     if is_reserved_device_name(&upper) {
         return Err(NameError {
@@ -172,9 +177,7 @@ pub fn compute_name_key(name: &str) -> Result<String, NameError> {
         });
     }
 
-    // Use Unicode-aware, locale-independent lowercasing on the NFC form
-    // as an approximation of default case-folding.
-    Ok(nfc.to_lowercase())
+    Ok(crate::case_folding::fold(&nfc))
 }
 
 /// Compute a canonical key for non-item display strings.
@@ -194,7 +197,7 @@ pub fn compute_display_name_key(name: &str) -> Result<String, NameError> {
         });
     }
 
-    Ok(nfc.to_lowercase())
+    Ok(crate::case_folding::fold(&nfc))
 }
 
 /// Legacy helper for backfilling existing rows.
@@ -203,21 +206,69 @@ pub fn compute_display_name_key(name: &str) -> Result<String, NameError> {
 /// NFC + default case-folding in a deterministic way.
 pub fn compute_name_key_legacy(name: &str) -> String {
     let nfc: String = name.nfc().collect();
-    nfc.to_lowercase()
+    crate::case_folding::fold(&nfc)
 }
 
 fn is_reserved_device_name(upper: &str) -> bool {
-    // Device names are ASCII; a four-byte Unicode name need not have a
-    // character boundary after its third byte.
-    matches!(
-        upper.as_bytes(),
-        b"CON"
-            | b"PRN"
-            | b"AUX"
-            | b"NUL"
-            | [b'C', b'O', b'M', b'1'..=b'9']
-            | [b'L', b'P', b'T', b'1'..=b'9']
-    )
+    let stem = upper
+        .split('.')
+        .next()
+        .unwrap_or(upper)
+        .trim_end_matches(' ');
+    matches!(stem, "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$")
+        || stem
+            .strip_prefix("COM")
+            .or_else(|| stem.strip_prefix("LPT"))
+            .is_some_and(|suffix| {
+                matches!(
+                    suffix,
+                    "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"
+                )
+            })
+}
+
+/// Deterministic portable spelling, before sibling collision allocation.
+pub fn portable_name(name: &str) -> String {
+    let mut fixed: String = name
+        .nfc()
+        .map(|ch| {
+            if ch <= '\u{1f}'
+                || ch == '\u{7f}'
+                || matches!(ch, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*')
+            {
+                '_'
+            } else {
+                ch
+            }
+        })
+        .collect();
+    fixed.truncate(fixed.trim_end_matches([' ', '.']).len());
+    if fixed.is_empty() {
+        fixed.push('_');
+    }
+    if is_reserved_device_name(&fixed.to_ascii_uppercase()) {
+        fixed.insert(0, '_');
+    }
+    truncate_name(&mut fixed, MAX_NAME_BYTES);
+    fixed.truncate(fixed.trim_end_matches([' ', '.']).len());
+    fixed
+}
+
+/// Reserve the suffix's bytes before truncating a colliding portable name.
+pub fn suffixed_name(name: &str, ordinal: usize) -> String {
+    let suffix = format!(" ({ordinal})");
+    let mut result = name.to_string();
+    truncate_name(&mut result, MAX_NAME_BYTES - suffix.len());
+    result.push_str(&suffix);
+    result
+}
+
+fn truncate_name(name: &mut String, max: usize) {
+    let mut end = name.len().min(max);
+    while !name.is_char_boundary(end) {
+        end -= 1;
+    }
+    name.truncate(end);
 }
 
 #[cfg(test)]
@@ -242,8 +293,11 @@ mod tests {
     #[test]
     fn nfc_equivalence_conflicts() {
         let composed = compute_name_key("é").unwrap();
-        let decomposed = compute_name_key("e\u{0301}").unwrap();
-        assert_eq!(composed, decomposed);
+        assert!(compute_name_key("e\u{0301}").is_err());
+        assert_eq!(
+            composed,
+            compute_name_key(&portable_name("e\u{0301}")).unwrap()
+        );
     }
 
     #[test]
@@ -255,12 +309,7 @@ mod tests {
             })
         ));
 
-        assert!(matches!(
-            validate_display_name("bad\u{200B}"),
-            Err(NameError {
-                kind: NameErrorKind::ContainsInvisible(_)
-            })
-        ));
+        assert!(validate_display_name("bad\u{200B}").is_ok());
     }
 
     #[test]

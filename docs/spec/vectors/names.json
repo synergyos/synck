@@ -1,0 +1,89 @@
+{
+  "unicode_version": "17.0.0",
+  "cases": [
+    {
+      "name": "Report",
+      "valid": true,
+      "key": "report",
+      "fixed": "Report"
+    },
+    {
+      "name": "Straße",
+      "valid": true,
+      "key": "strasse",
+      "fixed": "Straße"
+    },
+    {
+      "name": "STRASSE",
+      "valid": true,
+      "key": "strasse",
+      "fixed": "STRASSE"
+    },
+    {
+      "name": "Σςσ",
+      "valid": true,
+      "key": "σσσ",
+      "fixed": "Σςσ"
+    },
+    {
+      "name": "İ",
+      "valid": true,
+      "key": "i̇",
+      "fixed": "İ"
+    },
+    {
+      "name": "é",
+      "valid": false,
+      "key": null,
+      "fixed": "é"
+    },
+    {
+      "name": "CON.txt",
+      "valid": false,
+      "key": null,
+      "fixed": "_CON.txt"
+    },
+    {
+      "name": "COM¹.log",
+      "valid": false,
+      "key": null,
+      "fixed": "_COM¹.log"
+    },
+    {
+      "name": "Re: Budget",
+      "valid": false,
+      "key": null,
+      "fixed": "Re_ Budget"
+    },
+    {
+      "name": "trail. ",
+      "valid": false,
+      "key": null,
+      "fixed": "trail"
+    },
+    {
+      "name": "...",
+      "valid": false,
+      "key": null,
+      "fixed": "_"
+    },
+    {
+      "name": "👩‍💻",
+      "valid": true,
+      "key": "👩‍💻",
+      "fixed": "👩‍💻"
+    },
+    {
+      "name": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "valid": false,
+      "key": null,
+      "fixed": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "name": "汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉",
+      "valid": false,
+      "key": null,
+      "fixed": "汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉"
+    }
+  ]
+}

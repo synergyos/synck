@@ -20,6 +20,7 @@ pub mod config;
 pub mod envelope;
 pub mod errors;
 pub mod invariants;
+mod case_folding;
 pub mod naming;
 pub mod repo;
 pub mod sequencer;
