@@ -118,8 +118,8 @@ impl CommitEnvelopeValidator {
                     None if seq != 1 => {
                         findings.push(format!("{label}: first repository sequence must be 1"));
                     }
-                    Some(previous) if seq <= previous => findings.push(format!(
-                        "{label}: repository sequence does not increase after {previous}"
+                    Some(previous) if previous.checked_add(1) != Some(seq) => findings.push(format!(
+                        "{label}: repository sequence must be consecutive after {previous}"
                     )),
                     _ => {}
                 }

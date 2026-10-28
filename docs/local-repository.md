@@ -138,7 +138,11 @@ prove that a repository is correct. `repository.local.sqlite3` holds checkout
 projections, scan digests and email-source observations; `repository.state.sqlite3`
 holds historical indexes. Missing caches are rebuilt under the repository lock,
 without accepting working-file edits or changing commit identity. Existing
-malformed databases fail explicitly rather than being silently reset.
+malformed databases fail explicitly rather than being silently reset. History
+reads catch a valid but stale index up before using it, including in a normal
+checkout; being behind canonical history is not an integrity failure. `fsck`
+checks stored row validity before decoding checkpoints so malformed timestamps
+are reported with the affected commit and field, also under `--json`.
 
 `storage` reports physical usage, `storage optimize` changes supported physical
 storage, and `gc` removes unreferenced content. Reachability includes all retained

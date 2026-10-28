@@ -115,7 +115,7 @@ fn header(header: &PublishedHeader, after: &Cursor) -> Result<(), ProtocolError>
         .filter(|seq| *seq > 0)
         .ok_or_else(|| invalid("published commit requires positive repo_seq"))?
         as u64;
-    if sequence <= after.repo_seq || commit.event_count < 1 {
+    if after.repo_seq.checked_add(1) != Some(sequence) || commit.event_count < 1 {
         return Err(invalid("invalid published commit position or count"));
     }
     let bytes = canonical_stored_commit_bytes_for_hash(

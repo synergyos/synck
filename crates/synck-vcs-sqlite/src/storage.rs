@@ -1089,7 +1089,18 @@ impl StorageBackend for SqliteStorage {
                 ],
             ),
         };
-        collect_rows(&conn, &sql, values, commit_from_row)
+        let commits = collect_rows(&conn, &sql, values, commit_from_row)?;
+        let mut previous = from_repo_seq.max(1) - 1;
+        for commit in &commits {
+            let sequence = commit.repo_seq.expect("sequenced query");
+            if previous.checked_add(1) != Some(sequence) {
+                return Err(StorageError::Other {
+                    detail: format!("repository sequence must be consecutive after {previous}, got {sequence}"),
+                });
+            }
+            previous = sequence;
+        }
+        Ok(commits)
     }
 
     async fn list_items_readonly(
@@ -2002,14 +2013,14 @@ fn publish_checkpoint(
     ).optional().map_err(map_sqlite_error)?;
     let previous = match previous {
         None if position == 1 => synck_vcs::checkpoint::GENESIS,
-        Some((seq, bytes)) if seq < position => {
+        Some((seq, bytes)) if seq.checked_add(1) == Some(position) => {
             bytes.try_into().map_err(|_| StorageError::Other {
                 detail: "invalid checkpoint digest length".into(),
             })?
         }
         _ => {
             return Err(StorageError::Other {
-                detail: "checkpoint publication is not a forward extension".into(),
+                detail: "checkpoint publication must be consecutive".into(),
             });
         }
     };
@@ -2050,7 +2061,7 @@ impl SqliteStorage {
         ).map_err(map_sqlite_error)?;
         let mut rows = query.query([repo_id.as_str()]).map_err(map_sqlite_error)?;
         let mut previous = synck_vcs::checkpoint::GENESIS;
-        let mut last = 0;
+        let mut last = 0i64;
         let mut count = 0i64;
         while let Some(row) = rows.next().map_err(map_sqlite_error)? {
             let seq: i64 = row.get(0).map_err(map_sqlite_error)?;
@@ -2058,8 +2069,7 @@ impl SqliteStorage {
             let accepted: String = row.get(2).map_err(map_sqlite_error)?;
             let published_commit: Option<Vec<u8>> = row.get(3).map_err(map_sqlite_error)?;
             let published_digest: Option<Vec<u8>> = row.get(4).map_err(map_sqlite_error)?;
-            if seq <= last
-                || (last == 0 && seq != 1)
+            if last.checked_add(1) != Some(seq)
                 || published_commit.as_deref() != Some(commit.as_slice())
             {
                 return Err(StorageError::Other {

@@ -201,7 +201,7 @@ async fn project_commit<S: StateProjectorStore>(
     let repo_seq = commit.repo_seq.ok_or_else(|| {
         StateError::InvalidTree("sequenced commit has no repository sequence".to_string())
     })?;
-    if repo_seq <= head.applied_repo_seq {
+    if head.applied_repo_seq.checked_add(1) != Some(repo_seq) {
         return Err(StateError::InvalidTree(format!(
             "repository sequence {repo_seq} does not follow projection head {}",
             head.applied_repo_seq

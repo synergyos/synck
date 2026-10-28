@@ -19,7 +19,9 @@ generation; it never silently resets a client's state or erases pending work.
 
 `Cursor` is `{repository, repo_seq, checkpoint}`. Genesis has sequence zero and
 a `sha256:` digest of 64 zeroes. Published positions are positive signed 64-bit
-values and may have gaps. Checkpoints use the canonical framing and exact
+values starting at 1, with no gaps. Every next header must have the previous
+sequence plus one; reject missing positions even if the checkpoint hash matches.
+Checkpoints use the canonical framing and exact
 acceptance timestamp. A cursor authenticates continuity from an already trusted
 checkpoint, not the remote party's identity. Validate it against stored history.
 

@@ -1673,15 +1673,9 @@ fn numeric_repository_sequences_are_exact_revisions() {
 }
 
 #[test]
-fn show_and_revert_cross_repository_sequence_gaps() {
+fn show_and_revert_refresh_checkout_history() {
     let temporary = committed_repository();
     let root = temporary.path();
-    let connection = rusqlite::Connection::open(root.join(".synck/repository.sqlite3")).unwrap();
-    connection
-        .execute("UPDATE vcs_repo_activity_heads SET next_repo_seq = 4", [])
-        .unwrap();
-    drop(connection);
-
     fs::write(root.join("file.txt"), b"changed").unwrap();
     assert!(
         synck(root, &["commit", "-m", "third sequence"])
@@ -1689,7 +1683,7 @@ fn show_and_revert_cross_repository_sequence_gaps() {
             .success()
     );
 
-    let shown = synck(root, &["show", "4"]);
+    let shown = synck(root, &["show", "3"]);
     assert!(
         shown.status.success(),
         "{}",
@@ -1701,7 +1695,7 @@ fn show_and_revert_cross_repository_sequence_gaps() {
             .ends_with("M file.txt\n")
     );
 
-    let reverted = synck(root, &["revert", "4", "-m", "revert fourth sequence"]);
+    let reverted = synck(root, &["revert", "3", "-m", "revert third sequence"]);
     assert!(
         reverted.status.success(),
         "{}",
@@ -2308,6 +2302,8 @@ fn assert_fsck_integrity_failure(root: &std::path::Path, message: &str) {
 }
 
 fn install_unreachable_object(root: &std::path::Path, bytes: &[u8]) {
+    let object = synck_vcs::object::Object::new(synck_vcs::object::Codec::Raw, bytes).unwrap();
+    let bytes = object.payload();
     let digest = Sha256::digest(bytes).to_vec();
     let connection = rusqlite::Connection::open(root.join(".synck/object-store.sqlite3")).unwrap();
     connection
@@ -2362,9 +2358,14 @@ fn storage_and_gc_print_exact_object_totals() {
             .success()
     );
 
-    let ignore_size = fs::metadata(root.join(".synckignore")).unwrap().len();
+    let ignore_size = fs::metadata(root.join(".synckignore")).unwrap().len()
+        + synck_vcs::object::HEADER_BYTES as u64;
     let output = synck(root, &["storage"]);
-    assert!(output.status.success());
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert_eq!(
         String::from_utf8(output.stdout).unwrap(),
         format!(
@@ -2375,39 +2376,56 @@ fn storage_and_gc_print_exact_object_totals() {
     fs::write(root.join("file"), b"content").unwrap();
     assert!(synck(root, &["commit", "-m", "initial"]).status.success());
     let output = synck(root, &["storage"]);
-    assert!(output.status.success());
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert_eq!(
         String::from_utf8(output.stdout).unwrap(),
         format!(
             "referenced_objects 2\nreferenced_bytes {}\nunreachable_objects 0\nunreachable_bytes 0\n",
-            ignore_size + 7
+            ignore_size + 7 + synck_vcs::object::HEADER_BYTES as u64
         )
     );
 
+    let orphan_size = 6 + synck_vcs::object::HEADER_BYTES;
     install_unreachable_object(root, b"orphan");
     let output = synck(root, &["storage"]);
-    assert!(output.status.success());
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert_eq!(
         String::from_utf8(output.stdout).unwrap(),
         format!(
-            "referenced_objects 2\nreferenced_bytes {}\nunreachable_objects 1\nunreachable_bytes 6\n",
-            ignore_size + 7
+            "referenced_objects 2\nreferenced_bytes {}\nunreachable_objects 1\nunreachable_bytes {orphan_size}\n",
+            ignore_size + 7 + synck_vcs::object::HEADER_BYTES as u64
         )
     );
 
     let output = synck(root, &["gc"]);
-    assert!(output.status.success());
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert_eq!(
         String::from_utf8(output.stdout).unwrap(),
-        "removed_objects 1\nremoved_bytes 6\n"
+        format!("removed_objects 1\nremoved_bytes {orphan_size}\n")
     );
     let output = synck(root, &["storage"]);
-    assert!(output.status.success());
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert_eq!(
         String::from_utf8(output.stdout).unwrap(),
         format!(
             "referenced_objects 2\nreferenced_bytes {}\nunreachable_objects 0\nunreachable_bytes 0\n",
-            ignore_size + 7
+            ignore_size + 7 + synck_vcs::object::HEADER_BYTES as u64
         )
     );
 }
@@ -3042,15 +3060,18 @@ fn fsck_reports_non_uuidv7_commit_key() {
 }
 
 #[test]
-fn fsck_reports_out_of_range_format_version_as_integrity_failure() {
+fn fsck_reports_invalid_commit_format_despite_writer_constraints() {
     let temporary = committed_repository();
     let connection =
         rusqlite::Connection::open(temporary.path().join(".synck/repository.sqlite3")).unwrap();
-    connection
-        .execute("UPDATE vcs_commits SET format_version = 2147483648", [])
-        .unwrap();
+    assert!(
+        connection
+            .execute("UPDATE vcs_commits SET format_version = 2147483648", [])
+            .is_err()
+    );
+    // Simulate damaged storage, bypassing the writer's format constraint.
+    connection.execute_batch("PRAGMA ignore_check_constraints = ON; UPDATE vcs_commits SET format_version = 2147483648;").unwrap();
     drop(connection);
-
     assert_fsck_integrity_failure(temporary.path(), "outside the signed 32-bit range");
 }
 
@@ -3216,36 +3237,91 @@ fn fsck_rejects_an_allocator_ahead_of_history() {
 }
 
 #[test]
-fn log_limit_counts_commits_across_repository_sequence_gaps() {
+fn history_readers_reject_repository_sequence_gaps() {
     let temporary = committed_repository();
-    let connection =
-        rusqlite::Connection::open(temporary.path().join(".synck/repository.sqlite3")).unwrap();
-    connection
-        .execute("UPDATE vcs_repo_activity_heads SET next_repo_seq = 4", [])
+    let root = temporary.path();
+    let db = rusqlite::Connection::open(root.join(".synck/repository.sqlite3")).unwrap();
+    let (id, time): (Vec<u8>, String) = db
+        .query_row(
+            "SELECT commit_id,created_at FROM vcs_commits WHERE repo_seq=2",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
         .unwrap();
-    drop(connection);
+    let previous: Vec<u8> = db
+        .query_row(
+            "SELECT checkpoint FROM vcs_checkpoints WHERE repo_seq=1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let id = synck_vcs::types::commit_id_from_digest_bytes(&id).unwrap();
+    let checkpoint = synck_vcs::checkpoint::digest(
+        &previous.try_into().unwrap(),
+        3,
+        &id,
+        synck_vcs_sqlite::parse_timestamp(&time).unwrap(),
+    )
+    .unwrap();
+    // Keep the digest correct: the missing position itself must be rejected.
+    db.execute("UPDATE vcs_commits SET repo_seq=3 WHERE repo_seq=2", [])
+        .unwrap();
+    db.execute(
+        "UPDATE vcs_checkpoints SET repo_seq=3,checkpoint=?1 WHERE repo_seq=2",
+        [checkpoint.as_slice()],
+    )
+    .unwrap();
+    db.execute("UPDATE vcs_repo_activity_heads SET next_repo_seq=4", [])
+        .unwrap();
+    drop(db);
+    for args in [
+        vec!["log"],
+        vec!["--json", "log"],
+        vec!["show", "3"],
+        vec!["fsck"],
+    ] {
+        let output = synck(root, &args);
+        assert!(!output.status.success(), "{args:?}");
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            error.contains("consecutive") || error.contains("checkpoint placement"),
+            "{error}"
+        );
+    }
+}
 
-    fs::write(temporary.path().join("file.txt"), b"changed").unwrap();
-    let output = synck(temporary.path(), &["commit", "-m", "second"]);
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let output = synck(temporary.path(), &["log", "--oneline", "--limit", "2"]);
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let stdout = String::from_utf8(output.stdout).unwrap();
-    let lines = stdout.lines().collect::<Vec<_>>();
-    assert_eq!(lines.len(), 2, "{stdout}");
-    assert!(lines[0].starts_with("4 | "), "{stdout}");
-    assert!(lines[0].ends_with(" | second"), "{stdout}");
-    assert!(lines[1].starts_with("2 | "), "{stdout}");
-    assert!(lines[1].ends_with(" | initial"), "{stdout}");
+#[test]
+fn history_reads_refresh_stale_checkout_cache() {
+    for args in [
+        vec!["--json", "log"],
+        vec!["show", "HEAD", "--events", "--json"],
+        vec!["compare", "2", "3"],
+        vec!["history", "file.txt"],
+    ] {
+        let temporary = committed_repository();
+        let root = temporary.path();
+        fs::write(root.join("file.txt"), b"changed").unwrap();
+        let committed = synck(root, &["commit", "-m", "second"]);
+        assert!(committed.status.success(), "{:?}", committed);
+        let output = synck(root, &args);
+        assert!(
+            output.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        if args.contains(&"--json") {
+            serde_json::from_slice::<Value>(&output.stdout).unwrap();
+        }
+        let db = rusqlite::Connection::open(root.join(".synck/repository.state.sqlite3")).unwrap();
+        let applied: i64 = db
+            .query_row(
+                "SELECT applied_repo_seq FROM vcs_state_projection_heads",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(applied, 3, "{args:?}");
+    }
 }
 
 #[cfg(unix)]

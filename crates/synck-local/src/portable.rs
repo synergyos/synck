@@ -1466,14 +1466,12 @@ impl PortableRepository {
     }
 
     pub async fn verify(&self) -> Result<VerificationReport> {
-        self.storage.verify_metadata_objects(self.repo_id()).map_err(corrupt)?;
-        self.storage
-            .verify_checkpoints(self.repo_id())
-            .map_err(corrupt)?;
         let findings = crate::integrity::physical_core_findings(&self.storage, self.repo_id())?;
         if !findings.is_empty() {
             return Err(corrupt(findings.summary()));
         }
+        self.storage.verify_metadata_objects(self.repo_id()).map_err(corrupt)?;
+        self.storage.verify_checkpoints(self.repo_id()).map_err(corrupt)?;
         let connection = self.storage.open_readonly().map_err(corrupt)?;
         for table in [
             "vcs_metadata_objects",

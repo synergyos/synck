@@ -19,7 +19,7 @@ use synck_file_folder::{
 };
 use synck_vcs::naming::compute_name_key;
 use synck_vcs::state::{
-    ItemValue, NamespaceKey, RootHeader, StateIndexStore, StateRootId, StateTree,
+    ItemValue, NamespaceKey, RootHeader, StateIndexStore, StateProjectorStore, StateRootId, StateTree,
 };
 use synck_vcs::types::{
     ObjectId, COMMIT_EVENT_FAMILY_ITEM, COMMIT_EVENT_FAMILY_REF, CommitEventRow, CommitId,
@@ -1755,13 +1755,7 @@ impl Repository {
             .map_err(|error| LocalError::Integrity(error.to_string()))?;
         #[cfg(test)]
         record_historical_work(self.config().repo_id(), HistoricalWorkKind::StateStore, 1);
-        // `log` recovered first; a checkout's recovery already caught the index up.
-        if self.checkout_paths().is_none() {
-            self.catch_up_state_index_in(&mut store).await?;
-        }
-        let newest_repo_seq = commits[0].repo_seq;
-        self.require_historical_projection(&mut store, newest_repo_seq)
-            .await?;
+        self.catch_up_state_index_in(&mut store).await?;
         let mut roots = Vec::with_capacity(commits.len());
         for commit in &commits {
             let commit_id = CommitId::parse(&commit.commit_id).map_err(|error| {
@@ -1851,8 +1845,6 @@ impl Repository {
         #[cfg(test)]
         record_historical_work(self.config().repo_id(), HistoricalWorkKind::StateStore, 1);
         self.catch_up_state_index_in(&mut store).await?;
-        self.require_historical_projection(&mut store, repo_seq)
-            .await?;
         let root = self
             .historical_root_after_projection(&mut store, repo_seq, Some(&commit_id))
             .await?
@@ -1974,7 +1966,7 @@ impl Repository {
         })
     }
 
-    async fn complete_commit_events_in<S: StateIndexStore>(
+    async fn complete_commit_events_in<S: StateProjectorStore>(
         &self,
         store: &mut S,
         commit_id: &str,
@@ -2011,7 +2003,7 @@ impl Repository {
         Ok(output)
     }
 
-    async fn present_commit_event_rows_in<S: StateIndexStore>(
+    async fn present_commit_event_rows_in<S: StateProjectorStore>(
         &self,
         store: &mut S,
         commit_id: &CommitId,
@@ -2020,7 +2012,7 @@ impl Repository {
         rows: Vec<CommitEventRow>,
         calculate_commit_digest: bool,
     ) -> Result<(Vec<CommitEvent>, Option<String>)> {
-        self.require_historical_projection(store, repo_seq).await?;
+        self.catch_up_state_index_in(store).await?;
         let root = self
             .historical_root_after_projection(store, repo_seq, Some(commit_id))
             .await?
@@ -2034,9 +2026,6 @@ impl Repository {
             None => None,
         };
 
-        let tagged_digest = rows
-            .iter()
-            .any(|event| matches!(event, CommitEventRow::Ref(_)));
         let mut commit_hasher = Sha256::new();
         let mut output = Vec::with_capacity(rows.len());
         for (offset, event) in rows.into_iter().enumerate() {
@@ -2090,9 +2079,7 @@ impl Repository {
                         )));
                     }
                     if calculate_commit_digest {
-                        if tagged_digest {
-                            commit_hasher.update([COMMIT_EVENT_FAMILY_ITEM]);
-                        }
+                        commit_hasher.update([COMMIT_EVENT_FAMILY_ITEM]);
                         commit_hasher.update(payload_digest);
                     }
                     let presentation =
@@ -2591,33 +2578,15 @@ impl Repository {
         }
     }
 
-    pub(crate) async fn historical_root_at_commit<S: StateIndexStore>(
+    pub(crate) async fn historical_root_at_commit<S: StateProjectorStore>(
         &self,
         store: &mut S,
         repo_seq: i64,
         commit_id: &CommitId,
     ) -> Result<(StateRootId, RootHeader)> {
-        self.require_historical_projection(store, repo_seq).await?;
+        self.catch_up_state_index_in(store).await?;
         self.historical_root_after_projection(store, repo_seq, Some(commit_id))
             .await
-    }
-
-    async fn require_historical_projection<S: StateIndexStore>(
-        &self,
-        store: &mut S,
-        repo_seq: i64,
-    ) -> Result<()> {
-        let head = store
-            .projection_head()
-            .await
-            .map_err(|error| LocalError::Integrity(error.to_string()))?
-            .ok_or_else(|| LocalError::Integrity("state projection head is missing".to_string()))?;
-        if head.applied_repo_seq < repo_seq {
-            return Err(LocalError::Integrity(format!(
-                "state index is behind repository sequence {repo_seq}"
-            )));
-        }
-        Ok(())
     }
 
     async fn historical_root_after_projection<S: StateIndexStore>(
@@ -3080,11 +3049,11 @@ impl Repository {
         let display = normalize_input_path(self.root_path(), caller, input)?;
         let (item_id, item_type) = self.resolve_current_item_path(&display)?;
         let event_groups = self.item_event_groups(&item_id).await?;
-        let Some(last_group) = event_groups.last() else {
+        if event_groups.is_empty() {
             return Err(LocalError::Integrity(format!(
                 "tracked item {item_id} has no events"
             )));
-        };
+        }
         let mut store = self
             .storage()
             .state_index_store(self.config().repo_id().clone())
@@ -3092,8 +3061,6 @@ impl Repository {
         #[cfg(test)]
         record_historical_work(self.config().repo_id(), HistoricalWorkKind::StateStore, 1);
         self.catch_up_state_index_in(&mut store).await?;
-        self.require_historical_projection(&mut store, last_group.0)
-            .await?;
         let item_kinds = BTreeMap::from([(item_id.clone(), item_type.clone())]);
         let mut output = Vec::with_capacity(event_groups.len());
         for (repo_seq, commit_id, events) in event_groups {

@@ -347,9 +347,9 @@ pub fn validate_import_repo_seq(prev: Option<i64>, current: i64) -> Result<i64, 
             }
         }
         Some(prev) => {
-            if current <= prev {
+            if prev.checked_add(1) != Some(current) {
                 return Err(format!(
-                    "repo_seq must be strictly increasing (prev {prev}, got {current})"
+                    "repo_seq must be consecutive (prev {prev}, got {current})"
                 ));
             }
         }
@@ -723,11 +723,13 @@ mod bundle_tests {
     }
 
     #[test]
-    fn import_repo_seq_is_strictly_increasing() {
+    fn import_repo_seq_is_consecutive() {
         assert!(validate_import_repo_seq(None, 1).is_ok());
         assert!(validate_import_repo_seq(Some(1), 2).is_ok());
         assert!(validate_import_repo_seq(None, 2).is_err());
         assert!(validate_import_repo_seq(Some(2), 2).is_err());
         assert!(validate_import_repo_seq(Some(2), 1).is_err());
+        assert!(validate_import_repo_seq(Some(2), 4).is_err());
+        assert!(validate_import_repo_seq(Some(i64::MAX), 1).is_err());
     }
 }

@@ -9,7 +9,7 @@ pub const GENESIS: [u8; 32] = [0; 32];
 
 /// Hash a published position using fixed-width, big-endian framing.
 ///
-/// Sequence numbers must be positive and strictly increasing. The caller owns
+/// Sequence numbers start at one and must be consecutive. The caller owns
 /// those ordering checks and the atomic publication of position and checkpoint.
 pub fn digest(
     previous: &[u8; 32],

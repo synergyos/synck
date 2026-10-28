@@ -97,14 +97,7 @@ async fn fixture() -> (tempfile::TempDir, SqliteStorage, RepoId, Vec<Value>) {
     )
     .await
     .unwrap();
-    // Publication permits strictly increasing positions with gaps.
     let connection = source.open_writable().unwrap();
-    connection
-        .execute(
-            "UPDATE vcs_repo_activity_heads SET next_repo_seq=7 WHERE repo_id=?1",
-            [repo_id.as_str()],
-        )
-        .unwrap();
     core.sequence_repo_activity(repo_id.clone(), 10)
         .await
         .unwrap();
@@ -289,13 +282,13 @@ async fn bundle_metadata_preserves_salts_and_rolls_back_invalid_objects() {
 }
 
 #[tokio::test]
-async fn mixed_history_import_preserves_ids_ref_heads_gaps_and_next_append() {
+async fn mixed_history_import_preserves_ids_ref_heads_and_next_append() {
     let (directory, source, repo_id, records) = fixture().await;
     let target = SqliteStorage::new(directory.path().join("target.sqlite"));
     let report = target.import_bundle(&mut input(&records)).await.unwrap();
     assert_eq!(
         (report.commits, report.items, report.terminal_repo_seq),
-        (2, 12, 7)
+        (2, 12, 2)
     );
     assert_eq!(report.repo_id, repo_id);
     assert_eq!(report.source_schema.subsystem, SCHEMA_META_SUBSYSTEM_VCS);
@@ -315,7 +308,7 @@ async fn mixed_history_import_preserves_ids_ref_heads_gaps_and_next_append() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(next, 8);
+    assert_eq!(next, 3);
     let ref_head: i64 = connection
         .query_row(
             "SELECT ref_head_seq FROM vcs_items WHERE repo_id=?1 AND item_type='FILE'",
@@ -346,7 +339,7 @@ async fn mixed_history_import_preserves_ids_ref_heads_gaps_and_next_append() {
             .unwrap()
             .unwrap()
             .applied_repo_seq,
-        7
+        2
     );
     drop(state);
     let items = target
@@ -378,11 +371,11 @@ async fn mixed_history_import_preserves_ids_ref_heads_gaps_and_next_append() {
         .unwrap();
     assert_eq!(
         target
-            .list_commits_by_repo_seq_readonly(&repo_id, 8, None, 10)
+            .list_commits_by_repo_seq_readonly(&repo_id, 3, None, 10)
             .await
             .unwrap()[0]
             .repo_seq,
-        Some(8)
+        Some(3)
     );
     assert_eq!(
         target
@@ -402,7 +395,7 @@ async fn mixed_history_import_preserves_ids_ref_heads_gaps_and_next_append() {
             .unwrap()
             .unwrap()
             .applied_repo_seq,
-        8
+        3
     );
 }
 
@@ -410,6 +403,14 @@ async fn mixed_history_import_preserves_ids_ref_heads_gaps_and_next_append() {
 async fn invalid_or_incomplete_bundle_rolls_back_and_allows_clean_retry() {
     let (directory, _source, repo_id, records) = fixture().await;
     let mut cases = Vec::new();
+    let mut gap = records.clone();
+    for record in &mut gap {
+        if record["repo_seq"] == 2 {
+            record["repo_seq"] = json!(3);
+        }
+    }
+    cases.push(gap);
+
     for field in ["checkpoint", "created_at", "committer_id", "occurred_at"] {
         let mut changed = records.clone();
         changed
@@ -483,4 +484,60 @@ async fn invalid_or_incomplete_bundle_rolls_back_and_allows_clean_retry() {
             2
         );
     }
+}
+
+#[tokio::test]
+async fn sequencer_rejects_gaps_without_publishing_partial_history() {
+    let (_directory, source, repo_id, _) = fixture().await;
+    let core = Repo::new(
+        Storage::new(Arc::new(source.clone())),
+        CoreConfig::default(),
+    );
+    let items = source
+        .list_items_readonly(&repo_id, None, None, 100)
+        .await
+        .unwrap();
+    let chat = items.iter().find(|item| item.item_type == "CHAT").unwrap();
+    let event = EventProposal::from_fields(json!({
+        "item_id":chat.item_id, "event_type":"CHAT::RENAME", "base_seq":chat.head_seq,
+        "set_name":"after-gap"
+    }))
+    .unwrap();
+    let accepted = core
+        .append(repo_id.clone(), proposal(vec![event], "gap-retry"))
+        .await
+        .unwrap();
+    let db = source.open_writable().unwrap();
+    db.execute(
+        "UPDATE vcs_repo_activity_heads SET next_repo_seq=4 WHERE repo_id=?1",
+        [repo_id.as_str()],
+    )
+    .unwrap();
+    let error = core
+        .sequence_repo_activity(repo_id.clone(), 10)
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("consecutive"), "{error}");
+    let (pending, checkpoints): (i64, i64) = db.query_row(
+        "SELECT (SELECT count(*) FROM vcs_commits WHERE repo_seq IS NULL), (SELECT count(*) FROM vcs_checkpoints)",
+        [], |row| Ok((row.get(0)?, row.get(1)?)),
+    ).unwrap();
+    assert_eq!((pending, checkpoints), (1, 2));
+    db.execute(
+        "UPDATE vcs_repo_activity_heads SET next_repo_seq=3 WHERE repo_id=?1",
+        [repo_id.as_str()],
+    )
+    .unwrap();
+    assert_eq!(
+        core.sequence_repo_activity(repo_id.clone(), 10)
+            .await
+            .unwrap(),
+        1
+    );
+    let published = source
+        .list_commits_by_repo_seq_readonly(&repo_id, 3, None, 1)
+        .await
+        .unwrap();
+    assert_eq!(published[0].commit_id, accepted.commit_id);
+    source.verify_checkpoints(&repo_id).unwrap();
 }

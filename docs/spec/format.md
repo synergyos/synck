@@ -234,10 +234,11 @@ The checkpoint is SHA-256 over the concatenation, without separators, of:
 5. The acceptance timestamp's Unix seconds as a signed 64-bit big-endian integer.
 6. Its nanosecond fraction as an unsigned 32-bit big-endian integer, below 10^9.
 
-Sequences increase strictly; gaps are allowed. Leap-second timestamps are not
-representable by this framing. Author time is distinct from acceptance time.
-Vectors in `vectors/checkpoints.json` include a sequence gap and fractional time.
-The chain binds publication order relative to a trusted checkpoint. It does not
+Sequences start at 1 and are consecutive: 1, 2, 3, and so on. Gaps are invalid.
+Leap-second timestamps are not representable by this framing. Author time is
+distinct from acceptance time.
+Vectors in `vectors/checkpoints.json` include an invalid sequence gap and valid
+fractional time. The chain binds publication order relative to a trusted checkpoint. It does not
 by itself authenticate authority or detect the removal of an unknown suffix.
 A checkpoint is not a regulatory retention seal.
 
@@ -688,8 +689,8 @@ provenance, not a schema migration instruction: the SQLite writer emits
 `subsystem: "synck_vcs_sqlite", schema_id: "core-v7"`. The generic bundle
 boundary also recognizes `synck_vcs_pg` provenance; that is not a 0.1 reader.
 
-Commits are ordered by ascending positive `repo_seq`; gaps are allowed. Exactly
-`event_count` event/ref records immediately follow each commit, with contiguous
+Commits are ordered by consecutive `repo_seq`, starting at 1; gaps are invalid.
+Exactly `event_count` event/ref records immediately follow each commit, with contiguous
 indexes from zero, item records first and ref records after. Their repeated
 commit ID, position and acceptance time must match. Item and domain sections
 must not duplicate identities; item-head fields must match structural replay.

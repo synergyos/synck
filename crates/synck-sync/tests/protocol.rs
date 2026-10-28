@@ -60,7 +60,7 @@ fn published(request: &SubmitRequest, records: &[ProposalRecord]) -> PublishedCo
                     event_type: event.event_type.clone(),
                     commit_id: validated.commit_id.clone(),
                     commit_event_idx: i as i32,
-                    repo_seq: Some(5),
+                    repo_seq: Some(1),
                     event_payload_digest: digest(compute_sha256_digest_bytes(&payload)),
                     payload,
                     metadata: None,
@@ -78,7 +78,7 @@ fn published(request: &SubmitRequest, records: &[ProposalRecord]) -> PublishedCo
                     event_type: event.event_type.clone(),
                     commit_id: validated.commit_id.clone(),
                     commit_event_idx: i as i32,
-                    repo_seq: Some(5),
+                    repo_seq: Some(1),
                     event_payload_digest: digest(compute_sha256_digest_bytes(&payload)),
                     payload,
                     metadata: None,
@@ -91,7 +91,7 @@ fn published(request: &SubmitRequest, records: &[ProposalRecord]) -> PublishedCo
     let checkpoint = digest(
         synck_vcs::checkpoint::digest(
             &synck_vcs::checkpoint::GENESIS,
-            5,
+            1,
             &validated.commit_id,
             now(),
         )
@@ -101,7 +101,7 @@ fn published(request: &SubmitRequest, records: &[ProposalRecord]) -> PublishedCo
         commit: CommitRow {
             repo_id: request.repository.repo_id.clone(),
             commit_id: validated.commit_id,
-            repo_seq: Some(5),
+            repo_seq: Some(1),
             format_version: COMMIT_FORMAT_VERSION,
             import_job_id: request.metadata.import_job_id.clone(),
             author_id: request.metadata.author_id.clone(),
@@ -584,7 +584,7 @@ fn history_continuation_keeps_partial_item_and_ref_events_private() {
     assert!(state.push(&changed).is_err());
     assert_eq!(state.position(), &pending);
     let completed = state.push(&last).unwrap().unwrap();
-    assert_eq!(completed.repo_seq, 5);
+    assert_eq!(completed.repo_seq, 1);
     assert_eq!(completed.checkpoint, published.checkpoint);
     assert!(state.position().pending.is_none());
 }
@@ -784,4 +784,30 @@ fn history_page_can_start_and_end_mid_commit_with_complete_commits_between() {
             state = resumed;
         }
     }
+}
+
+#[test]
+fn history_rejects_a_sequence_gap_even_with_a_matching_checkpoint() {
+    let (vector, commits) = history_vector("many_small_commits");
+    let mut state = HistoryVerifier::new(Cursor::genesis(repository())).unwrap();
+    let original = state.position().clone();
+    let mut page = vector_history_page(&vector["pages"][0], &commits, original.clone(), false);
+    page.fragments.truncate(2);
+    let previous = sha256_digest_to_digest_bytes(&page.fragments[0].header.checkpoint);
+    let fragment = &mut page.fragments[1];
+    fragment.header.commit.repo_seq = Some(3);
+    if let CommitEventRow::Item(row) = &mut fragment.events[0] {
+        row.repo_seq = Some(3);
+    }
+    fragment.header.checkpoint = digest(
+        synck_vcs::checkpoint::digest(
+            &previous,
+            3,
+            &fragment.header.commit.commit_id,
+            fragment.header.commit.created_at,
+        )
+        .unwrap(),
+    );
+    assert!(state.push(&page).is_err());
+    assert_eq!(state.position(), &original);
 }
