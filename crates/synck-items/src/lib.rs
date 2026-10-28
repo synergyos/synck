@@ -10,23 +10,15 @@
 //! hydration and complete-history transfer.
 
 pub mod body_events;
-pub mod calendar;
-pub mod calendar_event;
-pub mod call;
-pub mod calls;
 pub mod chat;
-pub mod chat_organization;
 pub mod content;
 pub mod database;
 pub mod email;
 pub mod email_data_images;
-pub mod external_scheduling;
-pub mod federated_mount;
 pub mod file;
 pub mod file_resources;
 pub mod imported_email;
 pub mod metadata;
-pub mod native_calendars;
 pub mod post;
 pub mod reader;
 pub mod references;
@@ -35,7 +27,6 @@ pub mod subitems;
 pub mod table;
 pub mod task_list;
 pub mod tasks;
-pub mod time_tracking;
 
 /// Concurrency discipline declared by a persisted mutation vocabulary.
 /// This does not evaluate a caller's permissions.

@@ -12,7 +12,7 @@ use serde_json::Value;
 use synck_vcs::types::{ContentId, EventContent, EventProposal, ItemId, RefEventProposal, RepoId};
 use uuid::Uuid;
 
-use crate::{calls, native_calendars, replica_projection, subitems, tasks, time_tracking};
+use crate::{replica_projection, subitems, tasks};
 use subitems::{SubitemEventVerb as Verb, SubitemKind as Kind};
 
 #[derive(Debug, thiserror::Error)]
@@ -42,23 +42,6 @@ pub struct ReadContext<'a> {
     pub occurred_at: Option<DateTime<Utc>>,
     pub author: &'a str,
     pub committer: &'a str,
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(tag = "kind", content = "state", rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum NativeState {
-    Generic,
-    Task {
-        data: tasks::history::TaskData,
-        lifecycle: tasks::history::Lifecycle,
-    },
-    Calendar(native_calendars::Calendar),
-    CalendarEvent(native_calendars::CalendarEvent),
-    ChatOrganization(crate::chat_organization::ChatOrganization),
-    Call(calls::Call),
-    TimeSettings(time_tracking::Settings),
-    TimeBook(time_tracking::Book),
-    TimeEntry(time_tracking::Entry),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -144,8 +127,6 @@ pub struct ChatDetails {
     pub profile: Option<subitems::ChatProfileEvent>,
     pub assistants: BTreeSet<String>,
     pub participants: BTreeMap<String, subitems::ChatUserParticipantEvent>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub organization: Option<crate::chat_organization::ChatOrganization>,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -179,7 +160,6 @@ pub struct AncillaryEvent {
 #[derive(Clone, Debug, Serialize)]
 pub struct ReadableItem {
     pub projection: replica_projection::ReplicaItemProjection,
-    pub native: NativeState,
     pub chat: Option<ChatDetails>,
     pub post: Option<PostDetails>,
     pub subitems: Vec<ReadableSubitem>,
@@ -204,7 +184,6 @@ pub struct ItemReader {
     ancillary_events: Vec<AncillaryEvent>,
     poisoned: bool,
     projection: Option<replica_projection::ReplicaItemProjection>,
-    native: NativeState,
     chat: Option<ChatDetails>,
     post: Option<PostDetails>,
     subitems: BTreeMap<(String, SubitemIdentity), ReadableSubitem>,
@@ -242,14 +221,13 @@ impl ItemReader {
             ancillary_events: Vec::new(),
             poisoned: false,
             projection: None,
-            native: NativeState::Generic,
             chat: None,
             post: None,
             subitems: BTreeMap::new(),
         }
     }
 
-    /// Supply repository identity for deterministic FILE versions and CHAT organization owners.
+    /// Supply repository identity for deterministic FILE versions.
     pub fn for_repository(repo_id: RepoId, item_id: ItemId) -> Self {
         let mut reader = Self::new(item_id);
         reader.repo_id = Some(repo_id);
@@ -276,7 +254,6 @@ impl ItemReader {
                 .projection
                 .clone()
                 .ok_or_else(|| invalid("item has no creation"))?,
-            native: self.native.clone(),
             chat: self.chat.clone(),
             post: self.post.clone(),
             subitems: self.subitems.values().cloned().collect(),
@@ -636,7 +613,6 @@ impl ItemReader {
         if let Some(EventContent::Content { content_id }) = event.set_content {
             return Err(ReadError::NeedsContent(content_id));
         }
-        let next_native = self.reduce_native(&kind, event, &context)?;
         let mut projection = replica_projection::apply_replica_item_event(
             self.projection.clone(),
             self.item_id.clone(),
@@ -647,21 +623,8 @@ impl ItemReader {
         )
         .map_err(invalid)?;
         match kind.as_str() {
-            "TASK" | "CALL" | "CALENDAR" | "CALENDAR_EVENT" | "CHAT_ORGANIZATION"
-            | "TIME_SETTINGS" | "TIME_BOOK" | "TIME_ENTRY" => {
-                if event.event_type == "TASK::COMMENT::CREATE" {
-                    self.apply_uuid_comment(
-                        "TASK::COMMENT",
-                        "comment_id",
-                        "body",
-                        event,
-                        &context,
-                    )?;
-                }
-            }
             "FILE_VERSION_SET" => self.apply_version_set(event, &context)?,
-            "FILE" | "FOLDER" | "CHAT" | "EMAIL" | "POST" | "TASK_LIST" | "TABLE" | "DATABASE"
-            | "FEDERATED_MOUNT" => {
+            "FILE" | "FOLDER" | "CHAT" | "EMAIL" | "POST" | "TASK_LIST" | "TABLE" | "DATABASE" => {
                 if let Some((subkind, verb)) = subitems::classify_subitem_event(&event.event_type) {
                     if subkind.owning_item_type() != kind {
                         return Err(invalid("subitem family does not match owner"));
@@ -686,122 +649,8 @@ impl ItemReader {
         {
             self.file_content_positions.insert(context.item_seq);
         }
-        self.native = next_native;
         self.projection = Some(projection);
         Ok(())
-    }
-
-    fn reduce_native(
-        &self,
-        kind: &str,
-        event: &EventProposal,
-        ctx: &ReadContext<'_>,
-    ) -> Result<NativeState, ReadError> {
-        if (kind == "TASK" && tasks::history::event_policy(&event.event_type).is_none())
-            || (kind == "CALL" && crate::call::event_policy(&event.event_type).is_none())
-            || (time_tracking::is_kind(kind)
-                && time_tracking::event_policy(kind, &event.event_type).is_none())
-        {
-            return Err(unsupported(kind, &event.event_type));
-        }
-        Ok(match kind {
-            "CHAT_ORGANIZATION" => {
-                let organization = crate::chat_organization::reduce(
-                    match &self.native {
-                        NativeState::ChatOrganization(value) => Some(value),
-                        _ => None,
-                    },
-                    event,
-                )
-                .map_err(invalid)?;
-                if let Some(repo_id) = &self.repo_id {
-                    crate::chat_organization::validate_identity(
-                        repo_id,
-                        &self.item_id,
-                        &organization,
-                    )
-                    .map_err(invalid)?;
-                }
-                NativeState::ChatOrganization(organization)
-            }
-            "TASK" => {
-                let before = match &self.native {
-                    NativeState::Task { data, lifecycle } => Some(tasks::history::TaskState {
-                        item_id: self.item_id.clone(),
-                        data: data.clone(),
-                        lifecycle: *lifecycle,
-                    }),
-                    _ => None,
-                };
-                let next =
-                    tasks::history::reduce(before.as_ref(), event, ctx.author).map_err(invalid)?;
-                NativeState::Task {
-                    data: next.data,
-                    lifecycle: next.lifecycle,
-                }
-            }
-            "CALL" => NativeState::Call(
-                calls::history::reduce(
-                    match &self.native {
-                        NativeState::Call(value) => Some(value),
-                        _ => None,
-                    },
-                    event,
-                )
-                .map_err(invalid)?,
-            ),
-            "CALENDAR" => NativeState::Calendar(
-                native_calendars::history::reduce_calendar(
-                    match &self.native {
-                        NativeState::Calendar(value) => Some(value),
-                        _ => None,
-                    },
-                    event,
-                )
-                .map_err(invalid)?,
-            ),
-            "CALENDAR_EVENT" => NativeState::CalendarEvent(
-                native_calendars::history::reduce_event(
-                    match &self.native {
-                        NativeState::CalendarEvent(value) => Some(value),
-                        _ => None,
-                    },
-                    event,
-                    ctx.author,
-                )
-                .map_err(invalid)?,
-            ),
-            "TIME_ENTRY" => NativeState::TimeEntry(
-                time_tracking::reduce_entry(
-                    match &self.native {
-                        NativeState::TimeEntry(value) => Some(value),
-                        _ => None,
-                    },
-                    event,
-                )
-                .map_err(invalid)?,
-            ),
-            "TIME_SETTINGS" => {
-                let value: time_tracking::Settings =
-                    time_tracking::metadata(event).map_err(invalid)?;
-                value.validate().map_err(invalid)?;
-                NativeState::TimeSettings(value)
-            }
-            "TIME_BOOK" => {
-                let value: time_tracking::Book = time_tracking::metadata(event).map_err(invalid)?;
-                time_tracking::validate_rate(value.hourly_rate_minor).map_err(invalid)?;
-                if value.user_id.is_empty() || value.user_id.len() > 256 {
-                    return Err(invalid("invalid timekeeper"));
-                }
-                if let NativeState::TimeBook(previous) = &self.native {
-                    if previous.user_id != value.user_id {
-                        return Err(invalid("immutable timekeeper changed"));
-                    }
-                }
-                NativeState::TimeBook(value)
-            }
-            _ => NativeState::Generic,
-        })
     }
 
     fn apply_owner(

@@ -487,89 +487,41 @@ fn post_and_email_readers_expose_bodies_comments_assets_and_metadata_replacement
 }
 
 #[test]
-fn native_domains_use_existing_typed_reducers_and_remain_serializable() {
-    let cases = [
-        (
-            "CALENDAR",
-            json!({"title":"Calendar","color":"#336699","description":null,"archived":false}),
-        ),
-        (
-            "CALENDAR_EVENT",
-            json!({"calendar_item_id":ItemId::new(),"case_item_id":null,"title":"Meeting","time":{"kind":"TIMED","start":"2026-10-25T12:00:00Z","end":"2026-10-25T13:00:00Z","time_zone":"UTC"},"location":null,"meeting_url":null,"organizer_user_id":"alice","state":"SCHEDULED","attendees":[],"invitation_counter":0,"reminders":{"counter":0,"entries":[]},"reminder_schedule_generation":0}),
-        ),
-        (
-            "TIME_SETTINGS",
-            json!({"currency":"EUR","offices":[],"practices":[]}),
-        ),
-        (
-            "TIME_BOOK",
-            json!({"user_id":"alice","display_name":"Alice","hourly_rate_minor":null,"office_id":null,"practice_id":null,"active_entry_id":null}),
-        ),
-        (
-            "TIME_ENTRY",
-            json!({"book_id":ItemId::new(),"user_id":"alice","display_name":"Alice","draft":{"work_date":"2026-10-25","time_zone":"UTC","seconds":600,"description":"Review","assignment":{"kind":"INTERNAL"},"classification":"NONBILLABLE","office_id":null,"practice_id":null,"hourly_rate_minor":null,"rate_override":false},"status":"DRAFT","currency":"EUR","value_minor":0,"intervals":[]}),
-        ),
-        (
-            "CALL",
-            json!({"kind":"CREATE","creation":{"creator_id":"alice","created_at":"2026-10-25T12:00:00Z","expires_at":"2026-10-25T13:00:00Z","origin":{"kind":"STANDALONE","recipient_id":"bob"},"media":"AUDIO","transport":"GROUP_LIVEKIT"}}),
-        ),
-    ];
-    for (kind, meta) in cases {
+fn hosted_only_native_domains_are_explicitly_unsupported() {
+    for kind in [
+        "TASK",
+        "CALENDAR",
+        "CALENDAR_EVENT",
+        "TIME_SETTINGS",
+        "TIME_BOOK",
+        "TIME_ENTRY",
+        "CALL",
+        "CHAT_ORGANIZATION",
+        "FEDERATED_MOUNT",
+    ] {
         let id = ItemId::new();
         let mut reader = ItemReader::new(id.clone());
-        let mut first = event(&id, &format!("{kind}::CREATE"), meta, None);
-        let name = match kind {
-            "CALL" => calls::history::internal_name(&id),
-            "CALENDAR" | "CALENDAR_EVENT" => native_calendars::history::internal_name(kind, &id),
-            _ => format!("{}-{id}", kind.to_ascii_lowercase()),
-        };
+        let mut first = event(&id, &format!("{kind}::CREATE"), json!({}), None);
         first.create_item = Some(CreateItem {
             item_type: kind.into(),
-            name,
+            name: "unsupported".into(),
             parent_folder_id: None,
         });
-        apply(&mut reader, &first, "alice");
-        let snapshot = reader.snapshot().unwrap();
-        assert!(!matches!(snapshot.native, NativeState::Generic), "{kind}");
-        serde_json::to_value(snapshot).unwrap();
+        let result = reader.apply(
+            &first,
+            ReadContext {
+                item_seq: 1,
+                created_at: now(),
+                occurred_at: None,
+                author: "author",
+                committer: "author",
+            },
+        );
+        assert!(
+            matches!(result, Err(ReadError::Unsupported { .. })),
+            "{kind}: {result:?}"
+        );
     }
-    let id = ItemId::new();
-    let mut reader = ItemReader::new(id.clone());
-    let data = tasks::history::TaskData {
-        task_list_id: None,
-        parent_task_id: None,
-        meta: json!({"subject":"Review","created_by":"alice","created_at":"2026-10-25T12:00:00Z"}),
-    }
-    .normalized()
-    .unwrap();
-    let mut first = event(
-        &id,
-        "TASK::CREATE",
-        serde_json::to_value(data).unwrap(),
-        None,
-    );
-    first.create_item = Some(CreateItem {
-        item_type: "TASK".into(),
-        name: tasks::history::internal_name(&id),
-        parent_folder_id: None,
-    });
-    apply(&mut reader, &first, "alice");
-    let mut comment = event(
-        &id,
-        "TASK::COMMENT::CREATE",
-        json!({"comment_id":Uuid::now_v7()}),
-        json_body("task note"),
-    );
-    comment.base_seq = Some(1);
-    apply(&mut reader, &comment, "bob");
-    assert!(matches!(
-        reader.snapshot().unwrap().native,
-        NativeState::Task { .. }
-    ));
-    assert_eq!(
-        reader.snapshot().unwrap().subitems[0].body.as_deref(),
-        Some("task note")
-    );
 }
 
 #[test]

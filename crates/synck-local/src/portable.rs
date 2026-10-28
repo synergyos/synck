@@ -1074,20 +1074,7 @@ impl PortableRepository {
                     .map_err(corrupt)?;
             }
         }
-        let mut item = reader.snapshot().map_err(corrupt)?;
-        if let Some(chat) = item.chat.as_mut() {
-            let owner =
-                synck_items::chat_organization::item_id(self.repo_id(), id).map_err(corrupt)?;
-            let (organization, _) = self.read_owner(&owner, through, None).await?;
-            if organization.latest_item_seq() > 0 {
-                let synck_items::reader::NativeState::ChatOrganization(state) =
-                    organization.snapshot().map_err(corrupt)?.native
-                else {
-                    return Err(corrupt("CHAT organization identity has another item type"));
-                };
-                chat.organization = Some(state);
-            }
-        }
+        let item = reader.snapshot().map_err(corrupt)?;
         Ok(PortableItem { item, refs })
     }
 
@@ -1638,36 +1625,6 @@ impl PortableRepository {
         let item_count = items.len() as u64;
         if let Some(finding) = verifier.finish(&items).into_iter().next() {
             return Err(corrupt(finding));
-        }
-        for owner in items
-            .iter()
-            .filter(|item| item.item_type == "CHAT_ORGANIZATION")
-        {
-            if owner.sequencing_mode != SequencingMode::Local
-                || owner.lifecycle_state != LifecycleState::Live
-                || owner.federation_stream_id.is_some()
-                || owner.parent_folder_id.is_some()
-                || owner.ref_head_seq != 0
-            {
-                return Err(corrupt(
-                    "CHAT organization must remain a live local non-tree owner",
-                ));
-            }
-            let (reader, _) = self.read_owner(&owner.item_id, None, None).await?;
-            let synck_items::reader::NativeState::ChatOrganization(state) =
-                reader.snapshot().map_err(corrupt)?.native
-            else {
-                return Err(corrupt("invalid CHAT organization state"));
-            };
-            let chat = self
-                .storage
-                .get_item_readonly(self.repo_id(), &state.chat_item_id)
-                .await
-                .map_err(corrupt)?
-                .ok_or_else(|| corrupt("CHAT organization target is absent"))?;
-            if chat.item_type != "CHAT" {
-                return Err(corrupt("CHAT organization target is not a CHAT"));
-            }
         }
         let next: i64 = connection.query_row(
             "SELECT next_repo_seq FROM vcs_repo_activity_heads WHERE repo_id=?1",

@@ -100,9 +100,9 @@ Unknown typed presentation must not prevent canonical history preservation.
 
 `item show` uses the shared [incremental reader](../crates/synck-items/src/reader.rs)
 for supported FILE/FOLDER history, chats, email, posts, legacy task lists,
-tables/database records, native tasks, calendars/events, calls and timekeeping.
-It also interprets frozen file-version sidecars and stored organization/mount
-metadata. Support depends on the retained event vocabulary; an unknown typed
+tables/database records and frozen file-version sidecars. Hosted native tasks,
+calendars/events, calls, timekeeping and organization/mount reducers are absent
+from 0.2. Support depends on the retained event vocabulary; an unknown typed
 event can fail presentation without preventing a verified canonical copy.
 Reading a family does not imply that all of its mutations are exposed locally.
 
@@ -164,33 +164,6 @@ Private copy verification also rejects incomplete blobs and orphan chunks.
 Older repository formats are rejected. Import accepts complete format-6
 repositories and preserves canonical history and content IDs.
 
-## Canonical workspace linkage
-
-CHAT workspace linkage and its `ITEM_ONLY`/`COMBINE` access relationship live in
-a separate deterministic LOCAL `CHAT_ORGANIZATION` VCS owner. Its canonical
-CREATE/SET_METADATA history is retained by normal export, archive and import.
-Current and checkpointed `item show` reads compose this owner into
-`item.chat.organization` at the same checkpoint, including positive organization
-`revision`, `chat_item_id`, nullable `workspace_item_id` and `item_acl_mode`.
-The CHAT's canonical head, ref head and shared federation stream remain separate.
-
-The first baseline for an existing CHAT records current authority at its real
-acceptance time. Earlier checkpoints and old exports have unknown organization
-and omit the field; a present null workspace records an explicit absence.
-Organization owners are hidden from namespace listings but remain in repository
-logs and can be read directly. Public callers derive the owner ID with
-`synck_items::chat_organization::item_id(repo_id, chat_id)` and can inspect it with
-`synck item show <organization-owner-id> --path <repository>`.
-See [typed organization definition](../crates/synck-items/src/chat_organization.rs) for the identity
-and event contract. Local reads present stored ACL mode without executing
-platform permission evaluation.
-
-Native calendar-event linkage remains the single optional canonical
-`CalendarEvent.case_item_id` workspace reference. Its native event history
-preserves assignment, reassignment and removal through export/copy and
-historical reads. It grants no permissions and uses no export overlay or CHAT
-organization owner.
-
 ## Producer consistency
 
 A producer exports one complete accepted checkpoint: all visible accepted commits
@@ -199,7 +172,7 @@ domain cursors and bodies. Sequencing before opening a snapshot is insufficient;
 a new accepted write can arrive between them. Reject pending history rather than
 silently omit accepted writes or mix a newer namespace with an older prefix.
 
-An export producer may stage the existing bundle-v4 stream plus verified objects
+An export producer may stage the existing bundle-v5 stream plus verified objects
 and an in-memory `BundleSnapshot` (repository ID, terminal sequence, history length
 and SHA-256) to materialize SQLite. These are implementation inputs, not another
 customer package format. The length/hash cover all records, including final item

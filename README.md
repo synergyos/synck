@@ -133,8 +133,8 @@ synck item export FILE_ID ./report.pdf --path ./exported-repository
 synck repository log ./exported-repository
 ```
 
-Files, chats, email, posts, tasks, records, calendars, calls and time tracking are
-all readable, at any point in their history with `--through`. To edit the files
+Files, chats, email, posts, legacy task lists and table records are readable
+at any point in their history with `--through`. To edit the files
 with ordinary applications, make your own copy and check it out:
 
 ```sh
@@ -152,7 +152,7 @@ walks through all of this with a downloadable sample.
 | `synck-vcs` | The engine: items, events, commits, canonical encoding, invariants, verification and historical state. Independent of any database |
 | `synck-vcs-sqlite` | SQLite storage adapter |
 | `synck-file-folder` | File and folder operations, validation and file-version semantics |
-| `synck-items` | Shared vocabulary, readers and body encoding for stored item types: files, chats, email, tasks, calendars and more |
+| `synck-items` | Shared vocabulary, readers and body encoding for stored item types: files, chats and email |
 | `synck-local` | Local repositories, verified copying and the `synck` CLI |
 
 The [`docs/`](docs/README.md) directory holds the normative contracts for the
