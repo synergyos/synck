@@ -6,6 +6,35 @@ versions are independent of release numbers. There are no older-format readers
 or migrations. The normative SQL and JSON vectors linked here are part of this
 specification; no Rust source is needed to interpret a repository.
 
+## Fixed validity limits
+
+These limits belong to format 7, not to a writer configuration or a hosted
+service. Every writer, reader, replay/import path and `fsck` enforces them.
+Lengths are UTF-8 bytes (not characters); event size is its exact canonical
+JSON payload, including escaping.
+
+| Field | Maximum |
+| --- | ---: |
+| Commit message | 16,384 bytes (16 KiB) |
+| Author ID, committer ID (each) | 256 bytes |
+| Operation ID | 256 bytes |
+| One item or attached-ref event payload | 1,048,576 bytes (1 MiB) |
+| One display-name segment | 255 bytes |
+
+Author and committer IDs are nonempty. A stored operation ID is null or
+nonblank UTF-8; append submissions require one. Preserve its exact bytes,
+including whitespace; do not trim or derive a different retry identity.
+Messages may be null or empty. Name normalization and forbidden-character
+rules below still apply. Unknown event types remain interpretable as envelopes;
+the event payload bound covers their strings without a separate type-name cap.
+
+There is **no per-commit event-count or aggregate byte admission limit**. Counts
+and positions must still fit their specified integer representation. Transfer
+page bounds and optional server admission policy never change repository
+validity or split/rewrite accepted commits. See [the sync protocol](protocol.md).
+All public layers use `synck-vcs::limits`; Core configuration cannot override
+format validity. Previous `SYNCKHUB_*` constants are not part of this contract.
+
 ## Container and identifiers
 
 A repository is a directory containing `.synck/` with:

@@ -10,7 +10,7 @@ use std::fmt;
 use unicode_normalization::UnicodeNormalization;
 
 /// Maximum allowed UTF-8 byte length for a single name segment.
-pub const MAX_NAME_BYTES: usize = 255;
+pub use crate::limits::MAX_NAME_BYTES;
 
 /// Validation / canonicalization error for names.
 #[derive(Debug, Clone, PartialEq, Eq)]

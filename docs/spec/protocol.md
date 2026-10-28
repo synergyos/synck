@@ -1,188 +1,223 @@
 # Central synchronization protocol 1
 
-This is the shared, transport-neutral contract for new Synck 0.2 authorities and
-clients. It uses [repository format 7, commit format 6 and salted objects](format.md).
-It is incompatible with the removed 0.1 remote protocol. `synck-sync` owns its
-Rust wire values, limits and verification; product authentication, encryption,
-tenancy, quotas and storage adapters remain with their owning services.
+This transport-neutral contract uses [format 7](format.md), commit format 6 and
+salted objects. `synck-sync` provides wire values, streaming verification and
+admission-policy helpers. Authentication, durable staging, cleanup, transaction
+installation and Core acceptance belong to the authority/client adapters.
+The generic `synck serve`, clone/pull integration, remote lease commands and
+resumable import executor remain work in the central-sync plan. Library tests
+are not evidence that those executables or a deployed service exist.
 
-The protocol library is implemented. A generic `synck serve` executable and CLI
-clone/pull/push integration are separate work; this document does not claim they
-exist. No product may replace transactional Core invariants with wire validation.
+This replaces the initial unshipped protocol-1 draft with pages within commits.
+There is no 0.1 fallback or downgrade. Consumers pin the same public revision.
 
-## Repository identity and cursors
+## Identity and complete cursors
 
-`RepositoryIdentity` is `{repo_id, generation}`. Both are UUIDv7. The generation
-identifies one ordered history; copying a repository preserves it. A replacement
-history has a new generation even if its repository ID is unchanged.
+`RepositoryIdentity` is `{repo_id, generation}`: both are UUIDv7. Generation
+identifies one ordered history. Administrative history replacement changes the
+generation; it never silently resets a client's state or erases pending work.
 
-`Cursor` is `{repository, repo_seq, checkpoint}`. Positions are nonnegative signed
-64-bit values on storage, represented as JSON integers. The genesis cursor has
-position zero and a checkpoint of `sha256:` followed by 64 zeroes. Published
-positions are positive, strictly increasing, and may have gaps. Checkpoint digest
-bytes use the canonical format's framing and the authority's exact acceptance
-timestamp, never a rounded timestamp or a proposal's author date.
+`Cursor` is `{repository, repo_seq, checkpoint}`. Genesis has sequence zero and
+a `sha256:` digest of 64 zeroes. Published positions are positive signed 64-bit
+values and may have gaps. Checkpoints use the canonical framing and exact
+acceptance timestamp. A cursor authenticates continuity from an already trusted
+checkpoint, not the remote party's identity. Validate it against stored history.
 
-The authority verifies the supplied cursor against stored history. Generation
-mismatch requires reconciliation, including revalidation of pending proposals;
-it must never cause a silent cursor reset or data deletion. A client verifies
-every next page from its exact last durable cursor. A checkpoint authenticates
-continuity from a trusted cursor, not an unknown server or user identity.
+## Discovery, transfer and admission policy
 
-## Discovery and HTTP binding
-
-The canonical route prefix is `/v1/repositories/{repo_id}/sync`:
+All routes are under `/v1/repositories/{repo_id}/sync`:
 
 | Method and suffix | Request / result |
 | --- | --- |
 | `GET /capabilities` | `Capabilities` |
-| `POST /history` | `HistoryRequest` / `HistoryPage` |
+| `PUT /uploads/{operation_id}/pages/{offset}` | `ProposalPage` / durable next offset and expiry |
 | `POST /proposals` | `SubmitRequest` / `SubmitResult` |
-| `GET /receipts/{operation_id}` | `Receipt`, or not found |
-| `PUT /objects/{object_id}` | canonical framed bytes, immutable installation |
-| `GET /objects/{object_id}` | canonical framed bytes, or explicit missing |
+| `GET /receipts/{operation_id}` | exact accepted `Receipt`, or not found |
+| `POST /history` | `HistoryRequest` / `HistoryPage` |
+| `PUT /objects/{object_id}` | exact canonical salted bytes, immutable installation |
+| `GET /objects/{object_id}` | exact framed bytes, or explicit missing |
 
-An HTTP deployment requires authenticated TLS. Authorization applies to every
-route, including immutable object downloads and receipt lookups. A digest is not
-an access capability. Object keys and receipt identities are repository scoped.
-Error responses and account admission are service-owned; they must distinguish
-invalid input, authorization, generation mismatch, concurrency conflict, operation
-reuse, unavailable/missing objects, limits and retryable service failure. Do not
-put private application plaintext into error strings or request logs.
+HTTP deployments require authenticated TLS and authorization on every route,
+including receipts and immutable object downloads. IDs are not access tokens.
+Operations/staging are scoped to repository, generation and authenticated owner.
+Operation IDs use the format's 256-byte nonblank UTF-8 rule, not an ASCII-only
+subset. Encode an operation ID as one URL path segment; it is never a filesystem
+path. Install object metadata through Core's metadata API. Do not log content.
 
-`Capabilities` contains `protocol_version` (1), `repository`, `latest` cursor,
-`max_events`, `max_proposal_bytes`, `max_history_commits`, `max_history_bytes`
-and `max_object_bytes`. Services may choose lower limits than the library bounds.
-Clients validate version, identity and limits before use. Object-size policy is
-service owned and must be enforced while streaming before committing an upload.
+`Capabilities` contains `protocol_version: 1`, `repository`, `latest` complete
+cursor and `policy`. Fixed transfer bounds are **512 records per page** and
+**8 MiB of serialized JSON per page**. These are not commit limits. The byte
+bound fits any format-valid individual event even with JSON numeric-byte history
+encoding. Producers stop a page before either bound, and paginate again. They
+bound the source query and construction, not just the final serialization.
+Receivers cap network bytes before parsing; in-memory validation alone cannot
+protect an unbounded parser. Headers are small because format limits are fixed.
 
-## Proposals, acceptance and receipts
+`policy` has nullable `max_events_per_commit`, `max_object_bytes` and `quota_bytes`.
+Null means unrestricted. Object/quota byte counts refer to canonical framed
+object bytes. The authority checks quota against its durable usage and new,
+nonduplicated object bytes transactionally. Policy may refuse admission of valid
+content; it never makes existing accepted history invalid or untransferable.
+The reference `synck serve` advertises all three values as null and can serve any
+valid repository. Limits must not be smuggled into format constants.
 
-`SubmitRequest` contains:
+A refusal is non-retryable without changing the work or policy:
 
-```text
-repository: RepositoryIdentity
-proposal: CommitProposal
-ref_events: [RefEventProposal]
-head_guards: [{item_id, head_seq}]
+```json
+{"status":"POLICY_LIMIT","limit":"events_per_commit","maximum":500,"actual":1200}
 ```
 
-Every item event has an explicit stable `item_id`, including creates. A create
-has no `base_seq`; all events for an existing item carry its exact pre-commit
-base. Multiple events for a newly created item use no base. Ref events carry the
-exact pre-commit `base_ref_seq`, independent of the ordinary item head. Ordinary
-events precede ref events in commit identity. Metadata and content objects are
-references only; missing plaintext never blocks structural interpretation.
+The other limit names are `object_bytes` and `quota_bytes`. Never split or rewrite
+a submitted proposal. Clone commit preflights policy before constructing a
+commit, telling the agent to commit selected paths or use `synck import`.
+Publishing an existing repository first inventories **all** offending commit
+IDs, object-size violations and quota requirements, before any event/object
+upload. History is not rewritten to fit. `ServerPolicy` supplies these checks;
+the publication caller must finish the complete inventory before network writes.
 
-Head guards are unique and sorted by item ID. A submitted guard has a positive
-head and asserts an existing item's exact head under the same transaction and
-lock set as acceptance. Guards are preconditions, not commit events. Core owns
-namespace and structural guards for affected moves and renames; applications
-must select its checked FILE/FOLDER acceptance path where subtree closure is
-required. Protocol-level head guards do not replace those checks.
+## Paged proposal upload
 
-`proposal.operation_id` is mandatory: 1–128 ASCII letters, digits, `-`, `_`, `.`
-or `:`. Persist the exact request and object bytes before acknowledging a local
-save. An offline proposal is pending, not a local accepted commit or a remote
-receipt. A new retry ID must not be generated after a dropped reply.
+`ProposalPage` contains `repository`, `operation_id`, zero-based record `offset`
+and `records`. Records are tagged `{kind, value}`: `item` (`EventProposal`), then
+`ref` (`RefEventProposal`), then `guard` (`ItemHead`). An upload has one ordered
+stream across all pages. Every event supplies a stable item ID. Head guards are
+unique, sorted by item ID, and assert a positive pre-commit head. There is no
+aggregate event, byte or guard-count cap. Guards are paged so they cannot become
+a hidden limit on the number of affected items.
 
-`validate_submit` computes:
+The client persists exact events, object bytes, salt/object identity, operation
+ID and final metadata before reporting a saved pending change. Upload pages at
+the next acknowledged offset. The server durably installs a page before replying;
+a same-offset retry returns the original acknowledgement only for identical
+canonical records. Changed contents or gaps are rejected, never overwritten.
+A dropped reply does not justify a fresh operation ID. The authority may rebuild
+`ProposalVerifier` by replaying durable pages; it keeps only streaming digests,
+counts and one previous guard ID, not the whole proposal in memory.
 
-- `commit_id`: the existing Core hash of canonical content, independent of
-  repository placement, acceptance time, operation ID or guards;
-- `request_digest`: SHA-256 of the canonical RFC 8785 JSON of the entire typed
-  request, including generation, operation ID and guards;
-- `events_digest` and the complete set of referenced metadata/content objects.
-
-The authority checks authenticated identities, scope, object durability and
-persisted bases/structure in the same acceptance transaction. Install referenced
-metadata objects through Core's metadata API. Missing content objects cause an
-explicit refusal, not an empty-content substitution. Never mix VCS types from
-different public revisions inside one authority graph.
-
-Store the request digest and receipt atomically with accepted history. If an
-operation ID already exists with that digest, return the original receipt; with
-another digest, reject operation reuse. Core's operation-ID uniqueness alone
-does not establish that a different request is an identical retry.
-
-`SubmitResult` is tagged by `status`:
+The final `SubmitRequest` contains:
 
 ```text
-{"status":"accepted", "receipt": Receipt}
-{"status":"conflict", "items":[{"item_id":..., "head_seq":...}]}
+repository, operation_id
+metadata: {author_id, committer_id, message, occurred_at, import_job_id}
+event_count, events_digest
+guard_count, guards_digest
 ```
 
-Conflict heads are positive for existing items and zero for absence. A conflict
-is not acceptance. Reconcile against verified history and preserve unsent bytes;
-the authority does not merge application content. Clients must never silently
-overwrite another device's changed item after substituting a newer base.
+`events_digest` is the existing format digest over each event's family byte and
+SHA-256 of its canonical payload, with all ordinary events before refs.
+`guards_digest` is SHA-256 of the concatenation of SHA-256 digests of each guard's
+canonical RFC 8785 JSON, in sorted order; an empty guard stream hashes empty
+bytes. `request_digest` hashes canonical RFC 8785 JSON of the final typed request.
+It binds generation, operation, metadata and both stream summaries. Page size or
+boundaries do not affect these identities. `import_job_id` is null or the format's
+canonical UUIDv4 and participates in commit identity, exactly as local Core does.
+
+`validate_submit` checks only the header and computes identity. The authority
+must call `ProposalVerifier::finish` against the actual staged pages, then prove
+referenced objects durable and perform normal Core acceptance in one transaction.
+All item bases, ref bases, head guards, namespace and subtree constraints remain
+mandatory. Use checked FILE/FOLDER append paths and the existing import-job
+append API when applicable. A digest is not a substitute for these checks.
+No event becomes accepted before the entire commit is accepted atomically.
+
+The authority stores request digest and receipt atomically with accepted history.
+Same operation plus same digest returns the original receipt; another digest is
+operation reuse. Core uniqueness alone does not establish an identical retry.
+`SubmitResult` is `accepted`, `conflict` (item IDs/current heads, zero for absence),
+or `POLICY_LIMIT`. The server never merges or substitutes newer bases silently.
+The client preserves pending bytes and reconciles explicit conflicts.
+
+## Expiry, receipts and restart
+
+A staging session has an explicit server-issued `expires_at`. Every page and
+final submission must arrive before that deadline; `ProposalVerifier` refuses
+expired sessions. Do not silently extend expiry on rejected requests. Expired
+**unaccepted** page rows and their staging files are deleted by the authority's
+cleanup job, excluding in-flight acceptance under the same transactional fence.
+Page deletion must not delete canonical history or referenced objects.
+
+After staging expiry the client can reupload the same pending stream and
+operation ID. The server checks an accepted receipt before treating staging as
+missing/expired. Accepted receipts are not upload leftovers and remain durable
+for the promised retry-recovery lifetime. Expiry never changes an accepted result.
+Generation changes require reconciliation before pending uploads resume.
 
 `Receipt` contains `operation_id`, `request_digest`, `commit_id`, `accepted_at`
-and nullable `published` cursor. Acceptance is durable even if publication is
-pending. Release acceptance locks before waiting for the sequencer. A failed
-publication wait must not be reported as an unaccepted write. A client validates
-the receipt against its exact pending request (`Receipt::validate_for`) before
-marking it accepted. Publication is verified by fetching checkpoint history.
+and nullable `published` cursor. Durable acceptance can precede asynchronous
+sequence/checkpoint publication. Release acceptance locks before waiting for the
+sequencer; a failed wait is not failed acceptance. Validate recovered receipts
+against the exact pending request using `Receipt::validate_for`.
 
-Receipt lookup must be efficient and durable across restart. Never answer an
-unknown accepted outcome by blindly creating another operation. A receipt is not
-garbage-collectable while the service still promises retry recovery for its
-operation identity; lifecycle changes must preserve that boundary explicitly.
+## History continuation and atomic installation
 
-## Bounded history and local installation
+`HistoryRequest` contains `after: HistoryPosition` and an event `limit` from 1 to
+512. `HistoryPosition` contains `completed: Cursor` and optional
+`pending: {commit_id, next_event_index}`. A pending offset is positive and counts
+both item and ref events. The completed cursor never advances inside a commit.
 
-`HistoryRequest` has an exact `after` cursor and `limit`. `HistoryPage` contains
-the same `after`, complete `commits`, a `next` cursor and `has_more`. Each
-`PublishedCommit` contains one complete Core `CommitRow`, ordered tagged
-`CommitEventRow` values, and the resulting checkpoint. Never split a commit
-between pages or return an empty page with `has_more=true`. Concurrent later
-publication does not alter the meaning of a previously served prefix.
+A `HistoryPage` contains the exact requested `after`, `header`, ordered `events`
+and `has_more`. One page holds events from one commit. `header` repeats the same
+`CommitRow` and resulting checkpoint on each continuation. The server can stop
+before the event limit to obey the byte bound. A nonempty commit fragment must
+contain at least one event. A headerless, empty page is allowed only at a complete
+cursor with `has_more=false`. Incomplete commits always require continuation.
+Concurrent later publication never changes an already published prefix.
 
-The public hard bounds are 512 events per commit, 1 MiB per canonical event,
-4 MiB per canonical submission, 64 commits per page, 32 MiB of serialized JSON
-per page, 1,024 head guards, 256-byte identity/event-type strings and a 4 KiB
-commit message. The history byte bound accommodates Core byte-vector JSON
-expansion for a complete maximum-size commit. Services bound the producer query
-and page construction, not only a final response after an unbounded history read.
-HTTP clients cap response bytes before deserialization; request handlers cap
-request bytes before deserialization. Do not rely on an in-memory validator to
-protect an unbounded network parser.
+`HistoryVerifier` verifies exact positions, unchanged continuation headers,
+canonical payloads and format limits, event indexes/families/digests, the complete
+commit ID and checkpoint chain. A failed page does not alter the verifier state.
+`push` returns `None` while incomplete; it returns a complete cursor only after
+the last event and aggregate digest verify. A full commit has no transfer-size
+limit; `verify_published_commit` also accepts any format-valid event count.
 
-`verify_history_page` checks exact cursor identity, limits, canonical payloads,
-event/commit links, digests, commit IDs, increasing publication and the checkpoint
-chain. `verify_published_commit` performs the envelope/hash checks alone.
-These helpers do not prove cached parent columns, per-item heads or application
-semantics. The client must additionally replay Core transitions against its last
-verified state, validate available decrypted events, and install history,
-projections and the next cursor in one transaction. Failure leaves the previous
-durable cursor intact. Never expose a partially projected page as accepted UI.
+Clients durably stage incomplete commits privately. After restart rebuild the
+verifier from the last installed complete cursor and replay the staged prefix
+before resuming the next event offset. Semantic Core replay, namespace checks,
+projections, accepted history and the new complete cursor install atomically.
+Never expose a partial commit, promote a pending offset to an accepted cursor,
+or trust an unverified persisted hash accumulator. Failure leaves previously
+accepted state and unsent local work intact.
 
-## Immutable objects and encryption
+## Objects, encryption and bulk import
 
-Transfer the exact salted object framing as `application/octet-stream`. Validate
-framing, digest and codec before immutable installation; a same-ID retry must not
-replace different bytes. Downloads are bounded or streamed and verified before
-their application output is trusted. A missing body is explicitly unavailable.
-Thin replicas need not fetch every referenced content body before installing
-verified envelope history. The authority must prove referenced objects durable
-before accepting a new content-bearing proposal.
+Objects transfer as `application/octet-stream` with exact salted framing. Validate
+framing, codec and digest before immutable installation. Missing is different from
+empty. Thin replicas may install verified envelopes without every content body;
+new content-bearing acceptance requires referenced objects durable. Encryption,
+keys and signatures belong to the product profile, not a competing sync format.
 
-An encrypted product profile uses these same public objects and envelopes. Its
-own contract defines encryption suites, authenticated context, keys, visible
-fields, signatures and enrollment. This protocol does not invent a competing
-cryptographic object format or permit an authority to inspect encrypted domain
-data. Missing metadata remains different from metadata that decrypted incorrectly.
+Large imports follow the existing SynckHub client-side job model: a durable,
+disk-backed inventory before upload, folders first, then independently atomic
+batches sized from advertised policy. Each batch has stable item IDs, operation
+ID and `import_job_id`. Independent batches run in parallel after parent
+prerequisites are durable. Reconcile exact receipts before advancing progress.
+Transport paging does not split a pre-existing commit: the importer deliberately
+constructs new bounded commits from the inventory. This preserves the model for
+two million files without loading the inventory into memory or altering history.
 
-## Compatibility and evidence
+Store each file's object ID and salt in the import state database. Plaintext
+SHA-256 cannot reconstruct a salted object ID for `adopt-existing`. Surviving
+state permits exact reuse; lost state means uploading bytes again. Do not infer
+ownership of a same-name remote file or overwrite unrelated work.
 
-The protocol has no migration from 0.1, no implicit downgrade and no peer merge
-DAG. Product consumers pin the same exact public revision for `synck-vcs`, its
-adapter dependencies and `synck-sync`; old SynckHub graphs may remain separately
-pinned. Discovery must reject an incompatible protocol/profile clearly.
+## Reservations and clones
 
-[The independent ASCII JSON vector](vectors/sync.json) fixes a submitted request,
-canonical event bytes, event digest, commit identity and full request digest.
-`cargo test --locked -p synck-sync --test protocol` exercises the vector,
-receipt recovery matching, generation/guard binding, invalid shapes, publication
-gaps, replay and tampered history. These are library checks, not a deployed
-service, provider, native UI or scale qualification.
+Support shared checkouts with cooperative reservations and isolated clones per
+agent. Use one CLI family: `synck lock acquire/renew/release/list/break`.
+Standalone repositories use SQLite; clones use server-enforced leases. In a
+shared clone the lease also guards local writes, pull and materialization, not
+just the acquisition request. Direct filesystem writes bypass these locks, so
+all agents sharing files must participate. Receipt recovery and preserving
+unfinished local work remain necessary after expiry or loss of a server lease.
+Remote lease adapters and clone command integration are pending plan steps.
+
+## Evidence
+
+[The small vector](vectors/sync.json) preserves the initial commit ID while
+specifying the paged final request. [The 10,001-event vector](vectors/sync-large.json)
+contains an explicit deterministic ASCII event-generation recipe and independently
+computed hashes, a 16 KiB message, a 256-byte operation ID and an import-job ID.
+`cargo test --locked -p synck-sync --test protocol` checks these vectors, upload
+expiry, page ordering, retries, partial-history restart, tampering, exact receipt
+binding and separate policy refusals. These are shared-library checks, not a
+claim of a deployed service or completed clone/import executor.

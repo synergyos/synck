@@ -5,6 +5,7 @@
 
 use crate::config::CoreConfig;
 use crate::errors::{CoreError, StorageError};
+use crate::limits::validate_commit_metadata;
 use crate::invariants::{
     Invariant, InvariantContext, OperationKind, SequencingModeRule, TombstoneFinality,
     check_file_folder_live_parent_closure, check_folder_acyclicity,
@@ -202,7 +203,7 @@ impl Repo {
         events: &[EventProposal],
         ref_events: &[RefEventProposal],
     ) -> Result<Vec<Vec<u8>>, CoreError> {
-        validate_payload_limits(&self.config, events, ref_events)
+        validate_payload_limits(events, ref_events)
     }
 
     /// Fetch a single item by id.
@@ -729,7 +730,6 @@ impl Repo {
         let operation_id = proposal
             .operation_id
             .as_deref()
-            .map(str::trim)
             .filter(|value| !value.is_empty())
             .ok_or_else(|| {
                 CoreError::InvalidProposal(
@@ -1073,7 +1073,6 @@ impl Repo {
         let operation_id = proposal
             .operation_id
             .as_deref()
-            .map(str::trim)
             .filter(|id| !id.is_empty())
             .ok_or_else(|| {
                 CoreError::InvalidProposal(
@@ -1082,7 +1081,6 @@ impl Repo {
             })?
             .to_string();
         validate_commit_metadata(
-            &self.config,
             &proposal.author_id,
             &proposal.committer_id,
             proposal.message.as_deref(),
@@ -1096,14 +1094,6 @@ impl Repo {
             .ok_or_else(|| CoreError::InvalidProposal("commit event count overflow".to_string()))?;
         if combined_event_count == 0 {
             return Err(CoreError::EmptyCommit);
-        }
-        if let Some(max_events) = self.config.max_events_per_commit
-            && combined_event_count > max_events
-        {
-            return Err(CoreError::InvalidProposal(format!(
-                "commit exceeds max_events_per_commit: count={} max={}",
-                combined_event_count, max_events
-            )));
         }
 
         let mut observed_ref_bases: HashMap<ItemId, i64> = HashMap::new();
@@ -2028,7 +2018,6 @@ impl Repo {
             ));
         }
         validate_commit_metadata(
-            &self.config,
             &proposal.author_id,
             &proposal.committer_id,
             proposal.message.as_deref(),
@@ -2036,15 +2025,6 @@ impl Repo {
         )?;
         if proposal.events.is_empty() {
             return Err(CoreError::EmptyCommit);
-        }
-        if let Some(max_events) = self.config.max_events_per_commit
-            && proposal.events.len() > max_events
-        {
-            return Err(CoreError::InvalidProposal(format!(
-                "commit exceeds max_events_per_commit: count={} max={}",
-                proposal.events.len(),
-                max_events
-            )));
         }
 
         // All events must target the same item id if any item ids are supplied.
@@ -2674,7 +2654,6 @@ impl Repo {
                 ));
             }
             validate_commit_metadata(
-                &self.config,
                 &proposal.author_id,
                 &proposal.committer_id,
                 proposal.message.as_deref(),
@@ -2754,15 +2733,6 @@ impl Repo {
             for proposal in &mut proposals {
                 if proposal.events.is_empty() {
                     return Err(CoreError::EmptyCommit);
-                }
-                if let Some(max_events) = self.config.max_events_per_commit
-                    && proposal.events.len() > max_events
-                {
-                    return Err(CoreError::InvalidProposal(format!(
-                        "commit exceeds max_events_per_commit: count={} max={}",
-                        proposal.events.len(),
-                        max_events
-                    )));
                 }
                 prepare_existing_federated_ingest_events(
                     &ctx,
@@ -3019,7 +2989,6 @@ impl Repo {
         }
         let operation_id = federated_domain_operation_id(&proposal.domain_id, proposal.domain_seq);
         validate_commit_metadata(
-            &self.config,
             &proposal.author_id,
             &proposal.committer_id,
             proposal.message.as_deref(),
@@ -3038,14 +3007,6 @@ impl Repo {
             .len()
             .checked_add(proposal.ref_events.len())
             .ok_or_else(|| CoreError::InvalidProposal("commit event count overflow".to_string()))?;
-        if let Some(max_events) = self.config.max_events_per_commit
-            && combined_event_count > max_events
-        {
-            return Err(CoreError::InvalidProposal(format!(
-                "commit exceeds max_events_per_commit: count={} max={}",
-                combined_event_count, max_events
-            )));
-        }
 
         // Reject per-item federation transitions in domain ingests. A federated folder
         // replica is itself the boundary; individual items do not independently
@@ -3653,49 +3614,6 @@ fn validate_event_types_match_item(
     Ok(())
 }
 
-fn validate_commit_metadata(
-    config: &CoreConfig,
-    author_id: &str,
-    committer_id: &str,
-    message: Option<&str>,
-    operation_id: Option<&str>,
-) -> Result<(), CoreError> {
-    validate_identity("author_id", author_id, config.max_author_id_bytes)?;
-    validate_identity("committer_id", committer_id, config.max_author_id_bytes)?;
-    if let Some(message) = message {
-        validate_optional_byte_limit("message", message, config.max_commit_message_bytes)?;
-    }
-    if let Some(operation_id) = operation_id {
-        validate_optional_byte_limit("operation_id", operation_id, config.max_operation_id_bytes)?;
-    }
-    Ok(())
-}
-
-fn validate_identity(field: &str, value: &str, limit: Option<usize>) -> Result<(), CoreError> {
-    if value.is_empty() {
-        return Err(CoreError::InvalidProposal(format!(
-            "{field} must not be empty"
-        )));
-    }
-    validate_optional_byte_limit(field, value, limit)
-}
-
-fn validate_optional_byte_limit(
-    field: &str,
-    value: &str,
-    limit: Option<usize>,
-) -> Result<(), CoreError> {
-    if let Some(limit) = limit
-        && value.len() > limit
-    {
-        return Err(CoreError::InvalidProposal(format!(
-            "{field} exceeds UTF-8 byte limit: bytes={} max={limit}",
-            value.len()
-        )));
-    }
-    Ok(())
-}
-
 async fn map_insert_commit_unique_violation<T: StorageTxn + ?Sized>(
     txn: &mut T,
     repo_id: &RepoId,
@@ -3834,6 +3752,7 @@ async fn map_item_unique_violation<T: StorageTxn + ?Sized>(
     }))
 }
 
+
 #[cfg(test)]
 mod commit_metadata_limit_tests {
     use super::*;
@@ -3845,45 +3764,7 @@ mod commit_metadata_limit_tests {
         assert_eq!(first, federated_domain_operation_id(&long_domain, 41));
         assert_ne!(first, federated_domain_operation_id(&long_domain, 42));
         assert_ne!(first, federated_domain_operation_id("other", 41));
-        assert!(first.len() <= crate::config::SYNCKHUB_MAX_OPERATION_ID_BYTES);
-    }
-
-    #[test]
-    fn exact_utf8_metadata_limits_succeed_and_one_byte_over_fails() {
-        let config = CoreConfig {
-            max_author_id_bytes: Some(4),
-            max_commit_message_bytes: Some(4),
-            max_operation_id_bytes: Some(4),
-            ..CoreConfig::default()
-        };
-        validate_commit_metadata(&config, "éé", "éé", Some("éé"), Some("éé")).unwrap();
-        for result in [
-            validate_commit_metadata(&config, "ééx", "a", None, None),
-            validate_commit_metadata(&config, "a", "ééx", None, None),
-            validate_commit_metadata(&config, "a", "a", Some("ééx"), None),
-            validate_commit_metadata(&config, "a", "a", None, Some("ééx")),
-        ] {
-            assert!(matches!(result, Err(CoreError::InvalidProposal(_))));
-        }
-    }
-
-    #[test]
-    fn disabled_metadata_limits_preserve_local_acceptance_policy() {
-        let config = CoreConfig {
-            max_author_id_bytes: None,
-            max_commit_message_bytes: None,
-            max_operation_id_bytes: None,
-            ..CoreConfig::default()
-        };
-        let large = "x".repeat(32 * 1024);
-        validate_commit_metadata(&config, &large, &large, Some(&large), Some(&large)).unwrap();
-    }
-
-    #[test]
-    fn empty_actor_ids_are_rejected() {
-        let config = CoreConfig::default();
-        assert!(validate_commit_metadata(&config, "", "committer", None, None).is_err());
-        assert!(validate_commit_metadata(&config, "author", "", None, None).is_err());
+        assert!(first.len() <= crate::limits::MAX_OPERATION_ID_BYTES);
     }
 }
 
@@ -3950,60 +3831,15 @@ fn federated_proposal_is_content_only_existing_item(proposal: &FederatedProposal
     })
 }
 
-/// Canonicalize and validate item events followed by ref events against the
-/// repository's payload limits. Returns those exact bytes in the same order so
-/// append/ingest can store them without serializing the events a second time.
-/// This does not validate identities, event count, or domain policy.
+/// Return canonical item events followed by refs, enforcing fixed format limits.
+/// There is no aggregate commit size or event-count admission limit.
 pub fn validate_payload_limits(
-    config: &CoreConfig,
     events: &[EventProposal],
     ref_events: &[RefEventProposal],
 ) -> Result<Vec<Vec<u8>>, CoreError> {
-    let count = events
-        .len()
-        .checked_add(ref_events.len())
-        .ok_or_else(|| CoreError::InvalidProposal("commit event count overflow".to_string()))?;
-    let mut total = 0;
     events
         .iter()
         .map(canonical_event_proposal_bytes)
         .chain(ref_events.iter().map(canonical_ref_event_proposal_bytes))
-        .map(|payload| {
-            let payload = payload?;
-            enforce_payload_limits(config, payload.len(), &mut total, count)?;
-            Ok(payload)
-        })
         .collect()
-}
-
-fn enforce_payload_limits(
-    config: &CoreConfig,
-    event_payload_len: usize,
-    total_payload_bytes: &mut usize,
-    event_count: usize,
-) -> Result<(), CoreError> {
-    if let Some(max_event) = config.max_event_payload_bytes
-        && event_payload_len > max_event
-    {
-        return Err(CoreError::InvalidProposal(format!(
-            "event payload exceeds max_event_payload_bytes: bytes={} max={} events={}",
-            event_payload_len, max_event, event_count
-        )));
-    }
-
-    let new_total = total_payload_bytes
-        .checked_add(event_payload_len)
-        .ok_or_else(|| CoreError::InvalidProposal("commit payload size overflow".to_string()))?;
-    *total_payload_bytes = new_total;
-
-    if let Some(max_commit) = config.max_commit_payload_bytes
-        && *total_payload_bytes > max_commit
-    {
-        return Err(CoreError::InvalidProposal(format!(
-            "commit payload exceeds max_commit_payload_bytes: bytes={} max={} events={}",
-            *total_payload_bytes, max_commit, event_count
-        )));
-    }
-
-    Ok(())
 }

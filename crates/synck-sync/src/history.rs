@@ -1,41 +1,28 @@
-use std::io::Write;
-
+use crate::{
+    Cursor, HistoryPage, HistoryPosition, MAX_PAGE_RECORDS, PendingCommit, ProtocolError,
+    PublishedCommit, PublishedHeader, RepositoryIdentity, check_page_size, digest_id, invalid,
+};
 use sha2::{Digest, Sha256};
 use synck_vcs::types::{
-    COMMIT_EVENT_FAMILY_ITEM, COMMIT_EVENT_FAMILY_REF, CommitEventRow, EventProposal,
+    COMMIT_EVENT_FAMILY_ITEM, COMMIT_EVENT_FAMILY_REF, CommitEventRow, CommitRow, EventProposal,
     RefEventProposal, canonical_event_proposal_bytes, canonical_ref_event_proposal_bytes,
     canonical_stored_commit_bytes_for_hash, compute_commit_id, sha256_digest_to_digest_bytes,
 };
 
-use crate::{
-    Cursor, HistoryPage, MAX_EVENTS, MAX_HISTORY_BYTES, MAX_HISTORY_COMMITS, ProtocolError,
-    PublishedCommit, RepositoryIdentity, digest_id, invalid,
-};
-
-/// Verify canonical event/commit identity and links. The caller must additionally
-/// replay events against its previously verified item state before installing a
-/// projection. This function deliberately does not trust row parent caches.
-pub fn verify_published_commit(
-    published: &PublishedCommit,
-    repository: &RepositoryIdentity,
-) -> Result<(), ProtocolError> {
-    repository.validate()?;
-    let commit = &published.commit;
-    if commit.repo_id != repository.repo_id {
-        return Err(ProtocolError::Generation);
-    }
-    if commit.repo_seq.is_none_or(|sequence| sequence < 1) {
-        return Err(invalid("published commit requires positive repo_seq"));
-    }
-    if published.events.is_empty() || published.events.len() > MAX_EVENTS {
-        return Err(ProtocolError::Limit("event count"));
-    }
-    if usize::try_from(commit.event_count).ok() != Some(published.events.len()) {
-        return Err(invalid("commit event count mismatch"));
-    }
-    let mut digest = Sha256::new();
-    let mut refs_started = false;
-    for (index, event) in published.events.iter().enumerate() {
+#[derive(Clone, Default)]
+struct Events {
+    digest: Sha256,
+    next: usize,
+    refs_started: bool,
+}
+impl Events {
+    fn push(
+        &mut self,
+        event: &CommitEventRow,
+        commit: &CommitRow,
+        repository: &RepositoryIdentity,
+    ) -> Result<(), ProtocolError> {
+        let index = self.next;
         if event.commit_id() != &commit.commit_id
             || event.repo_seq() != commit.repo_seq
             || usize::try_from(event.commit_event_idx()).ok() != Some(index)
@@ -44,10 +31,10 @@ pub fn verify_published_commit(
         }
         let (family, payload, stored_digest) = match event {
             CommitEventRow::Item(row) => {
-                if row.payload.len() > crate::MAX_EVENT_BYTES {
+                if row.payload.len() > synck_vcs::limits::MAX_EVENT_PAYLOAD_BYTES {
                     return Err(ProtocolError::Limit("event bytes"));
                 }
-                if refs_started
+                if self.refs_started
                     || row.repo_id != repository.repo_id
                     || row.created_at != commit.created_at
                     || row.item_seq < 1
@@ -69,10 +56,10 @@ pub fn verify_published_commit(
                 )
             }
             CommitEventRow::Ref(row) => {
-                if row.payload.len() > crate::MAX_EVENT_BYTES {
+                if row.payload.len() > synck_vcs::limits::MAX_EVENT_PAYLOAD_BYTES {
                     return Err(ProtocolError::Limit("event bytes"));
                 }
-                refs_started = true;
+                self.refs_started = true;
                 if row.repo_id != repository.repo_id
                     || row.created_at != commit.created_at
                     || row.ref_seq < 1
@@ -98,99 +85,179 @@ pub fn verify_published_commit(
         if stored_digest != &actual_digest {
             return Err(invalid("event payload digest mismatch"));
         }
-        digest.update([family]);
-        digest.update(sha256_digest_to_digest_bytes(&actual_digest));
+        self.digest.update([family]);
+        self.digest
+            .update(sha256_digest_to_digest_bytes(&actual_digest));
+        self.next += 1;
+        if self.next > commit.event_count as usize {
+            return Err(invalid("too many commit events"));
+        }
+        Ok(())
     }
-    if digest_id(digest.finalize().into()) != commit.events_digest {
-        return Err(invalid("commit event digest mismatch"));
+    fn finish(&self, commit: &CommitRow) -> Result<(), ProtocolError> {
+        if self.next != commit.event_count as usize
+            || digest_id(self.digest.clone().finalize().into()) != commit.events_digest
+        {
+            return Err(invalid("commit event count or digest mismatch"));
+        }
+        Ok(())
     }
-    let commit_bytes = canonical_stored_commit_bytes_for_hash(
+}
+
+fn header(header: &PublishedHeader, after: &Cursor) -> Result<(), ProtocolError> {
+    after.validate()?;
+    let commit = &header.commit;
+    if commit.repo_id != after.repository.repo_id {
+        return Err(ProtocolError::Generation);
+    }
+    let sequence = commit
+        .repo_seq
+        .filter(|seq| *seq > 0)
+        .ok_or_else(|| invalid("published commit requires positive repo_seq"))?
+        as u64;
+    if sequence <= after.repo_seq || commit.event_count < 1 {
+        return Err(invalid("invalid published commit position or count"));
+    }
+    let bytes = canonical_stored_commit_bytes_for_hash(
         commit.format_version,
         &commit.author_id,
         &commit.committer_id,
         commit.occurred_at,
         commit.message.as_deref(),
         commit.import_job_id.as_deref(),
-        published.events.len(),
+        commit.event_count as usize,
         &commit.events_digest,
     )?;
-    if compute_commit_id(&commit_bytes) != commit.commit_id {
+    if compute_commit_id(&bytes) != commit.commit_id {
         return Err(invalid("commit ID mismatch"));
+    }
+    let checkpoint = synck_vcs::checkpoint::digest(
+        &sha256_digest_to_digest_bytes(&after.checkpoint),
+        sequence,
+        &commit.commit_id,
+        commit.created_at,
+    )?;
+    if digest_id(checkpoint) != header.checkpoint {
+        return Err(ProtocolError::Checkpoint);
     }
     Ok(())
 }
 
-/// Check a bounded page from the exact previously durable cursor. No state is
-/// changed on failure. Persist events, projections and the returned cursor in
-/// one local transaction after semantic replay succeeds.
-pub fn verify_history_page(
-    page: &HistoryPage,
-    expected_after: &Cursor,
-) -> Result<Cursor, ProtocolError> {
-    expected_after.validate()?;
-    page.after.validate()?;
-    page.next.validate()?;
-    if page.after.repository != expected_after.repository
-        || page.next.repository != expected_after.repository
-    {
+/// Verify full event content, without checking continuity from a prior cursor.
+/// Admission policy never restricts verification of already accepted history.
+pub fn verify_published_commit(
+    published: &PublishedCommit,
+    repository: &RepositoryIdentity,
+) -> Result<(), ProtocolError> {
+    repository.validate()?;
+    let commit = &published.commit;
+    if commit.repo_id != repository.repo_id {
         return Err(ProtocolError::Generation);
     }
-    if &page.after != expected_after {
-        return Err(ProtocolError::Checkpoint);
+    if commit.repo_seq.is_none_or(|n| n < 1) || commit.event_count < 1 {
+        return Err(invalid("invalid published commit"));
     }
-    if page.commits.len() > MAX_HISTORY_COMMITS || (page.commits.is_empty() && page.has_more) {
-        return Err(ProtocolError::Limit(
-            "history commit count or empty continuation",
-        ));
+    let bytes = canonical_stored_commit_bytes_for_hash(
+        commit.format_version,
+        &commit.author_id,
+        &commit.committer_id,
+        commit.occurred_at,
+        commit.message.as_deref(),
+        commit.import_job_id.as_deref(),
+        commit.event_count as usize,
+        &commit.events_digest,
+    )?;
+    if compute_commit_id(&bytes) != commit.commit_id {
+        return Err(invalid("commit ID mismatch"));
     }
-    encoded_size(page, MAX_HISTORY_BYTES)?;
-    let mut cursor = expected_after.clone();
-    for published in &page.commits {
-        verify_published_commit(published, &cursor.repository)?;
-        let sequence = published.commit.repo_seq.expect("verified publication") as u64;
-        if sequence <= cursor.repo_seq {
-            return Err(invalid("history positions must increase"));
-        }
-        let checkpoint = synck_vcs::checkpoint::digest(
-            &sha256_digest_to_digest_bytes(&cursor.checkpoint),
-            sequence,
-            &published.commit.commit_id,
-            published.commit.created_at,
-        )?;
-        if digest_id(checkpoint) != published.checkpoint {
-            return Err(ProtocolError::Checkpoint);
-        }
-        cursor.repo_seq = sequence;
-        cursor.checkpoint.clone_from(&published.checkpoint);
+    let mut events = Events::default();
+    for event in &published.events {
+        events.push(event, commit, repository)?;
     }
-    if page.next != cursor {
-        return Err(ProtocolError::Checkpoint);
-    }
-    Ok(cursor)
+    events.finish(commit)
 }
 
-/// Count serialized bytes without allocating another page-sized buffer. HTTP
-/// consumers must also cap the response body before deserialization.
-fn encoded_size(value: &impl serde::Serialize, limit: usize) -> Result<usize, ProtocolError> {
-    struct Counter {
-        bytes: usize,
-        limit: usize,
+/// Stream one bounded page at a time. Only `Some(cursor)` from push authorizes
+/// installation of a complete commit, after Core semantic replay succeeds.
+/// The caller durably stages events and installs history/projections/cursor in
+/// one transaction. On restart replay the partial staging from its last complete
+/// cursor; never deserialize an untrusted hash accumulator as verified state.
+#[derive(Clone)]
+pub struct HistoryVerifier {
+    position: HistoryPosition,
+    pending: Option<PublishedHeader>,
+    events: Events,
+}
+impl HistoryVerifier {
+    pub fn new(completed: Cursor) -> Result<Self, ProtocolError> {
+        completed.validate()?;
+        Ok(Self {
+            position: HistoryPosition {
+                completed,
+                pending: None,
+            },
+            pending: None,
+            events: Events::default(),
+        })
     }
-    impl Write for Counter {
-        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-            self.bytes = self
-                .bytes
-                .checked_add(bytes.len())
-                .filter(|length| *length <= self.limit)
-                .ok_or_else(|| std::io::Error::other("history page byte limit"))?;
-            Ok(bytes.len())
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
+    pub fn position(&self) -> &HistoryPosition {
+        &self.position
     }
-    let mut counter = Counter { bytes: 0, limit };
-    serde_json::to_writer(&mut counter, value)
-        .map_err(|_| ProtocolError::Limit("history bytes"))?;
-    Ok(counter.bytes)
+    pub fn push(&mut self, page: &HistoryPage) -> Result<Option<Cursor>, ProtocolError> {
+        if page.after != self.position {
+            return Err(ProtocolError::Checkpoint);
+        }
+        if page.events.len() > MAX_PAGE_RECORDS {
+            return Err(ProtocolError::Limit("history page events"));
+        }
+        check_page_size(page)?;
+        let Some(published) = &page.header else {
+            if !page.events.is_empty() || page.has_more || self.pending.is_some() {
+                return Err(invalid("invalid empty history page"));
+            }
+            return Ok(None);
+        };
+        if page.events.is_empty() {
+            return Err(invalid("empty commit fragment"));
+        }
+        let mut next = self.clone();
+        if let Some(previous) = &next.pending {
+            if serde_json::to_value(previous).map_err(|e| invalid(e.to_string()))?
+                != serde_json::to_value(published).map_err(|e| invalid(e.to_string()))?
+            {
+                return Err(invalid("commit header changed during continuation"));
+            }
+        } else {
+            header(published, &next.position.completed)?;
+            next.pending = Some(published.clone());
+        }
+        for event in &page.events {
+            next.events.push(
+                event,
+                &published.commit,
+                &next.position.completed.repository,
+            )?;
+        }
+        let completed = if next.events.next == published.commit.event_count as usize {
+            next.events.finish(&published.commit)?;
+            next.position.completed.repo_seq =
+                published.commit.repo_seq.expect("checked publication") as u64;
+            next.position.completed.checkpoint = published.checkpoint.clone();
+            next.position.pending = None;
+            next.pending = None;
+            next.events = Events::default();
+            Some(next.position.completed.clone())
+        } else {
+            if !page.has_more {
+                return Err(invalid("incomplete commit without continuation"));
+            }
+            next.position.pending = Some(PendingCommit {
+                commit_id: published.commit.commit_id.clone(),
+                next_event_index: next.events.next as u64,
+            });
+            None
+        };
+        *self = next;
+        Ok(completed)
+    }
 }

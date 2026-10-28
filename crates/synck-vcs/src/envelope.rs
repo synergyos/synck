@@ -104,6 +104,10 @@ pub struct CommitEnvelopeValidator {
 impl CommitEnvelopeValidator {
     pub fn begin(commit: &VerifyCommit, previous_repo_seq: &mut Option<i64>) -> Self {
         let mut findings = Vec::new();
+        if let Err(error) = crate::limits::validate_commit_metadata(
+            &commit.author_id, &commit.committer_id, commit.message.as_deref(), None) {
+            findings.push(error.to_string());
+        }
         let label = commit
             .repo_seq
             .map(|seq| format!("repo sequence {seq}"))

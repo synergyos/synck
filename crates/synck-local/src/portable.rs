@@ -25,9 +25,8 @@ use synck_vcs::bundle::{
     validate_bundle_event_payload_json_and_digest,
     validate_bundle_ref_event_payload_json_and_digest,
 };
-use synck_vcs::config::{
-    CoreConfig, SYNCKHUB_MAX_AUTHOR_ID_BYTES, SYNCKHUB_MAX_COMMIT_MESSAGE_BYTES,
-};
+use synck_vcs::config::CoreConfig;
+use synck_vcs::limits::{MAX_ACTOR_ID_BYTES, MAX_MESSAGE_BYTES};
 use synck_vcs::repo::Repo;
 use synck_vcs::state::{NamespaceKey, StateIndexStore, StateTree};
 use synck_vcs::storage::{Storage, StorageBackend};
@@ -336,7 +335,7 @@ fn copy_named(source: File, destination: &Path, name: &str) -> Result<()> {
 }
 
 fn author_valid(author: &str) -> Result<()> {
-    if author.trim().is_empty() || author.len() > SYNCKHUB_MAX_AUTHOR_ID_BYTES {
+    if author.trim().is_empty() || author.len() > MAX_ACTOR_ID_BYTES {
         return Err(invalid(
             "author must be nonblank and within the Core author limit",
         ));
@@ -359,10 +358,10 @@ pub struct WriteOptions {
 impl WriteOptions {
     fn validate(&self) -> Result<()> {
         if let Some(message) = &self.message
-            && (message.is_empty() || message.len() > SYNCKHUB_MAX_COMMIT_MESSAGE_BYTES)
+            && (message.is_empty() || message.len() > MAX_MESSAGE_BYTES)
         {
             return Err(invalid(format!(
-                "message must be 1 to {SYNCKHUB_MAX_COMMIT_MESSAGE_BYTES} UTF-8 bytes"
+                "message must be 1 to {MAX_MESSAGE_BYTES} UTF-8 bytes"
             )));
         }
         if let Some(author) = &self.author {

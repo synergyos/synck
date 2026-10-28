@@ -18,6 +18,7 @@
 pub mod bundle;
 pub mod checkpoint;
 pub mod config;
+pub mod limits;
 pub mod content;
 pub mod envelope;
 pub mod errors;

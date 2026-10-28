@@ -3269,3 +3269,44 @@ fn fix_names_initializes_and_commits_selected_renamed_paths() {
     assert_eq!(fs::read(root.join("bad_name")).unwrap(), b"selected");
     assert!(synck(root, &["status"]).status.success());
 }
+
+#[test]
+fn commit_format_limits_survive_portable_writes_copy_and_fsck() {
+    use synck_vcs::limits::*;
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("repo");
+    assert!(synck(temp.path(), &["init", root.to_str().unwrap(), "--author", "author"]).status.success());
+    fs::write(root.join("file.txt"), b"one").unwrap();
+    let message = "é".repeat(MAX_MESSAGE_BYTES / 2);
+    let output = synck(&root, &["commit", "-m", &message]);
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let source = temp.path().join("input");
+    fs::write(&source, b"two").unwrap();
+    let output = synck(&root, &["repository", "create-file", "two.txt", source.to_str().unwrap(), "--path", ".", "-m", &message]);
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let archive = temp.path().join("archive");
+    let copy = temp.path().join("copy");
+    for args in [vec!["fsck"], vec!["archive", archive.to_str().unwrap()],
+        vec!["repository", "import", archive.to_str().unwrap(), copy.to_str().unwrap()],
+        vec!["repository", "verify", copy.to_str().unwrap()]] {
+        let output = synck(&root, &args);
+        assert!(output.status.success(), "{args:?}: {}", String::from_utf8_lossy(&output.stderr));
+    }
+    fs::write(root.join("file.txt"), b"edited").unwrap();
+    let output = synck(&root, &["commit", "-m", &(message+"x")]);
+    assert!(!output.status.success());
+
+    let db = rusqlite::Connection::open(root.join(".synck/repository.sqlite3")).unwrap();
+    for (field, maximum) in [("message",MAX_MESSAGE_BYTES), ("author_id",MAX_ACTOR_ID_BYTES),
+        ("committer_id",MAX_ACTOR_ID_BYTES), ("operation_id",MAX_OPERATION_ID_BYTES)] {
+        let original: Option<String> = db.query_row(&format!("SELECT {field} FROM vcs_commits ORDER BY repo_seq DESC LIMIT 1"), [], |r| r.get(0)).unwrap();
+        db.execute(&format!("UPDATE vcs_commits SET {field}=?1 WHERE repo_seq=(SELECT max(repo_seq) FROM vcs_commits)"), ["x".repeat(maximum+1)]).unwrap();
+        for args in [vec!["log"], vec!["fsck"]] {
+            let output = synck(&root, &args);
+            assert!(!output.status.success(), "{field}: {args:?}");
+            let output = format!("{}{}",String::from_utf8_lossy(&output.stdout),String::from_utf8_lossy(&output.stderr));
+            assert!(output.contains("format byte limit"), "{field}: {output}");
+        }
+        db.execute(&format!("UPDATE vcs_commits SET {field}=?1 WHERE repo_seq=(SELECT max(repo_seq) FROM vcs_commits)"), [original]).unwrap();
+    }
+}

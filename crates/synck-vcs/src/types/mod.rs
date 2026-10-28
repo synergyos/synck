@@ -667,7 +667,10 @@ impl RefEventProposal {
 
 impl EventRow {
     pub fn proposal(&self) -> Result<EventProposal, serde_json::Error> {
+        crate::limits::check_bytes("event payload", self.payload.len(), crate::limits::MAX_EVENT_PAYLOAD_BYTES)
+            .map_err(serde::de::Error::custom)?;
         let mut event: EventProposal = serde_json::from_slice(&self.payload)?;
+        canonical_event_proposal_bytes(&event).map_err(serde::de::Error::custom)?;
         resolve_metadata(&mut event.set_metadata, self.metadata.as_ref())?;
         Ok(event)
     }
@@ -675,7 +678,10 @@ impl EventRow {
 
 impl RefEventRow {
     pub fn proposal(&self) -> Result<RefEventProposal, serde_json::Error> {
+        crate::limits::check_bytes("event payload", self.payload.len(), crate::limits::MAX_EVENT_PAYLOAD_BYTES)
+            .map_err(serde::de::Error::custom)?;
         let mut event: RefEventProposal = serde_json::from_slice(&self.payload)?;
+        canonical_ref_event_proposal_bytes(&event).map_err(serde::de::Error::custom)?;
         resolve_metadata(&mut event.set_metadata, self.metadata.as_ref())?;
         Ok(event)
     }
@@ -1005,12 +1011,18 @@ fn sha256_id_to_digest_bytes(s: &str) -> [u8; 32] {
 /// absent are omitted (not emitted as JSON `null`). `null` is only used where
 /// it has defined semantics (for example `set_parent: null` meaning “move to root”).
 pub fn canonical_event_proposal_bytes(ev: &EventProposal) -> Result<Vec<u8>, CoreError> {
+    for name in ev.create_item.as_ref().map(|item| item.name.as_str()).into_iter()
+        .chain(ev.set_name.as_deref()) {
+        crate::limits::check_bytes("name", name.len(), crate::limits::MAX_NAME_BYTES)?;
+    }
     let value = serde_json::to_value(ev).map_err(|e| {
         CoreError::InvalidProposal(format!(
             "serialize event proposal to json value failed: {e}"
         ))
     })?;
-    canonical_json_bytes(&value)
+    let bytes = canonical_json_bytes(&value)?;
+    crate::limits::check_bytes("event payload", bytes.len(), crate::limits::MAX_EVENT_PAYLOAD_BYTES)?;
+    Ok(bytes)
 }
 
 /// Canonicalize a narrow attached-ref proposal into RFC 8785 JSON bytes.
@@ -1020,7 +1032,9 @@ pub fn canonical_ref_event_proposal_bytes(ev: &RefEventProposal) -> Result<Vec<u
             "serialize ref event proposal to json value failed: {e}"
         ))
     })?;
-    canonical_json_bytes(&value)
+    let bytes = canonical_json_bytes(&value)?;
+    crate::limits::check_bytes("event payload", bytes.len(), crate::limits::MAX_EVENT_PAYLOAD_BYTES)?;
+    Ok(bytes)
 }
 
 /// The sole accepted commit encoding for Synck 0.2.
@@ -1039,6 +1053,7 @@ pub fn canonical_commit_bytes_for_hash(
     event_count: usize,
     events_digest: &Sha256Digest,
 ) -> Result<Vec<u8>, CoreError> {
+    crate::limits::validate_commit_metadata(author_id, committer_id, message, None)?;
     if event_count == 0 {
         return Err(CoreError::EmptyCommit);
     }

@@ -2,7 +2,7 @@
 //!
 //! The source schema in a header is provenance, not a target schema instruction.
 //! Only the current bundle encoding is accepted.
-use crate::config::SYNCKHUB_MAX_EVENT_PAYLOAD_BYTES;
+use crate::limits::MAX_EVENT_PAYLOAD_BYTES;
 use crate::types::{
     COMMIT_FORMAT_VERSION, EventProposal, RefEventProposal, RepoId, Sha256Digest,
     canonical_event_proposal_bytes, canonical_ref_event_proposal_bytes,
@@ -176,6 +176,8 @@ fn decode_commit_record(
     {
         return Err("operation_id must be null or nonblank".to_string());
     }
+    crate::limits::validate_commit_metadata(&record.author_id, &record.committer_id,
+        record.message.as_deref(), record.operation_id.as_deref()).map_err(|e| e.to_string())?;
     Ok(record)
 }
 
@@ -358,7 +360,7 @@ pub fn validate_import_repo_seq(prev: Option<i64>, current: i64) -> Result<i64, 
 // Apply the same supported canonical limits as fsck before retaining a commit's
 // payloads. Aggregate accounting checks integer overflow, not a commit-size cap.
 pub fn bounded_commit_payload_bytes(previous: usize, event: usize) -> Result<usize, String> {
-    if event > SYNCKHUB_MAX_EVENT_PAYLOAD_BYTES {
+    if event > MAX_EVENT_PAYLOAD_BYTES {
         return Err("event payload exceeds supported canonical byte limit".into());
     }
     previous
@@ -442,10 +444,10 @@ mod bundle_tests {
     #[test]
     fn bundle_payload_budget_bounds_events_and_checks_integer_overflow() {
         assert_eq!(
-            bounded_commit_payload_bytes(0, SYNCKHUB_MAX_EVENT_PAYLOAD_BYTES).unwrap(),
-            SYNCKHUB_MAX_EVENT_PAYLOAD_BYTES
+            bounded_commit_payload_bytes(0, MAX_EVENT_PAYLOAD_BYTES).unwrap(),
+            MAX_EVENT_PAYLOAD_BYTES
         );
-        assert!(bounded_commit_payload_bytes(0, SYNCKHUB_MAX_EVENT_PAYLOAD_BYTES + 1).is_err());
+        assert!(bounded_commit_payload_bytes(0, MAX_EVENT_PAYLOAD_BYTES + 1).is_err());
         assert_eq!(
             bounded_commit_payload_bytes((16 * 1024 * 1024) - 1, 1).unwrap(),
             (16 * 1024 * 1024)

@@ -2192,7 +2192,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn core_rejects_a_commit_above_the_shared_event_limit() {
+    async fn core_accepts_a_commit_above_the_old_event_limit() {
         let temporary = tempfile::tempdir().unwrap();
         init(temporary.path(), "author").await.unwrap();
         let repository = Repository::discover(temporary.path()).await.unwrap();
@@ -2216,7 +2216,7 @@ mod tests {
                 base_seq: None,
             })
             .collect();
-        let error = repository
+        let accepted = repository
             .core()
             .append(
                 repository.config().repo_id().clone(),
@@ -2230,8 +2230,8 @@ mod tests {
                 },
             )
             .await
-            .unwrap_err();
-        assert!(error.to_string().contains("max_events_per_commit"));
+            .unwrap();
+        assert_eq!(accepted.created_items.len(), 10_001);
     }
 
     #[tokio::test]

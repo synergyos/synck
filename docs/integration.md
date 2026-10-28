@@ -34,7 +34,7 @@ Item IDs are permanent, including across renames and moves.
 
 `<source>` is a file holding the exact bytes to record. Write options:
 
-- `-m, --message <text>`: commit message, 1 to 4,096 UTF-8 bytes.
+- `-m, --message <text>`: commit message, 1 to 16,384 UTF-8 bytes.
 - `--author <id>`: who made this revision, nonblank and at most 256 bytes.
   The repository author remains the committer.
 - `--occurred-at <time>`: when the revision was made, as RFC 3339. Use it

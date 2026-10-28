@@ -1,170 +1,217 @@
-use std::collections::{BTreeMap, BTreeSet};
-
+use crate::{
+    CommitMetadata, MAX_PAGE_RECORDS, ProposalPage, ProposalRecord, ProtocolError,
+    RepositoryIdentity, SubmitRequest, check_page_size, digest_id, invalid,
+};
 use sha2::{Digest, Sha256};
 use synck_vcs::types::{
-    CommitId, EventContent, ItemId, ObjectId, Sha256Digest, canonical_commit_bytes_for_hash,
-    canonical_json_bytes, compute_commit_id,
+    CommitId, ItemId, Sha256Digest, Timestamp, canonical_commit_bytes_for_hash,
+    canonical_event_proposal_bytes, canonical_json_bytes, canonical_ref_event_proposal_bytes,
+    compute_commit_id,
 };
 
-use crate::{
-    MAX_EVENTS, MAX_HEAD_GUARDS, MAX_OPERATION_ID_BYTES, MAX_PROPOSAL_BYTES, ProtocolError,
-    SubmitRequest, digest_id, invalid,
-};
-
-/// Stable identities for a request, before authority-assigned placement or time.
-/// All object IDs include metadata and every content role, including unknown
-/// application roles. The caller must prove durability in the authorized scope.
+#[derive(Debug)]
 pub struct ValidatedProposal {
     pub request_digest: Sha256Digest,
     pub commit_id: CommitId,
     pub events_digest: Sha256Digest,
-    pub required_objects: BTreeSet<ObjectId>,
 }
 
-/// Check bounded, deterministic wire shape. Persisted-head checks, structural
-/// invariants, authorization and durable receipt storage remain transactional
-/// authority responsibilities. Never treat this result as accepted state.
+/// Validate the small final request and compute its identities. The authority
+/// must also finish its staged ProposalVerifier and run Core acceptance checks.
 pub fn validate_submit(request: &SubmitRequest) -> Result<ValidatedProposal, ProtocolError> {
     request.repository.validate()?;
-    let operation_id = request
-        .proposal
-        .operation_id
-        .as_deref()
-        .filter(|id| !id.is_empty())
-        .ok_or_else(|| invalid("operation_id is required"))?;
-    if operation_id.len() > MAX_OPERATION_ID_BYTES
-        || !operation_id
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b':'))
-    {
+    let metadata = &request.metadata;
+    synck_vcs::limits::validate_commit_metadata(
+        &metadata.author_id,
+        &metadata.committer_id,
+        metadata.message.as_deref(),
+        Some(&request.operation_id),
+    )?;
+    // These are the format's existing signed event-index representation bounds,
+    // not a configured admission or transfer limit.
+    if request.event_count == 0 || request.event_count > i32::MAX as u64 {
         return Err(invalid(
-            "operation_id must be 1..128 ASCII letters, digits, '-', '_', '.' or ':'",
+            "event count does not fit the canonical representation",
         ));
     }
-    for identity in [&request.proposal.author_id, &request.proposal.committer_id] {
-        if identity.is_empty() || identity.len() > 256 {
-            return Err(invalid("author and committer IDs must be 1..256 bytes"));
-        }
-    }
-    if request
-        .proposal
-        .message
-        .as_ref()
-        .is_some_and(|message| message.len() > 4096)
-    {
-        return Err(ProtocolError::Limit("commit message"));
-    }
-    let event_count = request
-        .proposal
-        .events
-        .len()
-        .checked_add(request.ref_events.len())
-        .ok_or(ProtocolError::Limit("event count"))?;
-    if event_count == 0 || event_count > MAX_EVENTS {
-        return Err(ProtocolError::Limit("event count"));
-    }
-    if request.head_guards.len() > MAX_HEAD_GUARDS {
-        return Err(ProtocolError::Limit("head guards"));
-    }
-    let mut previous_guard = None;
-    for guard in &request.head_guards {
-        if guard.head_seq < 1 || previous_guard.is_some_and(|previous| previous >= &guard.item_id) {
-            return Err(invalid(
-                "head guards must be unique, sorted by item ID and positive",
-            ));
-        }
-        previous_guard = Some(&guard.item_id);
-    }
-    let mut bases: BTreeMap<&ItemId, Option<i64>> = BTreeMap::new();
-    let mut ref_bases = BTreeMap::new();
-    let mut required_objects = BTreeSet::new();
-    for event in &request.proposal.events {
-        let item_id = event
-            .item_id
-            .as_ref()
-            .ok_or_else(|| invalid("every event must supply a stable item_id"))?;
-        if event.event_type.is_empty() || event.event_type.len() > 256 {
-            return Err(invalid("event type must be 1..256 bytes"));
-        }
-        if event.create_item.is_some() && (event.base_seq.is_some() || bases.contains_key(item_id))
-        {
-            return Err(invalid(
-                "creation must be the first event for an item and have no base",
-            ));
-        }
-        if let Some(base) = event.base_seq {
-            if base < 1 {
-                return Err(invalid("existing item base must be positive"));
-            }
-        } else if event.create_item.is_none() && !bases.contains_key(item_id) {
-            return Err(invalid("existing item events require base_seq"));
-        }
-        match bases.insert(item_id, event.base_seq) {
-            Some(base) if base != event.base_seq => return Err(invalid("item bases disagree")),
-            _ => {}
-        }
-        if let Some(metadata) = &event.set_metadata {
-            required_objects.insert(metadata.id());
-        }
-        collect_content(&event.set_content, &mut required_objects);
-    }
-    for event in &request.ref_events {
-        if event.event_type.is_empty() || event.event_type.len() > 256 || event.base_ref_seq < 0 {
-            return Err(invalid("invalid ref event type or base"));
-        }
-        match ref_bases.insert(&event.owner_item_id, event.base_ref_seq) {
-            Some(base) if base != event.base_ref_seq => return Err(invalid("ref bases disagree")),
-            _ => {}
-        }
-        if let Some(metadata) = &event.set_metadata {
-            required_objects.insert(metadata.id());
-        }
-        collect_content(&event.set_content, &mut required_objects);
-    }
-    let config = synck_vcs::config::CoreConfig {
-        max_events_per_commit: Some(MAX_EVENTS),
-        max_event_payload_bytes: Some(crate::MAX_EVENT_BYTES),
-        max_commit_payload_bytes: Some(MAX_PROPOSAL_BYTES),
-        ..Default::default()
-    };
-    let payloads =
-        synck_vcs::validate_payload_limits(&config, &request.proposal.events, &request.ref_events)?;
-    let mut digest = Sha256::new();
-    for (index, payload) in payloads.iter().enumerate() {
-        let family = if index < request.proposal.events.len() {
-            synck_vcs::types::COMMIT_EVENT_FAMILY_ITEM
-        } else {
-            synck_vcs::types::COMMIT_EVENT_FAMILY_REF
-        };
-        digest.update([family]);
-        digest.update(Sha256::digest(payload));
-    }
-    let events_digest = digest_id(digest.finalize().into());
     let commit_id = compute_commit_id(&canonical_commit_bytes_for_hash(
-        &request.proposal.author_id,
-        &request.proposal.committer_id,
-        request.proposal.occurred_at,
-        request.proposal.message.as_deref(),
-        None,
-        event_count,
-        &events_digest,
+        &metadata.author_id,
+        &metadata.committer_id,
+        metadata.occurred_at,
+        metadata.message.as_deref(),
+        metadata.import_job_id.as_deref(),
+        request.event_count as usize,
+        &request.events_digest,
     )?);
-    let value = serde_json::to_value(request).map_err(|error| invalid(error.to_string()))?;
-    let request_bytes = canonical_json_bytes(&value)?;
-    if request_bytes.len() > MAX_PROPOSAL_BYTES {
-        return Err(ProtocolError::Limit("proposal bytes"));
-    }
-    let request_digest = digest_id(Sha256::digest(&request_bytes).into());
+    let value = serde_json::to_value(request).map_err(|e| invalid(e.to_string()))?;
+    let request_digest = digest_id(Sha256::digest(canonical_json_bytes(&value)?).into());
     Ok(ValidatedProposal {
         request_digest,
         commit_id,
-        events_digest,
-        required_objects,
+        events_digest: request.events_digest.clone(),
     })
 }
 
-fn collect_content(content: &Option<EventContent>, objects: &mut BTreeSet<ObjectId>) {
-    if let Some(content) = content {
-        objects.extend(content.values().cloned());
+/// Constant-sized streaming summary (apart from one previous guard ID). Pages
+/// belong in durable staging owned by the authority, not in this verifier. After
+/// restart replay those pages to reconstruct the summary before resuming.
+/// Invalid pages leave the previous summary unchanged.
+#[derive(Clone)]
+pub struct ProposalVerifier {
+    repository: RepositoryIdentity,
+    operation_id: String,
+    expires_at: Timestamp,
+    offset: u64,
+    events: u64,
+    guards: u64,
+    events_hasher: Sha256,
+    guards_hasher: Sha256,
+    refs_started: bool,
+    previous_guard: Option<ItemId>,
+}
+impl ProposalVerifier {
+    pub fn new(
+        repository: RepositoryIdentity,
+        operation_id: String,
+        expires_at: Timestamp,
+    ) -> Result<Self, ProtocolError> {
+        repository.validate()?;
+        synck_vcs::limits::validate_operation_id(&operation_id)?;
+        if expires_at.timestamp_subsec_nanos() >= 1_000_000_000 {
+            return Err(invalid("invalid upload expiry"));
+        }
+        Ok(Self {
+            repository,
+            operation_id,
+            expires_at,
+            offset: 0,
+            events: 0,
+            guards: 0,
+            events_hasher: Sha256::new(),
+            guards_hasher: Sha256::new(),
+            refs_started: false,
+            previous_guard: None,
+        })
+    }
+    pub fn next_offset(&self) -> u64 {
+        self.offset
+    }
+    fn live(&self, now: Timestamp) -> Result<(), ProtocolError> {
+        if now >= self.expires_at {
+            return Err(ProtocolError::UploadExpired);
+        }
+        Ok(())
+    }
+    pub fn push(&mut self, page: &ProposalPage, now: Timestamp) -> Result<(), ProtocolError> {
+        self.live(now)?;
+        if page.repository != self.repository {
+            return Err(ProtocolError::Generation);
+        }
+        if page.operation_id != self.operation_id || page.offset != self.offset {
+            return Err(invalid("upload operation or offset mismatch"));
+        }
+        if page.records.is_empty() || page.records.len() > MAX_PAGE_RECORDS {
+            return Err(ProtocolError::Limit("proposal page records"));
+        }
+        check_page_size(page)?;
+        let mut next = self.clone();
+        for record in &page.records {
+            match record {
+                ProposalRecord::Item(event) => {
+                    if next.refs_started || next.previous_guard.is_some() {
+                        return Err(invalid("item follows ref or guard"));
+                    }
+                    if event.item_id.is_none()
+                        || event.event_type.trim().is_empty()
+                        || event.base_seq.is_some_and(|seq| seq < 1)
+                        || (event.create_item.is_some() && event.base_seq.is_some())
+                    {
+                        return Err(invalid("invalid item proposal shape"));
+                    }
+                    next.event(0, canonical_event_proposal_bytes(event)?)?;
+                }
+                ProposalRecord::Ref(event) => {
+                    if next.previous_guard.is_some() {
+                        return Err(invalid("ref follows guard"));
+                    }
+                    if event.event_type.trim().is_empty() || event.base_ref_seq < 0 {
+                        return Err(invalid("invalid ref proposal shape"));
+                    }
+                    next.refs_started = true;
+                    next.event(1, canonical_ref_event_proposal_bytes(event)?)?;
+                }
+                ProposalRecord::Guard(guard) => {
+                    if guard.head_seq < 1
+                        || next
+                            .previous_guard
+                            .as_ref()
+                            .is_some_and(|id| id >= &guard.item_id)
+                    {
+                        return Err(invalid("head guards must be unique, sorted and positive"));
+                    }
+                    let value = serde_json::to_value(guard).map_err(|e| invalid(e.to_string()))?;
+                    next.guards_hasher
+                        .update(Sha256::digest(canonical_json_bytes(&value)?));
+                    next.guards = next
+                        .guards
+                        .checked_add(1)
+                        .ok_or_else(|| invalid("guard count overflow"))?;
+                    next.previous_guard = Some(guard.item_id.clone());
+                }
+            }
+        }
+        next.offset = next
+            .offset
+            .checked_add(page.records.len() as u64)
+            .ok_or_else(|| invalid("upload offset overflow"))?;
+        *self = next;
+        Ok(())
+    }
+    fn event(&mut self, family: u8, payload: Vec<u8>) -> Result<(), ProtocolError> {
+        self.events = self
+            .events
+            .checked_add(1)
+            .filter(|n| *n <= i32::MAX as u64)
+            .ok_or_else(|| invalid("event count does not fit the canonical representation"))?;
+        self.events_hasher.update([family]);
+        self.events_hasher.update(Sha256::digest(payload));
+        Ok(())
+    }
+    /// Build the final request from the exact uploaded stream. Guards bind the
+    /// request digest but do not alter canonical commit identity.
+    pub fn request(&self, metadata: CommitMetadata) -> Result<SubmitRequest, ProtocolError> {
+        let request = SubmitRequest {
+            repository: self.repository.clone(),
+            operation_id: self.operation_id.clone(),
+            metadata,
+            event_count: self.events,
+            events_digest: digest_id(self.events_hasher.clone().finalize().into()),
+            guard_count: self.guards,
+            guards_digest: digest_id(self.guards_hasher.clone().finalize().into()),
+        };
+        validate_submit(&request)?;
+        Ok(request)
+    }
+    pub fn finish(
+        &self,
+        request: &SubmitRequest,
+        now: Timestamp,
+    ) -> Result<ValidatedProposal, ProtocolError> {
+        self.live(now)?;
+        if request.repository != self.repository {
+            return Err(ProtocolError::Generation);
+        }
+        let expected = self.request(request.metadata.clone())?;
+        if request.operation_id != expected.operation_id
+            || request.event_count != expected.event_count
+            || request.events_digest != expected.events_digest
+            || request.guard_count != expected.guard_count
+            || request.guards_digest != expected.guards_digest
+        {
+            return Err(invalid(
+                "submission does not match staged event and guard stream",
+            ));
+        }
+        validate_submit(request)
     }
 }

@@ -580,6 +580,9 @@ fn parse_time_row(value: String, column: usize) -> rusqlite::Result<Timestamp> {
 }
 
 fn item_from_row(row: &Row<'_>) -> rusqlite::Result<ItemRow> {
+    let name: String = row.get(4)?;
+    synck_vcs::limits::check_bytes("name", name.len(), synck_vcs::limits::MAX_NAME_BYTES)
+        .map_err(|e| decode_error(4, e.to_string()))?;
     let lifecycle = match row.get::<_, String>(8)?.as_str() {
         "LIVE" => LifecycleState::Live,
         "TRASH" => LifecycleState::Trash,
@@ -618,6 +621,13 @@ fn item_from_row(row: &Row<'_>) -> rusqlite::Result<ItemRow> {
 }
 
 fn commit_from_row(row: &Row<'_>) -> rusqlite::Result<CommitRow> {
+    let author: String = row.get(5)?;
+    let committer: String = row.get(6)?;
+    let message: Option<String> = row.get(7)?;
+    let operation: Option<String> = row.get(12)?;
+    synck_vcs::limits::validate_commit_metadata(
+        &author, &committer, message.as_deref(), operation.as_deref(),
+    ).map_err(|e| decode_error(5, e.to_string()))?;
     let occurred_at = row
         .get::<_, Option<String>>(8)?
         .map(|value| parse_time_row(value, 8))
@@ -628,14 +638,21 @@ fn commit_from_row(row: &Row<'_>) -> rusqlite::Result<CommitRow> {
         repo_seq: row.get(2)?,
         format_version: row.get(3)?,
         import_job_id: row.get(4)?,
-        author_id: row.get(5)?,
-        committer_id: row.get(6)?,
-        message: row.get(7)?,
+        author_id: author,
+        committer_id: committer,
+        message,
         occurred_at,
         created_at: parse_time_row(row.get(9)?, 9)?,
         event_count: row.get(10)?,
         events_digest: parse_digest(row.get(11)?, 11)?,
     })
+}
+
+fn checked_payload(row: &Row<'_>, column: usize) -> rusqlite::Result<Vec<u8>> {
+    let bytes: Vec<u8> = row.get(column)?;
+    synck_vcs::limits::check_bytes("event payload", bytes.len(), synck_vcs::limits::MAX_EVENT_PAYLOAD_BYTES)
+        .map_err(|e| decode_error(column, e.to_string()))?;
+    Ok(bytes)
 }
 
 fn metadata_from_row(row: &Row<'_>, event_column: usize, metadata_column: usize) -> rusqlite::Result<Option<synck_vcs::metadata::Metadata>> {
@@ -664,7 +681,7 @@ fn event_from_row(row: &Row<'_>) -> rusqlite::Result<EventRow> {
         commit_id: parse_commit(row.get(4)?, 4)?,
         commit_event_idx: row.get(5)?,
         repo_seq: row.get(6)?,
-        payload: row.get(7)?,
+        payload: checked_payload(row, 7)?,
         metadata: metadata_from_row(row, 7, 12)?,
         event_payload_digest: parse_digest(row.get(8)?, 8)?,
         created_at: parse_time_row(row.get(9)?, 9)?,
@@ -682,7 +699,7 @@ fn ref_event_from_row(row: &Row<'_>) -> rusqlite::Result<RefEventRow> {
         commit_id: parse_commit(row.get(4)?, 4)?,
         commit_event_idx: row.get(5)?,
         repo_seq: row.get(6)?,
-        payload: row.get(7)?,
+        payload: checked_payload(row, 7)?,
         metadata: metadata_from_row(row, 7, 10)?,
         event_payload_digest: parse_digest(row.get(8)?, 8)?,
         created_at: parse_time_row(row.get(9)?, 9)?,
@@ -709,7 +726,7 @@ fn commit_event_from_row(row: &Row<'_>) -> rusqlite::Result<CommitEventRow> {
                 commit_id: parse_commit(row.get(5)?, 5)?,
                 commit_event_idx: row.get(6)?,
                 repo_seq: row.get(7)?,
-                payload: row.get(8)?,
+                payload: checked_payload(row, 8)?,
                 metadata: metadata_from_row(row, 8, 13)?,
                 event_payload_digest: parse_digest(row.get(9)?, 9)?,
                 created_at: parse_time_row(row.get(10)?, 10)?,
@@ -725,7 +742,7 @@ fn commit_event_from_row(row: &Row<'_>) -> rusqlite::Result<CommitEventRow> {
             commit_id: parse_commit(row.get(5)?, 5)?,
             commit_event_idx: row.get(6)?,
             repo_seq: row.get(7)?,
-            payload: row.get(8)?,
+            payload: checked_payload(row, 8)?,
                 metadata: metadata_from_row(row, 8, 13)?,
             event_payload_digest: parse_digest(row.get(9)?, 9)?,
             created_at: parse_time_row(row.get(10)?, 10)?,
@@ -738,7 +755,7 @@ fn commit_event_from_row(row: &Row<'_>) -> rusqlite::Result<CommitEventRow> {
 }
 
 const ITEM_COLUMNS: &str = "repo_id, item_id, item_type, parent_folder_id, name, name_key, head_seq, ref_head_seq, lifecycle_state, created_at, created_by, sequencing_mode, federation_stream_id";
-const COMMIT_COLUMNS: &str = "repo_id, commit_id, repo_seq, format_version, import_job_id, author_id, committer_id, message, occurred_at, created_at, event_count, events_digest";
+const COMMIT_COLUMNS: &str = "repo_id, commit_id, repo_seq, format_version, import_job_id, author_id, committer_id, message, occurred_at, created_at, event_count, events_digest, operation_id";
 const EVENT_COLUMNS: &str = "e.repo_id, e.item_id, e.item_seq, e.event_type, c.commit_id, e.commit_event_idx, c.repo_seq, e.payload, e.event_payload_digest, e.created_at, e.parent_folder_id, e.parent_folder_id_before, (SELECT m.payload FROM vcs_metadata_objects m WHERE m.repo_id=e.repo_id AND m.object_id=unhex(substr(json_extract(CAST(e.payload AS TEXT), '$.metadata_id'),8)))";
 const REF_EVENT_COLUMNS: &str = "r.repo_id, r.owner_item_id, r.ref_seq, r.event_type, c.commit_id, r.commit_event_idx, c.repo_seq, r.payload, r.event_payload_digest, r.created_at, (SELECT m.payload FROM vcs_metadata_objects m WHERE m.repo_id=r.repo_id AND m.object_id=unhex(substr(json_extract(CAST(r.payload AS TEXT), '$.metadata_id'),8)))";
 
