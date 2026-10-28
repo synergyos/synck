@@ -175,3 +175,12 @@ A complete portable copy backs up the canonical database and transfers reference
 objects. It does not copy checkout observations, settings or the state-tree cache.
 Enabling a checkout initializes that machine's local database. Unused workspace,
 batch-import and obsolete storage-mode tables do not exist in the current schema.
+
+## Ref sequence origin
+
+An item's attached ref ledger starts at sequence 1. Every subsequent ref event
+advances it by exactly one, independently of the item's ordinary event sequence.
+All ref events for one owner in a commit carry the same pre-commit
+`base_ref_seq`. `initial_ref_seq` is not a field and must be rejected as unknown.
+There is no legacy-baseline migration API. Typed FILE readers do not load frozen
+sidecar history or supplemental legacy-sidecar roots.

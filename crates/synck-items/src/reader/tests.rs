@@ -346,109 +346,6 @@ fn errors_poison_only_the_typed_reader_and_do_not_modify_source_events() {
 }
 
 #[test]
-fn version_sidecars_and_owner_refs_keep_uuid_identity_and_separate_ledger_positions() {
-    let repo = RepoId::new();
-    let file = ItemId::new();
-    let sidecar_id = synck_file_folder::file_version_set::item_id(&repo, &file).unwrap();
-    let version = Uuid::now_v7();
-    let mut sidecar = ItemReader::for_repository(repo.clone(), sidecar_id.clone());
-    apply(
-        &mut sidecar,
-        &synck_file_folder::file_version_set::create_event(sidecar_id.clone(), &file),
-        "alice",
-    );
-    let mut version_event = synck_file_folder::file_version_set::version_event(
-        sidecar_id.clone(),
-        "FILE_VERSION_SET::VERSION_CREATE",
-        &file,
-        &version.to_string(),
-        json!({"kind":"MAJOR","order_key":1,"description":"Original","content":{"size":12}})
-            .as_object()
-            .unwrap()
-            .clone(),
-        Some(EventContent::Blob { blob_id: A.into() }),
-    );
-    apply(&mut sidecar, &version_event, "alice");
-    version_event.event_type = "FILE_VERSION_SET::VERSION_SET_DESCRIPTION".into();
-    version_event.set_content = None;
-    version_event.set_metadata.as_mut().unwrap()["description"] = json!("Described");
-    apply(&mut sidecar, &version_event, "alice");
-    let sidecar = sidecar.snapshot().unwrap();
-    assert_eq!(sidecar.subitems[0].version_label.as_deref(), Some("1.0"));
-    let mut reader = ItemReader::for_repository(repo, file.clone());
-    let mut first = event(
-        &file,
-        "FILE::CREATE",
-        Value::Null,
-        Some(EventContent::Blob { blob_id: A.into() }),
-    );
-    first.create_item = Some(CreateItem {
-        item_type: "FILE".into(),
-        name: "document.txt".into(),
-        parent_folder_id: None,
-    });
-    apply(&mut reader, &first, "alice");
-    let baseline = RefEventProposal {
-        owner_item_id: file.clone(),
-        event_type: "FILE_VERSION::LEGACY_BASELINE".into(),
-        set_metadata: Some(
-            json!({"legacy_sidecar_item_id":sidecar_id,"legacy_sidecar_head_seq":3,"legacy_sidecar_head_event_digest":A}),
-        ),
-        set_content: None,
-        base_ref_seq: 0,
-        initial_ref_seq: Some(3),
-    };
-    reader
-        .apply_ref(
-            &baseline,
-            RefReadContext {
-                ref_seq: 3,
-                created_at: now(),
-                author: "alice",
-                committer: "alice",
-            },
-        )
-        .unwrap();
-    assert!(matches!(reader.snapshot(), Err(ReadError::NeedsHistory(_))));
-    reader.seed_legacy_versions(&sidecar).unwrap();
-    let edit = RefEventProposal {
-        owner_item_id: file,
-        event_type: "FILE_VERSION::SET_DESCRIPTION".into(),
-        set_metadata: Some(
-            json!({"file_item_id":reader.item_id,"version_id":version,"description":"New description"}),
-        ),
-        set_content: None,
-        base_ref_seq: 3,
-        initial_ref_seq: None,
-    };
-    reader
-        .apply_ref(
-            &edit,
-            RefReadContext {
-                ref_seq: 4,
-                created_at: now(),
-                author: "alice",
-                committer: "alice",
-            },
-        )
-        .unwrap();
-    let snapshot = reader.snapshot().unwrap();
-    let version = &snapshot.subitems[0];
-    assert_eq!(version.body.as_deref(), Some("New description"));
-    assert_eq!(version.stable_id, Some(version_id(&version.metadata)));
-    assert!(matches!(
-        version.created_position.ledger,
-        HistoryLedger::Item
-    ));
-    assert!(matches!(version.latest_position.ledger, HistoryLedger::Ref));
-    assert_eq!(snapshot.projection.latest_item_seq, 1);
-    assert_eq!(snapshot.latest_ref_seq, 4);
-}
-fn version_id(meta: &Value) -> Uuid {
-    Uuid::parse_str(meta["version_id"].as_str().unwrap()).unwrap()
-}
-
-#[test]
 fn supplemental_links_and_workflow_annotations_do_not_hide_primary_content() {
     let (mut reader, id) = create("FILE");
     apply(
@@ -512,103 +409,30 @@ fn supplemental_links_and_workflow_annotations_do_not_hide_primary_content() {
 }
 
 #[test]
-fn translated_sidecar_root_retains_provenance_without_executing_or_requiring_private_services() {
-    let (mut reader, id) = create("FILE");
-    let sidecar = ItemId::new();
-    let marker = RefEventProposal {
-        owner_item_id: id.clone(),
-        event_type: "FILE_VERSION::LEGACY_SIDECAR_ROOT".into(),
-        set_metadata: Some(
-            json!({"file_item_id":id,"legacy_sidecar_item_id":sidecar,"legacy_sidecar_head_seq":3,"legacy_sidecar_head_event_digest":A,"legacy_sidecar_root_event_digest":B}),
-        ),
-        set_content: None,
-        base_ref_seq: 0,
-        initial_ref_seq: None,
-    };
-    reader
-        .apply_ref(
-            &marker,
-            RefReadContext {
-                ref_seq: 1,
-                created_at: now(),
-                author: "alice",
-                committer: "alice",
-            },
-        )
-        .unwrap();
+fn owner_refs_keep_uuid_identity_and_independent_positions() {
+    let (mut reader, owner) = create("FILE");
+    let version_id = Uuid::now_v7();
+    let reference = synck_file_folder::file_version_set::automatic_initial_ref_event(
+        &synck_vcs::types::RepoId::new(), &owner, &version_id.to_string(),
+        0, 2, 1, A.into(), Some(7),
+    ).unwrap();
+    reader.apply_ref(&reference, RefReadContext {
+        ref_seq: 1, created_at: now(), author: "author", committer: "committer",
+    }).unwrap();
+    let update: synck_vcs::types::RefEventProposal = serde_json::from_value(json!({
+        "owner_item_id":owner,"event_type":"FILE_VERSION::SET_DESCRIPTION","base_ref_seq":1,
+        "set_metadata":{"file_item_id":owner,"version_id":version_id,"description":"Reviewed"}
+    })).unwrap();
+    reader.apply_ref(&update, RefReadContext {
+        ref_seq: 2, created_at: now(), author: "editor", committer: "committer",
+    }).unwrap();
     let snapshot = reader.snapshot().unwrap();
-    assert_eq!(snapshot.legacy_sidecar_roots[0].item_id, sidecar);
-    assert_eq!(snapshot.legacy_sidecar_roots[0].root_event_digest, B);
-    assert_eq!(reader.required_sidecars().count(), 0);
-}
-
-#[test]
-fn legacy_inline_and_current_ref_versions_share_one_label_sequence() {
-    let repo = RepoId::new();
-    let file = ItemId::new();
-    let mut reader = ItemReader::for_repository(repo, file.clone());
-    let mut first = event(
-        &file,
-        "FILE::CREATE",
-        Value::Null,
-        Some(EventContent::Blob { blob_id: A.into() }),
-    );
-    first.create_item = Some(CreateItem {
-        item_type: "FILE".into(),
-        name: "doc.txt".into(),
-        parent_folder_id: None,
-    });
-    apply(&mut reader, &first, "alice");
-    apply(
-        &mut reader,
-        &event(
-            &file,
-            "FILE::VERSION::CREATE",
-            json!({"meta":{"kind":"MAJOR","order_key":1024}}),
-            Some(EventContent::Blob { blob_id: A.into() }),
-        ),
-        "alice",
-    );
-    let reference = RefEventProposal {
-        owner_item_id: file.clone(),
-        event_type: "FILE_VERSION::CREATE".into(),
-        set_metadata: Some(
-            json!({"file_item_id":file,"version_id":Uuid::now_v7(),"operation_id":"new-version","kind":"MAJOR","label_source":"INTERNAL","order_key":2048}),
-        ),
-        set_content: Some(EventContent::Blob { blob_id: A.into() }),
-        base_ref_seq: 0,
-        initial_ref_seq: None,
-    };
-    reader
-        .apply_ref(
-            &reference,
-            RefReadContext {
-                ref_seq: 1,
-                created_at: now(),
-                author: "alice",
-                committer: "alice",
-            },
-        )
-        .unwrap();
-    let snapshot = reader.snapshot().unwrap();
-    assert_eq!(
-        snapshot
-            .subitems
-            .iter()
-            .find(|row| row.family == "FILE::VERSION")
-            .unwrap()
-            .version_label
-            .as_deref(),
-        Some("1.0")
-    );
-    assert_eq!(
-        snapshot
-            .subitems
-            .iter()
-            .find(|row| row.family == "FILE_VERSION")
-            .unwrap()
-            .version_label
-            .as_deref(),
-        Some("2.0")
-    );
+    assert_eq!(snapshot.projection.latest_item_seq, 1);
+    assert_eq!(snapshot.latest_ref_seq, 2);
+    assert_eq!(snapshot.subitems.len(), 1);
+    let version = &snapshot.subitems[0];
+    assert_eq!(version.identity, SubitemIdentity::Uuid(version_id));
+    assert_eq!(version.created_position.seq, 1);
+    assert_eq!(version.latest_position.seq, 2);
+    assert_eq!(version.body.as_deref(), Some("Reviewed"));
 }

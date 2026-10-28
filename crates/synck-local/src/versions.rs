@@ -58,8 +58,6 @@ struct StoredVersion {
 struct VersionSetState {
     item_id: ItemId,
     head_seq: i64,
-    legacy_head_seq: i64,
-    legacy_head_digest: Option<String>,
     replay_commit_id: Option<CommitId>,
     replay_commit_base_seq: i64,
     versions: HashMap<String, StoredVersion>,
@@ -97,7 +95,6 @@ fn named_version_ref_event(
         set_metadata: Some(Value::Object(metadata)),
         set_content: content,
         base_ref_seq,
-        initial_ref_seq: None,
     }
 }
 
@@ -336,20 +333,6 @@ impl Repository {
                 "invalid named-version owner {file_item_id}"
             )));
         }
-        if owner.ref_head_seq == 0 {
-            let legacy_id = version_set::item_id(self.config().repo_id(), file_item_id)
-                .map_err(LocalError::Integrity)?;
-            if let Some(legacy) = self
-                .core()
-                .get_item(self.config().repo_id().clone(), legacy_id.clone())
-                .await?
-            {
-                return Err(LocalError::Integrity(format!(
-                    "local format migration did not baseline legacy FILE_VERSION_SET {legacy_id} at head {}",
-                    legacy.head_seq
-                )));
-            }
-        }
         if ref_event.owner_item_id != *file_item_id || ref_event.base_ref_seq != owner.ref_head_seq
         {
             return Err(LocalError::Invalid(
@@ -497,26 +480,9 @@ impl Repository {
             .ok_or_else(|| LocalError::Integrity(format!("missing FILE {file_item_id}")))?;
         let item_id = version_set::item_id(self.config().repo_id(), file_item_id)
             .map_err(LocalError::Integrity)?;
-        let item = self
-            .core()
-            .get_item(self.config().repo_id().clone(), item_id.clone())
-            .await?;
-        if let Some(item) = item.as_ref()
-            && (item.item_type != version_set::ITEM_TYPE
-                || item.lifecycle_state != LifecycleState::Live
-                || item.parent_folder_id.is_some()
-                || item.name != version_set::item_name(file_item_id))
-        {
-            return Err(LocalError::Integrity(format!(
-                "FILE_VERSION_SET {} has invalid ownership",
-                item.item_id
-            )));
-        }
         let mut state = VersionSetState {
             item_id,
             head_seq: 0,
-            legacy_head_seq: 0,
-            legacy_head_digest: None,
             replay_commit_id: None,
             replay_commit_base_seq: 0,
             versions: HashMap::new(),
@@ -528,44 +494,6 @@ impl Repository {
             .into_iter()
             .map(|revision| (revision.item_seq, revision))
             .collect::<HashMap<_, _>>();
-        if let Some(item) = item.as_ref() {
-            let mut from_seq = 1;
-            loop {
-                let events = self
-                    .core()
-                    .list_events(
-                        self.config().repo_id().clone(),
-                        state.item_id.clone(),
-                        from_seq,
-                        PAGE_SIZE,
-                    )
-                    .await?;
-                if events.is_empty() {
-                    break;
-                }
-                for event in &events {
-                    apply_version_event(
-                        self.config().repo_id(),
-                        file_item_id,
-                        &revisions,
-                        &mut state,
-                        event,
-                    )?;
-                    state.legacy_head_seq = event.item_seq;
-                    state.legacy_head_digest = Some(event.event_payload_digest.to_string());
-                    from_seq = event.item_seq + 1;
-                }
-                if events.len() < PAGE_SIZE {
-                    break;
-                }
-            }
-            if state.head_seq != item.head_seq {
-                return Err(LocalError::Integrity(format!(
-                    "FILE_VERSION_SET {} replay head {} differs from item head {}",
-                    item.item_id, state.head_seq, item.head_seq
-                )));
-            }
-        }
         let mut from_ref_seq = 1;
         loop {
             let events = self
@@ -914,34 +842,6 @@ fn apply_ref_version_event(
     event: &RefEventRow,
 ) -> Result<()> {
     let proposal = decode_ref_version_event(file_item_id, event)?;
-    if event.event_type == "FILE_VERSION::LEGACY_BASELINE" {
-        let metadata = proposal
-            .set_metadata
-            .as_ref()
-            .and_then(Value::as_object)
-            .ok_or_else(|| LocalError::Integrity("legacy baseline has no metadata".to_string()))?;
-        let sidecar_id = required_item_id(metadata, "legacy_sidecar_item_id")?;
-        let sidecar_head = required_positive_i64(metadata, "legacy_sidecar_head_seq")?;
-        let sidecar_digest = required_string(metadata, "legacy_sidecar_head_event_digest")?;
-        if proposal.set_content.is_some() || metadata.len() != 3 {
-            return Err(LocalError::Integrity(
-                "legacy named-version baseline has invalid payload shape".to_string(),
-            ));
-        }
-        if sidecar_id != state.item_id
-            || sidecar_head != state.legacy_head_seq
-            || event.ref_seq != state.legacy_head_seq
-            || state.legacy_head_digest.as_deref() != Some(sidecar_digest.as_str())
-            || proposal.base_ref_seq != 0
-            || proposal.initial_ref_seq != Some(event.ref_seq)
-        {
-            return Err(LocalError::Integrity(
-                "legacy named-version baseline does not match the frozen sidecar".to_string(),
-            ));
-        }
-        state.head_seq = event.ref_seq;
-        return Ok(());
-    }
     let suffix = event
         .event_type
         .strip_prefix("FILE_VERSION::")
@@ -1392,86 +1292,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn ref_replay_rejects_non_exact_legacy_baseline_shape() {
-        let repo_id = synck_vcs::types::RepoId::new();
-        let file_item_id = ItemId::new();
-        let sidecar_item_id = version_set::item_id(&repo_id, &file_item_id).unwrap();
-        let sidecar_digest = format!("sha256:{}", "1".repeat(64));
-        let exact = RefEventProposal {
-            owner_item_id: file_item_id.clone(),
-            event_type: "FILE_VERSION::LEGACY_BASELINE".to_string(),
-            set_metadata: Some(serde_json::json!({
-                "legacy_sidecar_item_id": sidecar_item_id.as_str(),
-                "legacy_sidecar_head_seq": 3,
-                "legacy_sidecar_head_event_digest": sidecar_digest,
-            })),
-            set_content: None,
-            base_ref_seq: 0,
-            initial_ref_seq: Some(3),
-        };
-
-        let mut extra_metadata = exact.clone();
-        extra_metadata
-            .set_metadata
-            .as_mut()
-            .and_then(Value::as_object_mut)
-            .unwrap()
-            .insert("unexpected".to_string(), true.into());
-        let mut content = exact.clone();
-        content.set_content = Some(EventContent::Text {
-            text: "unexpected".to_string(),
-        });
-
-        for (proposal, accepted) in [(exact, true), (extra_metadata, false), (content, false)] {
-            let payload = canonical_ref_event_proposal_bytes(&proposal).unwrap();
-            let payload_digest = compute_sha256_digest_bytes(&payload);
-            let event = RefEventRow {
-                repo_id: repo_id.clone(),
-                owner_item_id: file_item_id.clone(),
-                ref_seq: 3,
-                event_type: proposal.event_type.clone(),
-                commit_id: CommitId::parse(format!("sha256:{}", "a".repeat(64))).unwrap(),
-                commit_event_idx: 0,
-                repo_seq: Some(1),
-                payload,
-                event_payload_digest: synck_vcs::types::Sha256Digest::parse(
-                    sha256_prefixed_hex_from_digest_bytes(payload_digest),
-                )
-                .unwrap(),
-                created_at: synck_vcs::types::now(),
-            };
-            let mut state = VersionSetState {
-                item_id: sidecar_item_id.clone(),
-                head_seq: 3,
-                legacy_head_seq: 3,
-                legacy_head_digest: Some(sidecar_digest.clone()),
-                replay_commit_id: None,
-                replay_commit_base_seq: 0,
-                versions: HashMap::new(),
-                live_sources: HashMap::new(),
-            };
-            let result = apply_ref_version_event(
-                &repo_id,
-                &file_item_id,
-                &HashMap::new(),
-                &mut state,
-                &event,
-            );
-            if accepted {
-                result.unwrap();
-            } else {
-                assert!(
-                    result
-                        .unwrap_err()
-                        .to_string()
-                        .contains("invalid payload shape")
-                );
-            }
-        }
-    }
-
-    #[allow(clippy::too_many_arguments)]
     fn create_event(
         _repository: &Repository,
         file_item_id: &ItemId,

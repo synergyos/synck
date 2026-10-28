@@ -446,7 +446,6 @@ mod tests {
             ),
             set_content: Some(EventContent::Blob { blob_id: D.into() }),
             base_ref_seq: 0,
-            initial_ref_seq: None,
         };
         assert_eq!(
             commit_event_references(&ref_row(&version)).unwrap().blobs,
@@ -498,7 +497,6 @@ mod tests {
             set_metadata: None,
             set_content: None,
             base_ref_seq: 0,
-            initial_ref_seq: None,
         });
         let CommitEventRow::Ref(row) = &mut reference else {
             unreachable!()

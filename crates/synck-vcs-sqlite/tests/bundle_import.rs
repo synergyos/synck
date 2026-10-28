@@ -93,7 +93,6 @@ async fn fixture() -> (tempfile::TempDir, SqliteStorage, RepoId, Vec<Value>) {
             set_metadata: Some(json!({"version_id":ItemId::new()})),
             set_content: None,
             base_ref_seq: 0,
-            initial_ref_seq: None,
         }],
     )
     .await
@@ -341,7 +340,6 @@ async fn mixed_history_import_preserves_ids_ref_heads_gaps_and_next_append() {
             set_metadata: None,
             set_content: None,
             base_ref_seq: 1,
-            initial_ref_seq: None,
         }],
     )
     .await

@@ -358,26 +358,9 @@ impl CommitEnvelopeValidator {
             }
         };
         let expected_ref_seq = owner.head_seq.saturating_add(1);
-        let valid_legacy_baseline = owner.head_seq == 0
-            && owner.commit_base_seq == Some(0)
-            && proposal.event_type == "FILE_VERSION::LEGACY_BASELINE"
-            && proposal.initial_ref_seq == Some(event.ref_seq)
-            && event.ref_seq >= 1;
-        if event.ref_seq != expected_ref_seq && !valid_legacy_baseline {
+        if event.ref_seq != expected_ref_seq {
             self.findings.push(format!(
-                "{context}: ref sequence is {}, expected {expected_ref_seq}",
-                event.ref_seq
-            ));
-        }
-        if proposal.initial_ref_seq.is_some() && !valid_legacy_baseline {
-            self.findings
-                .push(format!("{context}: invalid legacy baseline sequence"));
-        }
-        if proposal.event_type == "FILE_VERSION::LEGACY_BASELINE"
-            && proposal.initial_ref_seq.is_none()
-        {
-            self.findings.push(format!(
-                "{context}: legacy baseline has no initial sequence"
+                "{context}: ref sequence is {}, expected {expected_ref_seq}", event.ref_seq
             ));
         }
         owner.head_seq = event.ref_seq;

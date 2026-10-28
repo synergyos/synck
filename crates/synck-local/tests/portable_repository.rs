@@ -13,7 +13,7 @@ use synck_vcs::config::CoreConfig;
 use synck_vcs::repo::Repo;
 use synck_vcs::storage::{Storage, StorageBackend};
 use synck_vcs::types::{
-    CommitProposal, CreateItem, EventContent, EventProposal, ItemId, RefEventProposal, RepoId,
+    CommitProposal, CreateItem, EventContent, EventProposal, ItemId, RepoId,
 };
 use synck_vcs_sqlite::SqliteStorage;
 
@@ -359,8 +359,23 @@ async fn invalid_materialization_missing_body_and_extra_objects_never_publish() 
     assert!(!destination.exists());
     fs::write(body_path, body).unwrap();
 
-    let (source, _) = frozen_sidecar_transfer(&fixture.root, false);
-    let snapshot = bundle_snapshot(&source);
+    let source = fixture.root.join("empty-bundle");
+    fs::create_dir_all(source.join("objects")).unwrap();
+    let repo_id = RepoId::new();
+    let mut bytes = serde_json::to_vec(&json!({
+        "type": "synck_vcs_bundle_header", "bundle_format_version": 5,
+        "repo_id": repo_id, "history_generation": uuid::Uuid::now_v7().to_string(),
+        "exported_at": "2026-01-02T00:00:00Z", "commit_format_version": 6,
+        "schema": {"subsystem":"synck_vcs_sqlite", "schema_id":"core-v6"}
+    })).unwrap();
+    bytes.push(b'\n');
+    fs::write(source.join("history.ndjson"), &bytes).unwrap();
+    let snapshot = BundleSnapshot {
+        repo_id, terminal_repo_seq: 0,
+        history_sha256: format!("sha256:{}", hex::encode(Sha256::digest(&bytes))),
+        history_bytes: bytes.len() as u64,
+    };
+    materialize_repository(&source.join("history.ndjson"), &source.join("objects"), &snapshot, &fixture.root.join("valid-empty")).await.unwrap();
     let history = source.join("history.ndjson");
     let original = fs::read(&history).unwrap();
     fs::write(&history, &original[..original.len() - 1]).unwrap();
@@ -511,199 +526,6 @@ async fn linked_repository_content_is_rejected_without_touching_its_target() {
 
 // Frozen sidecar writes are deliberately unavailable through today's append
 // API. Build their historical canonical records to exercise the import reader.
-fn frozen_sidecar_transfer(root: &PathBuf, baseline: bool) -> (PathBuf, ItemId) {
-    use synck_file_folder::file_version_set as versions;
-    use synck_vcs::types::{
-        COMMIT_EVENT_FAMILY_REF, canonical_event_proposal_bytes,
-        canonical_ref_event_proposal_bytes, canonical_stored_commit_bytes_for_hash,
-        compute_commit_id, sha256_digest_from_digest_bytes,
-    };
-    let repo = RepoId::new();
-    let file = ItemId::new();
-    let sidecar = versions::item_id(&repo, &file).unwrap();
-    let version = ItemId::new().to_string();
-    let bytes = b"legacy bytes";
-    let blob = format!("sha256:{}", hex::encode(Sha256::digest(bytes)));
-    let mut initial = creation(&file, "FILE", None, "legacy.txt");
-    initial.set_content = Some(EventContent::Blob {
-        blob_id: blob.clone(),
-    });
-    initial.set_metadata = Some(json!({"content":{"size":bytes.len()}}));
-    let create = versions::create_event(sidecar.clone(), &file);
-    let named=versions::version_event(sidecar.clone(),versions::VERSION_CREATE_EVENT,&file,&version,
-        json!({"kind":"MAJOR","order_key":1,"description":"Original","content":{"size":bytes.len()}}).as_object().unwrap().clone(),Some(EventContent::Blob {blob_id:blob.clone()}));
-    let mut description = versions::version_event(
-        sidecar.clone(),
-        versions::VERSION_SET_DESCRIPTION_EVENT,
-        &file,
-        &version,
-        json!({"description":"Before baseline"})
-            .as_object()
-            .unwrap()
-            .clone(),
-        None,
-    );
-    description.base_seq = Some(2);
-    let frozen_digest = format!(
-        "sha256:{}",
-        hex::encode(Sha256::digest(
-            canonical_event_proposal_bytes(&description).unwrap()
-        ))
-    );
-    let mut groups = vec![
-        (vec![initial], None),
-        (vec![create, named], None),
-        (vec![description], None),
-    ];
-    if baseline {
-        groups.push((Vec::new(),Some(RefEventProposal {owner_item_id:file.clone(),event_type:"FILE_VERSION::LEGACY_BASELINE".into(),set_metadata:Some(json!({"legacy_sidecar_item_id":sidecar,"legacy_sidecar_head_seq":3,"legacy_sidecar_head_event_digest":frozen_digest})),set_content:None,base_ref_seq:0,initial_ref_seq:Some(3)})));
-    }
-    let terminal = groups.len() as i64;
-    let timestamp = "2026-01-01T00:00:00.000000000Z";
-    let mut records = vec![
-        json!({"type":"synck_vcs_bundle_header","bundle_format_version":5,"repo_id":repo,"history_generation":synck_vcs::types::CommitPk::new(),"exported_at":timestamp,"schema":{"subsystem":"synck_vcs_pg","schema_id":"historical-fixture"},"commit_format_version":6}),
-    ];
-    let mut heads = std::collections::BTreeMap::<ItemId, i64>::new();
-    let mut checkpoint = synck_vcs::checkpoint::GENESIS;
-    for (offset, (events, reference)) in groups.into_iter().enumerate() {
-        let seq = offset as i64 + 1;
-        let format = synck_vcs::types::COMMIT_FORMAT_VERSION;
-        let mut hasher = Sha256::new();
-        let mut rows = Vec::new();
-        for (index, event) in events.into_iter().enumerate() {
-            let payload = canonical_event_proposal_bytes(&event).unwrap();
-            let digest = Sha256::digest(&payload);
-            hasher.update([synck_vcs::types::COMMIT_EVENT_FAMILY_ITEM]);
-            hasher.update(digest);
-            let id = event.item_id.clone().unwrap();
-            let head = heads.entry(id.clone()).or_default();
-            *head += 1;
-            rows.push(json!({"type":"event","commit_id":"pending","repo_seq":seq,"commit_event_idx":index,"item_id":id,"item_seq":head,"event_type":event.event_type,"payload_json":String::from_utf8(payload).unwrap(),"event_payload_digest":format!("sha256:{}",hex::encode(digest)),"created_at":timestamp,"parent_folder_id":null,"parent_folder_id_before":null}));
-        }
-        if let Some(event) = reference {
-            let payload = canonical_ref_event_proposal_bytes(&event).unwrap();
-            let digest = Sha256::digest(&payload);
-            hasher.update([COMMIT_EVENT_FAMILY_REF]);
-            hasher.update(digest);
-            rows.push(json!({"type":"ref_event","commit_id":"pending","repo_seq":seq,"commit_event_idx":0,"owner_item_id":file,"ref_seq":3,"event_type":event.event_type,"payload_json":String::from_utf8(payload).unwrap(),"event_payload_digest":format!("sha256:{}",hex::encode(digest)),"created_at":timestamp}));
-        }
-        let digest = sha256_digest_from_digest_bytes(&hasher.finalize()).unwrap();
-        let id = compute_commit_id(
-            &canonical_stored_commit_bytes_for_hash(
-                format,
-                &"legacy-author".into(),
-                &"legacy-author".into(),
-                None,
-                None,
-                None,
-                rows.len(),
-                &digest,
-            )
-            .unwrap(),
-        );
-        checkpoint =
-            synck_vcs::checkpoint::digest(&checkpoint, seq as u64, &id, timestamp.parse().unwrap())
-                .unwrap();
-        records.push(json!({"type":"commit","commit_id":id,"checkpoint":format!("sha256:{}",hex::encode(checkpoint)),"repo_seq":seq,"operation_id":null,"import_job_id":null,"format_version":format,"author_id":"legacy-author","committer_id":"legacy-author","message":null,"occurred_at":null,"created_at":timestamp,"event_count":rows.len(),"events_digest":digest}));
-        for mut row in rows {
-            row["commit_id"] = json!(id);
-            records.push(row);
-        }
-    }
-    for (id, kind, name, head, refhead) in [
-        (
-            file.clone(),
-            "FILE",
-            "legacy.txt".into(),
-            1,
-            if baseline { 3 } else { 0 },
-        ),
-        (
-            sidecar,
-            "FILE_VERSION_SET",
-            versions::item_name(&file),
-            3,
-            0,
-        ),
-    ] {
-        records.push(json!({"type":"item","item_id":id,"item_type":kind,"parent_folder_id":null,"name":name,"name_key":synck_vcs::naming::compute_name_key(&name).unwrap(),"head_seq":head,"ref_head_seq":refhead,"lifecycle_state":"LIVE","created_at":timestamp,"created_by":"legacy-author","sequencing_mode":"LOCAL","federation_stream_id":null}));
-    }
-    let source = root.join(if baseline {
-        "legacy-baseline-transfer"
-    } else {
-        "legacy-unmigrated-transfer"
-    });
-    fs::create_dir(&source).unwrap();
-    fs::create_dir(source.join("objects")).unwrap();
-    fs::write(source.join("objects").join(&blob[7..]), bytes).unwrap();
-    let history = records
-        .iter()
-        .map(|row| serde_json::to_string(row).unwrap() + "\n")
-        .collect::<String>();
-    fs::write(source.join("history.ndjson"), &history).unwrap();
-    fs::write(source.join("snapshot.json"),serde_json::to_vec(&json!({"repo_id":repo,"terminal_repo_seq":terminal,"history_sha256":format!("sha256:{}",hex::encode(Sha256::digest(history.as_bytes()))),"history_bytes":history.len()})).unwrap()).unwrap();
-    (source, file)
-}
-
-#[tokio::test]
-async fn frozen_labels_follow_sidecar_checkpoint_before_and_after_ref_baseline() {
-    let temporary = tempfile::tempdir().unwrap();
-    let root = temporary.path().to_path_buf();
-    for baseline in [false, true] {
-        let (source, file) = frozen_sidecar_transfer(&root, baseline);
-        let destination = root.join(if baseline { "migrated" } else { "unmigrated" });
-        materialize_repository(
-            &source.join("history.ndjson"),
-            &source.join("objects"),
-            &bundle_snapshot(&source),
-            &destination,
-        )
-        .await
-        .unwrap();
-        let repository = PortableRepository::open(&destination).unwrap();
-        assert!(
-            repository
-                .show_item(&file, Some(1))
-                .await
-                .unwrap()
-                .item
-                .subitems
-                .is_empty()
-        );
-        let early = repository.show_item(&file, Some(2)).await.unwrap();
-        assert_eq!(early.item.subitems.len(), 1);
-        assert_eq!(early.item.subitems[0].body.as_deref(), Some("Original"));
-        let before = repository.show_item(&file, Some(3)).await.unwrap();
-        assert_eq!(
-            before.item.subitems[0].body.as_deref(),
-            Some("Before baseline")
-        );
-        let current = repository.show_item(&file, None).await.unwrap();
-        assert_eq!(current.item.subitems.len(), 1);
-        assert_eq!(
-            current.item.subitems[0].body.as_deref(),
-            Some("Before baseline")
-        );
-        assert_eq!(current.refs.len(), usize::from(baseline));
-        if baseline {
-            assert_eq!(
-                repository
-                    .show_item(&file, Some(4))
-                    .await
-                    .unwrap()
-                    .item
-                    .subitems
-                    .len(),
-                1
-            );
-        }
-    }
-}
-
-fn bundle_snapshot(source: &std::path::Path) -> BundleSnapshot {
-    serde_json::from_slice(&fs::read(source.join("snapshot.json")).unwrap()).unwrap()
-}
-
 fn canonical_rows(root: &std::path::Path) -> Vec<Vec<String>> {
     let db = rusqlite::Connection::open(root.join(".synck/repository.sqlite3")).unwrap();
     [

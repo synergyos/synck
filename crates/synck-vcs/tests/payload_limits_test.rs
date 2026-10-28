@@ -81,3 +81,15 @@ fn lossless_json_rules_remain_enforced() {
     event.set_metadata = Some(serde_json::from_str(r#"{"n":9007199254740993}"#).unwrap());
     assert!(validate_payload_limits(&CoreConfig::default(), &[event], &[]).is_err());
 }
+
+#[test]
+fn ref_proposals_reject_explicit_initial_sequences() {
+    let proposal = serde_json::json!({
+        "owner_item_id": "01890c6c-1111-7777-8888-aaaaaaaaaaaa",
+        "event_type": "FILE_VERSION::CREATE",
+        "base_ref_seq": 0,
+        "initial_ref_seq": 18
+    });
+    assert!(serde_json::from_value::<RefEventProposal>(proposal).unwrap_err()
+        .to_string().contains("unknown field"));
+}

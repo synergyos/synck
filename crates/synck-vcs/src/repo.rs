@@ -34,7 +34,6 @@ use std::time::Instant;
 use tracing::{debug, info, instrument, trace, warn};
 
 const ITEM_UPSERT_BATCH_MIN_ROWS: usize = 64;
-const LEGACY_REF_BASELINE_EVENT_TYPE: &str = "FILE_VERSION::LEGACY_BASELINE";
 
 /// Stable local receipt key for one accepted federation-domain proposal.
 ///
@@ -516,45 +515,10 @@ impl Repo {
         proposal: CommitProposal,
         ref_events: Vec<RefEventProposal>,
     ) -> Result<AcceptedCommit, CoreError> {
-        reject_legacy_baseline_on_normal_append(&ref_events)?;
         self.append_with_base_seq_mode(
             repo_id,
             proposal,
             ref_events,
-            AppendBaseSeqMode::RequirePresent,
-            &[],
-            AppendProfile::Generic,
-        )
-        .await
-    }
-
-    /// Append one bounded maintenance-only commit of authenticated legacy baselines.
-    pub async fn append_legacy_ref_baselines(
-        &self,
-        repo_id: RepoId,
-        proposal: CommitProposal,
-        baselines: Vec<RefEventProposal>,
-    ) -> Result<AcceptedCommit, CoreError> {
-        if !proposal.events.is_empty() {
-            return Err(CoreError::InvalidProposal(
-                "legacy baseline commits must not contain item events".to_string(),
-            ));
-        }
-        if baselines.is_empty()
-            || baselines.iter().any(|baseline| {
-                baseline.event_type != LEGACY_REF_BASELINE_EVENT_TYPE
-                    || baseline.initial_ref_seq.is_none()
-            })
-        {
-            return Err(CoreError::InvalidProposal(
-                "legacy baseline append requires one or more FILE_VERSION::LEGACY_BASELINE events with exact initial sequences"
-                    .to_string(),
-            ));
-        }
-        self.append_with_base_seq_mode(
-            repo_id,
-            proposal,
-            baselines,
             AppendBaseSeqMode::RequirePresent,
             &[],
             AppendProfile::Generic,
@@ -624,7 +588,6 @@ impl Repo {
         proposal: CommitProposal,
         ref_events: Vec<RefEventProposal>,
     ) -> Result<AcceptedCommit, CoreError> {
-        reject_legacy_baseline_on_normal_append(&ref_events)?;
         self.append_one_locked_txn(
             txn,
             repo_id,
@@ -698,7 +661,6 @@ impl Repo {
         guards: &[(ItemId, i64)],
         subtree_guards: &[SubtreeClosureGuard],
     ) -> Result<AcceptedCommit, CoreError> {
-        reject_legacy_baseline_on_normal_append(&ref_events)?;
         self.append_with_base_seq_mode(
             repo_id,
             proposal,
@@ -726,7 +688,6 @@ impl Repo {
         guards: &[(ItemId, i64)],
         subtree_guards: &[SubtreeClosureGuard],
     ) -> Result<AcceptedCommit, CoreError> {
-        reject_legacy_baseline_on_normal_append(&ref_events)?;
         self.append_one_locked_txn(
             txn,
             repo_id,
@@ -766,7 +727,6 @@ impl Repo {
                 "federated item ref ingest requires ref events only".to_string(),
             ));
         }
-        reject_legacy_baseline_on_normal_append(&ref_events)?;
         let owner = self
             .get_item_by_federation_stream_id(repo_id.clone(), federation_stream_id.to_string())
             .await?
@@ -893,7 +853,6 @@ impl Repo {
         import_job_id: String,
     ) -> Result<AcceptedCommit, CoreError> {
         validate_import_job_id(&import_job_id)?;
-        reject_legacy_baseline_on_normal_append(&ref_events)?;
         self.append_with_base_seq_mode(
             repo_id,
             proposal,
@@ -1165,7 +1124,6 @@ impl Repo {
         }
 
         let mut observed_ref_bases: HashMap<ItemId, i64> = HashMap::new();
-        let mut owners_with_ref_events = HashSet::new();
         for event in &ref_events {
             if event.event_type.trim().is_empty() {
                 return Err(CoreError::InvalidProposal(
@@ -1175,22 +1133,6 @@ impl Repo {
             if event.base_ref_seq < 0 {
                 return Err(CoreError::InvalidProposal(
                     "base_ref_seq must be non-negative".to_string(),
-                ));
-            }
-            if let Some(initial_ref_seq) = event.initial_ref_seq {
-                if event.event_type != LEGACY_REF_BASELINE_EVENT_TYPE
-                    || event.base_ref_seq != 0
-                    || initial_ref_seq < 1
-                    || owners_with_ref_events.contains(&event.owner_item_id)
-                {
-                    return Err(CoreError::InvalidProposal(
-                        "initial_ref_seq is valid only on an owner's first FILE_VERSION::LEGACY_BASELINE at base 0"
-                            .to_string(),
-                    ));
-                }
-            } else if event.event_type == LEGACY_REF_BASELINE_EVENT_TYPE {
-                return Err(CoreError::InvalidProposal(
-                    "FILE_VERSION::LEGACY_BASELINE requires initial_ref_seq".to_string(),
                 ));
             }
             match observed_ref_bases.entry(event.owner_item_id.clone()) {
@@ -1206,7 +1148,6 @@ impl Repo {
                 }
                 std::collections::hash_map::Entry::Occupied(_) => {}
             }
-            owners_with_ref_events.insert(event.owner_item_id.clone());
         }
 
         if base_seq_mode == AppendBaseSeqMode::MaterializeUnderItemLocks
@@ -1833,17 +1774,9 @@ impl Repo {
             let head = ref_head_after
                 .get_mut(&event.owner_item_id)
                 .expect("validated ref owner head must be loaded");
-            *head = match event.initial_ref_seq {
-                Some(initial_ref_seq) if *head == 0 => initial_ref_seq,
-                Some(_) => {
-                    return Err(CoreError::InvalidProposal(
-                        "legacy ref baseline requires an empty owner ref ledger".to_string(),
-                    ));
-                }
-                None => head.checked_add(1).ok_or_else(|| {
-                    CoreError::InvalidProposal("ref sequence overflow".to_string())
-                })?,
-            };
+            *head = head.checked_add(1).ok_or_else(|| {
+                CoreError::InvalidProposal("ref sequence overflow".to_string())
+            })?;
             ref_event_seqs.push(*head);
         }
 
@@ -3162,11 +3095,6 @@ impl Repo {
         }
         for event in &proposal.ref_events {
             validate_blob_ids(&event.set_content)?;
-            if event.initial_ref_seq.is_some() {
-                return Err(CoreError::InvalidProposal(
-                    "federated domain proposals cannot set an initial ref sequence".to_string(),
-                ));
-            }
             if !event.event_type.starts_with("FILE_VERSION::") {
                 return Err(CoreError::InvalidProposal(format!(
                     "unsupported federated ref event type `{}`",
@@ -3801,15 +3729,6 @@ fn validate_commit_metadata(
     }
     if let Some(operation_id) = operation_id {
         validate_optional_byte_limit("operation_id", operation_id, config.max_operation_id_bytes)?;
-    }
-    Ok(())
-}
-
-fn reject_legacy_baseline_on_normal_append(events: &[RefEventProposal]) -> Result<(), CoreError> {
-    if events.iter().any(|event| event.initial_ref_seq.is_some()) {
-        return Err(CoreError::InvalidProposal(
-            "exact initial ref sequences are maintenance-only".to_string(),
-        ));
     }
     Ok(())
 }

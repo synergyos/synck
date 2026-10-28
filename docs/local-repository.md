@@ -1521,8 +1521,7 @@ logical blob by reconstruction. Verification never repairs authoritative rows
 or object bytes, and it stops at the first failure, which it reports as an
 `INTEGRITY` error with exit status 2.
 
-Named-version verification replays frozen sidecar transitions and attached ref
-events in repository order. Each create or content replacement must reference a
+Named-version verification replays attached ref events in repository order. Each create or content replacement must reference a
 FILE revision that already exists at that event position and must agree with its
 commit coordinates, object, and size. LIVE source-revision uniqueness is
 enforced at every transition, not only in the final projection, and create

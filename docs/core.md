@@ -287,8 +287,7 @@ These invariants define “Synck VCS” in a way that callers can depend on:
 * **Linear per-item order**:
   * `item_seq` is strictly increasing per item starting at 1 (no gaps for accepted history).
   * attached `ref_seq` is independent of `item_seq`, starts at 1, and is
-    strictly contiguous except for the one migration-only baseline transition
-    defined below;
+    strictly contiguous;
   * `commit_event_idx` is contiguous `0..event_count-1` per commit.
 * **Repo activity order (derived)**:
   * `repo_seq` is an optional monotonic activity sequence per repo, starting at 1 (gaps allowed).
@@ -475,10 +474,8 @@ immutable item history that need an independent lifecycle and compare-and-swap
 domain. It is not a second item and it cannot change item structure.
 
 `RefEventProposal` contains `owner_item_id`, `event_type`, optional
-`set_metadata`, optional `set_content`, `base_ref_seq`, and optional
-`initial_ref_seq`. The last field is omitted when absent and is reserved for
-the maintenance-only legacy baseline described below. Ordinary append rejects any
-present `initial_ref_seq`. It has no create, name, parent, lifecycle,
+`set_metadata`, optional `set_content`, and `base_ref_seq`. It has no create,
+name, parent, lifecycle,
 sequencing-mode, or federation-binding fields.
 
 Local `append_with_refs` accepts a `CommitProposal` plus a separate
@@ -496,12 +493,8 @@ tombstoned owner is rejected. The item/ref events, both heads, commit, and
 current item state are one transaction. Historical-state roots are projected
 separately after repository sequencing.
 
-The sole permitted sequence discontinuity is a migration-only
-`FILE_VERSION::LEGACY_BASELINE` as the first ref event for an owner. It requires
-no prior ref event, `ref_head_seq = 0`, `base_ref_seq = 0`, and an explicitly
-validated positive `ref_seq = N` equal to the frozen legacy sidecar head. Every
-later ref event is strictly `N + 1`, `N + 2`, and so on. No normal append API
-accepts an explicit ref sequence or any other gap.
+Every ref ledger starts at one and advances contiguously. There is no explicit
+initial sequence, migration baseline, or maintenance API for bypassing its CAS.
 
 `ref_events` rows have primary key `(repo_id, owner_item_id, ref_seq)`, unique
 commit position `(repo_id, commit_pk, commit_event_idx)`, canonical payload and

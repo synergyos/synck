@@ -534,7 +534,6 @@ mod tests {
             set_metadata: Some(serde_json::json!({"file_item_id": owner_item_id.as_str()})),
             set_content: None,
             base_ref_seq: 0,
-            initial_ref_seq: None,
         };
         let payload = canonical_ref_event_proposal_bytes(&proposal).unwrap();
         let payload_digest = compute_sha256_digest_bytes(&payload);

@@ -479,9 +479,6 @@ pub struct RefEventProposal {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub set_content: Option<EventContent>,
     pub base_ref_seq: i64,
-    /// Exact first sequence used only by the authenticated legacy baseline.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub initial_ref_seq: Option<i64>,
 }
 
 /// Logical representation of an attached ref-event row.

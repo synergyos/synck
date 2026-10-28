@@ -26,8 +26,6 @@ pub enum ReadError {
     },
     #[error("body {0} must be hydrated before reading")]
     NeedsContent(ContentId),
-    #[error("readable state requires history for {0}")]
-    NeedsHistory(ItemId),
 }
 
 impl From<subitems::SubitemError> for ReadError {
@@ -83,12 +81,6 @@ pub struct ReadablePosition {
     pub seq: i64,
 }
 
-#[derive(Clone, Debug, Serialize)]
-pub struct LegacySidecar {
-    pub item_id: ItemId,
-    pub head_seq: i64,
-    pub event_digest: String,
-}
 
 #[derive(Clone, Debug, Serialize)]
 pub struct ReadableSubitem {
@@ -125,13 +117,7 @@ pub struct ChatDetails {
     pub participants: BTreeMap<String, subitems::ChatUserParticipantEvent>,
 }
 
-#[derive(Clone, Debug, Serialize)]
-pub struct LegacySidecarRoot {
-    pub item_id: ItemId,
-    pub head_seq: i64,
-    pub event_digest: String,
-    pub root_event_digest: String,
-}
+
 
 /// Preserved supplemental application data; it is not executed by public replay.
 #[derive(Clone, Debug, Serialize)]
@@ -148,7 +134,6 @@ pub struct ReadableItem {
     pub chat: Option<ChatDetails>,
     pub subitems: Vec<ReadableSubitem>,
     pub latest_ref_seq: i64,
-    pub legacy_sidecar_roots: Vec<LegacySidecarRoot>,
     pub data_links: Vec<subitems::ItemDataLink>,
     pub ancillary_events: Vec<AncillaryEvent>,
     pub presentation_warnings: Vec<String>,
@@ -158,9 +143,6 @@ pub struct ItemReader {
     item_id: ItemId,
     repo_id: Option<RepoId>,
     ref_seq: i64,
-    required_sidecars: BTreeMap<ItemId, LegacySidecar>,
-    loaded_sidecars: BTreeMap<ItemId, i64>,
-    legacy_sidecar_roots: Vec<LegacySidecarRoot>,
     data_links: BTreeMap<String, subitems::ItemDataLink>,
     ancillary_events: Vec<AncillaryEvent>,
     poisoned: bool,
@@ -192,9 +174,6 @@ impl ItemReader {
             item_id,
             repo_id: None,
             ref_seq: 0,
-            required_sidecars: BTreeMap::new(),
-            loaded_sidecars: BTreeMap::new(),
-            legacy_sidecar_roots: Vec::new(),
             data_links: BTreeMap::new(),
             ancillary_events: Vec::new(),
             poisoned: false,
@@ -221,11 +200,6 @@ impl ItemReader {
         if self.poisoned {
             return Err(invalid("reader must be discarded after an error"));
         }
-        for required in self.required_sidecars.values() {
-            if self.loaded_sidecars.get(&required.item_id) != Some(&required.head_seq) {
-                return Err(ReadError::NeedsHistory(required.item_id.clone()));
-            }
-        }
         Ok(ReadableItem {
             projection: self
                 .projection
@@ -234,7 +208,6 @@ impl ItemReader {
             chat: self.chat.clone(),
             subitems: self.subitems.values().cloned().collect(),
             latest_ref_seq: self.ref_seq,
-            legacy_sidecar_roots: self.legacy_sidecar_roots.clone(),
             data_links: self.data_links.values().cloned().collect(),
             ancillary_events: self.ancillary_events.clone(),
             presentation_warnings: if self.ancillary_events.is_empty() {
@@ -243,53 +216,6 @@ impl ItemReader {
                 vec!["Supplemental workflow/revision annotations are retained without application presentation or execution.".into()]
             },
         })
-    }
-
-    pub fn required_sidecars(&self) -> impl Iterator<Item = &LegacySidecar> {
-        self.required_sidecars.values()
-    }
-
-    /// Seed the exact frozen sidecar snapshot. The caller verifies its canonical
-    /// head digest against required_sidecars before supplying this typed view.
-    pub fn seed_legacy_versions(&mut self, sidecar: &ReadableItem) -> Result<(), ReadError> {
-        if self.poisoned {
-            return Err(invalid("reader must be discarded after an error"));
-        }
-        let result = self.seed_legacy_versions_inner(sidecar);
-        if result.is_err() {
-            self.poisoned = true;
-        }
-        result
-    }
-    fn seed_legacy_versions_inner(&mut self, sidecar: &ReadableItem) -> Result<(), ReadError> {
-        if sidecar.projection.item_type != "FILE_VERSION_SET"
-            || synck_file_folder::file_version_set::file_item_id_from_name(&sidecar.projection.name)
-                .map_err(invalid)?
-                != self.item_id
-        {
-            return Err(invalid("sidecar does not belong to FILE"));
-        }
-        if let Some(expected) = self.required_sidecars.get(&sidecar.projection.item_id) {
-            if sidecar.projection.latest_item_seq != expected.head_seq {
-                return Err(invalid("sidecar head does not match baseline"));
-            }
-        }
-        for version in &sidecar.subitems {
-            let Some(id) = version.stable_id else {
-                return Err(invalid("legacy sidecar version_id missing"));
-            };
-            let mut row = version.clone();
-            row.family = "FILE_VERSION".into();
-            let key = (row.family.clone(), SubitemIdentity::Uuid(id));
-            if !self.subitems.contains_key(&key) {
-                self.subitems.insert(key, row);
-            }
-        }
-        self.loaded_sidecars.insert(
-            sidecar.projection.item_id.clone(),
-            sidecar.projection.latest_item_seq,
-        );
-        self.relabel_versions("FILE_VERSION")
     }
 
     pub fn apply_ref(
@@ -322,94 +248,11 @@ impl ItemReader {
         if kind != "FILE" {
             return Err(unsupported(kind, &event.event_type));
         }
-        let first = self.ref_seq == 0;
-        let expected = if first {
-            event.initial_ref_seq.unwrap_or(1)
-        } else {
-            self.ref_seq + 1
-        };
+        let expected = self.ref_seq.checked_add(1).ok_or_else(|| invalid("ref sequence overflow"))?;
         if ctx.ref_seq != expected {
             return Err(invalid("noncontiguous ref sequence"));
         }
-        if event.event_type == "FILE_VERSION::LEGACY_BASELINE" {
-            let meta = event
-                .set_metadata
-                .as_ref()
-                .ok_or_else(|| invalid("baseline metadata missing"))?;
-            let id = ItemId::parse(
-                meta.get("legacy_sidecar_item_id")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| invalid("baseline sidecar missing"))?,
-            )
-            .map_err(invalid)?;
-            let head = meta
-                .get("legacy_sidecar_head_seq")
-                .and_then(Value::as_i64)
-                .filter(|value| *value >= 1)
-                .ok_or_else(|| invalid("baseline head missing"))?;
-            let digest = meta
-                .get("legacy_sidecar_head_event_digest")
-                .and_then(Value::as_str)
-                .ok_or_else(|| invalid("baseline digest missing"))?;
-            synck_vcs::types::Sha256Digest::parse(digest).map_err(invalid)?;
-            if !first
-                || event.base_ref_seq != 0
-                || event.set_content.is_some()
-                || ctx.ref_seq != head
-            {
-                return Err(invalid("invalid legacy baseline envelope"));
-            }
-            self.required_sidecars.insert(
-                id.clone(),
-                LegacySidecar {
-                    item_id: id,
-                    head_seq: head,
-                    event_digest: digest.into(),
-                },
-            );
-        } else if event.event_type == "FILE_VERSION::LEGACY_SIDECAR_ROOT" {
-            let meta = event
-                .set_metadata
-                .as_ref()
-                .and_then(Value::as_object)
-                .ok_or_else(|| invalid("sidecar root metadata missing"))?;
-            if meta.len() != 5 || event.set_content.is_some() {
-                return Err(invalid("invalid sidecar root shape"));
-            }
-            let meta = Value::Object(meta.clone());
-            if uuid(&meta, "file_item_id")?
-                != Uuid::parse_str(self.item_id.as_str()).expect("typed item ID")
-            {
-                return Err(invalid("sidecar root owner mismatch"));
-            }
-            let id = ItemId::parse(
-                meta.get("legacy_sidecar_item_id")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| invalid("sidecar root identity missing"))?,
-            )
-            .map_err(invalid)?;
-            let head_seq = meta
-                .get("legacy_sidecar_head_seq")
-                .and_then(Value::as_i64)
-                .filter(|seq| *seq >= 1)
-                .ok_or_else(|| invalid("sidecar root head missing"))?;
-            let event_digest = meta
-                .get("legacy_sidecar_head_event_digest")
-                .and_then(Value::as_str)
-                .ok_or_else(|| invalid("sidecar root head digest missing"))?;
-            let root_event_digest = meta
-                .get("legacy_sidecar_root_event_digest")
-                .and_then(Value::as_str)
-                .ok_or_else(|| invalid("sidecar root digest missing"))?;
-            synck_vcs::types::Sha256Digest::parse(event_digest).map_err(invalid)?;
-            synck_vcs::types::Sha256Digest::parse(root_event_digest).map_err(invalid)?;
-            self.legacy_sidecar_roots.push(LegacySidecarRoot {
-                item_id: id,
-                head_seq,
-                event_digest: event_digest.into(),
-                root_event_digest: root_event_digest.into(),
-            });
-        } else if let Some(verb) = event.event_type.strip_prefix("FILE_VERSION::") {
+        if let Some(verb) = event.event_type.strip_prefix("FILE_VERSION::") {
             let sidecar_event = match verb {
                 "CREATE" => "FILE_VERSION_SET::VERSION_CREATE",
                 "SET_DESCRIPTION" => "FILE_VERSION_SET::VERSION_SET_DESCRIPTION",

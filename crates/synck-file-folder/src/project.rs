@@ -393,33 +393,12 @@ fn parse_and_verify_events<'a>(
         }
         match ref_sequences.entry(row.owner_item_id.clone()) {
             std::collections::btree_map::Entry::Vacant(entry) => {
-                let expected_ref_seq = match proposal.initial_ref_seq {
-                    Some(initial_ref_seq)
-                        if proposal.event_type == "FILE_VERSION::LEGACY_BASELINE"
-                            && proposal.base_ref_seq == 0
-                            && initial_ref_seq >= 1 =>
-                    {
-                        initial_ref_seq
-                    }
-                    Some(_) => {
-                        return Err(error(
-                            SemanticErrorCode::MalformedProfileEvent,
-                            "ref event has an invalid initial sequence",
-                        ));
-                    }
-                    None if proposal.event_type == "FILE_VERSION::LEGACY_BASELINE" => {
-                        return Err(error(
-                            SemanticErrorCode::MalformedProfileEvent,
-                            "legacy ref baseline has no initial sequence",
-                        ));
-                    }
-                    None => proposal.base_ref_seq.checked_add(1).ok_or_else(|| {
-                        error(
-                            SemanticErrorCode::MalformedProfileEvent,
-                            "ref event sequence overflows",
-                        )
-                    })?,
-                };
+                let expected_ref_seq = proposal.base_ref_seq.checked_add(1).ok_or_else(|| {
+                    error(
+                        SemanticErrorCode::MalformedProfileEvent,
+                        "ref event sequence overflows",
+                    )
+                })?;
                 if row.ref_seq != expected_ref_seq {
                     return Err(error(
                         SemanticErrorCode::MalformedProfileEvent,
@@ -430,10 +409,7 @@ fn parse_and_verify_events<'a>(
             }
             std::collections::btree_map::Entry::Occupied(mut entry) => {
                 let (base_ref_seq, previous_ref_seq) = *entry.get();
-                if proposal.base_ref_seq != base_ref_seq
-                    || proposal.initial_ref_seq.is_some()
-                    || proposal.event_type == "FILE_VERSION::LEGACY_BASELINE"
-                {
+                if proposal.base_ref_seq != base_ref_seq {
                     return Err(error(
                         SemanticErrorCode::MalformedProfileEvent,
                         "ref events for one owner have inconsistent bases",
@@ -1019,7 +995,6 @@ mod tests {
             set_metadata: Some(serde_json::json!({"file_item_id": owner_item_id.as_str()})),
             set_content: None,
             base_ref_seq: 0,
-            initial_ref_seq: None,
         };
         let payload = canonical_ref_event_proposal_bytes(&proposal).unwrap();
         let payload_digest = compute_sha256_digest_bytes(&payload);

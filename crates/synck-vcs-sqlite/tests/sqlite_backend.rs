@@ -251,7 +251,6 @@ fn ref_event(owner_item_id: ItemId, base_ref_seq: i64, event_type: &str) -> RefE
         set_metadata: Some(serde_json::json!({"version_id": ItemId::new().as_str()})),
         set_content: None,
         base_ref_seq,
-        initial_ref_seq: None,
     }
 }
 
@@ -292,7 +291,7 @@ async fn append_cannot_create_a_frozen_file_version_sidecar() {
 }
 
 #[tokio::test]
-async fn ref_ledger_has_independent_cas_order_and_legacy_baseline() {
+async fn ref_ledger_has_independent_cas_and_order() {
     let (_directory, storage) = backend();
     storage.init_schema().await.unwrap();
     let repo_id = RepoId::new();
@@ -371,71 +370,6 @@ async fn ref_ledger_has_independent_cas_order_and_legacy_baseline() {
         1
     );
 
-    let baseline_owner = ItemId::new();
-    let mut create = create_event("legacy.txt");
-    create.item_id = Some(baseline_owner.clone());
-    repo.append(repo_id.clone(), commit(vec![create]))
-        .await
-        .unwrap();
-    let mut baseline = ref_event(baseline_owner.clone(), 0, "FILE_VERSION::LEGACY_BASELINE");
-    baseline.initial_ref_seq = Some(18);
-    let rejected = repo
-        .append_with_refs(repo_id.clone(), commit(Vec::new()), vec![baseline.clone()])
-        .await
-        .unwrap_err();
-    assert!(rejected.to_string().contains("maintenance-only"));
-    let second_baseline_owner = ItemId::new();
-    let mut second_create = create_event("legacy-two.txt");
-    second_create.item_id = Some(second_baseline_owner.clone());
-    repo.append(repo_id.clone(), commit(vec![second_create]))
-        .await
-        .unwrap();
-    let mut second_baseline = ref_event(
-        second_baseline_owner.clone(),
-        0,
-        "FILE_VERSION::LEGACY_BASELINE",
-    );
-    second_baseline.initial_ref_seq = Some(7);
-    let mixed = repo
-        .append_legacy_ref_baselines(
-            repo_id.clone(),
-            commit(vec![create_event("mixed.txt")]),
-            vec![baseline.clone()],
-        )
-        .await
-        .unwrap_err();
-    assert!(mixed.to_string().contains("must not contain item events"));
-    let accepted = repo
-        .append_legacy_ref_baselines(
-            repo_id.clone(),
-            commit(Vec::new()),
-            vec![baseline, second_baseline],
-        )
-        .await
-        .unwrap();
-    assert_eq!(accepted.ref_event_seqs, vec![18, 7]);
-    assert_eq!(
-        repo.get_item(repo_id.clone(), second_baseline_owner)
-            .await
-            .unwrap()
-            .unwrap()
-            .ref_head_seq,
-        7
-    );
-    let next = repo
-        .append_with_refs(
-            repo_id.clone(),
-            commit(Vec::new()),
-            vec![ref_event(
-                baseline_owner.clone(),
-                18,
-                "FILE_VERSION::CREATE",
-            )],
-        )
-        .await
-        .unwrap();
-    assert_eq!(next.ref_event_seqs, vec![19]);
-
     repo.sequence_repo_activity(repo_id.clone(), 64)
         .await
         .unwrap();
@@ -462,7 +396,6 @@ async fn ref_ledger_has_independent_cas_order_and_legacy_baseline() {
         .await
         .unwrap();
     assert_eq!(items[&item_id].ref_head_seq, 3);
-    assert_eq!(items[&baseline_owner].ref_head_seq, 19);
 }
 
 #[tokio::test]

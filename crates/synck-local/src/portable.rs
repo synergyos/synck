@@ -977,9 +977,7 @@ impl PortableRepository {
     /// restored in an in-memory view; stored canonical bytes remain unchanged.
     pub async fn show_item(&self, id: &ItemId, through: Option<i64>) -> Result<PortableItem> {
         self.check_revision(through)?;
-        let (mut reader, _) = self.read_owner(id, through, None).await?;
-        let is_file = reader.snapshot().map_err(corrupt)?.projection.item_type == "FILE";
-        let mut seeded = BTreeSet::new();
+        let mut reader = self.read_owner(id, through).await?;
         let mut refs = Vec::new();
         let mut ref_from = 1;
         'refs: loop {
@@ -1023,44 +1021,11 @@ impl PortableRepository {
                         },
                     )
                     .map_err(corrupt)?;
-                let required = reader.required_sidecars().cloned().collect::<Vec<_>>();
-                for sidecar in required {
-                    if !seeded.insert((sidecar.item_id.clone(), sidecar.head_seq)) {
-                        continue;
-                    }
-                    let (sidecar_reader, digest) = self
-                        .read_owner(&sidecar.item_id, through, Some(sidecar.head_seq))
-                        .await?;
-                    if digest.as_deref() != Some(sidecar.event_digest.as_str()) {
-                        return Err(corrupt(
-                            "frozen sidecar head digest differs from canonical baseline",
-                        ));
-                    }
-                    reader
-                        .seed_legacy_versions(&sidecar_reader.snapshot().map_err(corrupt)?)
-                        .map_err(corrupt)?;
-                }
+
                 refs.push(row);
             }
             if done {
                 break;
-            }
-        }
-        // Before ref-ledger migration, named versions live only in the one
-        // deterministic sidecar. A baseline, when present, authenticates an
-        // exact frozen head above and must never be replaced by a newer view.
-        if is_file && seeded.is_empty() {
-            let sidecar = synck_file_folder::file_version_set::item_id(self.repo_id(), id)
-                .map_err(corrupt)?;
-            let head:Option<i64>=self.storage.open_readonly().map_err(corrupt)?.query_row(
-                "SELECT MAX(e.item_seq) FROM vcs_events e JOIN vcs_commits c ON c.repo_id=e.repo_id AND c.commit_pk=e.commit_pk WHERE e.repo_id=?1 AND e.item_id=?2 AND c.repo_seq IS NOT NULL AND (?3 IS NULL OR c.repo_seq<=?3)",
-                params![self.repo_id().as_str(),sidecar.as_str(),through],|row|row.get(0),
-            )?;
-            if let Some(head) = head {
-                let (sidecar_reader, _) = self.read_owner(&sidecar, through, Some(head)).await?;
-                reader
-                    .seed_legacy_versions(&sidecar_reader.snapshot().map_err(corrupt)?)
-                    .map_err(corrupt)?;
             }
         }
         let item = reader.snapshot().map_err(corrupt)?;
@@ -1071,10 +1036,8 @@ impl PortableRepository {
         &self,
         id: &ItemId,
         through: Option<i64>,
-        head_limit: Option<i64>,
-    ) -> Result<(ItemReader, Option<String>)> {
+    ) -> Result<ItemReader> {
         let mut reader = ItemReader::for_repository(self.repo_id().clone(), id.clone());
-        let mut last_digest = None;
         let mut from = 1;
         'history: loop {
             let page = self
@@ -1090,15 +1053,11 @@ impl PortableRepository {
                 if through.is_some_and(|seq| row.repo_seq.is_none_or(|event_seq| event_seq > seq)) {
                     break 'history;
                 }
-                if head_limit.is_some_and(|head| row.item_seq > head) {
-                    break 'history;
-                }
                 validate_bundle_event_payload_json_and_digest(
                     std::str::from_utf8(&row.payload).map_err(corrupt)?,
                     row.event_payload_digest.as_str(),
                 )
                 .map_err(corrupt)?;
-                last_digest = Some(row.event_payload_digest.to_string());
                 let mut event: EventProposal = serde_json::from_slice(&row.payload)?;
                 if let Some(EventContent::Content { content_id }) = event.set_content {
                     let object = self.read_body(content_id)?;
@@ -1149,10 +1108,7 @@ impl PortableRepository {
                 }
             }
         }
-        if head_limit.is_some_and(|head| reader.latest_item_seq() != head) {
-            return Err(corrupt("frozen sidecar history is incomplete"));
-        }
-        Ok((reader, last_digest))
+        Ok(reader)
     }
 
     pub fn read_body(&self, id: ContentId) -> Result<ContentObject> {
@@ -1232,7 +1188,7 @@ impl PortableRepository {
         self.check_revision(through)?;
         // Ref presentation can be unsupported while ordinary FILE content is
         // still readable. Its exact ref ledger remains available in the archive.
-        let (reader, _) = self.read_owner(id, through, None).await?;
+        let reader = self.read_owner(id, through).await?;
         let item = reader.snapshot().map_err(corrupt)?.projection;
         let (blob, expected_size) = match item.item_type.as_str() {
             "FILE" => (

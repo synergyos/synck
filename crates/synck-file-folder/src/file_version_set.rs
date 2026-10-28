@@ -203,7 +203,6 @@ pub fn automatic_initial_ref_event(
         set_metadata: Some(serde_json::Value::Object(metadata)),
         set_content: Some(EventContent::Blob { blob_id }),
         base_ref_seq,
-        initial_ref_seq: None,
     })
 }
 
