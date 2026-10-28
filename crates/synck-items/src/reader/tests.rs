@@ -484,3 +484,19 @@ fn reader_cache_rejects_damage_wrong_identity_version_and_poison() {
     assert!(reader.apply(&bad,ReadContext{item_seq:2,created_at:now(),occurred_at:None,author:"alice",committer:"alice"}).is_err());
     assert!(reader.export_cache().is_err());
 }
+
+
+#[test]
+fn borrowed_reader_queries_match_snapshot_without_transcript_clones() {
+    let (mut reader,id)=create("CHAT");
+    apply(&mut reader,&event(&id,"CHAT::MESSAGE::CREATE",json!({}),json_body("message")),"alice");
+    let snapshot=reader.snapshot().unwrap();
+    assert_eq!(serde_json::to_value(reader.projection().unwrap()).unwrap(),serde_json::to_value(&snapshot.projection).unwrap());
+    assert_eq!(serde_json::to_value(reader.chat_details().unwrap()).unwrap(),serde_json::to_value(&snapshot.chat).unwrap());
+    assert_eq!(serde_json::to_value(reader.subitem("CHAT::MESSAGE",2).unwrap()).unwrap(),serde_json::to_value(&snapshot.subitems[0]).unwrap());
+    assert!(reader.subitem("CHAT::REACTION",2).unwrap().is_none());
+    assert!(reader.subitem("CHAT::MESSAGE",99).unwrap().is_none());
+    let bad=event(&id,"CHAT::MESSAGE::SET_CONTENT",json!({"item_seq":999}),json_body("missing"));
+    assert!(reader.apply(&bad,ReadContext{item_seq:3,created_at:now(),occurred_at:None,author:"alice",committer:"alice"}).is_err());
+    assert!(reader.projection().is_err());assert!(reader.chat_details().is_err());assert!(reader.subitem("CHAT::MESSAGE",2).is_err());
+}

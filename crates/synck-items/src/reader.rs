@@ -196,6 +196,32 @@ impl ItemReader {
             .map_or(0, |item| item.latest_item_seq)
     }
 
+    /// Borrow the current projection without cloning the item's subitems.
+    pub fn projection(&self) -> Result<Option<&replica_projection::ReplicaItemProjection>, ReadError> {
+        self.ensure_readable()?;
+        Ok(self.projection.as_ref())
+    }
+
+    /// Borrow CHAT configuration without cloning its transcript.
+    pub fn chat_details(&self) -> Result<Option<&ChatDetails>, ReadError> {
+        self.ensure_readable()?;
+        Ok(self.chat.as_ref())
+    }
+
+    /// Look up a sequence-identified subitem in O(log n), without a full snapshot.
+    /// UUID-identified owner refs use the separate ref ledger and are not returned.
+    pub fn subitem(&self, family: &str, item_seq: i64) -> Result<Option<&ReadableSubitem>, ReadError> {
+        self.ensure_readable()?;
+        Ok(self.subitems.get(&(family.to_owned(), SubitemIdentity::Sequence(item_seq))))
+    }
+
+    fn ensure_readable(&self) -> Result<(), ReadError> {
+        if self.poisoned {
+            return Err(invalid("reader must be discarded after an error"));
+        }
+        Ok(())
+    }
+
     pub fn snapshot(&self) -> Result<ReadableItem, ReadError> {
         if self.poisoned {
             return Err(invalid("reader must be discarded after an error"));
