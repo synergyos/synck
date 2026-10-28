@@ -8,7 +8,7 @@ fn now() -> DateTime<Utc> {
     "2026-10-25T12:00:00Z".parse().unwrap()
 }
 fn event(id: &ItemId, ty: &str, metadata: Value, content: Option<EventContent>) -> EventProposal {
-    serde_json::from_value(
+    EventProposal::from_fields(
         json!({"item_id":id,"event_type":ty,"set_metadata":metadata,"set_content":content}),
     )
     .unwrap()
@@ -419,7 +419,7 @@ fn owner_refs_keep_uuid_identity_and_independent_positions() {
     reader.apply_ref(&reference, RefReadContext {
         ref_seq: 1, created_at: now(), author: "author", committer: "committer",
     }).unwrap();
-    let update: synck_vcs::types::RefEventProposal = serde_json::from_value(json!({
+    let update: synck_vcs::types::RefEventProposal = synck_vcs::types::RefEventProposal::from_fields(json!({
         "owner_item_id":owner,"event_type":"FILE_VERSION::SET_DESCRIPTION","base_ref_seq":1,
         "set_metadata":{"file_item_id":owner,"version_id":version_id,"description":"Reviewed"}
     })).unwrap();

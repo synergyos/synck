@@ -248,7 +248,7 @@ fn ref_event(owner_item_id: ItemId, base_ref_seq: i64, event_type: &str) -> RefE
     RefEventProposal {
         owner_item_id,
         event_type: event_type.to_string(),
-        set_metadata: Some(serde_json::json!({"version_id": ItemId::new().as_str()})),
+        set_metadata: Some(synck_vcs::metadata::MetadataRef::new(serde_json::json!({"version_id": ItemId::new().as_str()})).unwrap()),
         set_content: None,
         base_ref_seq,
     }

@@ -112,15 +112,14 @@ pub fn apply_replica_item_event(
             proposal.event_type.split_once("::").map(|(_, verb)| verb),
             Some("CREATE" | "SET_METADATA")
         );
-    if item_level_metadata && let Some(metadata) = proposal.set_metadata.as_ref() {
+    if item_level_metadata && let Some(metadata) = proposal.set_metadata.as_ref().and_then(synck_vcs::metadata::MetadataRef::value) {
         item.metadata_json = metadata.clone();
         item.item_subtype = item_subtype(metadata)?;
         item.color_metadata = item_color_metadata_from_json(metadata);
     }
     if proposal.event_type == "CHAT::SET_PROFILE"
         && proposal
-            .set_metadata
-            .as_ref()
+            .set_metadata.as_ref().and_then(synck_vcs::metadata::MetadataRef::value)
             .and_then(|metadata| metadata.get("chat_kind"))
             .and_then(serde_json::Value::as_str)
             .is_some_and(|kind| kind.eq_ignore_ascii_case("DIRECT"))
@@ -144,8 +143,7 @@ pub fn apply_replica_item_event(
     {
         let previous_blob = item.content_blob_id.as_deref();
         let explicit_size = proposal
-            .set_metadata
-            .as_ref()
+            .set_metadata.as_ref().and_then(synck_vcs::metadata::MetadataRef::value)
             .and_then(|metadata| metadata.get("content"))
             .and_then(|content| content.get("size"))
             .and_then(serde_json::Value::as_i64)
@@ -158,7 +156,7 @@ pub fn apply_replica_item_event(
         item.content_blob_id = Some(blob_id.clone());
         item.content_item_seq = Some(item_seq);
     } else if proposal.event_type == "FILE::VERSION::CREATE"
-        && let Some(size) = content_size(proposal.set_metadata.as_ref())
+        && let Some(size) = content_size(proposal.set_metadata.as_ref().and_then(synck_vcs::metadata::MetadataRef::value))
     {
         // Legacy version-create events projected the current size but never moved
         // the item's content head. Preserve that cloud-projection contract.
@@ -209,8 +207,7 @@ fn projected_updated_at(
         return Ok(default);
     }
     let metadata = proposal
-        .set_metadata
-        .as_ref()
+        .set_metadata.as_ref().and_then(synck_vcs::metadata::MetadataRef::value)
         .and_then(serde_json::Value::as_object)
         .ok_or_else(|| invalid_repair("set_metadata must be an object"))?;
     const KEYS: [&str; 3] = [
@@ -280,7 +277,7 @@ mod tests {
         let create = EventProposal {
             item_id: Some(item_id.clone()),
             event_type: "FILE::CREATE".to_string(),
-            set_metadata: Some(serde_json::json!({"subtype":"STANDARD","color_metadata":"blue"})),
+            set_metadata: Some(synck_vcs::metadata::MetadataRef::new(serde_json::json!({"subtype":"STANDARD","color_metadata":"blue"})).unwrap()),
             set_content: None,
             create_item: Some(CreateItem {
                 item_type: "FILE".to_string(),
@@ -302,7 +299,7 @@ mod tests {
         let mut content = create.clone();
         content.create_item = None;
         content.event_type = "FILE::SET_CONTENT".to_string();
-        content.set_metadata = Some(serde_json::json!({"content":{"size":42}}));
+        content.set_metadata = Some(synck_vcs::metadata::MetadataRef::new(serde_json::json!({"content":{"size":42}})).unwrap());
         content.set_content = Some(EventContent::Blob {
             blob_id: format!("sha256:{}", "ab".repeat(32)),
         });
@@ -342,7 +339,7 @@ mod tests {
         let profile = EventProposal {
             item_id: None,
             event_type: "CHAT::SET_PROFILE".to_string(),
-            set_metadata: Some(serde_json::json!({"chat_kind": "DIRECT"})),
+            set_metadata: Some(synck_vcs::metadata::MetadataRef::new(serde_json::json!({"chat_kind": "DIRECT"})).unwrap()),
             set_content: None,
             create_item: None,
             set_parent: None,
@@ -386,7 +383,7 @@ mod tests {
         let event = EventProposal {
             item_id: Some(item_id.clone()),
             event_type: "FILE::VERSION::CREATE".to_string(),
-            set_metadata: Some(serde_json::json!({"content":{"size":20}})),
+            set_metadata: Some(synck_vcs::metadata::MetadataRef::new(serde_json::json!({"content":{"size":20}})).unwrap()),
             set_content: Some(EventContent::Blob {
                 blob_id: format!("sha256:{}", "cd".repeat(32)),
             }),

@@ -215,7 +215,7 @@ mod tests {
             ("CHAT::MESSAGE::CREATE", "body"),
             ("CHAT::MESSAGE::SET_CONTENT", "body"),
         ] {
-            let legacy: EventProposal = serde_json::from_value(serde_json::json!({
+            let legacy: EventProposal = EventProposal::from_fields(serde_json::json!({
                 "event_type": event_type,
                 "item_id": "01890c6c-1111-7777-8888-aaaaaaaaaaaa",
                 "base_seq": 1,

@@ -985,7 +985,7 @@ fn cli_log_and_show_events_expose_complete_authoritative_rows() {
         .unwrap();
     let mut proposal: synck_vcs::types::EventProposal =
         serde_json::from_slice(&original_payload).unwrap();
-    proposal.set_metadata = Some(serde_json::json!({"tampered": true}));
+    proposal.set_metadata = Some(synck_vcs::metadata::MetadataRef::new(serde_json::json!({"tampered": true})).unwrap());
     let tampered_payload = synck_vcs::types::canonical_event_proposal_bytes(&proposal).unwrap();
     let tampered_digest = synck_vcs::types::compute_sha256_digest_bytes(&tampered_payload).to_vec();
     connection

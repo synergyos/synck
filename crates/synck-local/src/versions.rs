@@ -80,7 +80,7 @@ fn named_version_ref_event(
     mut metadata: Map<String, Value>,
     content: Option<EventContent>,
     base_ref_seq: i64,
-) -> RefEventProposal {
+) -> Result<RefEventProposal> {
     metadata.insert(
         "file_item_id".to_string(),
         Value::String(file_item_id.to_string()),
@@ -89,13 +89,13 @@ fn named_version_ref_event(
         "version_id".to_string(),
         Value::String(version_id.to_string()),
     );
-    RefEventProposal {
+    Ok(RefEventProposal {
         owner_item_id: file_item_id.clone(),
         event_type: event_type.to_string(),
-        set_metadata: Some(Value::Object(metadata)),
+        set_metadata: Some(synck_vcs::metadata::MetadataRef::new(Value::Object(metadata)).map_err(|e| LocalError::Invalid(e.to_string()))?),
         set_content: content,
         base_ref_seq,
-    }
+    })
 }
 
 impl Repository {
@@ -185,7 +185,7 @@ impl Repository {
                 blob_id: revision.blob_id.to_string(),
             }),
             state.head_seq,
-        );
+        )?;
         self.append_version_commit(&file_item_id, message, operation_id, event)
             .await
     }
@@ -311,7 +311,7 @@ impl Repository {
             metadata,
             None,
             state.head_seq,
-        );
+        )?;
         self.append_version_commit(&file_item_id, message, operation_id, event)
             .await
     }
@@ -649,8 +649,7 @@ fn apply_version_event(
         )));
     }
     let metadata = proposal
-        .set_metadata
-        .as_ref()
+        .set_metadata.as_ref().and_then(synck_vcs::metadata::MetadataRef::value)
         .and_then(Value::as_object)
         .ok_or_else(|| LocalError::Integrity(format!("{} has no metadata", event.event_type)))?;
     if required_item_id(metadata, "file_item_id")? != *file_item_id {
@@ -879,6 +878,7 @@ fn apply_ref_version_event(
             commit_event_idx: event.commit_event_idx,
             repo_seq: event.repo_seq,
             payload,
+            metadata: event.metadata.clone(),
             event_payload_digest: event.event_payload_digest.clone(),
             created_at: event.created_at,
             parent_folder_id: None,
@@ -891,7 +891,7 @@ fn decode_ref_version_event(
     file_item_id: &ItemId,
     event: &RefEventRow,
 ) -> Result<RefEventProposal> {
-    let proposal: RefEventProposal = serde_json::from_slice(&event.payload).map_err(|error| {
+    let proposal: RefEventProposal = event.proposal().map_err(|error| {
         LocalError::Integrity(format!(
             "invalid ref-event payload at ref sequence {}: {error}",
             event.ref_seq
@@ -1078,7 +1078,7 @@ fn select_revision(revisions: &[FileRevision], requested: Option<i64>) -> Result
 }
 
 fn parse_event(event: &EventRow) -> Result<EventProposal> {
-    serde_json::from_slice(&event.payload).map_err(|error| {
+    event.proposal().map_err(|error| {
         LocalError::Integrity(format!(
             "invalid event payload at item sequence {}: {error}",
             event.item_seq
@@ -1097,8 +1097,7 @@ fn event_content(event: &EventProposal) -> Result<(ObjectId, i64)> {
         }
     };
     let size = event
-        .set_metadata
-        .as_ref()
+        .set_metadata.as_ref().and_then(synck_vcs::metadata::MetadataRef::value)
         .and_then(|value| value.pointer("/content/size"))
         .and_then(Value::as_i64)
         .filter(|value| *value >= 0)
@@ -1253,10 +1252,11 @@ mod tests {
             Map::new(),
             None,
             0,
-        );
+        ).unwrap();
         let payload = canonical_ref_event_proposal_bytes(&proposal).unwrap();
         let payload_digest = compute_sha256_digest_bytes(&payload);
         let mut row = RefEventRow {
+                metadata: proposal.set_metadata.as_ref().and_then(|value| value.payload()).cloned(),
             repo_id,
             owner_item_id: file_item_id.clone(),
             ref_seq: 1,
@@ -1336,7 +1336,7 @@ mod tests {
                 blob_id: blob_id.to_string(),
             }),
             next_ref_seq - 1,
-        )
+        ).unwrap()
     }
 
     fn replace_event(
@@ -1369,7 +1369,7 @@ mod tests {
                 blob_id: source.blob_id.to_string(),
             }),
             next_ref_seq - 1,
-        )
+        ).unwrap()
     }
 
     fn tombstone_event(
@@ -1385,7 +1385,7 @@ mod tests {
             Map::new(),
             None,
             next_ref_seq - 1,
-        )
+        ).unwrap()
     }
 
     async fn append(repository: &Repository, message: &str, ref_events: Vec<RefEventProposal>) {
@@ -1614,12 +1614,9 @@ mod tests {
             version_set::ORDER_KEY_GAP * 2,
             2,
         );
-        create
-            .set_metadata
-            .as_mut()
-            .and_then(Value::as_object_mut)
-            .unwrap()
-            .insert("content".to_string(), serde_json::json!({ "size": null }));
+        let mut changed_metadata = create.set_metadata.as_ref().unwrap().value().unwrap().clone();
+        changed_metadata["content"] = serde_json::json!({"size":null});
+        create.set_metadata = Some(synck_vcs::metadata::MetadataRef::new(changed_metadata).unwrap());
         append(&repository, "nullable create size", vec![create]).await;
 
         let mut metadata = Map::new();
@@ -1634,7 +1631,7 @@ mod tests {
                 blob_id: revision.blob_id.to_string(),
             }),
             2,
-        );
+        ).unwrap();
         append(&repository, "patch version content", vec![replacement]).await;
 
         let versions = repository

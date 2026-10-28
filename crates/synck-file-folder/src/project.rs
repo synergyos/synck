@@ -1,6 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use serde_json::{Value, json};
+use serde_json::Value;
+#[cfg(test)]
+use serde_json::json;
 use sha2::{Digest, Sha256};
 use synck_vcs::naming::compute_name_key;
 use synck_vcs::types::{
@@ -319,7 +321,7 @@ fn parse_and_verify_events<'a>(
         }
         aggregate_digest.update([COMMIT_EVENT_FAMILY_ITEM]);
         aggregate_digest.update(digest);
-        let proposal: EventProposal = serde_json::from_slice(&row.payload).map_err(|failure| {
+        let proposal: EventProposal = row.proposal().map_err(|failure| {
             error(
                 SemanticErrorCode::MalformedProfileEvent,
                 format!("event payload does not decode strictly: {failure}"),
@@ -365,7 +367,7 @@ fn parse_and_verify_events<'a>(
             ));
         }
         let proposal: RefEventProposal =
-            serde_json::from_slice(&row.payload).map_err(|failure| {
+            row.proposal().map_err(|failure| {
                 error(
                     SemanticErrorCode::MalformedProfileEvent,
                     format!("ref event payload does not decode strictly: {failure}"),
@@ -636,7 +638,7 @@ fn classify_profile_event(
             )?;
         }
         Some("SET_CONTENT") if kind == FileFolderKind::File => {
-            normalize_content_event(proposal, &mut normalized)?;
+            validate_content_event(proposal)?;
         }
         Some("TRASH") => require_lifecycle_shape(proposal, true, false)?,
         Some("RESTORE") => require_lifecycle_shape(proposal, false, false)?,
@@ -701,10 +703,7 @@ fn require_only(proposal: &EventProposal, modifier: Modifier) -> Result<(), Sema
     require_shape(valid, "malformed structural event")
 }
 
-fn normalize_content_event(
-    proposal: &EventProposal,
-    normalized: &mut EventProposal,
-) -> Result<(), SemanticError> {
+fn validate_content_event(proposal: &EventProposal) -> Result<(), SemanticError> {
     let valid_base = proposal.base_seq.is_none_or(|value| value > 0)
         && proposal.create_item.is_none()
         && proposal.set_parent.is_none()
@@ -731,7 +730,7 @@ fn normalize_content_event(
     let metadata = proposal
         .set_metadata
         .as_ref()
-        .and_then(Value::as_object)
+        .and_then(|value| value.as_object())
         .ok_or_else(|| {
             error(
                 SemanticErrorCode::MalformedProfileEvent,
@@ -749,7 +748,7 @@ fn normalize_content_event(
             "FILE::SET_CONTENT has an unknown metadata decoration",
         ));
     }
-    let size = metadata
+    metadata
         .get("content")
         .and_then(Value::as_object)
         .filter(|content| content.len() == 1)
@@ -776,7 +775,6 @@ fn normalize_content_event(
     if let Some(provenance) = metadata.get("provenance") {
         validate_provenance(provenance)?;
     }
-    normalized.set_metadata = Some(json!({"content": {"size": size}}));
     Ok(())
 }
 
@@ -926,10 +924,7 @@ fn require_omission_shape(proposal: &EventProposal) -> Result<(), SemanticError>
 }
 
 fn has_metadata(proposal: &EventProposal) -> bool {
-    proposal
-        .set_metadata
-        .as_ref()
-        .is_some_and(|metadata| !metadata.is_null())
+    proposal.set_metadata.is_some()
 }
 
 fn no_federation_modifier(proposal: &EventProposal) -> bool {
@@ -992,7 +987,7 @@ mod tests {
         let proposal = RefEventProposal {
             owner_item_id: owner_item_id.clone(),
             event_type: "FILE_VERSION::CREATE".to_string(),
-            set_metadata: Some(serde_json::json!({"file_item_id": owner_item_id.as_str()})),
+            set_metadata: Some(synck_vcs::metadata::MetadataRef::new(serde_json::json!({"file_item_id": owner_item_id.as_str()})).unwrap()),
             set_content: None,
             base_ref_seq: 0,
         };
@@ -1033,6 +1028,7 @@ mod tests {
             events_digest,
         };
         let row = RefEventRow {
+                metadata: proposal.set_metadata.as_ref().and_then(|value| value.payload()).cloned(),
             repo_id,
             owner_item_id,
             ref_seq: 1,

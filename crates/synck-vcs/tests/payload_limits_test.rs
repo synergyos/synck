@@ -77,9 +77,7 @@ fn defaults_bound_escaped_bytes_not_plaintext_length() {
 
 #[test]
 fn lossless_json_rules_remain_enforced() {
-    let mut event = event();
-    event.set_metadata = Some(serde_json::from_str(r#"{"n":9007199254740993}"#).unwrap());
-    assert!(validate_payload_limits(&CoreConfig::default(), &[event], &[]).is_err());
+    assert!(synck_vcs::metadata::MetadataRef::new(serde_json::from_str(r#"{"n":9007199254740993}"#).unwrap()).is_err());
 }
 
 #[test]

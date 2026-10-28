@@ -12,6 +12,7 @@ use serde::de::Error as _;
 use serde::{Deserialize, Serialize};
 use serde::{Deserializer, Serializer};
 use uuid::Uuid;
+use crate::metadata::{Metadata, MetadataRef};
 
 /// Domain timestamp type.
 ///
@@ -414,6 +415,8 @@ pub struct EventRow {
     pub repo_seq: Option<i64>,
     /// Canonical RFC 8785 JSON bytes for the EventProposal payload.
     pub payload: Vec<u8>,
+    #[serde(skip)]
+    pub metadata: Option<Metadata>,
     /// SHA-256 digest of the canonical payload bytes.
     pub event_payload_digest: Sha256Digest,
     pub created_at: Timestamp,
@@ -457,6 +460,8 @@ pub struct EventInsertRow {
     pub event_type: EventType,
     /// Canonical RFC 8785 JSON bytes for the EventProposal payload.
     pub payload: Vec<u8>,
+    #[serde(skip)]
+    pub metadata: Option<Metadata>,
     /// Raw 32-byte SHA-256 digest of `payload`.
     pub event_payload_digest: [u8; 32],
     pub created_at: Timestamp,
@@ -473,8 +478,8 @@ pub struct EventInsertRow {
 pub struct RefEventProposal {
     pub owner_item_id: ItemId,
     pub event_type: EventType,
-    #[serde(default, skip_serializing_if = "is_none_or_json_null")]
-    pub set_metadata: Option<serde_json::Value>,
+    #[serde(default, rename = "metadata_id", skip_serializing_if = "Option::is_none")]
+    pub set_metadata: Option<MetadataRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub set_content: Option<EventContent>,
     pub base_ref_seq: i64,
@@ -492,6 +497,8 @@ pub struct RefEventRow {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repo_seq: Option<i64>,
     pub payload: Vec<u8>,
+    #[serde(skip)]
+    pub metadata: Option<Metadata>,
     pub event_payload_digest: Sha256Digest,
     pub created_at: Timestamp,
 }
@@ -506,6 +513,8 @@ pub struct RefEventInsertRow {
     pub ref_seq: i64,
     pub event_type: EventType,
     pub payload: Vec<u8>,
+    #[serde(skip)]
+    pub metadata: Option<Metadata>,
     pub event_payload_digest: [u8; 32],
     pub created_at: Timestamp,
 }
@@ -590,8 +599,8 @@ pub struct EventProposal {
     pub item_id: Option<ItemId>,
     pub event_type: EventType,
     /// Non‑structural metadata associated with this event (tags, labels, etc.).
-    #[serde(default, skip_serializing_if = "is_none_or_json_null")]
-    pub set_metadata: Option<serde_json::Value>,
+    #[serde(default, rename = "metadata_id", skip_serializing_if = "Option::is_none")]
+    pub set_metadata: Option<MetadataRef>,
     /// Structured content for this event (text/JSON/blob ids).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub set_content: Option<EventContent>,
@@ -642,6 +651,61 @@ pub struct EventProposal {
     pub base_seq: Option<i64>,
 }
 
+
+fn application_metadata(value: &mut serde_json::Value) -> Result<Option<MetadataRef>, serde_json::Error> {
+    let Some(fields) = value.as_object_mut() else { return Ok(None); };
+    let Some(metadata) = fields.remove("set_metadata") else { return Ok(None); };
+    if fields.contains_key("metadata_id") {
+        return Err(serde::de::Error::custom("metadata_id and application metadata are mutually exclusive"));
+    }
+    if metadata.is_null() { return Ok(None); }
+    MetadataRef::new(metadata).map(Some).map_err(serde::de::Error::custom)
+}
+
+impl EventProposal {
+    /// Construct application input, salting metadata once before acceptance.
+    /// Wire readers must use Deserialize, which accepts only metadata IDs.
+    pub fn from_fields(mut value: serde_json::Value) -> Result<Self, serde_json::Error> {
+        let metadata = application_metadata(&mut value)?;
+        let mut event: Self = serde_json::from_value(value)?;
+        if metadata.is_some() { event.set_metadata = metadata; }
+        Ok(event)
+    }
+}
+
+impl RefEventProposal {
+    pub fn from_fields(mut value: serde_json::Value) -> Result<Self, serde_json::Error> {
+        let metadata = application_metadata(&mut value)?;
+        let mut event: Self = serde_json::from_value(value)?;
+        if metadata.is_some() { event.set_metadata = metadata; }
+        Ok(event)
+    }
+}
+
+impl EventRow {
+    pub fn proposal(&self) -> Result<EventProposal, serde_json::Error> {
+        let mut event: EventProposal = serde_json::from_slice(&self.payload)?;
+        resolve_metadata(&mut event.set_metadata, self.metadata.as_ref())?;
+        Ok(event)
+    }
+}
+
+impl RefEventRow {
+    pub fn proposal(&self) -> Result<RefEventProposal, serde_json::Error> {
+        let mut event: RefEventProposal = serde_json::from_slice(&self.payload)?;
+        resolve_metadata(&mut event.set_metadata, self.metadata.as_ref())?;
+        Ok(event)
+    }
+}
+
+fn resolve_metadata(reference: &mut Option<MetadataRef>, metadata: Option<&Metadata>) -> Result<(), serde_json::Error> {
+    if let Some(metadata) = metadata {
+        reference.as_mut().ok_or_else(|| serde::de::Error::custom("unexpected metadata payload"))?
+            .resolve(metadata.clone()).map_err(serde::de::Error::custom)?;
+    }
+    Ok(())
+}
+
 fn deserialize_set_parent_tristate<'de, D>(
     deserializer: D,
 ) -> Result<Option<Option<ItemId>>, D::Error>
@@ -650,10 +714,6 @@ where
 {
     let inner: Option<ItemId> = Option::deserialize(deserializer)?;
     Ok(Some(inner))
-}
-
-fn is_none_or_json_null(v: &Option<serde_json::Value>) -> bool {
-    matches!(v, None | Some(serde_json::Value::Null))
 }
 
 /// Fields for creating a new item structurally.
@@ -1176,7 +1236,7 @@ mod tests {
         let ev = EventProposal {
             item_id: Some(ItemId::parse("01890c6c-1111-7777-8888-aaaaaaaaaaaa").unwrap()),
             event_type: "TEST".to_string(),
-            set_metadata: Some(serde_json::json!({
+            set_metadata: Some(crate::metadata::MetadataRef::new(serde_json::json!({
                 "integers": [
                     -MAX_SAFE_JSON_INTEGER,
                     MAX_SAFE_JSON_INTEGER,
@@ -1184,7 +1244,7 @@ mod tests {
                     57_946_832_445_233_864_i64
                 ],
                 "floating_point": 1e30
-            })),
+            })).unwrap()),
             set_content: None,
             create_item: None,
             set_parent: None,
@@ -1208,89 +1268,24 @@ mod tests {
     }
 
     #[test]
-    fn canonical_event_rejects_nested_integers_outside_lossless_range() {
-        let invalid_integers = [
-            serde_json::Number::from(MAX_SAFE_JSON_INTEGER + 2),
-            serde_json::Number::from(-MAX_SAFE_JSON_INTEGER - 2),
-            serde_json::Number::from(u64::MAX),
-        ];
-
-        for integer in invalid_integers {
-            let ev = EventProposal {
-                item_id: Some(ItemId::parse("01890c6c-1111-7777-8888-aaaaaaaaaaaa").unwrap()),
-                event_type: "TEST".to_string(),
-                set_metadata: Some(serde_json::json!({
-                    "outer": {"inner": [serde_json::Value::Number(integer.clone())]}
-                })),
-                set_content: None,
-                create_item: None,
-                set_parent: None,
-                set_name: None,
-                set_tombstoned: None,
-                set_in_trash: None,
-                set_is_federated: None,
-                set_federation_stream_id: None,
-                base_seq: Some(1),
-            };
-
-            let error = canonical_event_proposal_bytes(&ev).unwrap_err();
-            let expected = format!(
-                "JSON integer {integer} cannot be represented by RFC 8785 without changing its value; encode it as a string"
-            );
-            assert!(
-                matches!(error, CoreError::InvalidProposal(ref message) if message == &expected),
-                "unexpected error for {integer}: {error}"
-            );
+    fn canonical_metadata_rejects_lossy_integers() {
+        for integer in ["9007199254740993", "-9007199254740993", "18446744073709551615", "18446744073709551616", "-9223372036854775809"] {
+            let value: serde_json::Value = serde_json::from_str(&format!(r#"{{"outer":{{"inner":[{integer}]}}}}"#)).unwrap();
+            let error = canonical_json_bytes(&value).unwrap_err();
+            assert!(matches!(error, CoreError::InvalidProposal(ref message) if message.contains("cannot be represented")));
+            assert!(MetadataRef::new(value).is_err());
         }
     }
 
     #[test]
-    fn canonical_event_rejects_raw_integers_beyond_rust_integer_ranges() {
-        for integer in ["18446744073709551616", "-9223372036854775809"] {
-            let json = format!(
-                r#"{{
-                    "item_id": "01890c6c-1111-7777-8888-aaaaaaaaaaaa",
-                    "event_type": "TEST",
-                    "set_metadata": {{"integer": {integer}}},
-                    "base_seq": 1
-                }}"#
-            );
-            let ev: EventProposal = serde_json::from_str(&json)
-                .expect("large integer proposal must deserialize exactly");
-
-            let error = canonical_event_proposal_bytes(&ev).unwrap_err();
-            let expected = format!(
-                "JSON integer {integer} cannot be represented by RFC 8785 without changing its value; encode it as a string"
-            );
-            assert!(
-                matches!(error, CoreError::InvalidProposal(ref message) if message == &expected),
-                "unexpected error for {integer}: {error}"
-            );
-        }
-    }
-
-    #[test]
-    fn canonical_event_accepts_exact_integers_with_exponent_canonical_spelling() {
-        for (integer, canonical) in [
-            ("1000000000000000000000", "1e+21"),
-            ("-1000000000000000000000", "-1e+21"),
-        ] {
-            let json = format!(
-                r#"{{
-                    "item_id": "01890c6c-1111-7777-8888-aaaaaaaaaaaa",
-                    "event_type": "TEST",
-                    "set_metadata": {{"integer": {integer}}},
-                    "base_seq": 1
-                }}"#
-            );
-            let event: EventProposal =
-                serde_json::from_str(&json).expect("exact large integer proposal must deserialize");
-
-            let bytes = canonical_event_proposal_bytes(&event)
-                .expect("canonical notation must not change the integer value");
-            assert!(std::str::from_utf8(&bytes).unwrap().contains(canonical));
-            let replay: EventProposal = serde_json::from_slice(&bytes).unwrap();
-            assert_eq!(canonical_event_proposal_bytes(&replay).unwrap(), bytes);
+    fn canonical_metadata_accepts_exact_exponent_integers() {
+        for (integer, expected) in [("1000000000000000000000", "1e+21"), ("-1000000000000000000000", "-1e+21")] {
+            let value: serde_json::Value = serde_json::from_str(&format!(r#"{{"integer":{integer}}}"#)).unwrap();
+            let metadata = Metadata::new(value).unwrap();
+            let bytes = &metadata.payload()[crate::object::HEADER_BYTES..];
+            assert!(std::str::from_utf8(bytes).unwrap().contains(expected));
+            let replay = Metadata::verify(&metadata.id(), metadata.payload().to_vec()).unwrap();
+            assert_eq!(replay.payload(), metadata.payload());
         }
     }
 

@@ -150,7 +150,7 @@ fn decode_events(events: &[EventRow]) -> std::result::Result<Vec<EventProposal>,
     events
         .iter()
         .map(|event| {
-            serde_json::from_slice::<EventProposal>(&event.payload)
+            event.proposal()
                 .map_err(|error| format!("invalid canonical event payload: {error}"))
         })
         .collect()
@@ -312,8 +312,7 @@ fn classify_version_event(event: &EventProposal) -> std::result::Result<LocalEve
             let valid = event.item_id.is_some()
                 && event.create_item.is_none()
                 && event
-                    .set_metadata
-                    .as_ref()
+                    .set_metadata.as_ref().and_then(synck_vcs::metadata::MetadataRef::value)
                     .is_some_and(serde_json::Value::is_object)
                 && valid_content
                 && event.set_in_trash.is_none()
@@ -343,8 +342,7 @@ pub(crate) fn parse_content(event: &EventProposal) -> std::result::Result<(Objec
         _ => return Err("file content event has no blob".to_string()),
     };
     let content = event
-        .set_metadata
-        .as_ref()
+        .set_metadata.as_ref().and_then(synck_vcs::metadata::MetadataRef::value)
         .and_then(|value| value.as_object())
         .filter(|object| object.len() == 1)
         .and_then(|object| object.get("content"))
@@ -368,8 +366,7 @@ pub(crate) fn parse_version_content(
         _ => return Err("version content event has no blob".to_string()),
     };
     let size = match event
-        .set_metadata
-        .as_ref()
+        .set_metadata.as_ref().and_then(synck_vcs::metadata::MetadataRef::value)
         .and_then(|value| value.pointer("/content/size"))
     {
         None | Some(serde_json::Value::Null) => None,

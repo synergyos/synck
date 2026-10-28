@@ -1081,14 +1081,13 @@ impl Repository {
             if event.event_type != "FILE::SET_CONTENT" {
                 continue;
             }
-            let proposal: synck_vcs::types::EventProposal = serde_json::from_slice(&event.payload)?;
+            let proposal: synck_vcs::types::EventProposal = event.proposal()?;
             let Some(synck_vcs::types::EventContent::Blob { blob_id }) = proposal.set_content
             else {
                 continue;
             };
             let size = proposal
-                .set_metadata
-                .as_ref()
+                .set_metadata.as_ref().and_then(synck_vcs::metadata::MetadataRef::value)
                 .and_then(|m| m.get("content"))
                 .and_then(|m| m.get("size"))
                 .and_then(serde_json::Value::as_i64)

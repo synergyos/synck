@@ -105,7 +105,7 @@ pub fn version_event(
     version_id: &str,
     mut metadata: serde_json::Map<String, serde_json::Value>,
     content: Option<EventContent>,
-) -> EventProposal {
+) -> Result<EventProposal, String> {
     metadata.insert(
         "file_item_id".to_string(),
         serde_json::Value::String(file_item_id.to_string()),
@@ -114,10 +114,10 @@ pub fn version_event(
         "version_id".to_string(),
         serde_json::Value::String(version_id.to_string()),
     );
-    EventProposal {
+    Ok(EventProposal {
         item_id: Some(version_set_item_id),
         event_type: event_type.to_string(),
-        set_metadata: Some(serde_json::Value::Object(metadata)),
+        set_metadata: Some(synck_vcs::metadata::MetadataRef::new(serde_json::Value::Object(metadata)).map_err(|e| e.to_string())?),
         set_content: content,
         create_item: None,
         set_parent: None,
@@ -127,7 +127,7 @@ pub fn version_event(
         set_is_federated: None,
         set_federation_stream_id: None,
         base_seq: None,
-    }
+    })
 }
 
 /// Builds the canonical legacy FILE_VERSION_SET events for historical tests
@@ -165,7 +165,7 @@ pub fn automatic_initial_events(
         version_id,
         metadata,
         Some(EventContent::Blob { blob_id }),
-    ));
+    )?);
     Ok(events)
 }
 
@@ -200,7 +200,7 @@ pub fn automatic_initial_ref_event(
     Ok(RefEventProposal {
         owner_item_id: file_item_id.clone(),
         event_type: "FILE_VERSION::CREATE".to_string(),
-        set_metadata: Some(serde_json::Value::Object(metadata)),
+        set_metadata: Some(synck_vcs::metadata::MetadataRef::new(serde_json::Value::Object(metadata)).map_err(|e| e.to_string())?),
         set_content: Some(EventContent::Blob { blob_id }),
         base_ref_seq,
     })
@@ -270,7 +270,7 @@ pub fn validate_identities(repo_id: &RepoId, events: &[EventProposal]) -> Result
             let metadata = event
                 .set_metadata
                 .as_ref()
-                .and_then(serde_json::Value::as_object)
+                .and_then(|value| value.as_object())
                 .ok_or_else(|| format!("{} has no metadata object", event.event_type))?;
             let file_item_id = metadata
                 .get("file_item_id")

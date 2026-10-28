@@ -99,7 +99,7 @@ this framing and does not change object identity. Language-neutral vectors are
 in `vectors/objects.json`.
 
 Implementation status: the identifier type and UTF8-body writer use this
-framing. The RAW file store and metadata envelope conversion are still pending.
+framing. The RAW file store conversion is still pending.
 
 ### Metadata payloads
 
@@ -123,7 +123,14 @@ before history. Each has exactly `type` (`metadata`), `object_id` (canonical
 object). Duplicate IDs and metadata records after history are rejected. Import
 validates the payload and installs it in the same transaction as history; an
 invalid record rolls back both. Complete SQLite copies preserve these rows.
-The event-envelope conversion to these references remains in progress.
+Item and ref envelopes use the optional `metadata_id` field, containing the
+canonical object ID string. Inline `set_metadata` is rejected on the wire.
+Acceptance installs supplied metadata bytes in the same transaction as the
+event. Readers may resolve the ID to verified bytes without changing the
+envelope or its digest. Missing bytes leave the ID intact and are explicitly
+reported as absent; typed interpretation requiring those fields cannot proceed.
+`vectors/events.json` defines canonical envelopes, event digests, tagged event
+sequences and commit hashes, including envelopes with metadata references.
 
 ## Commit size
 

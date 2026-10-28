@@ -159,6 +159,7 @@ impl PendingCommit {
                         item_seq: event.item_seq,
                         event_type: event.event_type,
                         payload: event.payload,
+                        metadata: None,
                         event_payload_digest: event
                             .event_payload_digest
                             .try_into()
@@ -178,6 +179,7 @@ impl PendingCommit {
                         ref_seq: event.ref_seq,
                         event_type: event.event_type,
                         payload: event.payload,
+                        metadata: None,
                         event_payload_digest: event
                             .event_payload_digest
                             .try_into()

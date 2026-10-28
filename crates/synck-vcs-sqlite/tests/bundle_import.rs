@@ -30,7 +30,7 @@ fn proposal(events: Vec<EventProposal>, operation_id: &str) -> CommitProposal {
 }
 
 fn create(kind: &str) -> EventProposal {
-    serde_json::from_value(json!({
+    EventProposal::from_fields(json!({
         "item_id": ItemId::new(), "event_type": format!("{kind}::CREATE"),
         "create_item": CreateItem { item_type: kind.into(), parent_folder_id: None, name: kind.into() }
     })).unwrap()
@@ -79,7 +79,7 @@ async fn fixture() -> (tempfile::TempDir, SqliteStorage, RepoId, Vec<Value>) {
         .unwrap();
     let chat = items.iter().find(|item| item.item_type == "CHAT").unwrap();
     let file = items.iter().find(|item| item.item_type == "FILE").unwrap();
-    let change: EventProposal = serde_json::from_value(json!({
+    let change: EventProposal = EventProposal::from_fields(json!({
         "item_id":chat.item_id,"event_type":"CHAT::MESSAGE::CREATE","base_seq":1,
         "set_content":EventContent::Text{text:"legacy inline body".into()},
     }))
@@ -90,7 +90,7 @@ async fn fixture() -> (tempfile::TempDir, SqliteStorage, RepoId, Vec<Value>) {
         vec![RefEventProposal {
             owner_item_id: file.item_id.clone(),
             event_type: "FILE_VERSION::CREATE".into(),
-            set_metadata: Some(json!({"version_id":ItemId::new()})),
+            set_metadata: Some(synck_vcs::metadata::MetadataRef::new(json!({"version_id":ItemId::new()})).unwrap()),
             set_content: None,
             base_ref_seq: 0,
         }],
@@ -136,6 +136,12 @@ async fn export_records(source: &SqliteStorage, repo_id: &RepoId) -> Vec<Value> 
         },
         commit_format_version: COMMIT_FORMAT_VERSION,
     })];
+    let connection = source.open_readonly().unwrap();
+    let mut statement = connection.prepare("SELECT object_id, payload FROM vcs_metadata_objects WHERE repo_id=?1 ORDER BY object_id").unwrap();
+    for row in statement.query_map([repo_id.as_str()], |row| Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?))).unwrap() {
+        let (digest, payload) = row.unwrap();
+        records.push(json!({"type":"metadata", "object_id":format!("sha256:{}", hex::encode(digest)), "payload_hex":hex::encode(payload)}));
+    }
     let mut previous = synck_vcs::checkpoint::GENESIS;
     for commit in source
         .list_commits_by_repo_seq_readonly(repo_id, 1, None, 100)
@@ -349,7 +355,7 @@ async fn mixed_history_import_preserves_ids_ref_heads_gaps_and_next_append() {
         .unwrap();
     let chat = items.iter().find(|item| item.item_type == "CHAT").unwrap();
     let file = items.iter().find(|item| item.item_type == "FILE").unwrap();
-    let rename:EventProposal=serde_json::from_value(json!({"item_id":chat.item_id,"event_type":"CHAT::RENAME","base_seq":2,"set_name":"continued-chat"})).unwrap();
+    let rename:EventProposal=EventProposal::from_fields(json!({"item_id":chat.item_id,"event_type":"CHAT::RENAME","base_seq":2,"set_name":"continued-chat"})).unwrap();
     let core = Repo::new(
         Storage::new(Arc::new(target.clone())),
         CoreConfig::default(),

@@ -135,7 +135,7 @@ pub fn validate_and_materialize_with_content_revisions(
                 insert_created_final(&mut final_items, item_id, FileFolderKind::File, location)?;
                 exposed_items.insert(item_id.clone());
                 events.push(create_event(item_id, FileFolderKind::File, location));
-                events.push(content_event(item_id, None, content));
+                events.push(content_event(item_id, None, content)?);
             }
             Intent::UpdateFolder {
                 item_id,
@@ -186,7 +186,7 @@ pub fn validate_and_materialize_with_content_revisions(
                     record_blob(&mut blobs_by_id, content)?;
                     if item.content.as_ref() != Some(content) || content_revisions.contains(item_id)
                     {
-                        events.push(content_event(item_id, Some(*base_seq), content));
+                        events.push(content_event(item_id, Some(*base_seq), content)?);
                         changed = true;
                     }
                 }
@@ -977,13 +977,13 @@ fn set_name_event(
     proposal
 }
 
-fn content_event(item_id: &ItemId, base_seq: Option<i64>, content: &BlobRef) -> EventProposal {
+fn content_event(item_id: &ItemId, base_seq: Option<i64>, content: &BlobRef) -> Result<EventProposal, SemanticError> {
     let mut proposal = base_event(item_id, FileFolderKind::File, "SET_CONTENT", base_seq);
     proposal.set_content = Some(EventContent::Blob {
         blob_id: content.blob_id.as_str().to_string(),
     });
-    proposal.set_metadata = Some(json!({"content": {"size": content.size}}));
-    proposal
+    proposal.set_metadata = Some(synck_vcs::metadata::MetadataRef::new(json!({"content": {"size": content.size}})).map_err(|e| error(SemanticErrorCode::InvalidContent, e.to_string()))?);
+    Ok(proposal)
 }
 
 fn lifecycle_event(

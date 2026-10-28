@@ -1008,7 +1008,7 @@ impl PortableRepository {
                     row.event_payload_digest.as_str(),
                 )
                 .map_err(corrupt)?;
-                let event = serde_json::from_slice(&row.payload)?;
+                let event = row.proposal()?;
                 let commit = self
                     .storage
                     .get_commit_readonly(self.repo_id(), &row.commit_id)
@@ -1063,7 +1063,7 @@ impl PortableRepository {
                     row.event_payload_digest.as_str(),
                 )
                 .map_err(corrupt)?;
-                let mut event: EventProposal = serde_json::from_slice(&row.payload)?;
+                let mut event: EventProposal = row.proposal()?;
                 if let Some(EventContent::Content { content_id }) = &event.set_content {
                     let objects = BTreeMap::from([(content_id.clone(), self.read_body(content_id.clone())?)]);
                     synck_items::body_events::restore(
@@ -1479,7 +1479,7 @@ impl PortableRepository {
                         if let CommitEventRow::Item(event) = row {
                             if event.event_type == "FILE::SET_CONTENT" {
                                 let proposal: EventProposal =
-                                    serde_json::from_slice(&event.payload)?;
+                                    event.proposal()?;
                                 let (blob, size) = crate::event_profile::parse_content(&proposal)
                                     .map_err(corrupt)?;
                                 expected_heads.insert(
@@ -2214,10 +2214,10 @@ impl PortableRepository {
         let profile = json!({"chat_kind":"ROOM"});
         synck_items::subitems::parse_chat_profile_event(&profile).map_err(invalid)?;
         let events = vec![
-            serde_json::from_value(
+            EventProposal::from_fields(
                 json!({"item_id":id,"event_type":"CHAT::CREATE","create_item":{"item_type":"CHAT","name":format!("chat-{id}"),"parent_folder_id":null},"set_metadata":{"non_tree":true,"chat_title":title}}),
             )?,
-            serde_json::from_value(
+            EventProposal::from_fields(
                 json!({"item_id":id,"event_type":"CHAT::SET_PROFILE","set_metadata":profile}),
             )?,
         ];
@@ -2244,7 +2244,7 @@ impl PortableRepository {
         let object = Object::new(Codec::Utf8, body.as_bytes()).map_err(invalid)?;
         let content_id = object.id();
         self.store_bytes(object.payload())?;
-        let event: EventProposal = serde_json::from_value(
+        let event: EventProposal = EventProposal::from_fields(
             json!({"item_id":chat,"event_type":"CHAT::MESSAGE::CREATE","set_content":EventContent::Content {content_id}}),
         )?;
         synck_items::subitems::extract_chat_message_fields(
@@ -2271,7 +2271,7 @@ impl PortableRepository {
             let content = json!({"blob_id":blob.blob_id});
             synck_items::subitems::extract_chat_attachment_fields(&meta, &content)
                 .map_err(invalid)?;
-            events.push(serde_json::from_value(json!({"item_id":chat,"event_type":"CHAT::MESSAGE.ATTACHMENT::CREATE","set_metadata":{"parent_item_seq":owner.head_seq + 1,"meta":meta},"set_content":content}))?);
+            events.push(EventProposal::from_fields(json!({"item_id":chat,"event_type":"CHAT::MESSAGE.ATTACHMENT::CREATE","set_metadata":{"parent_item_seq":owner.head_seq + 1,"meta":meta},"set_content":content}))?);
         }
         let commit = self
             .core()

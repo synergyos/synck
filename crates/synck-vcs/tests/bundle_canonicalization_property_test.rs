@@ -198,7 +198,7 @@ fn gen_event_proposal(rng: &mut XorShift64) -> EventProposal {
         item_id: Some(item_id),
         event_type: gen_string(rng, 32),
         set_metadata: if rng.next_bool() {
-            Some(gen_json_value(rng, 3))
+            Some(synck_vcs::metadata::MetadataRef::new(serde_json::json!({"value":gen_json_value(rng, 3)})).unwrap())
         } else {
             None
         },

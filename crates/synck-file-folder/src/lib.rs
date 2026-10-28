@@ -156,7 +156,7 @@ mod tests {
 
     #[test]
     fn historical_file_reference_requires_an_exact_blob_and_size() {
-        let event: EventProposal = serde_json::from_value(serde_json::json!({
+        let event: EventProposal = EventProposal::from_fields(serde_json::json!({
             "item_id": "01900000-0000-7000-8000-000000000001",
             "event_type": "FILE::SET_CONTENT",
             "set_metadata": {"content": {"size": 7}},
@@ -172,7 +172,7 @@ mod tests {
         );
 
         let mut malformed = event.clone();
-        malformed.set_metadata = Some(serde_json::json!({"content": {"size": -1}}));
+        malformed.set_metadata = Some(synck_vcs::metadata::MetadataRef::new(serde_json::json!({"content": {"size": -1}})).unwrap());
         assert!(file_blob_reference(&malformed).is_err());
 
         let mut unrelated = event;

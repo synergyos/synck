@@ -85,7 +85,7 @@ pub(crate) fn prepare(
         if attachment.embedded_data_image {
             meta["origin"] = json!({"kind":"html_data_image","version":1});
         }
-        attachments.push(serde_json::from_value(
+        attachments.push(synck_vcs::types::EventProposal::from_fields(
             json!({"item_id":id,"event_type":"EMAIL::ATTACHMENT::CREATE",
             "set_metadata":{"meta":meta},"set_content":{"blob_id":blob}}),
         )?);
@@ -104,7 +104,7 @@ pub(crate) fn prepare(
         "raw_rfc822_provenance":if parsed.raw_rfc822_generated {"generated"} else {"original"},
         "provider_raw_json_blob_id":null,"imported_at":chrono::Utc::now().to_rfc3339()
     }});
-    let mut events = vec![serde_json::from_value(
+    let mut events = vec![synck_vcs::types::EventProposal::from_fields(
         json!({"item_id":id,"event_type":"EMAIL::CREATE",
         "create_item":{"item_type":"EMAIL","parent_folder_id":parent,"name":name},"set_metadata":metadata}),
     )?];

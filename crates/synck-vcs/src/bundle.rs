@@ -596,10 +596,10 @@ mod bundle_tests {
                 item_id: Some(gen_item_id(rng)),
                 event_type: gen_string(rng, 16),
                 set_metadata: if rng.next_bool() {
-                    Some(serde_json::json!({
+                    Some(crate::metadata::MetadataRef::new(serde_json::json!({
                         "k": gen_string(rng, 16),
                         "n": (rng.next_u64() % 1_000_000) as i64
-                    }))
+                    })).unwrap())
                 } else {
                     None
                 },

@@ -531,7 +531,7 @@ mod tests {
         let proposal = RefEventProposal {
             owner_item_id: owner_item_id.clone(),
             event_type: "FILE_VERSION::CREATE".to_string(),
-            set_metadata: Some(serde_json::json!({"file_item_id": owner_item_id.as_str()})),
+            set_metadata: Some(crate::metadata::MetadataRef::new(serde_json::json!({"file_item_id": owner_item_id.as_str()})).unwrap()),
             set_content: None,
             base_ref_seq: 0,
         };
@@ -628,7 +628,7 @@ mod tests {
         let item_proposal = EventProposal {
             item_id: Some(item_id.clone()),
             event_type: "FILE::SET_METADATA".to_string(),
-            set_metadata: Some(serde_json::json!({"key": "value"})),
+            set_metadata: Some(crate::metadata::MetadataRef::new(serde_json::json!({"key": "value"})).unwrap()),
             set_content: None,
             create_item: None,
             set_parent: None,

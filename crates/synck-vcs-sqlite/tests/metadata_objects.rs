@@ -45,3 +45,76 @@ async fn metadata_roundtrips_and_missing_differs_from_corrupt() {
     assert!(storage.verify_metadata_objects(&repo).is_err());
     assert!(storage.put_metadata(&repo, &metadata).is_err());
 }
+
+#[tokio::test]
+async fn accepted_event_keeps_only_metadata_id_and_reads_without_payload() {
+    use std::sync::Arc;
+    use synck_vcs::config::CoreConfig;
+    use synck_vcs::storage::Storage;
+    use synck_vcs::types::{CommitProposal, EventProposal, ItemId, canonical_event_proposal_bytes};
+    let directory = tempfile::tempdir().unwrap();
+    let storage = SqliteStorage::new(directory.path().join("history.sqlite3"));
+    storage.init_schema().await.unwrap();
+    let repo = RepoId::new();
+    let item = ItemId::new();
+    let event = EventProposal::from_fields(serde_json::json!({
+        "item_id": item, "event_type":"CHAT::CREATE",
+        "create_item":{"item_type":"CHAT","name":"room"},
+        "set_metadata":{"private_note":"erasable value"},
+    }))
+    .unwrap();
+    let id = event.set_metadata.as_ref().unwrap().id();
+    let expected = canonical_event_proposal_bytes(&event).unwrap();
+    assert!(!String::from_utf8_lossy(&expected).contains("erasable value"));
+    assert!(!String::from_utf8_lossy(&expected).contains("set_metadata"));
+    let core = synck_vcs::repo::Repo::new(
+        Storage::new(Arc::new(storage.clone())),
+        CoreConfig::default(),
+    );
+    core.append(
+        repo.clone(),
+        CommitProposal {
+            author_id: "writer".into(),
+            committer_id: "writer".into(),
+            message: None,
+            occurred_at: None,
+            operation_id: Some("metadata-write".into()),
+            events: vec![event],
+        },
+    )
+    .await
+    .unwrap();
+    core.sequence_repo_activity(repo.clone(), 10).await.unwrap();
+    let rows = storage
+        .list_events_for_item_readonly(&repo, &item, 1, 10)
+        .await
+        .unwrap();
+    assert_eq!(rows[0].payload, expected);
+    assert_eq!(
+        rows[0]
+            .proposal()
+            .unwrap()
+            .set_metadata
+            .unwrap()
+            .value()
+            .unwrap()["private_note"],
+        "erasable value"
+    );
+    storage
+        .open_writable()
+        .unwrap()
+        .execute(
+            "DELETE FROM vcs_metadata_objects WHERE repo_id=?1 AND object_id=?2",
+            rusqlite::params![repo.as_str(), id.as_bytes().as_slice()],
+        )
+        .unwrap();
+    storage.verify_checkpoints(&repo).unwrap();
+    let rows = storage
+        .list_events_for_item_readonly(&repo, &item, 1, 10)
+        .await
+        .unwrap();
+    let event = rows[0].proposal().unwrap();
+    assert_eq!(event.set_metadata.as_ref().unwrap().id(), id);
+    assert!(event.set_metadata.as_ref().unwrap().value().is_none());
+    assert_eq!(canonical_event_proposal_bytes(&event).unwrap(), expected);
+}

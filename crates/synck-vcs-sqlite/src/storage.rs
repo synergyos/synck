@@ -638,6 +638,15 @@ fn commit_from_row(row: &Row<'_>) -> rusqlite::Result<CommitRow> {
     })
 }
 
+fn metadata_from_row(row: &Row<'_>, event_column: usize, metadata_column: usize) -> rusqlite::Result<Option<synck_vcs::metadata::Metadata>> {
+    let Some(bytes) = row.get::<_, Option<Vec<u8>>>(metadata_column)? else { return Ok(None); };
+    let payload: Vec<u8> = row.get(event_column)?;
+    let event: serde_json::Value = serde_json::from_slice(&payload).map_err(|e| decode_error(event_column, e.to_string()))?;
+    let id = event.get("metadata_id").and_then(serde_json::Value::as_str).ok_or_else(|| decode_error(event_column, "missing metadata ID"))?;
+    let id = synck_vcs::types::ObjectId::parse(id).map_err(|e| decode_error(event_column, e.to_string()))?;
+    synck_vcs::metadata::Metadata::verify(&id, bytes).map(Some).map_err(|e| decode_error(metadata_column, e.to_string()))
+}
+
 fn event_from_row(row: &Row<'_>) -> rusqlite::Result<EventRow> {
     let parent = row
         .get::<_, Option<String>>(10)?
@@ -656,6 +665,7 @@ fn event_from_row(row: &Row<'_>) -> rusqlite::Result<EventRow> {
         commit_event_idx: row.get(5)?,
         repo_seq: row.get(6)?,
         payload: row.get(7)?,
+        metadata: metadata_from_row(row, 7, 12)?,
         event_payload_digest: parse_digest(row.get(8)?, 8)?,
         created_at: parse_time_row(row.get(9)?, 9)?,
         parent_folder_id: parent,
@@ -673,6 +683,7 @@ fn ref_event_from_row(row: &Row<'_>) -> rusqlite::Result<RefEventRow> {
         commit_event_idx: row.get(5)?,
         repo_seq: row.get(6)?,
         payload: row.get(7)?,
+        metadata: metadata_from_row(row, 7, 10)?,
         event_payload_digest: parse_digest(row.get(8)?, 8)?,
         created_at: parse_time_row(row.get(9)?, 9)?,
     })
@@ -699,6 +710,7 @@ fn commit_event_from_row(row: &Row<'_>) -> rusqlite::Result<CommitEventRow> {
                 commit_event_idx: row.get(6)?,
                 repo_seq: row.get(7)?,
                 payload: row.get(8)?,
+                metadata: metadata_from_row(row, 8, 13)?,
                 event_payload_digest: parse_digest(row.get(9)?, 9)?,
                 created_at: parse_time_row(row.get(10)?, 10)?,
                 parent_folder_id: parent,
@@ -714,6 +726,7 @@ fn commit_event_from_row(row: &Row<'_>) -> rusqlite::Result<CommitEventRow> {
             commit_event_idx: row.get(6)?,
             repo_seq: row.get(7)?,
             payload: row.get(8)?,
+                metadata: metadata_from_row(row, 8, 13)?,
             event_payload_digest: parse_digest(row.get(9)?, 9)?,
             created_at: parse_time_row(row.get(10)?, 10)?,
         })),
@@ -726,8 +739,8 @@ fn commit_event_from_row(row: &Row<'_>) -> rusqlite::Result<CommitEventRow> {
 
 const ITEM_COLUMNS: &str = "repo_id, item_id, item_type, parent_folder_id, name, name_key, head_seq, ref_head_seq, lifecycle_state, created_at, created_by, sequencing_mode, federation_stream_id";
 const COMMIT_COLUMNS: &str = "repo_id, commit_id, repo_seq, format_version, import_job_id, author_id, committer_id, message, occurred_at, created_at, event_count, events_digest";
-const EVENT_COLUMNS: &str = "e.repo_id, e.item_id, e.item_seq, e.event_type, c.commit_id, e.commit_event_idx, c.repo_seq, e.payload, e.event_payload_digest, e.created_at, e.parent_folder_id, e.parent_folder_id_before";
-const REF_EVENT_COLUMNS: &str = "r.repo_id, r.owner_item_id, r.ref_seq, r.event_type, c.commit_id, r.commit_event_idx, c.repo_seq, r.payload, r.event_payload_digest, r.created_at";
+const EVENT_COLUMNS: &str = "e.repo_id, e.item_id, e.item_seq, e.event_type, c.commit_id, e.commit_event_idx, c.repo_seq, e.payload, e.event_payload_digest, e.created_at, e.parent_folder_id, e.parent_folder_id_before, (SELECT m.payload FROM vcs_metadata_objects m WHERE m.repo_id=e.repo_id AND m.object_id=unhex(substr(json_extract(CAST(e.payload AS TEXT), '$.metadata_id'),8)))";
+const REF_EVENT_COLUMNS: &str = "r.repo_id, r.owner_item_id, r.ref_seq, r.event_type, c.commit_id, r.commit_event_idx, c.repo_seq, r.payload, r.event_payload_digest, r.created_at, (SELECT m.payload FROM vcs_metadata_objects m WHERE m.repo_id=r.repo_id AND m.object_id=unhex(substr(json_extract(CAST(r.payload AS TEXT), '$.metadata_id'),8)))";
 
 fn checked_limit(limit: usize) -> Result<i64, StorageError> {
     i64::try_from(limit).map_err(|_| StorageError::Other {
@@ -925,7 +938,8 @@ impl StorageBackend for SqliteStorage {
             &conn,
             "SELECT event_family, repo_id, owner_item_id, event_seq, event_type, commit_id, \
                     commit_event_idx, repo_seq, payload, event_payload_digest, created_at, \
-                    parent_folder_id, parent_folder_id_before \
+                    parent_folder_id, parent_folder_id_before, \
+                    (SELECT m.payload FROM vcs_metadata_objects m WHERE m.repo_id=events.repo_id AND m.object_id=unhex(substr(json_extract(CAST(events.payload AS TEXT), '$.metadata_id'),8))) \
              FROM ( \
                  SELECT 0 AS event_family, e.repo_id, e.item_id AS owner_item_id, \
                         e.item_seq AS event_seq, e.event_type, c.commit_id, e.commit_event_idx, \
@@ -941,7 +955,7 @@ impl StorageBackend for SqliteStorage {
                  FROM vcs_ref_events r JOIN vcs_commits c \
                    ON c.repo_id = r.repo_id AND c.commit_pk = r.commit_pk \
                  WHERE c.repo_id = ?1 AND c.commit_id = ?2 \
-             ) ORDER BY commit_event_idx LIMIT ?3",
+             ) AS events ORDER BY commit_event_idx LIMIT ?3",
             vec![
                 text_value(repo_id.as_str()),
                 Value::Blob(commit_id_to_digest_bytes(commit_id).to_vec()),
@@ -965,7 +979,8 @@ impl StorageBackend for SqliteStorage {
             &conn,
             "SELECT event_family, repo_id, owner_item_id, event_seq, event_type, commit_id, \
                     commit_event_idx, repo_seq, payload, event_payload_digest, created_at, \
-                    parent_folder_id, parent_folder_id_before \
+                    parent_folder_id, parent_folder_id_before, \
+                    (SELECT m.payload FROM vcs_metadata_objects m WHERE m.repo_id=events.repo_id AND m.object_id=unhex(substr(json_extract(CAST(events.payload AS TEXT), '$.metadata_id'),8))) \
              FROM ( \
                  SELECT 0 AS event_family, e.repo_id, e.item_id AS owner_item_id, \
                         e.item_seq AS event_seq, e.event_type, c.commit_id, e.commit_event_idx, \
@@ -981,7 +996,7 @@ impl StorageBackend for SqliteStorage {
                  FROM vcs_ref_events r JOIN vcs_commits c \
                    ON c.repo_id = r.repo_id AND c.commit_pk = r.commit_pk \
                  WHERE c.repo_id = ?1 AND c.commit_id IS NOT NULL AND c.repo_seq IS NOT NULL \
-             ) \
+             ) AS events \
              WHERE repo_seq > ?2 OR (repo_seq = ?2 AND commit_event_idx > ?3) \
              ORDER BY repo_seq, commit_event_idx LIMIT ?4",
             vec![
@@ -1600,6 +1615,9 @@ impl StorageTxn for SqliteTxn {
     }
 
     async fn append_event(&mut self, event: &EventInsertRow) -> Result<(), StorageError> {
+        if let Some(metadata) = &event.metadata {
+            crate::metadata::insert(self.conn()?, &event.repo_id, metadata)?;
+        }
         self.conn()?
             .execute(
                 "INSERT INTO vcs_events (repo_id, commit_pk, commit_event_idx, item_id, item_seq, event_type, payload, event_payload_digest, created_at, parent_folder_id, parent_folder_id_before) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
@@ -1622,6 +1640,9 @@ impl StorageTxn for SqliteTxn {
     }
 
     async fn append_ref_event(&mut self, event: &RefEventInsertRow) -> Result<(), StorageError> {
+        if let Some(metadata) = &event.metadata {
+            crate::metadata::insert(self.conn()?, &event.repo_id, metadata)?;
+        }
         self.conn()?
             .execute(
                 "INSERT INTO vcs_ref_events (repo_id, commit_pk, commit_event_idx, owner_item_id, ref_seq, event_type, payload, event_payload_digest, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",

@@ -26,6 +26,8 @@ pub enum ReadError {
     },
     #[error("body {0} must be hydrated before reading")]
     NeedsContent(ObjectId),
+    #[error("metadata payload is not present: {0}")]
+    NeedsMetadata(ObjectId),
 }
 
 impl From<subitems::SubitemError> for ReadError {
@@ -237,6 +239,9 @@ impl ItemReader {
         event: &RefEventProposal,
         ctx: &RefReadContext<'_>,
     ) -> Result<(), ReadError> {
+        if let Some(reference) = &event.set_metadata {
+            if reference.value().is_none() { return Err(ReadError::NeedsMetadata(reference.id())); }
+        }
         if event.owner_item_id != self.item_id {
             return Err(invalid("ref owner mismatch"));
         }
@@ -264,8 +269,7 @@ impl ItemReader {
                 _ => return Err(unsupported("FILE", &event.event_type)),
             };
             let meta = event
-                .set_metadata
-                .as_ref()
+                .set_metadata.as_ref().and_then(synck_vcs::metadata::MetadataRef::value)
                 .ok_or_else(|| invalid("version ref metadata missing"))?;
             if uuid(meta, "file_item_id")?
                 != Uuid::parse_str(self.item_id.as_str()).expect("typed item ID")
@@ -301,7 +305,7 @@ impl ItemReader {
             }
             if matches!(verb, "CREATE" | "REPLACE_CONTENT") {
                 let content = subitems::reconstruct_subitem_content(
-                    event.set_metadata.as_ref(),
+                    event.set_metadata.as_ref().and_then(synck_vcs::metadata::MetadataRef::value),
                     event.set_content.as_ref(),
                 );
                 subitems::validate_file_version_ref_content(&content, &event.event_type)?;
@@ -401,6 +405,9 @@ impl ItemReader {
         event: &EventProposal,
         context: ReadContext<'_>,
     ) -> Result<(), ReadError> {
+        if let Some(reference) = &event.set_metadata {
+            if reference.value().is_none() { return Err(ReadError::NeedsMetadata(reference.id())); }
+        }
         if event.item_id.as_ref() != Some(&self.item_id)
             || context.item_seq != self.latest_item_seq() + 1
         {
@@ -452,7 +459,7 @@ impl ItemReader {
         _ctx: &ReadContext<'_>,
         projection: &mut replica_projection::ReplicaItemProjection,
     ) -> Result<(), ReadError> {
-        let meta = event.set_metadata.as_ref().unwrap_or(&Value::Null);
+        let meta = event.set_metadata.as_ref().and_then(synck_vcs::metadata::MetadataRef::value).unwrap_or(&Value::Null);
         if matches!(
             event.event_type.as_str(),
             "ITEM::DATA_LINK::PUT" | "ITEM::DATA_LINK::DELETE"
@@ -473,7 +480,7 @@ impl ItemReader {
             self.ancillary_events.push(AncillaryEvent {
                 item_seq: _ctx.item_seq,
                 event_type: event.event_type.clone(),
-                metadata: event.set_metadata.clone(),
+                metadata: event.set_metadata.as_ref().and_then(synck_vcs::metadata::MetadataRef::value).cloned(),
                 content: event.set_content.clone(),
             });
             return Ok(());
@@ -602,16 +609,16 @@ impl ItemReader {
         let target = if creating {
             ctx.item_seq
         } else {
-            subitems::meta_get_i64(event.set_metadata.as_ref(), "item_seq")
+            subitems::meta_get_i64(event.set_metadata.as_ref().and_then(synck_vcs::metadata::MetadataRef::value), "item_seq")
                 .ok_or_else(|| invalid("subitem mutation missing stable item_seq"))?
         };
         let key = (family.into(), SubitemIdentity::Sequence(target));
-        let meta = subitems::reconstruct_subitem_meta(event.set_metadata.as_ref());
+        let meta = subitems::reconstruct_subitem_meta(event.set_metadata.as_ref().and_then(synck_vcs::metadata::MetadataRef::value));
         let content = subitems::reconstruct_subitem_content(
-            event.set_metadata.as_ref(),
+            event.set_metadata.as_ref().and_then(synck_vcs::metadata::MetadataRef::value),
             event.set_content.as_ref(),
         );
-        let parent = subitems::meta_get_i64(event.set_metadata.as_ref(), "parent_item_seq");
+        let parent = subitems::meta_get_i64(event.set_metadata.as_ref().and_then(synck_vcs::metadata::MetadataRef::value), "parent_item_seq");
         let previous = self.subitems.get(&key);
         let mut row = if creating {
             if previous.is_some() {
@@ -714,14 +721,13 @@ impl ItemReader {
             return Ok(());
         }
         let meta = event
-            .set_metadata
-            .as_ref()
+            .set_metadata.as_ref().and_then(synck_vcs::metadata::MetadataRef::value)
             .ok_or_else(|| invalid("sidecar metadata missing"))?;
         let id = uuid(meta, "version_id")?;
         let owner = uuid(meta, "file_item_id")?;
         let key = (family.into(), SubitemIdentity::Uuid(id));
         let content = subitems::reconstruct_subitem_content(
-            event.set_metadata.as_ref(),
+            event.set_metadata.as_ref().and_then(synck_vcs::metadata::MetadataRef::value),
             event.set_content.as_ref(),
         );
         let mut row = if event.event_type == versions::VERSION_CREATE_EVENT {
@@ -993,7 +999,7 @@ fn update_subitem(
         };
         return Ok(());
     }
-    let replacement = subitems::meta_get_json(event.set_metadata.as_ref(), "meta");
+    let replacement = subitems::meta_get_json(event.set_metadata.as_ref().and_then(synck_vcs::metadata::MetadataRef::value), "meta");
     match kind {
         Kind::ChatMessage => {
             if let Some(body) = content.get("body").and_then(Value::as_str) {

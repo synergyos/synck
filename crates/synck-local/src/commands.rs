@@ -512,8 +512,7 @@ impl Repository {
             )?;
             self.reject_recorded_email_name(&change.path, &email.events[0])?;
             let source_blob = email.events[0]
-                .set_metadata
-                .as_ref()
+                .set_metadata.as_ref().and_then(synck_vcs::metadata::MetadataRef::value)
                 .expect("EMAIL metadata")["mailcal"]["source"]["blob_id"]
                 .as_str()
                 .expect("EMAIL source blob");
@@ -2072,7 +2071,7 @@ impl Repository {
                             "commit {commit_id} event {index} has an inconsistent envelope"
                         )));
                     }
-                    let proposal: EventProposal = serde_json::from_slice(&event.payload).map_err(
+                    let proposal: EventProposal = event.proposal().map_err(
                         |error| {
                             LocalError::Integrity(format!(
                                 "commit {commit_id} event {index} has invalid canonical JSON: {error}"
@@ -2153,7 +2152,7 @@ impl Repository {
                             "commit {commit_id} ref event {index} has an inconsistent envelope"
                         )));
                     }
-                    let proposal: RefEventProposal = serde_json::from_slice(&event.payload)
+                    let proposal: RefEventProposal = event.proposal()
                         .map_err(|error| {
                             LocalError::Integrity(format!(
                                 "commit {commit_id} ref event {index} has invalid canonical JSON: {error}"
@@ -3003,7 +3002,9 @@ impl Repository {
             let sql = format!(
                 "WITH requested(item_id, item_seq) AS (VALUES {values})
                  SELECT e.item_id, e.item_seq, e.event_type, e.payload,
-                        e.event_payload_digest
+                        e.event_payload_digest,
+                        (SELECT m.payload FROM vcs_metadata_objects m WHERE m.repo_id=e.repo_id
+                         AND m.object_id=unhex(substr(json_extract(CAST(e.payload AS TEXT), '$.metadata_id'),8)))
                  FROM vcs_events e
                  JOIN requested r
                    ON r.item_id = e.item_id AND r.item_seq = e.item_seq
@@ -3024,10 +3025,11 @@ impl Repository {
                     row.get::<_, String>(2)?,
                     row.get::<_, Vec<u8>>(3)?,
                     row.get::<_, Vec<u8>>(4)?,
+                    row.get::<_, Option<Vec<u8>>>(5)?,
                 ))
             })?;
             for row in rows {
-                let (item_id, item_seq, event_type, payload, stored_digest) = row?;
+                let (item_id, item_seq, event_type, payload, stored_digest, metadata) = row?;
                 let item_id = ItemId::parse(item_id).map_err(|error| {
                     LocalError::Integrity(format!("invalid historical event item ID: {error}"))
                 })?;
@@ -3053,12 +3055,17 @@ impl Repository {
                         "historical content event digest disagrees for {item_id}"
                     )));
                 }
-                let proposal: EventProposal =
+                let mut proposal: EventProposal =
                     serde_json::from_slice(&payload).map_err(|error| {
                         LocalError::Integrity(format!(
                             "invalid historical content event for {item_id}: {error}"
                         ))
                     })?;
+                if let Some(bytes) = metadata {
+                    let reference = proposal.set_metadata.as_mut().ok_or_else(|| LocalError::Integrity("unexpected metadata payload".into()))?;
+                    let resolved = synck_vcs::metadata::Metadata::verify(&reference.id(), bytes).map_err(|e| LocalError::Integrity(e.to_string()))?;
+                    reference.resolve(resolved).map_err(|e| LocalError::Integrity(e.to_string()))?;
+                }
                 if canonical_event_proposal_bytes(&proposal)? != payload
                     || proposal.item_id.as_ref() != Some(&item_id)
                     || proposal.event_type != event_type
@@ -6256,8 +6263,7 @@ fn commit_event_display_item_id(proposal: &EventProposal) -> Result<ItemId> {
             .map_err(LocalError::Integrity);
     }
     let file_item_id = proposal
-        .set_metadata
-        .as_ref()
+        .set_metadata.as_ref().and_then(synck_vcs::metadata::MetadataRef::value)
         .and_then(serde_json::Value::as_object)
         .and_then(|metadata| metadata.get("file_item_id"))
         .and_then(serde_json::Value::as_str)
@@ -7383,7 +7389,7 @@ fn path_depth(path: &str) -> usize {
 }
 
 fn parse_event(event: &synck_vcs::types::EventRow) -> Result<EventProposal> {
-    serde_json::from_slice(&event.payload)
+    event.proposal()
         .map_err(|error| LocalError::Integrity(format!("invalid event payload: {error}")))
 }
 
@@ -7421,8 +7427,7 @@ fn content_from_event(event: &EventProposal) -> Result<(ObjectId, i64)> {
         }
     };
     let size = event
-        .set_metadata
-        .as_ref()
+        .set_metadata.as_ref().and_then(synck_vcs::metadata::MetadataRef::value)
         .and_then(|value| value.pointer("/content/size"))
         .and_then(serde_json::Value::as_i64)
         .filter(|size| *size >= 0)
@@ -7620,6 +7625,7 @@ mod tests {
             aggregate_digest.update([synck_vcs::types::COMMIT_EVENT_FAMILY_ITEM]);
             aggregate_digest.update(digest);
             rows.push(EventRow {
+                metadata: event.set_metadata.as_ref().and_then(|value| value.payload()).cloned(),
                 repo_id: repo_id.clone(),
                 item_id,
                 item_seq: *item_seq,

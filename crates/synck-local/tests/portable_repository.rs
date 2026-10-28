@@ -43,7 +43,7 @@ fn proposal(events: Vec<EventProposal>) -> CommitProposal {
 }
 
 fn creation(id: &ItemId, kind: &str, parent: Option<ItemId>, name: &str) -> EventProposal {
-    serde_json::from_value(json!({"item_id":id,"event_type":format!("{kind}::CREATE"),"create_item":CreateItem {item_type:kind.into(),parent_folder_id:parent,name:name.into()}})).unwrap()
+    EventProposal::from_fields(json!({"item_id":id,"event_type":format!("{kind}::CREATE"),"create_item":CreateItem {item_type:kind.into(),parent_folder_id:parent,name:name.into()}})).unwrap()
 }
 
 async fn fixture() -> Fixture {
@@ -92,8 +92,8 @@ async fn fixture() -> Fixture {
         body.payload(),
     )
     .unwrap();
-    let file_event:EventProposal=serde_json::from_value(json!({"item_id":file,"event_type":"FILE::SET_CONTENT","base_seq":1,"set_metadata":{"content":{"size":primary.len()}},"set_content":EventContent::Blob {blob_id:primary_blob.clone()}})).unwrap();
-    let message:EventProposal=serde_json::from_value(json!({"item_id":chat,"event_type":"CHAT::MESSAGE::CREATE","base_seq":1,"set_content":EventContent::Content {content_id:body.id()}})).unwrap();
+    let file_event:EventProposal=EventProposal::from_fields(json!({"item_id":file,"event_type":"FILE::SET_CONTENT","base_seq":1,"set_metadata":{"content":{"size":primary.len()}},"set_content":EventContent::Blob {blob_id:primary_blob.clone()}})).unwrap();
+    let message:EventProposal=EventProposal::from_fields(json!({"item_id":chat,"event_type":"CHAT::MESSAGE::CREATE","base_seq":1,"set_content":EventContent::Content {content_id:body.id()}})).unwrap();
     core.append(repo_id.clone(), proposal(vec![file_event, message]))
         .await
         .unwrap();
@@ -318,7 +318,7 @@ async fn follower_activation_continuation_and_explicit_finalize_preserve_old_byt
         Storage::new(Arc::new(storage.clone())),
         CoreConfig::default(),
     );
-    core.append(fixture.repo_id.clone(),proposal(vec![serde_json::from_value(json!({"item_id":fixture.chat,"event_type":"CHAT::MESSAGE::CREATE","base_seq":3,"set_content":EventContent::Json {json:json!({"body":"accepted before crash"})}})).unwrap()])).await.unwrap();
+    core.append(fixture.repo_id.clone(),proposal(vec![EventProposal::from_fields(json!({"item_id":fixture.chat,"event_type":"CHAT::MESSAGE::CREATE","base_seq":3,"set_content":EventContent::Json {json:json!({"body":"accepted before crash"})}})).unwrap()])).await.unwrap();
     let mut repository = PortableRepository::open(&destination).unwrap();
     assert!(repository.verify().await.is_err());
     repository.finalize().await.unwrap();
@@ -608,7 +608,7 @@ async fn repository_copy_includes_committed_wal_without_checkpointing_source() {
     core.append(
         fixture.repo_id.clone(),
         proposal(vec![
-            serde_json::from_value(json!({
+            EventProposal::from_fields(json!({
                 "item_id":fixture.chat,
                 "event_type":"CHAT::MESSAGE::CREATE",
                 "base_seq":2,
@@ -1567,7 +1567,7 @@ async fn email_ingress_rejects_file_appends_and_historical_email_file_edits() {
     core.append(
         fixture.repo_id.clone(),
         proposal(vec![
-            serde_json::from_value(json!({
+            EventProposal::from_fields(json!({
                 "item_id":fixture.file,"event_type":"FILE::SET_NAME","base_seq":2,"set_name":"historical.msg"
             }))
             .unwrap(),

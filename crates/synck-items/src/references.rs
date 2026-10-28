@@ -144,7 +144,7 @@ pub fn event_blob_references(event: &EventProposal) -> Result<Vec<String>, Refer
         refs.push(blob_id.clone());
     }
 
-    if let Some(metadata) = event.set_metadata.as_ref() {
+    if let Some(metadata) = event.set_metadata.as_ref().and_then(synck_vcs::metadata::MetadataRef::value) {
         push_mailcal_blob_references(&mut refs, event.event_type.as_str(), metadata)?;
     }
 
@@ -158,12 +158,12 @@ pub fn event_blob_references(event: &EventProposal) -> Result<Vec<String>, Refer
 pub fn commit_event_blob_references(row: &CommitEventRow) -> Result<Vec<String>, ReferenceError> {
     match row {
         CommitEventRow::Item(row) => {
-            let event = serde_json::from_slice::<EventProposal>(&row.payload)
+            let event = row.proposal()
                 .map_err(|error| format!("invalid item event payload: {error}"))?;
             event_blob_references(&event)
         }
         CommitEventRow::Ref(row) => {
-            let event = serde_json::from_slice::<RefEventProposal>(&row.payload)
+            let event = row.proposal()
                 .map_err(|error| format!("invalid ref event payload: {error}"))?;
             Ok(match &event.set_content {
                 Some(EventContent::Blob { blob_id }) => vec![blob_id.clone()],
@@ -219,12 +219,12 @@ pub fn ref_event_references(event: &RefEventProposal) -> Result<HistoryReference
 pub fn commit_event_references(row: &CommitEventRow) -> Result<HistoryReferences, ReferenceError> {
     match row {
         CommitEventRow::Item(row) => {
-            let event = serde_json::from_slice::<EventProposal>(&row.payload)
+            let event = row.proposal()
                 .map_err(|error| format!("invalid item event payload: {error}"))?;
             event_references(&event)
         }
         CommitEventRow::Ref(row) => {
-            let event = serde_json::from_slice::<RefEventProposal>(&row.payload)
+            let event = row.proposal()
                 .map_err(|error| format!("invalid ref event payload: {error}"))?;
             ref_event_references(&event)
         }
@@ -246,7 +246,7 @@ mod tests {
         EventProposal {
             item_id: Some(ItemId::new()),
             event_type: event_type.to_string(),
-            set_metadata: Some(metadata),
+            set_metadata: (!metadata.is_null()).then(|| synck_vcs::metadata::MetadataRef::new(metadata).unwrap()),
             set_content: None,
             create_item: None,
             set_parent: None,
@@ -392,6 +392,7 @@ mod tests {
 
     fn item_row(event: &EventProposal) -> CommitEventRow {
         CommitEventRow::Item(synck_vcs::types::EventRow {
+                metadata: event.set_metadata.as_ref().and_then(|value| value.payload()).cloned(),
             repo_id: synck_vcs::types::RepoId::new(),
             item_id: event.item_id.clone().unwrap(),
             item_seq: 1,
@@ -409,6 +410,7 @@ mod tests {
 
     fn ref_row(event: &RefEventProposal) -> CommitEventRow {
         CommitEventRow::Ref(synck_vcs::types::RefEventRow {
+                metadata: event.set_metadata.as_ref().and_then(|value| value.payload()).cloned(),
             repo_id: synck_vcs::types::RepoId::new(),
             owner_item_id: event.owner_item_id.clone(),
             ref_seq: 1,
@@ -441,9 +443,9 @@ mod tests {
         let mut version = RefEventProposal {
             owner_item_id: created.item_id.unwrap(),
             event_type: "FILE_VERSION::CREATE".into(),
-            set_metadata: Some(
+            set_metadata: Some(synck_vcs::metadata::MetadataRef::new(
                 serde_json::json!({"blob_id":B, "mailcal":{"v":2,"source":{"blob_id":C}}}),
-            ),
+            ).unwrap()),
             set_content: Some(EventContent::Blob { blob_id: D.into() }),
             base_ref_seq: 0,
         };

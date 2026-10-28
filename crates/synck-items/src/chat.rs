@@ -70,8 +70,7 @@ pub fn validate_non_tree_transition(
 ) -> Result<(), &'static str> {
     // ITEM wire events omit repository-local identity; the transport binds it.
     let Some(meta) = event
-        .set_metadata
-        .as_ref()
+        .set_metadata.as_ref().and_then(synck_vcs::metadata::MetadataRef::value)
         .and_then(serde_json::Value::as_object)
     else {
         return Err("CHAT transition requires metadata");

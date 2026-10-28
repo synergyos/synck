@@ -1234,6 +1234,7 @@ mod tests {
             events_digest,
         };
         let event = EventRow {
+                metadata: proposal.set_metadata.as_ref().and_then(|value| value.payload()).cloned(),
             repo_id: repo_id.clone(),
             item_id,
             item_seq: 1,
