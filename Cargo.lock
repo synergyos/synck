@@ -1373,7 +1373,7 @@ dependencies = [
 
 [[package]]
 name = "synck-file-folder"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -1386,7 +1386,7 @@ dependencies = [
 
 [[package]]
 name = "synck-items"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "base64",
  "cfb",
@@ -1407,7 +1407,7 @@ dependencies = [
 
 [[package]]
 name = "synck-local"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "anstream",
  "anstyle",
@@ -1443,7 +1443,7 @@ dependencies = [
 
 [[package]]
 name = "synck-vcs"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1463,7 +1463,7 @@ dependencies = [
 
 [[package]]
 name = "synck-vcs-sqlite"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "chrono",

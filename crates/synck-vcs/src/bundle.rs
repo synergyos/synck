@@ -314,7 +314,7 @@ pub fn read_header(reader: &mut dyn BufRead) -> Result<BundleHeader, String> {
         ));
     }
     if header.schema.subsystem == SCHEMA_META_SUBSYSTEM_SQLITE
-        && header.schema.schema_id != "core-v6"
+        && header.schema.schema_id != "core-v7"
     {
         return Err("unsupported SQLite source schema provenance".into());
     }

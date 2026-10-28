@@ -129,7 +129,7 @@ async fn repository_discovery_rejects_format_one() {
         Ok(_) => panic!("repository discovery accepted format 1"),
         Err(error) => error,
     };
-    assert!(error.to_string().contains("format-6"));
+    assert!(error.to_string().contains("format-7"));
 }
 
 #[tokio::test]

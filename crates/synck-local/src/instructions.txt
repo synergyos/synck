@@ -8,7 +8,7 @@ CREATE AND COMMIT
 
     synck init [DIR] --author "<author>"
 
-Init creates a format-6 CHUNKED repository with an independent local checkout.
+Init creates a format-7 CHUNKED repository with an independent local checkout.
 It creates or preserves .synckignore and commits only that file. Existing files
 remain uncommitted. Defaults ignore OS/editor junk and unambiguous caches, not
 ordinary target/, dist/ or build/ folders. Hidden files default to ignore. To

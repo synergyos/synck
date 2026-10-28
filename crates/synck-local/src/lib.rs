@@ -50,5 +50,5 @@ pub use worktree::{Change, ChangeKind};
 
 pub use chunk_store::StorageMode;
 
-/// Create a complete format-6 repository with chunked storage and a checkout.
+/// Create a complete format-7 repository with chunked storage and a checkout.
 pub use portable::init_repository as init;

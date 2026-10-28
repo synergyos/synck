@@ -56,7 +56,7 @@ async fn fixture() -> Fixture {
     let folder = ItemId::new();
     let file = ItemId::new();
     let chat = ItemId::new();
-    fs::write(metadata.join("config.json"),serde_json::to_vec(&json!({"format_version":6,"repo_id":repo_id,"author":"original-author","authority":"LOCAL"})).unwrap()).unwrap();
+    fs::write(metadata.join("config.json"),serde_json::to_vec(&json!({"format_version":7,"repo_id":repo_id,"author":"original-author","authority":"LOCAL"})).unwrap()).unwrap();
     fs::write(metadata.join("lock"), []).unwrap();
     let storage = SqliteStorage::new(metadata.join("repository.sqlite3"));
     storage.init_schema().await.unwrap();
@@ -243,7 +243,7 @@ async fn complete_mixed_repository_reads_offline_and_keeps_exact_history_and_bod
     }
     let config: serde_json::Value =
         serde_json::from_slice(&fs::read(archived.join(".synck/config.json")).unwrap()).unwrap();
-    assert_eq!(config["format_version"], 6);
+    assert_eq!(config["format_version"], 7);
     assert!(config.get("author").is_none());
     assert_eq!(canonical_rows(&fixture.source), canonical_rows(&archived));
     let reimported = fixture.root.join("reimported");
@@ -367,7 +367,7 @@ async fn invalid_materialization_missing_body_and_extra_objects_never_publish() 
         "type": "synck_vcs_bundle_header", "bundle_format_version": 5,
         "repo_id": repo_id, "history_generation": uuid::Uuid::now_v7().to_string(),
         "exported_at": "2026-01-02T00:00:00Z", "commit_format_version": 6,
-        "schema": {"subsystem":"synck_vcs_sqlite", "schema_id":"core-v6"}
+        "schema": {"subsystem":"synck_vcs_sqlite", "schema_id":"core-v7"}
     })).unwrap();
     bytes.push(b'\n');
     fs::write(source.join("history.ndjson"), &bytes).unwrap();
@@ -548,16 +548,22 @@ async fn unsupported_format_is_rejected_without_mutation() {
     let source = &fixture.source;
     let path = source.join(".synck/config.json");
     let mut config: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-    for version in [3, 4, 5] {
+    for version in [3, 4, 5, 6, 8] {
         config["format_version"] = json!(version);
         let bytes = serde_json::to_vec(&config).unwrap();
         fs::write(&path, &bytes).unwrap();
-        assert!(PortableRepository::open(source).is_err());
+        let error = PortableRepository::open(source).err().expect("unsupported format").to_string();
+        assert!(error.contains("format-7"));
+        if version == 6 { assert!(error.contains("Synck 0.1.x")); }
         let destination = fixture.root.join("rejected");
         assert!(import_repository(source, &destination).await.is_err());
         assert!(!destination.exists());
         assert_eq!(fs::read(&path).unwrap(), bytes);
     }
+    // Identify the reader before interpreting another release's config shape.
+    fs::write(&path, br#"{"format_version":6,"old_release_field":true}"#).unwrap();
+    let error = PortableRepository::open(source).err().unwrap().to_string();
+    assert!(error.contains("Synck 0.1.x"), "{error}");
 }
 
 #[tokio::test]

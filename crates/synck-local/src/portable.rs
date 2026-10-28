@@ -1,4 +1,4 @@
-//! Format 6 repositories: canonical data and content without a working checkout.
+//! Format 7 repositories: canonical data and content without a working checkout.
 //!
 //! Opening and reading never repairs history or touches a working tree. Imported
 //! copies are followers. Local activation records an operator's source-retirement
@@ -51,8 +51,17 @@ use crate::repository::{
     sync_file, sync_open_directory,
 };
 
-pub const FORMAT_VERSION: u32 = 6;
+pub const FORMAT_VERSION: u32 = 7;
 const MAX_PAYLOAD_BYTES: usize = HEADER_BYTES + synck_items::body_events::MAX_BODY_BYTES;
+pub(crate) fn unsupported_format(version: Option<u64>) -> LocalError {
+    let reader = match version {
+        Some(6) => "Open format 6 with Synck 0.1.x, export its working files, and initialize a new repository with 0.2.0.",
+        _ => "Open this repository with the release that created it; this release has no migration reader.",
+    };
+    let version = version.map_or_else(|| "missing".to_string(), |value| value.to_string());
+    invalid(format!("unsupported repository format {version}; Synck 0.2.0 requires format-7. {reader}"))
+}
+
 const PAGE: usize = 512;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -368,7 +377,7 @@ pub(crate) fn stored_operation_id(id: &Uuid) -> String {
 }
 
 impl PortableRepository {
-    /// Open exactly this format-6 repository. No discovery, migration, recovery,
+    /// Open exactly this format-7 repository. No discovery, migration, recovery,
     /// checkout scan, indexing or authoritative database writes occur here.
     pub fn open(root: &Path) -> Result<Self> {
         let root_dir = directory(root)?;
@@ -389,12 +398,12 @@ impl PortableRepository {
             64 * 1024,
             &root.join(".synck/config.json"),
         )?;
-        let config: Config = serde_json::from_slice(&bytes)?;
-        if config.format_version != FORMAT_VERSION {
-            return Err(invalid(
-                "unsupported repository format; format 6 is required",
-            ));
+        let value: serde_json::Value = serde_json::from_slice(&bytes)?;
+        let version = value.get("format_version").and_then(serde_json::Value::as_u64);
+        if version != Some(u64::from(FORMAT_VERSION)) {
+            return Err(unsupported_format(version));
         }
+        let config: Config = serde_json::from_value(value)?;
         if let Some(author) = &config.author {
             author_valid(author)?;
         } else if config.authority != Authority::Follower {

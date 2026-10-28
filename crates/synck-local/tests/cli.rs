@@ -1756,7 +1756,7 @@ fn cli_repository_information_and_author_configuration() {
         ],
     );
     assert_eq!(info["schema_version"], 5);
-    assert_eq!(info["format_version"], 6);
+    assert_eq!(info["format_version"], 7);
     assert_eq!(info["author"], "author");
     assert_eq!(info["head"]["repo_seq"], 2);
     assert_keys(info.get("head").unwrap(), &["repo_seq", "commit_id"]);

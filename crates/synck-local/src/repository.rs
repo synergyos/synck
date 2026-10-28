@@ -26,7 +26,7 @@ use uuid::Uuid;
 use crate::chunk_store::{ChunkStore, OBJECT_STORE_FILE, StorageMode};
 use crate::error::{IoContext, LocalError, Result};
 
-const FORMAT_VERSION: u32 = 6;
+use crate::portable::FORMAT_VERSION;
 const LOCAL_SCHEMA_VERSION: i64 = 13;
 pub(crate) const MONITOR_LOCK_FILE: &str = "monitor.lock";
 const PAGE_SIZE: usize = 1_024;
@@ -103,7 +103,7 @@ fn reject_bare_complete_repository(metadata_path: &Path) -> Result<()> {
         return Ok(());
     };
     match config.get("format_version").and_then(serde_json::Value::as_i64) {
-        Some(6) if config.get("checkout").is_none() => Err(LocalError::Invalid(
+        Some(version) if version == i64::from(FORMAT_VERSION) && config.get("checkout").is_none() => Err(LocalError::Invalid(
             "this is a complete repository without a checkout; read it with synck item and synck repository commands (synck repository log lists its history), or enable file editing with synck repository checkout".to_string(),
         )),
         _ => Ok(()),
@@ -133,7 +133,7 @@ impl Config {
         storage_mode: StorageMode,
     ) -> Self {
         Self {
-            format_version: 6,
+            format_version: FORMAT_VERSION,
             storage_mode: Some(storage_mode),
             repo_id,
             author,
@@ -188,15 +188,13 @@ pub struct Repository {
 
 impl Repository {
     /// Open the checkout containing `start`, reporting any repository format
-    /// other than 6 with one plain message.
+    /// other than 7 with one plain message.
     pub async fn discover_complete(start: &Path) -> Result<Self> {
         let root = discover_root(start)?;
         let file = open_regular_file_nofollow(&root.join(".synck/config.json"))?;
         let config: serde_json::Value = serde_json::from_reader(file)?;
-        if config.get("format_version").and_then(|v| v.as_u64()) != Some(6) {
-            return Err(LocalError::Invalid(
-                "unsupported repository format; format 6 is required".into(),
-            ));
+        if config.get("format_version").and_then(|v| v.as_u64()) != Some(u64::from(FORMAT_VERSION)) {
+            return Err(crate::portable::unsupported_format(config.get("format_version").and_then(|v| v.as_u64())));
         }
         Self::discover(start).await
     }
@@ -243,15 +241,17 @@ impl Repository {
         // Close the reader before recovery replaces config.json on Windows.
         drop(config_file);
         let config: Config = serde_json::from_slice(&config_bytes)?;
-        if config.format_version != FORMAT_VERSION
-            || config.checkout.is_none()
+        if config.format_version != FORMAT_VERSION {
+            return Err(crate::portable::unsupported_format(Some(u64::from(config.format_version))));
+        }
+        if config.checkout.is_none()
             || !config
                 .authority
                 .is_some_and(|authority| authority != crate::portable::Authority::Follower)
             || config.author.is_empty()
         {
             return Err(LocalError::Invalid(
-                "expected a complete format-6 repository with an independent checkout".into(),
+                "expected a complete format-7 repository with an independent checkout".into(),
             ));
         }
 
@@ -669,20 +669,19 @@ impl Repository {
             .filter(|item_id| !current.contains_key(*item_id))
             .cloned()
             .collect::<BTreeSet<_>>();
-        if self.config.format_version == 6 {
-            for id in &missing {
-                let kind: String = connection.query_row(
-                    "SELECT item_type FROM vcs_items WHERE repo_id=?1 AND item_id=?2",
-                    params![self.config.repo_id.as_str(), id.as_str()],
-                    |row| row.get(0),
-                )?;
-                if kind != "FILE" && kind != "FOLDER" {
-                    return Err(LocalError::Invalid(
-                        "operation would affect non-filesystem items".into(),
-                    ));
-                }
+        for id in &missing {
+            let kind: String = connection.query_row(
+                "SELECT item_type FROM vcs_items WHERE repo_id=?1 AND item_id=?2",
+                params![self.config.repo_id.as_str(), id.as_str()],
+                |row| row.get(0),
+            )?;
+            if kind != "FILE" && kind != "FOLDER" {
+                return Err(LocalError::Invalid(
+                    "operation would affect non-filesystem items".into(),
+                ));
             }
         }
+
         current.extend(self.load_current_file_folder_items(&connection, &missing)?);
 
         for intent in intents.iter_mut() {
@@ -714,39 +713,37 @@ impl Repository {
             *descendants = expected;
         }
 
-        if self.config.format_version == 6 {
-            let visible = self.checkout_visible_item_ids(&connection)?;
-            for intent in intents.iter() {
-                let target = match intent {
-                    Intent::UpdateFile { item_id, .. } | Intent::UpdateFolder { item_id, .. } => {
-                        Some(item_id)
-                    }
-                    Intent::Trash { root, descendants } => {
-                        if descendants
-                            .iter()
-                            .any(|item| !visible.contains(&item.item_id))
-                        {
-                            return Err(LocalError::Invalid(
-                                "folder deletion would affect omitted or non-filesystem items"
-                                    .into(),
-                            ));
-                        }
-                        Some(&root.item_id)
-                    }
-                    _ => None,
-                };
-                if let Some(id) = target {
-                    let mode: String = connection.query_row(
-                        "SELECT sequencing_mode FROM vcs_items WHERE repo_id=?1 AND item_id=?2",
-                        params![self.config.repo_id.as_str(), id.as_str()],
-                        |row| row.get(0),
-                    )?;
-                    if mode != "LOCAL" {
+        let visible = self.checkout_visible_item_ids(&connection)?;
+        for intent in intents.iter() {
+            let target = match intent {
+                Intent::UpdateFile { item_id, .. } | Intent::UpdateFolder { item_id, .. } => {
+                    Some(item_id)
+                }
+                Intent::Trash { root, descendants } => {
+                    if descendants
+                        .iter()
+                        .any(|item| !visible.contains(&item.item_id))
+                    {
                         return Err(LocalError::Invalid(
-                            "externally sequenced items cannot be edited in a local checkout"
+                            "folder deletion would affect omitted or non-filesystem items"
                                 .into(),
                         ));
                     }
+                    Some(&root.item_id)
+                }
+                _ => None,
+            };
+            if let Some(id) = target {
+                let mode: String = connection.query_row(
+                    "SELECT sequencing_mode FROM vcs_items WHERE repo_id=?1 AND item_id=?2",
+                    params![self.config.repo_id.as_str(), id.as_str()],
+                    |row| row.get(0),
+                )?;
+                if mode != "LOCAL" {
+                    return Err(LocalError::Invalid(
+                        "externally sequenced items cannot be edited in a local checkout"
+                            .into(),
+                    ));
                 }
             }
         }

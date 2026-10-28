@@ -37,7 +37,7 @@ fn init_history_maintenance_and_copy_work_in_both_modes() {
         );
         let config: Value =
             serde_json::from_slice(&fs::read(root.join(".synck/config.json")).unwrap()).unwrap();
-        assert_eq!(config["format_version"], 6);
+        assert_eq!(config["format_version"], 7);
         assert_eq!(config["authority"], "INDEPENDENT_LOCAL");
         assert_eq!(config["storage_mode"], mode);
         assert!(root.join(".synckignore").is_file());
