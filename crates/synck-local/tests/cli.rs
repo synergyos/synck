@@ -1652,15 +1652,28 @@ fn numeric_repository_sequences_are_exact_revisions() {
         )
         .unwrap();
     fs::write(root.join("file.txt"), b"changed").unwrap();
-    let rejected = synck(root, &["commit", "-m", "must not be accepted"]);
-    assert!(!rejected.status.success());
-    let error = String::from_utf8_lossy(&rejected.stderr);
-    assert!(
-        error.contains("integrity error")
-            && error.contains("publication counter")
-            && error.contains("finalize"),
-        "{error}"
+    let pending = synck(
+        root,
+        &["--json", "commit", "-m", "accepted pending publication"],
     );
+    // Acceptance succeeded; the CLI reports the separate publication failure.
+    assert!(!pending.status.success());
+    let error: Value = serde_json::from_slice(&pending.stderr).unwrap();
+    assert_eq!(error["error"]["kind"], "ACCEPTED_NEEDS_RECOVERY");
+    let message = error["error"]["message"].as_str().unwrap();
+    assert!(
+        message.contains("publication counter") && message.contains("repository finalize"),
+        "{message}"
+    );
+    let accepted_id: Vec<u8> = db
+        .query_row(
+            "SELECT commit_id FROM vcs_commits WHERE repo_seq IS NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let accepted_id = synck_vcs::types::commit_id_from_digest_bytes(&accepted_id).unwrap();
+    assert!(message.contains(accepted_id.as_str()), "{message}");
     let after: (i64, i64) = db
         .query_row(
             "SELECT (SELECT count(*) FROM vcs_commits), (SELECT count(*) FROM vcs_events)",
@@ -1668,15 +1681,30 @@ fn numeric_repository_sequences_are_exact_revisions() {
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .unwrap();
-    assert_eq!(
-        after, before,
-        "rejected commit must leave no accepted history"
-    );
+    assert_eq!(after.0, before.0 + 1);
+    assert!(after.1 > before.1);
     let repaired = synck(root, &["repository", "finalize", "."]);
     assert!(
         repaired.status.success(),
         "{}",
         String::from_utf8_lossy(&repaired.stderr)
+    );
+    let published: Vec<u8> = db
+        .query_row(
+            "SELECT commit_id FROM vcs_commits WHERE repo_seq=3",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        synck_vcs::types::commit_id_from_digest_bytes(&published).unwrap(),
+        accepted_id
+    );
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM vcs_commits", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        after.0
     );
     assert_eq!(
         db.query_row(
@@ -1685,13 +1713,7 @@ fn numeric_repository_sequences_are_exact_revisions() {
             |r| r.get::<_, i64>(0)
         )
         .unwrap(),
-        3
-    );
-    let committed = synck(root, &["commit", "-m", "third sequence"]);
-    assert!(
-        committed.status.success(),
-        "{}",
-        String::from_utf8_lossy(&committed.stderr)
+        4
     );
     let compared = synck(root, &["compare", "2", "3"]);
     assert!(

@@ -539,14 +539,14 @@ async fn sequencer_rejects_gaps_without_publishing_partial_history() {
 }
 
 #[tokio::test]
-async fn sequencer_counter_mismatch_refuses_acceptance_and_repairs_from_history() {
+async fn sequencer_counter_mismatch_preserves_acceptance_and_repairs_from_history() {
     let (_directory, source, repo_id, _) = fixture().await;
     let core = Repo::new(
         Storage::new(Arc::new(source.clone())),
         CoreConfig::default(),
     );
     let db = source.open_writable().unwrap();
-    for counter in [Some(1), Some(7), None] {
+    for (index, counter) in [Some(1), Some(7), None].into_iter().enumerate() {
         if let Some(counter) = counter {
             db.execute(
                 "UPDATE vcs_repo_activity_heads SET next_repo_seq=?1 WHERE repo_id=?2",
@@ -560,27 +560,44 @@ async fn sequencer_counter_mismatch_refuses_acceptance_and_repairs_from_history(
             )
             .unwrap();
         }
+        let accepted = core
+            .append(
+                repo_id.clone(),
+                proposal(
+                    vec![create(&format!("NEW{index}"))],
+                    &format!("pending-{index}"),
+                ),
+            )
+            .await
+            .unwrap();
+        assert!(accepted.repo_seq.is_none());
         let error = core
-            .append(repo_id.clone(), proposal(vec![create("NEW")], "refused"))
+            .sequence_repo_activity(repo_id.clone(), 10)
             .await
             .unwrap_err();
         assert!(error.to_string().contains("publication counter"), "{error}");
         assert_eq!(
-            db.query_row("SELECT count(*) FROM vcs_commits", [], |r| r
-                .get::<_, i64>(0))
-                .unwrap(),
-            2
-        );
-        source.repair_publication_counter(&repo_id).unwrap();
-        assert_eq!(
             db.query_row(
-                "SELECT next_repo_seq FROM vcs_repo_activity_heads",
+                "SELECT count(*) FROM vcs_commits WHERE repo_seq IS NULL",
                 [],
                 |r| r.get::<_, i64>(0)
             )
             .unwrap(),
-            3
+            1
         );
+        source.repair_publication_counter(&repo_id).unwrap();
+        assert_eq!(
+            core.sequence_repo_activity(repo_id.clone(), 10)
+                .await
+                .unwrap(),
+            1
+        );
+        let published = source
+            .list_commits_by_repo_seq_readonly(&repo_id, index as i64 + 3, None, 1)
+            .await
+            .unwrap();
+        assert_eq!(published[0].commit_id, accepted.commit_id);
+        source.verify_checkpoints(&repo_id).unwrap();
     }
     // Repair must not bless corruption in the published chain.
     db.execute("UPDATE vcs_repo_activity_heads SET next_repo_seq=9", [])

@@ -1544,7 +1544,6 @@ impl StorageTxn for SqliteTxn {
         if limit == 0 {
             return Ok(0);
         }
-        let next = checked_publication_counter(self.conn()?, repo_id)?;
         ensure_history_generation(self.conn()?, repo_id)?;
         let now = format_timestamp(Utc::now());
         self.conn()?
@@ -1566,6 +1565,10 @@ impl StorageTxn for SqliteTxn {
             .collect::<rusqlite::Result<Vec<_>>>()
             .map_err(map_sqlite_error)?;
         drop(statement);
+        if commit_pks.is_empty() {
+            return Ok(0);
+        }
+        let next = checked_publication_counter(self.conn()?, repo_id)?;
         for (offset, commit_pk) in commit_pks.iter().enumerate() {
             let offset = i64::try_from(offset).map_err(|_| StorageError::Other {
                 detail: "sequencer offset overflow".to_string(),
@@ -1614,9 +1617,6 @@ impl StorageTxn for SqliteTxn {
         occurred_at: Option<Timestamp>,
         created_at: Timestamp,
     ) -> Result<(), StorageError> {
-        if repo_seq.is_none() {
-            checked_publication_counter(self.conn()?, repo_id)?;
-        }
         self.conn()?
             .execute(
                 "INSERT INTO vcs_commits (repo_id, commit_pk, commit_id, repo_seq, operation_id, format_version, import_job_id, author_id, committer_id, message, occurred_at, created_at, event_count, events_digest) VALUES (?1, ?2, NULL, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, NULL, NULL)",
@@ -2046,7 +2046,7 @@ impl SqliteStorage {
     }
 
     /// Repair only the derived counter, after verifying published history.
-    /// Acceptance and sequencing use the same SQLite write exclusion.
+    /// Repair and sequencing use the same SQLite write exclusion.
     pub fn repair_publication_counter(&self, repo_id: &RepoId) -> Result<(), StorageError> {
         let mut conn = self.open_writable()?;
         let txn = conn

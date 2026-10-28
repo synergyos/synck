@@ -242,6 +242,20 @@ fractional time. The chain binds publication order relative to a trusted checkpo
 by itself authenticate authority or detect the removal of an unknown suffix.
 A checkpoint is not a regulatory retention seal.
 
+Sequencer implementations MUST serialize publication transactions per repository:
+only one such transaction may run for a repository at a time. Lock that
+repository's activity head, select committed unsequenced commits, validate the
+counter against the last published position, then assign a consecutive batch,
+publish every checkpoint and advance the counter in the same transaction. Hold
+the activity-head lock until commit or rollback. Rollback leaves no assigned
+positions, counter advancement or checkpoints, so it creates no gap. Backends
+with row locks may select unsequenced commits using `FOR UPDATE SKIP LOCKED`;
+that does not replace the per-repository sequencer lock. Use a deterministic
+batch order (acceptance timestamp, then commit key). Never allocate `repo_seq`
+with `nextval()` or its equivalent in the acceptance transaction. SQLite uses
+`BEGIN IMMEDIATE` to serialize its writers; acceptance itself does not access
+the activity head or checkpoints.
+
 SQLite publishes `vcs_checkpoints(repo_id, repo_seq, commit_id, checkpoint)`
 with raw 32-byte digest values. `vcs_history_generations(repo_id, generation)`
 holds a UUIDv7 identifying this history generation. Copies preserve that value.
@@ -605,12 +619,15 @@ additional owned tables, unique constraints, views or triggers are not.
   unpublished changes. Replay must reproduce its name, name key, type, parent,
   lifecycle, item/ref heads, creation attribution and federation fields.
 - `vcs_repo_activity_heads.next_repo_seq` is exactly one greater than the last
-  published position (1 before first publication). Before accepting unsequenced
-  commits or publishing them, SQLite checks this counter against canonical
-  history in the same write transaction; disagreement is an integrity error.
-  Explicit `repository finalize` verifies the published checkpoint chain and
-  recomputes this derived counter transactionally before resuming publication.
-  It never renumbers published commits. `updated_at` is operational allocation
+  published position (1 before first publication). Acceptance never reads or
+  locks sequencer state and never allocates `repo_seq` in the commit transaction:
+  accepted commits remain durable with `repo_seq = NULL` until asynchronous
+  publication. Only the sequencer checks the counter against published history
+  before assigning a batch. A mismatch stops publication with an integrity
+  error; it does not invalidate or reject acceptance. Explicit `repository
+  finalize` verifies the published checkpoint chain and recomputes this derived
+  counter transactionally before publishing pending commits with their original
+  IDs. It never renumbers published commits. `updated_at` is operational allocation
   time. `vcs_checkpoints` has exactly one matching row per published commit and
   none for unpublished commits. `vcs_history_generations` has one generation.
 - `vcs_metadata_objects` stores available framed metadata objects. Absence is
