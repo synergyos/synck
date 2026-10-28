@@ -124,11 +124,13 @@ fn page(
 ) -> HistoryPage {
     HistoryPage {
         after,
-        header: Some(PublishedHeader {
-            commit: published.commit.clone(),
-            checkpoint: published.checkpoint.clone(),
-        }),
-        events,
+        fragments: vec![HistoryFragment {
+            header: PublishedHeader {
+                commit: published.commit.clone(),
+                checkpoint: published.checkpoint.clone(),
+            },
+            events,
+        }],
         has_more,
     }
 }
@@ -339,17 +341,17 @@ fn history_tampering_replay_and_partial_terminal_pages_leave_cursor_unchanged() 
         false,
     );
     let mut bad = valid.clone();
-    bad.header.as_mut().unwrap().commit.created_at += chrono::Duration::seconds(1);
+    bad.fragments[0].header.commit.created_at += chrono::Duration::seconds(1);
     assert!(state.push(&bad).is_err());
     assert_eq!(state.position(), &original);
     bad = valid.clone();
-    if let CommitEventRow::Item(row) = &mut bad.events[0] {
+    if let CommitEventRow::Item(row) = &mut bad.fragments[0].events[0] {
         row.payload.push(b' ');
     }
     assert!(state.push(&bad).is_err());
     assert_eq!(state.position(), &original);
     bad = valid.clone();
-    bad.events.clear();
+    bad.fragments[0].events.clear();
     assert!(state.push(&bad).is_err());
     bad = valid.clone();
     bad.after.completed.repository.generation = Uuid::now_v7();
@@ -358,8 +360,7 @@ fn history_tampering_replay_and_partial_terminal_pages_leave_cursor_unchanged() 
     assert!(state.push(&valid).is_err());
     let terminal = HistoryPage {
         after: state.position().clone(),
-        header: None,
-        events: vec![],
+        fragments: vec![],
         has_more: false,
     };
     assert!(state.push(&terminal).unwrap().is_none());
@@ -500,6 +501,26 @@ fn maximum_format_event_fits_both_transfers_without_relaxing_page_bounds() {
             .unwrap()
             .is_some()
     );
+    let mut history = HistoryVerifier::new(Cursor::genesis(repository())).unwrap();
+    let oversized = HistoryPage {
+        after: history.position().clone(),
+        fragments: vec![
+            HistoryFragment {
+                header: PublishedHeader {
+                    commit: published.commit.clone(),
+                    checkpoint: published.checkpoint.clone()
+                },
+                events: published.events.clone(),
+            };
+            3
+        ],
+        has_more: false,
+    };
+    assert!(matches!(
+        history.push(&oversized),
+        Err(ProtocolError::Limit("page bytes"))
+    ));
+    assert_eq!(history.position().completed, Cursor::genesis(repository()));
     let mut state = verifier(&initial);
     assert!(matches!(
         state.push(
@@ -553,11 +574,11 @@ fn history_continuation_keeps_partial_item_and_ref_events_private() {
         false,
     );
     let mut changed = last.clone();
-    changed.header.as_mut().unwrap().commit.message = Some("different".into());
+    changed.fragments[0].header.commit.message = Some("different".into());
     assert!(state.push(&changed).is_err());
     assert_eq!(state.position(), &pending);
     changed = last.clone();
-    if let CommitEventRow::Ref(row) = &mut changed.events[0] {
+    if let CommitEventRow::Ref(row) = &mut changed.fragments[0].events[0] {
         row.payload.push(b' ');
     }
     assert!(state.push(&changed).is_err());
@@ -566,4 +587,201 @@ fn history_continuation_keeps_partial_item_and_ref_events_private() {
     assert_eq!(completed.repo_seq, 5);
     assert_eq!(completed.checkpoint, published.checkpoint);
     assert!(state.position().pending.is_none());
+}
+
+fn history_vector(name: &str) -> (serde_json::Value, Vec<PublishedCommit>) {
+    let vector: serde_json::Value =
+        serde_json::from_str(include_str!("../../../docs/spec/vectors/sync-history.json")).unwrap();
+    assert_eq!(
+        serde_json::to_value(repository()).unwrap(),
+        vector["repository"]
+    );
+    assert_eq!(
+        now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
+        vector["accepted_at"]
+    );
+    let case = vector[name].clone();
+    let mut previous = synck_vcs::checkpoint::GENESIS;
+    let mut ordinal = 0;
+    let commits = case["event_counts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .enumerate()
+        .map(|(index, count)| {
+            let mut initial = request();
+            initial.metadata = serde_json::from_value(vector["metadata"].clone()).unwrap();
+            initial.metadata.message = Some(format!("commit-{index}"));
+            let records: Vec<_> = (0..count.as_u64().unwrap())
+                .map(|_| {
+                    let event = serde_json::from_value(serde_json::json!({
+                        "item_id": format!("019a2900-0000-7000-8000-{:012x}", ordinal + 100),
+                        "event_type": "FOLDER::CREATE",
+                        "create_item": {"item_type":"FOLDER", "name":format!("folder-{ordinal:05}")}
+                    }))
+                    .unwrap();
+                    ordinal += 1;
+                    ProposalRecord::Item(event)
+                })
+                .collect();
+            let request = upload(&initial, &records, MAX_PAGE_RECORDS)
+                .request(initial.metadata)
+                .unwrap();
+            let mut commit = published(&request, &records);
+            let sequence = index as i64 + 1;
+            commit.commit.repo_seq = Some(sequence);
+            for event in &mut commit.events {
+                match event {
+                    CommitEventRow::Item(row) => row.repo_seq = Some(sequence),
+                    CommitEventRow::Ref(_) => unreachable!(),
+                }
+            }
+            previous = synck_vcs::checkpoint::digest(
+                &previous,
+                sequence as u64,
+                &commit.commit.commit_id,
+                now(),
+            )
+            .unwrap();
+            commit.checkpoint = digest(previous);
+            let expected = &case["commits"][index];
+            assert_eq!(commit.commit.commit_id.as_str(), expected["commit_id"]);
+            assert_eq!(
+                commit.commit.events_digest.as_str(),
+                expected["events_digest"]
+            );
+            assert_eq!(commit.checkpoint.as_str(), expected["checkpoint"]);
+            commit
+        })
+        .collect();
+    (case, commits)
+}
+
+fn vector_history_page(
+    spec: &serde_json::Value,
+    commits: &[PublishedCommit],
+    after: HistoryPosition,
+    has_more: bool,
+) -> HistoryPage {
+    HistoryPage {
+        after,
+        fragments: spec["fragments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|range| {
+                let commit = &commits[range["commit_index"].as_u64().unwrap() as usize];
+                let start = range["start_event"].as_u64().unwrap() as usize;
+                let end = range["end_event"].as_u64().unwrap() as usize;
+                HistoryFragment {
+                    header: PublishedHeader {
+                        commit: commit.commit.clone(),
+                        checkpoint: commit.checkpoint.clone(),
+                    },
+                    events: commit.events[start..end].to_vec(),
+                }
+            })
+            .collect(),
+        has_more,
+    }
+}
+
+#[test]
+fn many_small_commits_share_one_page_and_roll_back_on_late_corruption() {
+    let (vector, commits) = history_vector("many_small_commits");
+    let mut state = HistoryVerifier::new(Cursor::genesis(repository())).unwrap();
+    let original = state.position().clone();
+    let page = vector_history_page(&vector["pages"][0], &commits, original.clone(), false);
+    assert_eq!(page.fragments.len(), 128);
+    assert!(serde_json::to_vec(&page).unwrap().len() <= MAX_PAGE_BYTES);
+    let mut bad = page.clone();
+    bad.fragments.last_mut().unwrap().header.checkpoint = digest([9; 32]);
+    assert!(state.push(&bad).is_err());
+    assert_eq!(state.position(), &original);
+    // Limits count all fragments, not just the largest commit in the page.
+    bad = page.clone();
+    bad.fragments
+        .resize(MAX_PAGE_RECORDS + 1, page.fragments[0].clone());
+    assert!(matches!(
+        state.push(&bad),
+        Err(ProtocolError::Limit("history page events"))
+    ));
+    assert_eq!(state.position(), &original);
+    bad = page.clone();
+    bad.fragments[1].events.clear();
+    assert!(state.push(&bad).is_err());
+    bad = page.clone();
+    bad.fragments.swap(0, 1);
+    assert!(state.push(&bad).is_err());
+    assert_eq!(state.position(), &original);
+    let completed = state.push(&page).unwrap().unwrap();
+    assert_eq!(completed.repo_seq, 128);
+    assert_eq!(completed.checkpoint, commits.last().unwrap().checkpoint);
+    assert!(state.position().pending.is_none());
+}
+
+#[test]
+fn history_page_can_start_and_end_mid_commit_with_complete_commits_between() {
+    let (vector, commits) = history_vector("starts_and_ends_mid_commit");
+    let mut state = HistoryVerifier::new(Cursor::genesis(repository())).unwrap();
+    let pages = vector["pages"].as_array().unwrap();
+    for (index, spec) in pages.iter().enumerate() {
+        let page = vector_history_page(
+            spec,
+            &commits,
+            state.position().clone(),
+            index + 1 < pages.len(),
+        );
+        if index == 1 {
+            let pending = state.position().clone();
+            for variant in 0..4 {
+                let mut bad = page.clone();
+                match variant {
+                    0 => bad.has_more = false,
+                    1 => bad.fragments[1].header.commit.message = Some("changed".into()),
+                    2 => {
+                        bad.fragments[2].events.pop();
+                    }
+                    3 => bad.fragments[0].header.commit.created_at += chrono::Duration::seconds(1),
+                    _ => unreachable!(),
+                }
+                assert!(state.push(&bad).is_err());
+                assert_eq!(state.position(), &pending);
+            }
+        }
+        let completed = state.push(&page).unwrap();
+        let sequence = spec["completed_repo_seq"].as_u64().unwrap();
+        assert_eq!(state.position().completed.repo_seq, sequence);
+        if sequence == 0 {
+            assert!(completed.is_none());
+        } else {
+            let completed = completed.unwrap();
+            assert_eq!(completed.repo_seq, sequence);
+            assert_eq!(
+                completed.checkpoint,
+                commits[sequence as usize - 1].checkpoint
+            );
+        }
+        assert_eq!(
+            state
+                .position()
+                .pending
+                .as_ref()
+                .map(|p| p.next_event_index),
+            spec["pending_event_index"].as_u64()
+        );
+        if index == 1 {
+            // Installing through commit 3 leaves only commit 4's prefix private.
+            // A restart replays that prefix from the last completed cursor.
+            let mut resumed = HistoryVerifier::new(state.position().completed.clone()).unwrap();
+            let prefix = HistoryPage {
+                after: resumed.position().clone(),
+                fragments: vec![page.fragments.last().unwrap().clone()],
+                has_more: true,
+            };
+            assert!(resumed.push(&prefix).unwrap().is_none());
+            assert_eq!(resumed.position(), state.position());
+            state = resumed;
+        }
+    }
 }

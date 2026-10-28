@@ -249,11 +249,17 @@ pub struct PublishedHeader {
 #[serde(deny_unknown_fields)]
 pub struct HistoryPage {
     pub after: HistoryPosition,
-    /// One commit per page; repeat the identical header on every continuation.
-    /// None is only valid for an empty terminal page at a complete cursor.
-    pub header: Option<PublishedHeader>,
-    pub events: Vec<CommitEventRow>,
+    /// Ordered commit fragments sharing the page's event and byte budgets.
+    /// Only the first may continue a prior page; only the last may be incomplete.
+    pub fragments: Vec<HistoryFragment>,
     pub has_more: bool,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HistoryFragment {
+    /// Repeat the identical header when continuing a commit.
+    pub header: PublishedHeader,
+    pub events: Vec<CommitEventRow>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

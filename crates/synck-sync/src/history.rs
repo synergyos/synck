@@ -178,10 +178,12 @@ pub fn verify_published_commit(
 }
 
 /// Stream one bounded page at a time. Only `Some(cursor)` from push authorizes
-/// installation of a complete commit, after Core semantic replay succeeds.
-/// The caller durably stages events and installs history/projections/cursor in
-/// one transaction. On restart replay the partial staging from its last complete
-/// cursor; never deserialize an untrusted hash accumulator as verified state.
+/// installation through the last complete commit, after Core semantic replay
+/// succeeds. A trailing incomplete fragment remains private. Invalid pages leave
+/// all state unchanged. The caller durably stages events and installs complete
+/// history/projections/cursor in one transaction. On restart replay the partial
+/// staging from its last complete cursor; never deserialize an untrusted hash
+/// accumulator as verified state.
 #[derive(Clone)]
 pub struct HistoryVerifier {
     position: HistoryPosition,
@@ -207,56 +209,66 @@ impl HistoryVerifier {
         if page.after != self.position {
             return Err(ProtocolError::Checkpoint);
         }
-        if page.events.len() > MAX_PAGE_RECORDS {
-            return Err(ProtocolError::Limit("history page events"));
+        // Every fragment is nonempty, so this also bounds header count.
+        let mut remaining = MAX_PAGE_RECORDS;
+        for fragment in &page.fragments {
+            if fragment.events.is_empty() {
+                return Err(invalid("empty commit fragment"));
+            }
+            remaining = remaining
+                .checked_sub(fragment.events.len())
+                .ok_or(ProtocolError::Limit("history page events"))?;
         }
         check_page_size(page)?;
-        let Some(published) = &page.header else {
-            if !page.events.is_empty() || page.has_more || self.pending.is_some() {
+        if page.fragments.is_empty() {
+            if page.has_more || self.pending.is_some() {
                 return Err(invalid("invalid empty history page"));
             }
             return Ok(None);
-        };
-        if page.events.is_empty() {
-            return Err(invalid("empty commit fragment"));
         }
         let mut next = self.clone();
-        if let Some(previous) = &next.pending {
-            if serde_json::to_value(previous).map_err(|e| invalid(e.to_string()))?
-                != serde_json::to_value(published).map_err(|e| invalid(e.to_string()))?
-            {
-                return Err(invalid("commit header changed during continuation"));
+        let mut completed_any = false;
+        for (index, fragment) in page.fragments.iter().enumerate() {
+            let published = &fragment.header;
+            if let Some(previous) = &next.pending {
+                if serde_json::to_value(previous).map_err(|e| invalid(e.to_string()))?
+                    != serde_json::to_value(published).map_err(|e| invalid(e.to_string()))?
+                {
+                    return Err(invalid("commit header changed during continuation"));
+                }
+            } else {
+                header(published, &next.position.completed)?;
             }
-        } else {
-            header(published, &next.position.completed)?;
-            next.pending = Some(published.clone());
-        }
-        for event in &page.events {
-            next.events.push(
-                event,
-                &published.commit,
-                &next.position.completed.repository,
-            )?;
-        }
-        let completed = if next.events.next == published.commit.event_count as usize {
-            next.events.finish(&published.commit)?;
-            next.position.completed.repo_seq =
-                published.commit.repo_seq.expect("checked publication") as u64;
-            next.position.completed.checkpoint = published.checkpoint.clone();
-            next.position.pending = None;
-            next.pending = None;
-            next.events = Events::default();
-            Some(next.position.completed.clone())
-        } else {
-            if !page.has_more {
-                return Err(invalid("incomplete commit without continuation"));
+            for event in &fragment.events {
+                next.events.push(
+                    event,
+                    &published.commit,
+                    &next.position.completed.repository,
+                )?;
             }
-            next.position.pending = Some(PendingCommit {
-                commit_id: published.commit.commit_id.clone(),
-                next_event_index: next.events.next as u64,
-            });
-            None
-        };
+            if next.events.next == published.commit.event_count as usize {
+                next.events.finish(&published.commit)?;
+                next.position.completed.repo_seq =
+                    published.commit.repo_seq.expect("checked publication") as u64;
+                next.position.completed.checkpoint = published.checkpoint.clone();
+                next.position.pending = None;
+                next.pending = None;
+                next.events = Events::default();
+                completed_any = true;
+            } else {
+                if index + 1 != page.fragments.len() || !page.has_more {
+                    return Err(invalid(
+                        "incomplete commit must end a page with continuation",
+                    ));
+                }
+                next.pending = Some(published.clone());
+                next.position.pending = Some(PendingCommit {
+                    commit_id: published.commit.commit_id.clone(),
+                    next_event_index: next.events.next as u64,
+                });
+            }
+        }
+        let completed = completed_any.then(|| next.position.completed.clone());
         *self = next;
         Ok(completed)
     }

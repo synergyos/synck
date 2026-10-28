@@ -155,20 +155,32 @@ against the exact pending request using `Receipt::validate_for`.
 `pending: {commit_id, next_event_index}`. A pending offset is positive and counts
 both item and ref events. The completed cursor never advances inside a commit.
 
-A `HistoryPage` contains the exact requested `after`, `header`, ordered `events`
-and `has_more`. One page holds events from one commit. `header` repeats the same
-`CommitRow` and resulting checkpoint on each continuation. The server can stop
-before the event limit to obey the byte bound. A nonempty commit fragment must
-contain at least one event. A headerless, empty page is allowed only at a complete
-cursor with `has_more=false`. Incomplete commits always require continuation.
-Concurrent later publication never changes an already published prefix.
+A `HistoryPage` contains the exact requested `after`, ordered `fragments` and
+`has_more`. Each `HistoryFragment` has its own `header` (`CommitRow` and resulting
+checkpoint) and nonempty ordered `events`. Continuations repeat the identical
+header. The first fragment may continue the pending commit, followed by any
+number of complete commits and at most one incomplete final fragment. A page
+may also contain only a portion of the pending commit. Never begin another
+commit before finishing the current one, or split one commit into multiple
+fragments within the same page.
 
-`HistoryVerifier` verifies exact positions, unchanged continuation headers,
-canonical payloads and format limits, event indexes/families/digests, the complete
-commit ID and checkpoint chain. A failed page does not alter the verifier state.
-`push` returns `None` while incomplete; it returns a complete cursor only after
-the last event and aggregate digest verify. A full commit has no transfer-size
-limit; `verify_published_commit` also accepts any format-valid event count.
+The **sum** of events across fragments must not exceed 512, and the entire
+serialized page, including every header, must fit 8 MiB. The server packs commits
+until the requested event limit or byte bound is reached; it does not stop just
+because a commit ended. An empty fragment list is allowed only at a complete
+cursor with `has_more=false`. An incomplete final fragment requires
+`has_more=true`. Concurrent later publication never changes an already published
+prefix.
+
+`HistoryVerifier` checks exact positions, unchanged continuation headers,
+canonical payloads and format limits, event indexes/families/digests, and each
+commit ID and checkpoint in order. A failed page leaves all verifier state
+unchanged, including when an earlier fragment in that page was valid. `push`
+returns the **last completed cursor in the page**, or `None` if no commit
+completed. That cursor covers all completed commits even when a trailing
+fragment is incomplete; the pending offset remains private. A full commit has
+no transfer-size limit; `verify_published_commit` also accepts any format-valid
+event count.
 
 Clients durably stage incomplete commits privately. After restart rebuild the
 verifier from the last installed complete cursor and replay the staged prefix
@@ -221,3 +233,9 @@ computed hashes, a 16 KiB message, a 256-byte operation ID and an import-job ID.
 expiry, page ordering, retries, partial-history restart, tampering, exact receipt
 binding and separate policy refusals. These are shared-library checks, not a
 claim of a deployed service or completed clone/import executor.
+
+[The packed-history vectors](vectors/sync-history.json) independently specify
+128 small commits transferred in one page and a page that continues one commit,
+completes intervening commits, and starts another. Protocol tests verify their
+checkpoint chains, whole-page limits, rollback on late corruption, and restart
+from the last completed cursor with only the trailing prefix staged.
