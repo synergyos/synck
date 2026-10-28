@@ -17,3 +17,8 @@ fn bundled_sqlite_includes_wal_reset_fix() {
         rusqlite::version()
     );
 }
+
+#[test]
+fn published_schema_matches_standalone_specification() {
+    assert_eq!(include_str!("schema.sql"), include_str!("../../../docs/spec/history.sql"));
+}

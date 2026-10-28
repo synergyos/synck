@@ -14,10 +14,10 @@ use synck_vcs::types::{
     compute_commit_id, compute_sha256_digest_bytes, sha256_prefixed_hex_from_digest_bytes,
 };
 
-const INTENTS_FIXTURE: &str = include_str!("fixtures/v1/intents.json");
-const EVENTS_FIXTURE: &str = include_str!("fixtures/v1/events.json");
-const GROUPS_FIXTURE: &str = include_str!("fixtures/v1/change_groups.json");
-const CONFORMANCE_FIXTURE: &str = include_str!("fixtures/v1/conformance.json");
+const INTENTS_FIXTURE: &str = include_str!("../../../docs/spec/vectors/file-folder/intents.json");
+const EVENTS_FIXTURE: &str = include_str!("../../../docs/spec/vectors/file-folder/events.json");
+const GROUPS_FIXTURE: &str = include_str!("../../../docs/spec/vectors/file-folder/change_groups.json");
+const CONFORMANCE_FIXTURE: &str = include_str!("../../../docs/spec/vectors/file-folder/conformance.json");
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]

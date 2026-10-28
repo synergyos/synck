@@ -7418,7 +7418,7 @@ mod tests {
     use crate::repository::{Repository, windows_extended_length_path_units};
 
     const CONFORMANCE_FIXTURE: &str =
-        include_str!("../../synck-file-folder/tests/fixtures/v1/conformance.json");
+        include_str!("../../../docs/spec/vectors/file-folder/conformance.json");
 
     #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]

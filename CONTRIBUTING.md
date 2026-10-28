@@ -7,8 +7,8 @@ regression. Use the checked-in Rust toolchain and `--locked` with Cargo.
 
 Persisted events, identifiers, canonical bytes, database/storage formats and
 versioned wire protocols are compatibility contracts. Discuss a change to those
-contracts before implementing it. Preserve existing accepted history and error
-categories. Product policy, hosted services and GUI applications are outside
+contracts before implementing it. Follow the [pre-1.0 single-format policy](docs/formats.md), preserve accepted
+history within that format, and preserve error categories. Product policy, hosted services and GUI applications are outside
 this workspace's scope.
 
 ## Getting started

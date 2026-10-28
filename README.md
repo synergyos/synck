@@ -21,7 +21,7 @@ $ synck log --oneline
 2 | 2026-10-26 16:50 +01:00 | Alex | Record the meeting time
 1 | 2026-10-26 16:50 +01:00 | Alex | Initialize Synck repository
 $ synck fsck
-{"repo_id":"01a178e7-f433-7720-9811-70994ded0458","terminal_repo_seq":3,"commits":3,"items":2,"blobs":3,"bodies":0}
+# Reports history/checkpoints, objects, metadata and absent payloads.
 ```
 
 Synck is the open-source engine behind [SynckHub](https://synckhub.com). It is a
@@ -56,20 +56,23 @@ If you know Git, some of this will feel familiar and some will not. Each
 difference is deliberate.
 
 - **Items, not snapshots.** Synck versions *items*: files and folders, but also
-  chats, email, tasks, calendars and other records. Every item has a permanent
+  chats and email. The 0.2 typed readers cover FILE/FOLDER, CHAT and EMAIL. Every item has a permanent
   ID and its own ordered history, so a renamed or moved file is still the same
   file.
-- **Append-only history.** Accepted changes are never rewritten. Undo adds a
-  new change that reverses an old one.
+- **Append-only ordinary writes.** Undo adds a new change that reverses an old
+  one. A future explicit administrative rewrite must change the history generation
+  and require client reconciliation; 0.2 does not implement that command.
 - **No staging area.** Edit files with any application. `synck commit` records
   what changed: everything, or only the paths you name.
 - **One writer, linear history.** Each item has one authority that accepts its
-  changes in order. There are no branches or merges, and changes to different
-  items never conflict.
+  changes in order. There are no branches or merges, and independent content edits to different
+  items do not conflict. Structural changes still share namespace constraints.
 - **Integrity throughout.** Commits, file versions and message bodies are
-  identified by SHA-256. `synck fsck` checks the history and every stored byte.
-- **Complete, self-contained copies.** Every repository holds its whole history
-  and every byte that history refers to. `synck archive` writes a verified copy
+  identified by SHA-256. Content objects include a random salt. `synck fsck`
+  checks history/checkpoints and available objects, reporting absent payloads
+  separately from corruption.
+- **Complete, self-contained archives.** A complete archive holds its history
+  and every byte that history refers to. Thin repositories may lack payloads. `synck archive` writes a verified copy
   that opens with this tool alone.
 
 [Items, events and commits](https://synckhub.com/synck/internals) and the
@@ -122,8 +125,8 @@ operating guide that also works well for AI agents.
 
 ## Open a repository someone gave you
 
-A complete repository exported from SynckHub, or copied from someone else, can be
-checked and read directly:
+A repository in the matching release format can be checked and read directly.
+SynckHub currently remains pinned to 0.1; its format-6 exports require that reader:
 
 ```sh
 synck repository verify ./exported-repository
@@ -173,11 +176,32 @@ services and the user interface belong to the application that embeds it.
 
 ## Status and compatibility
 
-This is the first public release, 0.1.0. The Rust API is pre-1.0 and may change.
-Stored data is held to a stricter standard: releases do not rewrite accepted
-history, change identifiers or silently reinterpret stored data, and the canonical
-encodings are pinned by test vectors in this repository. See
-[Formats and compatibility](https://synckhub.com/synck/reference/formats).
+Synck 0.2.0 uses repository format 7. Before 1.0, each release reads only its
+own format and refuses other formats without modifying them. There are no
+compatibility readers or automatic migrations. The Rust API can also change;
+repositories made by untagged development builds are disposable.
+
+The [standalone format specification](docs/spec/format.md), SQL schemas and
+language-neutral vectors define the format independently of the Rust source.
+Complete exports preserve the history generation, hashes and exact object salts.
+Regulated retention requires a separate archival system; a verified copy alone
+is not a claim of WORM or regulatory compliance.
+
+To carry working files from 0.1 to 0.2, keep both executables available:
+
+```sh
+# Use the 0.1 executable inside the old repository:
+synck-0.1 export-tree HEAD /path/to/new-work
+# Then use 0.2:
+synck-0.2 init /path/to/new-work --author "Alex"
+cd /path/to/new-work
+synck-0.2 commit --fix-names -m "Import working files from 0.1"
+```
+
+These executable names denote separately installed versions. FILE bytes transfer;
+old history, IDs, labels and typed chat/email data do not. Keep the original
+repository with its 0.1 reader when those records matter. A history converter
+is not included. See [format policy](docs/formats.md).
 
 CI builds and tests every package on Linux, macOS and Windows.
 

@@ -31,38 +31,7 @@ const MAX_BATCH_ROWS: usize = 1024;
 #[cfg(test)]
 mod ooxml_benchmark;
 
-const SCHEMA: &str = r#"
-CREATE TABLE store_identity (
-    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-    repo_id TEXT NOT NULL CHECK (repo_id <> '')
-) STRICT;
-CREATE TABLE blobs (
-    digest BLOB PRIMARY KEY CHECK (length(digest) = 32),
-    size_bytes INTEGER NOT NULL CHECK (size_bytes >= 0),
-    complete INTEGER NOT NULL CHECK (complete IN (0, 1))
-) STRICT;
-CREATE TABLE chunks (
-    digest BLOB PRIMARY KEY CHECK (length(digest) = 32),
-    raw_size INTEGER NOT NULL CHECK (raw_size BETWEEN 1 AND 262144),
-    codec TEXT NOT NULL CHECK (codec IN ('RAW', 'ZSTD')),
-    payload BLOB NOT NULL,
-    CHECK (
-        (codec = 'RAW' AND length(payload) = raw_size)
-        OR
-        (codec = 'ZSTD' AND length(payload) > 0
-            AND length(payload) * 100 < raw_size * 95)
-    )
-) STRICT;
-CREATE TABLE blob_chunks (
-    blob_digest BLOB NOT NULL CHECK (length(blob_digest) = 32),
-    ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
-    chunk_digest BLOB NOT NULL CHECK (length(chunk_digest) = 32),
-    PRIMARY KEY (blob_digest, ordinal),
-    FOREIGN KEY (blob_digest) REFERENCES blobs(digest) ON DELETE CASCADE,
-    FOREIGN KEY (chunk_digest) REFERENCES chunks(digest)
-) STRICT;
-CREATE INDEX idx_blob_chunks_chunk_digest ON blob_chunks(chunk_digest);
-"#;
+const SCHEMA: &str = include_str!("object-store.sql");
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -953,7 +922,7 @@ fn resolved_open_path(path: &Path) -> Result<PathBuf> {
 }
 
 fn validate_schema(connection: &Connection) -> Result<()> {
-    if schema_objects(connection)?.as_slice() != expected_schema_objects() {
+    if &schema_objects(connection)? != expected_schema_objects() {
         return Err(LocalError::Integrity(
             "object SQLite schema definition does not match version 1".to_string(),
         ));
@@ -961,29 +930,17 @@ fn validate_schema(connection: &Connection) -> Result<()> {
     Ok(())
 }
 
-fn expected_schema_objects() -> &'static [(String, String, String, String)] {
-    static EXPECTED: OnceLock<Vec<(String, String, String, String)>> = OnceLock::new();
+fn expected_schema_objects() -> &'static synck_vcs_sqlite::schema::SchemaShape {
+    static EXPECTED: OnceLock<synck_vcs_sqlite::schema::SchemaShape> = OnceLock::new();
     EXPECTED.get_or_init(|| {
-        let connection =
-            Connection::open_in_memory().expect("open in-memory object schema database");
-        connection
-            .execute_batch(SCHEMA)
-            .expect("install built-in object schema");
-        schema_objects(&connection).expect("read built-in object schema")
+        let connection = Connection::open_in_memory().expect("open expected object schema");
+        connection.execute_batch(SCHEMA).expect("install expected object schema");
+        schema_objects(&connection).expect("read expected object schema")
     })
 }
 
-fn schema_objects(connection: &Connection) -> Result<Vec<(String, String, String, String)>> {
-    let mut statement = connection.prepare(
-        "SELECT type, name, tbl_name, sql
-         FROM sqlite_schema
-         WHERE sql IS NOT NULL
-         ORDER BY type, name",
-    )?;
-    let rows = statement.query_map([], |row| {
-        Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
-    })?;
-    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+fn schema_objects(connection: &Connection) -> Result<synck_vcs_sqlite::schema::SchemaShape> {
+    Ok(synck_vcs_sqlite::schema::inspect(connection, "")?)
 }
 
 fn flush_batch(
@@ -1276,6 +1233,19 @@ mod tests {
             self.position += count;
             Ok(count)
         }
+    }
+
+    #[test]
+    fn equivalent_object_schema_is_accepted_but_changed_keys_are_rejected() {
+        assert_eq!(SCHEMA, include_str!("../../../docs/spec/object-store.sql"));
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch(&SCHEMA.replace("INTEGER NOT NULL", "INT NOT NULL").replace(
+            "idx_blob_chunks_chunk_digest", "different_performance_index_name"
+        )).unwrap();
+        connection.execute_batch("CREATE INDEX extra_index ON chunks(raw_size)").unwrap();
+        validate_schema(&connection).unwrap();
+        connection.execute_batch("CREATE UNIQUE INDEX changed_key ON blobs(size_bytes)").unwrap();
+        assert!(validate_schema(&connection).is_err());
     }
 
     #[test]

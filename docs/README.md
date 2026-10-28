@@ -23,10 +23,10 @@ Core is storage-adapter-independent. The included `synck-vcs-sqlite` adapter
 and `synck-local` distribution use SQLite; the complete local repository layout
 is specified here without constraining other engine adapters.
 
-These contracts cover the engine, format-6 repositories and their checkouts. Typed readers and mutation support vary by
-stored item family. The source and canonical vectors define exact encodings;
-remote, replica, historical-index and shared-item formats also require their
-versioned implementations and fixtures. A crate's presence does not imply
-typed mutation support for every stored family.
+The [standalone format-7 specification](spec/format.md), its SQL schemas and
+language-neutral vectors are the authoritative persisted-format contract.
+Typed readers cover FILE/FOLDER, CHAT and EMAIL; unsupported families remain
+structurally verifiable. The current release includes no remote/replica protocol.
 
-- [Portable repositories](portable-repository.md): format-6 data storage, verified copying, complete verification, independent editable/sparse checkout and explicit source-retirement activation.
+- [Portable repositories](portable-repository.md): verified copies, thin-history
+  verification, editable/sparse checkouts and source-retirement activation.

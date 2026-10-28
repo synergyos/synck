@@ -1,48 +1,39 @@
-# Format and compatibility scope
+# Format and compatibility
 
-This note describes compatibility boundaries implemented by the workspace
-crates. It does not define replacement encodings or change existing formats.
-[Core engine](core.md) provides the engine data model, API invariants and
-canonical commit/event contract. [Local repositories](local-repository.md)
-provides the SQLite, working-tree, object-store and archive contract. Separate
-remote, replica, historical-index and shared-item encodings remain defined by
-the implementations and their checked-in canonical vectors.
+Synck 0.2.0 uses repository format 7, Core SQLite schema 7, commit format 6,
+object frame V1 and history bundle format 5. These numbers name different
+contracts; they need not match. The [standalone specification](spec/format.md),
+its SQL schemas and language-neutral vectors define the persisted format.
+Where implementation and specification disagree, the implementation is wrong.
 
-The `synck-vcs` engine is independent of its persistence backend. Its
-`StorageBackend` and `StorageTxn` interfaces define transaction, ordering,
-constraint, read and error semantics; canonical event/commit bytes are owned by
-the engine. This repository includes `synck-vcs-sqlite` for local persistence.
-SynckHub's PostgreSQL adapter, `synck-vcs-postgres`, implements the same engine
-interfaces in a separate repository and is not included here. The SQLite local
-directory/archive format is a distribution contract, not a restriction on engine
-backends.
+Before 1.0, each release reads only its own repository format. Other versions
+are refused without migration or modification. Format 6 belongs to Synck 0.1.x;
+format 7 belongs to 0.2.0. Repositories written by untagged development builds
+are disposable. Rust APIs are also pre-1.0 and consumers must pin a revision.
+No compatibility reader, automatic converter or silent reinterpretation exists.
 
-| Boundary | Source owner | Compatibility evidence in this tree |
-| --- | --- | --- |
-| Core item/ref event and commit bytes | `synck-vcs` | `tests/canonical_vectors_test.rs` and canonicalization tests |
-| FILE/FOLDER intents and canonical events | `synck-file-folder` | `tests/profile_v1.rs` and `tests/fixtures/v1/` |
-| Local repository, content and archive behavior | `synck-local` | `tests/local_repository.rs`, `tests/inspection.rs` and `tests/cli.rs` |
-| Shared item vocabulary, typed readers and body encoding | `synck-items` | Public module definitions and focused reader tests |
-| Complete format-6 data repositories and verified copying | `synck-local` | `tests/portable_repository.rs` and [data repository contract](portable-repository.md) |
+For a manual 0.1-to-0.2 transfer, use the 0.1 executable to run
+`export-tree HEAD` into a new directory. Then use 0.2 to initialize and commit
+that directory. FILE bytes transfer; old history, typed chat/email records,
+identities and labels do not. Keep the original repository and its reader if
+those records matter. There is no history converter in this release.
 
-Core stores canonical history and validates its structural invariants. It does
-not infer all application semantics from event names. Shared item modules provide
-storage-free semantics and readers for supported persisted families; unknown
-domain presentation remains an explicit limit.
-Referenced bodies, attachments, blobs and historical versions must be available
-and verified separately when constructing a complete copy.
+Normal writes never rewrite accepted history. `revert` adds a compensating
+commit. Future administrative replacement must use a new history generation,
+validate dependencies and explicitly reconcile stale clients. It cannot change
+an already retained archive. These semantics do not mean a mutable local disk
+is WORM storage or satisfies financial-record retention rules.
 
-Local repositories use `.synck/` metadata and SQLite. Treat that directory and
-its durable content as repository data. Do not edit its database or history
-files manually, and do not treat an uncoordinated copy of a live SQLite database
-as a verified backup. Use the tool's archive, copy and integrity commands for
-supported local workflows. Format-6 repositories are directly openable SQLite
-directories whose exact bytes live in `.synck/objects/` (`WHOLE_FILE`) or
-`.synck/object-store.sqlite3` (`CHUNKED`). Other repository format versions are
-rejected.
+Complete copies preserve IDs, generation, frames and salts. Thin repositories
+can omit referenced payloads and remain structurally valid; complete archival
+exports cannot. A long-term archive must retain a compatible reader or verified
+migration independently of this project's pre-1.0 support policy.
 
-The public Rust API is pre-1.0. Persisted identities, accepted canonical bytes,
-historical state, archive formats and versioned remote/replica protocols must
-retain their existing compatibility rules. A source reorganization or a new
-crate version does not authorize changing them. Unsupported data or format
-versions must be reported explicitly rather than silently discarded.
+Private cache schemas are not portable contracts. Deleting a disposable cache
+causes replay, not a history migration. Canonical database structure is validated
+by tables, types and keys, not SQL formatting or performance-index names.
+
+The 0.2 typed scope is FILE/FOLDER, CHAT and EMAIL. Hosted-only readers and old
+FILE sidecars/resource forks were removed. Generic envelopes still provide
+structural integrity for uninterpreted families. No cross-machine sync protocol
+is included in this release.
