@@ -632,3 +632,57 @@ fn absent_child_acquisition_preserves_parent_conflicts_and_structural_checks() {
     }
     assert_eq!(fs::read(root.join("folder/a.txt")).unwrap(), b"unfinished");
 }
+
+#[test]
+fn case_alias_takeover_preserves_ignored_work_in_tracked_folder() {
+    let temp = fixture();
+    let root = temp.path();
+    fs::create_dir(root.join("Dir")).unwrap();
+    fs::write(root.join("Dir/tracked.txt"), b"base").unwrap();
+    ok(root, &["commit", "-m", "initial"]);
+    let token = acquire(root, &["Dir"], "A");
+    fs::write(root.join("Dir/.unfinished"), b"unfinished").unwrap();
+    expire(root, &token);
+    let before = ok(root, &["lock", "list"]);
+    refused(root, &["lock", "acquire", "dir", "--owner", "B"], "INVALID");
+    assert_eq!(ok(root, &["lock", "list"]), before);
+    assert_eq!(
+        fs::read(root.join("Dir/.unfinished")).unwrap(),
+        b"unfinished"
+    );
+
+    if !root.join("dir").exists() {
+        // A clean alias can be reserved on a case-sensitive filesystem. Future
+        // takeover must still inspect the actual tracked spelling, even when
+        // the stored reservation itself now uses the absent spelling.
+        fs::remove_file(root.join("Dir/.unfinished")).unwrap();
+        let next = acquire(root, &["dir"], "B");
+        assert_ne!(next, token);
+        fs::write(root.join("Dir/.unfinished"), b"B unfinished").unwrap();
+        expire(root, &next);
+        let before = ok(root, &["lock", "list"]);
+        refused(root, &["lock", "acquire", "dir", "--owner", "C"], "INVALID");
+        assert_eq!(ok(root, &["lock", "list"]), before);
+        assert_eq!(
+            fs::read(root.join("Dir/.unfinished")).unwrap(),
+            b"B unfinished"
+        );
+    }
+}
+
+#[test]
+fn case_alias_takeover_preserves_ignored_new_file() {
+    let temp = fixture();
+    let root = temp.path();
+    let token = acquire(root, &[".Draft"], "A");
+    fs::write(root.join(".Draft"), b"unfinished").unwrap();
+    expire(root, &token);
+    let before = ok(root, &["lock", "list"]);
+    refused(
+        root,
+        &["lock", "acquire", ".draft", "--owner", "B"],
+        "INVALID",
+    );
+    assert_eq!(ok(root, &["lock", "list"]), before);
+    assert_eq!(fs::read(root.join(".Draft")).unwrap(), b"unfinished");
+}

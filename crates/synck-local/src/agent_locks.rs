@@ -1,5 +1,6 @@
 //! Local path reservations. Every entry point runs under RepositoryLock; leases
 //! never hold that OS lock while an agent is editing. These are not history/cache.
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -358,7 +359,24 @@ impl Repository {
                 changed_keys.push((key(source)?, false));
             }
         }
-        for (path, path_key) in paths.iter().zip(&keys) {
+        // Lock identity is case-folded, but filesystem lookup may not be. Check
+        // the tracked and previous reservation spellings as well as the request;
+        // an absent alias must not hide unfinished work during takeover.
+        let mut check_paths: BTreeSet<String> = paths.iter().cloned().collect();
+        for path in committed.keys() {
+            if keys.contains(&key(path)?) {
+                check_paths.insert(path.clone());
+            }
+        }
+        if let Some(db) = open(self.root_path(), self.repository_id().as_str(), false)? {
+            for row in reservations(&db)? {
+                if keys.iter().any(|p| covers(p, &row.key)) {
+                    check_paths.insert(row.info.path);
+                }
+            }
+        }
+        for path in &check_paths {
+            let path_key = &key(path)?;
             let exists = self
                 .root_path()
                 .join(path)
