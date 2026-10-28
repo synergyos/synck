@@ -2704,3 +2704,81 @@ async fn checked_subtree_guards_enforce_aggregate_limit_and_disjointness_before_
         .unwrap_err();
     assert!(matches!(exact_limit_error, CoreError::ItemNotFound { .. }));
 }
+
+#[tokio::test]
+async fn checkpoint_publication_is_atomic_and_does_not_gate_acceptance() {
+    let (_directory, backend) = backend();
+    backend.init_schema().await.unwrap();
+    let repo_id = RepoId::new();
+    let repo = Repo::new(
+        Storage::new(Arc::new(backend.clone())),
+        CoreConfig::default(),
+    );
+    let first = repo
+        .append(repo_id.clone(), commit(vec![create_event("first")]))
+        .await
+        .unwrap();
+    let second = repo
+        .append(repo_id.clone(), commit(vec![create_event("second")]))
+        .await
+        .unwrap();
+    assert!(first.repo_seq.is_none());
+    assert!(second.repo_seq.is_none());
+    let connection = backend.open_writable().unwrap();
+    let accepted: String = connection
+        .query_row(
+            "SELECT created_at FROM vcs_commits WHERE repo_id=?1 AND commit_id=?2",
+            params![
+                repo_id.as_str(),
+                synck_vcs::types::commit_id_to_digest_bytes(&second.commit_id).as_slice()
+            ],
+            |row| row.get(0),
+        )
+        .unwrap();
+    // Force failure after the first position has been assigned inside the batch.
+    connection
+        .execute(
+            "UPDATE vcs_commits SET created_at='zzz' WHERE commit_id=?1",
+            [synck_vcs::types::commit_id_to_digest_bytes(&second.commit_id).as_slice()],
+        )
+        .unwrap();
+    assert!(
+        repo.sequence_repo_activity(repo_id.clone(), 10)
+            .await
+            .is_err()
+    );
+    let published: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM vcs_commits WHERE repo_seq IS NOT NULL",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let checkpoints: i64 = connection
+        .query_row("SELECT count(*) FROM vcs_checkpoints", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!((published, checkpoints), (0, 0));
+    connection
+        .execute(
+            "UPDATE vcs_commits SET created_at=?1 WHERE commit_id=?2",
+            params![
+                accepted,
+                synck_vcs::types::commit_id_to_digest_bytes(&second.commit_id).as_slice()
+            ],
+        )
+        .unwrap();
+    assert_eq!(
+        repo.sequence_repo_activity(repo_id.clone(), 10)
+            .await
+            .unwrap(),
+        2
+    );
+    backend.verify_checkpoints(&repo_id).unwrap();
+    connection
+        .execute(
+            "UPDATE vcs_commits SET created_at='2020-01-01T00:00:00Z' WHERE repo_seq=1",
+            [],
+        )
+        .unwrap();
+    assert!(backend.verify_checkpoints(&repo_id).is_err());
+}

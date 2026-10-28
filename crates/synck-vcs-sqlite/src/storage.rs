@@ -238,6 +238,20 @@ CREATE TABLE vcs_ref_events (
 
 CREATE INDEX idx_vcs_ref_events_repo_owner_event_type_ref_seq
 ON vcs_ref_events (repo_id, owner_item_id, event_type, ref_seq DESC);
+
+CREATE TABLE vcs_history_generations (
+    repo_id TEXT PRIMARY KEY,
+    generation TEXT NOT NULL
+) STRICT;
+
+CREATE TABLE vcs_checkpoints (
+    repo_id TEXT NOT NULL,
+    repo_seq INTEGER NOT NULL CHECK (repo_seq >= 1),
+    commit_id BLOB NOT NULL CHECK (length(commit_id) = 32),
+    checkpoint BLOB NOT NULL CHECK (length(checkpoint) = 32),
+    PRIMARY KEY (repo_id, repo_seq),
+    FOREIGN KEY (repo_id, commit_id) REFERENCES vcs_commits (repo_id, commit_id)
+) STRICT;
 "#;
 
 #[derive(Clone, Debug)]
@@ -1795,6 +1809,7 @@ impl StorageTxn for SqliteTxn {
         if limit == 0 {
             return Ok(0);
         }
+        ensure_history_generation(self.conn()?, repo_id)?;
         let now = format_timestamp(Utc::now());
         self.conn()?
             .execute(
@@ -1838,6 +1853,7 @@ impl StorageTxn for SqliteTxn {
                     params![repo_id.as_str(), commit_pk, repo_seq],
                 )
                 .map_err(map_sqlite_error)?;
+            publish_checkpoint(self.conn()?, repo_id, commit_pk)?;
         }
         if !commit_pks.is_empty() {
             let count = i64::try_from(commit_pks.len()).map_err(|_| StorageError::Other {
@@ -1961,6 +1977,7 @@ impl StorageTxn for SqliteTxn {
                 detail: format!("missing commit during seal: {commit_pk}"),
             });
         }
+        publish_checkpoint(self.conn()?, repo_id, commit_pk.as_str())?;
         Ok(())
     }
 
@@ -2227,5 +2244,135 @@ mod checked_append_work_tests {
             }
         }
         transaction.commit().expect("commit unrelated items");
+    }
+}
+
+fn ensure_history_generation(conn: &Connection, repo_id: &RepoId) -> Result<(), StorageError> {
+    conn.execute(
+        "INSERT INTO vcs_history_generations (repo_id,generation) VALUES (?1,?2) ON CONFLICT(repo_id) DO NOTHING",
+        params![repo_id.as_str(), CommitPk::new().as_str()],
+    ).map_err(map_sqlite_error)?;
+    Ok(())
+}
+
+/// Called only inside the transaction which assigns or imports the position.
+fn publish_checkpoint(
+    conn: &Connection,
+    repo_id: &RepoId,
+    commit_pk: &str,
+) -> Result<(), StorageError> {
+    let (position, commit, created): (Option<i64>, Vec<u8>, String) = conn.query_row(
+        "SELECT repo_seq,commit_id,created_at FROM vcs_commits WHERE repo_id=?1 AND commit_pk=?2",
+        params![repo_id.as_str(), commit_pk],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    ).map_err(map_sqlite_error)?;
+    let Some(position) = position else {
+        return Ok(());
+    };
+    ensure_history_generation(conn, repo_id)?;
+    let previous: Option<(i64, Vec<u8>)> = conn.query_row(
+        "SELECT repo_seq,checkpoint FROM vcs_checkpoints WHERE repo_id=?1 ORDER BY repo_seq DESC LIMIT 1",
+        [repo_id.as_str()], |row| Ok((row.get(0)?, row.get(1)?)),
+    ).optional().map_err(map_sqlite_error)?;
+    let previous = match previous {
+        None if position == 1 => synck_vcs::checkpoint::GENESIS,
+        Some((seq, bytes)) if seq < position => {
+            bytes.try_into().map_err(|_| StorageError::Other {
+                detail: "invalid checkpoint digest length".into(),
+            })?
+        }
+        _ => {
+            return Err(StorageError::Other {
+                detail: "checkpoint publication is not a forward extension".into(),
+            });
+        }
+    };
+    let commit_id = commit_id_from_digest_bytes(&commit).map_err(|error| StorageError::Other {
+        detail: error.to_string(),
+    })?;
+    let timestamp = parse_timestamp(&created)?;
+    let digest = synck_vcs::checkpoint::digest(&previous, position as u64, &commit_id, timestamp)
+        .map_err(|error| StorageError::Other {
+        detail: error.to_string(),
+    })?;
+    conn.execute(
+        "INSERT INTO vcs_checkpoints (repo_id,repo_seq,commit_id,checkpoint) VALUES (?1,?2,?3,?4)",
+        params![repo_id.as_str(), position, commit, digest.as_slice()],
+    )
+    .map_err(map_sqlite_error)?;
+    Ok(())
+}
+
+impl SqliteStorage {
+    /// Verify publication independently from historical-state caches.
+    /// Unsequenced accepted commits intentionally have no checkpoint.
+    pub fn verify_checkpoints(&self, repo_id: &RepoId) -> Result<(), StorageError> {
+        let conn = self.open_readonly()?;
+        conn.execute_batch("BEGIN").map_err(map_sqlite_error)?;
+        let generation: String = conn
+            .query_row(
+                "SELECT generation FROM vcs_history_generations WHERE repo_id=?1",
+                [repo_id.as_str()],
+                |row| row.get(0),
+            )
+            .map_err(map_sqlite_error)?;
+        CommitPk::parse(generation).map_err(|error| StorageError::Other {
+            detail: format!("invalid history generation: {error}"),
+        })?;
+        let mut query = conn.prepare(
+            "SELECT c.repo_seq,c.commit_id,c.created_at,p.commit_id,p.checkpoint FROM vcs_commits c LEFT JOIN vcs_checkpoints p ON p.repo_id=c.repo_id AND p.repo_seq=c.repo_seq WHERE c.repo_id=?1 AND c.repo_seq IS NOT NULL ORDER BY c.repo_seq",
+        ).map_err(map_sqlite_error)?;
+        let mut rows = query.query([repo_id.as_str()]).map_err(map_sqlite_error)?;
+        let mut previous = synck_vcs::checkpoint::GENESIS;
+        let mut last = 0;
+        let mut count = 0i64;
+        while let Some(row) = rows.next().map_err(map_sqlite_error)? {
+            let seq: i64 = row.get(0).map_err(map_sqlite_error)?;
+            let commit: Vec<u8> = row.get(1).map_err(map_sqlite_error)?;
+            let accepted: String = row.get(2).map_err(map_sqlite_error)?;
+            let published_commit: Option<Vec<u8>> = row.get(3).map_err(map_sqlite_error)?;
+            let published_digest: Option<Vec<u8>> = row.get(4).map_err(map_sqlite_error)?;
+            if seq <= last
+                || (last == 0 && seq != 1)
+                || published_commit.as_deref() != Some(commit.as_slice())
+            {
+                return Err(StorageError::Other {
+                    detail: format!("checkpoint placement mismatch at sequence {seq}"),
+                });
+            }
+            let id = commit_id_from_digest_bytes(&commit).map_err(|error| StorageError::Other {
+                detail: error.to_string(),
+            })?;
+            let digest = synck_vcs::checkpoint::digest(
+                &previous,
+                seq as u64,
+                &id,
+                parse_timestamp(&accepted)?,
+            )
+            .map_err(|error| StorageError::Other {
+                detail: error.to_string(),
+            })?;
+            if published_digest.as_deref() != Some(digest.as_slice()) {
+                return Err(StorageError::Other {
+                    detail: format!("checkpoint digest mismatch at sequence {seq}"),
+                });
+            }
+            previous = digest;
+            last = seq;
+            count += 1;
+        }
+        let stored: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM vcs_checkpoints WHERE repo_id=?1",
+                [repo_id.as_str()],
+                |row| row.get(0),
+            )
+            .map_err(map_sqlite_error)?;
+        if stored != count {
+            return Err(StorageError::Other {
+                detail: "checkpoint without a published commit".into(),
+            });
+        }
+        Ok(())
     }
 }

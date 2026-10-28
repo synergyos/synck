@@ -1,0 +1,26 @@
+[
+  {
+    "previous": "0000000000000000000000000000000000000000000000000000000000000000",
+    "repo_seq": 1,
+    "commit_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "accepted_seconds": 1767225600,
+    "accepted_nanos": 0,
+    "checkpoint": "e6e272eaa4301eb6e8c012fb43bb20a4a6b52b9139bddc9e149685f5c920d31f"
+  },
+  {
+    "previous": "e6e272eaa4301eb6e8c012fb43bb20a4a6b52b9139bddc9e149685f5c920d31f",
+    "repo_seq": 2,
+    "commit_id": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "accepted_seconds": 1767225601,
+    "accepted_nanos": 123456789,
+    "checkpoint": "d5e14cb3123421eb2185726708abb0ffe805350cebc181a4ffb6867bcddd5890"
+  },
+  {
+    "previous": "d5e14cb3123421eb2185726708abb0ffe805350cebc181a4ffb6867bcddd5890",
+    "repo_seq": 4,
+    "commit_id": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "accepted_seconds": 1767225602,
+    "accepted_nanos": 0,
+    "checkpoint": "e18d3c646c0c9db155c84eb23f60b4f183d3954383011bfd3c71f2f62991c562"
+  }
+]

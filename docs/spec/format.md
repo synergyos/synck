@@ -35,3 +35,34 @@ Non-UTF-8 names are errors, never guessed encodings.
 The generated case-folding table uses the Unicode 17.0.0 data from
 <https://www.unicode.org/Public/17.0.0/ucd/CaseFolding.txt>, under the
 [Unicode License V3](unicode-license.txt).
+
+## Publication checkpoints
+
+Acceptance remains atomic per touched items and folder guards. Accepted commits
+have no repository position until the separate sequencer publishes them.
+Publication assigns the sequence and its checkpoint in the same transaction;
+waiting for publication must not hold acceptance locks.
+
+The checkpoint is SHA-256 over the concatenation, without separators, of:
+
+1. The 19 ASCII bytes `synck-checkpoint-v1`.
+2. The preceding checkpoint's raw 32 bytes (32 zero bytes at genesis).
+3. The positive repository sequence as an unsigned 64-bit big-endian integer.
+4. The commit ID's raw 32 digest bytes, without its `sha256:` prefix.
+5. The acceptance timestamp's Unix seconds as a signed 64-bit big-endian integer.
+6. Its nanosecond fraction as an unsigned 32-bit big-endian integer, below 10^9.
+
+Sequences increase strictly; gaps are allowed. Leap-second timestamps are not
+representable by this framing. Author time is distinct from acceptance time.
+Vectors in `vectors/checkpoints.json` include a sequence gap and fractional time.
+The chain binds publication order relative to a trusted checkpoint. It does not
+by itself authenticate authority or detect the removal of an unknown suffix.
+A checkpoint is not a regulatory retention seal.
+
+SQLite publishes `vcs_checkpoints(repo_id, repo_seq, commit_id, checkpoint)`
+with raw 32-byte digest values. `vcs_history_generations(repo_id, generation)`
+holds a UUIDv7 identifying this history generation. Copies preserve that value.
+A future administrative rewrite must replace the generation, validate its new
+history and rebuild checkpoints before publishing the replacement atomically.
+Client cursors must bind repository ID, generation, position and checkpoint;
+a generation mismatch cannot be treated as an ordinary forward extension.

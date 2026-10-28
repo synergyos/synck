@@ -16,6 +16,7 @@
 //! derived `name_key`.
 
 pub mod bundle;
+pub mod checkpoint;
 pub mod config;
 pub mod envelope;
 pub mod errors;

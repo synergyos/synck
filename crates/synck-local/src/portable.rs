@@ -1473,6 +1473,7 @@ impl PortableRepository {
     }
 
     pub async fn verify(&self) -> Result<VerificationReport> {
+        self.storage.verify_checkpoints(self.repo_id()).map_err(corrupt)?;
         let findings = if self.config.checkout.is_some() {
             crate::integrity::physical_findings(&self.storage, self.repo_id())?
         } else {
@@ -1484,6 +1485,8 @@ impl PortableRepository {
         let connection = self.storage.open_readonly().map_err(corrupt)?;
         for table in [
             "vcs_commits",
+            "vcs_checkpoints",
+            "vcs_history_generations",
             "vcs_events",
             "vcs_ref_events",
             "vcs_items",
