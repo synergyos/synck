@@ -81,7 +81,7 @@ payloads, salts, hashes, commit/event identities or existing content IDs.
 
 Every retained item and ref event participates in closure discovery, including
 trashed/tombstoned items, historical file versions and superseded bodies. Use
-canonical Blob/Content references and defined legacy POST, mail/calendar and TASK
+canonical Blob/Content references and the imported-email
 metadata references. Do not infer completeness from current heads or arbitrary
 JSON strings that resemble hashes. A published export/copy contains exactly the
 union of the referenced closure; all required objects pass their applicable
@@ -99,8 +99,8 @@ without replacement.
 Unknown typed presentation must not prevent canonical history preservation.
 
 `item show` uses the shared [incremental reader](../crates/synck-items/src/reader.rs)
-for supported FILE/FOLDER history, chats, email, posts, legacy task lists,
-tables/database records and frozen file-version sidecars. Hosted native tasks,
+for supported FILE/FOLDER history, chats, email and frozen file-version sidecars.
+Task, post, table/database,
 calendars/events, calls, timekeeping and organization/mount reducers are absent
 from 0.2. Support depends on the retained event vocabulary; an unknown typed
 event can fail presentation without preventing a verified canonical copy.

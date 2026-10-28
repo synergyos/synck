@@ -30,35 +30,13 @@ fn invalid_content(error: impl std::fmt::Display) -> BodyEventError {
 
 pub fn body_key(event_type: &str) -> Option<&'static str> {
     match event_type {
-        "CHAT::MESSAGE::CREATE"
-        | "CHAT::MESSAGE::SET_CONTENT"
-        | "CALENDAR_EVENT::SET_OCCURRENCE_DESCRIPTION"
-        | "CALENDAR_EVENT::SET_DESCRIPTION"
-        | "TASK_LIST::TASK.COMMENT::CREATE"
-        | "TASK::COMMENT::CREATE"
-        | "TABLE::RECORD.COMMENT::CREATE"
-        | "TABLE::RECORD.COMMENT::SET_CONTENT" => Some("body"),
-        "POST::COMMENT::CREATE" => Some("body_markdown"),
+        "CHAT::MESSAGE::CREATE" | "CHAT::MESSAGE::SET_CONTENT" => Some("body"),
         _ => None,
     }
 }
 
 pub fn validate_body(event_type: &str, body: &str) -> Result<(), BodyEventError> {
-    let valid = body.len() <= MAX_BODY_BYTES
-        && match event_type {
-            "CHAT::MESSAGE::CREATE"
-            | "CHAT::MESSAGE::SET_CONTENT"
-            | "CALENDAR_EVENT::SET_OCCURRENCE_DESCRIPTION"
-            | "CALENDAR_EVENT::SET_DESCRIPTION" => true,
-            "POST::COMMENT::CREATE" => !body.trim().is_empty(),
-            "TASK_LIST::TASK.COMMENT::CREATE" | "TASK::COMMENT::CREATE" => {
-                !body.trim().is_empty() && body.len() <= 10_000
-            }
-            "TABLE::RECORD.COMMENT::CREATE" | "TABLE::RECORD.COMMENT::SET_CONTENT" => {
-                !body.trim().is_empty() && body.chars().count() <= 10_000
-            }
-            _ => false,
-        };
+    let valid = body.len() <= MAX_BODY_BYTES && body_key(event_type).is_some();
     if valid {
         Ok(())
     } else {
@@ -211,57 +189,13 @@ mod tests {
 
     #[test]
     fn body_policy_preserves_unicode_and_empty_body_rules() {
-        for kind in [
-            "CHAT::MESSAGE::CREATE",
-            "CHAT::MESSAGE::SET_CONTENT",
-            "CALENDAR_EVENT::SET_DESCRIPTION",
-            "CALENDAR_EVENT::SET_OCCURRENCE_DESCRIPTION",
-        ] {
+        for kind in ["CHAT::MESSAGE::CREATE", "CHAT::MESSAGE::SET_CONTENT"] {
             assert!(validate_body(kind, "").is_ok());
             assert!(validate_body(kind, "\0🦀").is_ok());
             assert!(validate_body(kind, &"x".repeat(MAX_BODY_BYTES)).is_ok());
             assert!(validate_body(kind, &"x".repeat(MAX_BODY_BYTES + 1)).is_err());
         }
-        for kind in [
-            "POST::COMMENT::CREATE",
-            "TASK_LIST::TASK.COMMENT::CREATE",
-            "TASK::COMMENT::CREATE",
-            "TABLE::RECORD.COMMENT::CREATE",
-            "TABLE::RECORD.COMMENT::SET_CONTENT",
-        ] {
-            assert!(validate_body(kind, " \n").is_err());
-            assert!(validate_body(kind, "\0🦀").is_ok());
-        }
-        assert!(validate_body("TASK_LIST::TASK.COMMENT::CREATE", &"é".repeat(5000)).is_ok());
-        assert!(validate_body("TASK_LIST::TASK.COMMENT::CREATE", &"é".repeat(5001)).is_err());
-        assert!(validate_body("TASK::COMMENT::CREATE", &"é".repeat(5000)).is_ok());
-        assert!(validate_body("TASK::COMMENT::CREATE", &"é".repeat(5001)).is_err());
-        assert!(validate_body("TABLE::RECORD.COMMENT::CREATE", &"🦀".repeat(10_000)).is_ok());
-        assert!(validate_body("TABLE::RECORD.COMMENT::CREATE", &"🦀".repeat(10_001)).is_err());
         assert!(validate_body("FILE::SET_CONTENT", "body").is_err());
-    }
-
-    #[test]
-    fn native_description_requires_exact_body_shape() {
-        for value in [serde_json::json!(""), serde_json::json!("description 🦀")] {
-            let event: EventProposal = serde_json::from_value(serde_json::json!({
-                "event_type": "CALENDAR_EVENT::SET_DESCRIPTION",
-                "item_id": "01890c6c-1111-7777-8888-aaaaaaaaaaaa",
-                "base_seq": 1,
-                "set_content": {"json": {"body": value}}
-            }))
-            .unwrap();
-            assert_eq!(inline_body(&event).unwrap(), value.as_str());
-            for invalid in [
-                serde_json::json!({"body": value, "extra": true}),
-                serde_json::json!({"body": null}),
-                serde_json::json!({"description": value}),
-            ] {
-                let mut event = event.clone();
-                event.set_content = Some(EventContent::Json { json: invalid });
-                assert!(inline_body(&event).is_err());
-            }
-        }
     }
 
     #[test]
@@ -275,13 +209,6 @@ mod tests {
         for (event_type, key) in [
             ("CHAT::MESSAGE::CREATE", "body"),
             ("CHAT::MESSAGE::SET_CONTENT", "body"),
-            ("CALENDAR_EVENT::SET_DESCRIPTION", "body"),
-            ("CALENDAR_EVENT::SET_OCCURRENCE_DESCRIPTION", "body"),
-            ("POST::COMMENT::CREATE", "body_markdown"),
-            ("TASK_LIST::TASK.COMMENT::CREATE", "body"),
-            ("TASK::COMMENT::CREATE", "body"),
-            ("TABLE::RECORD.COMMENT::CREATE", "body"),
-            ("TABLE::RECORD.COMMENT::SET_CONTENT", "body"),
         ] {
             let legacy: EventProposal = serde_json::from_value(serde_json::json!({
                 "event_type": event_type,

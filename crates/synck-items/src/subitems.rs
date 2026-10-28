@@ -27,10 +27,6 @@ pub enum SubitemKind {
     ChatFile,
     ChatFileFolder,
     EmailAttachment,
-    TaskListTask,
-    TaskListTaskComment,
-    StructuredDataRecord,
-    StructuredDataRecordComment,
 }
 
 impl SubitemKind {
@@ -44,10 +40,6 @@ impl SubitemKind {
             "FILE" => Some(SubitemKind::ChatFile),
             "FILE_FOLDER" => Some(SubitemKind::ChatFileFolder),
             "ATTACHMENT" => Some(SubitemKind::EmailAttachment),
-            "TASK" => Some(SubitemKind::TaskListTask),
-            "TASK.COMMENT" => Some(SubitemKind::TaskListTaskComment),
-            "RECORD" => Some(SubitemKind::StructuredDataRecord),
-            "RECORD.COMMENT" => Some(SubitemKind::StructuredDataRecordComment),
             _ => None,
         }
     }
@@ -62,8 +54,6 @@ impl SubitemKind {
             | SubitemKind::ChatFile
             | SubitemKind::ChatFileFolder => "CHAT",
             SubitemKind::EmailAttachment => "EMAIL",
-            SubitemKind::TaskListTask | SubitemKind::TaskListTaskComment => "TASK_LIST",
-            SubitemKind::StructuredDataRecord | SubitemKind::StructuredDataRecordComment => "TABLE",
         }
     }
 
@@ -77,10 +67,6 @@ impl SubitemKind {
             SubitemKind::ChatFile => "CHAT::FILE::CREATE",
             SubitemKind::ChatFileFolder => "CHAT::FILE_FOLDER::CREATE",
             SubitemKind::EmailAttachment => "EMAIL::ATTACHMENT::CREATE",
-            SubitemKind::TaskListTask => "TASK_LIST::TASK::CREATE",
-            SubitemKind::TaskListTaskComment => "TASK_LIST::TASK.COMMENT::CREATE",
-            SubitemKind::StructuredDataRecord => "TABLE::RECORD::CREATE",
-            SubitemKind::StructuredDataRecordComment => "TABLE::RECORD.COMMENT::CREATE",
         }
     }
 
@@ -94,10 +80,6 @@ impl SubitemKind {
             SubitemKind::ChatFile => "CHAT::FILE::SET_METADATA",
             SubitemKind::ChatFileFolder => "CHAT::FILE_FOLDER::SET_METADATA",
             SubitemKind::EmailAttachment => "EMAIL::ATTACHMENT::SET_METADATA",
-            SubitemKind::TaskListTask => "TASK_LIST::TASK::SET_METADATA",
-            SubitemKind::TaskListTaskComment => "TASK_LIST::TASK.COMMENT::SET_METADATA",
-            SubitemKind::StructuredDataRecord => "TABLE::RECORD::SET_METADATA",
-            SubitemKind::StructuredDataRecordComment => "TABLE::RECORD.COMMENT::SET_METADATA",
         }
     }
 
@@ -109,10 +91,6 @@ impl SubitemKind {
             SubitemKind::ChatFile => Some("CHAT::FILE::SET_CONTENT"),
             SubitemKind::ChatMessageFileRef => None,
             SubitemKind::ChatFileFolder => None,
-            SubitemKind::TaskListTask => None,
-            SubitemKind::TaskListTaskComment => None,
-            SubitemKind::StructuredDataRecord => Some("TABLE::RECORD::SET_CONTENT"),
-            SubitemKind::StructuredDataRecordComment => Some("TABLE::RECORD.COMMENT::SET_CONTENT"),
             _ => None,
         }
     }
@@ -127,10 +105,6 @@ impl SubitemKind {
             SubitemKind::ChatFile => "CHAT::FILE::TRASH",
             SubitemKind::ChatFileFolder => "CHAT::FILE_FOLDER::TRASH",
             SubitemKind::EmailAttachment => "EMAIL::ATTACHMENT::TRASH",
-            SubitemKind::TaskListTask => "TASK_LIST::TASK::TRASH",
-            SubitemKind::TaskListTaskComment => "TASK_LIST::TASK.COMMENT::TRASH",
-            SubitemKind::StructuredDataRecord => "TABLE::RECORD::TRASH",
-            SubitemKind::StructuredDataRecordComment => "TABLE::RECORD.COMMENT::TRASH",
         }
     }
 
@@ -144,10 +118,6 @@ impl SubitemKind {
             SubitemKind::ChatFile => "CHAT::FILE::RESTORE",
             SubitemKind::ChatFileFolder => "CHAT::FILE_FOLDER::RESTORE",
             SubitemKind::EmailAttachment => "EMAIL::ATTACHMENT::RESTORE",
-            SubitemKind::TaskListTask => "TASK_LIST::TASK::RESTORE",
-            SubitemKind::TaskListTaskComment => "TASK_LIST::TASK.COMMENT::RESTORE",
-            SubitemKind::StructuredDataRecord => "TABLE::RECORD::RESTORE",
-            SubitemKind::StructuredDataRecordComment => "TABLE::RECORD.COMMENT::RESTORE",
         }
     }
 
@@ -161,10 +131,6 @@ impl SubitemKind {
             SubitemKind::ChatFile => "CHAT::FILE::TOMBSTONE",
             SubitemKind::ChatFileFolder => "CHAT::FILE_FOLDER::TOMBSTONE",
             SubitemKind::EmailAttachment => "EMAIL::ATTACHMENT::TOMBSTONE",
-            SubitemKind::TaskListTask => "TASK_LIST::TASK::TOMBSTONE",
-            SubitemKind::TaskListTaskComment => "TASK_LIST::TASK.COMMENT::TOMBSTONE",
-            SubitemKind::StructuredDataRecord => "TABLE::RECORD::TOMBSTONE",
-            SubitemKind::StructuredDataRecordComment => "TABLE::RECORD.COMMENT::TOMBSTONE",
         }
     }
 }
@@ -241,7 +207,7 @@ pub enum SubitemEventVerb {
 }
 
 pub fn match_subitem_event(event_type: &str) -> Option<(SubitemKind, SubitemVerb)> {
-    const KINDS: [SubitemKind; 12] = [
+    const KINDS: [SubitemKind; 8] = [
         SubitemKind::FileVersion,
         SubitemKind::ChatMessage,
         SubitemKind::ChatMessageReaction,
@@ -250,10 +216,6 @@ pub fn match_subitem_event(event_type: &str) -> Option<(SubitemKind, SubitemVerb
         SubitemKind::ChatFile,
         SubitemKind::ChatFileFolder,
         SubitemKind::EmailAttachment,
-        SubitemKind::TaskListTask,
-        SubitemKind::TaskListTaskComment,
-        SubitemKind::StructuredDataRecord,
-        SubitemKind::StructuredDataRecordComment,
     ];
 
     for kind in KINDS {
@@ -282,7 +244,7 @@ pub fn match_subitem_event(event_type: &str) -> Option<(SubitemKind, SubitemVerb
 }
 
 pub fn classify_subitem_event(event_type: &str) -> Option<(SubitemKind, SubitemEventVerb)> {
-    const KINDS: [SubitemKind; 12] = [
+    const KINDS: [SubitemKind; 8] = [
         SubitemKind::FileVersion,
         SubitemKind::ChatMessage,
         SubitemKind::ChatMessageReaction,
@@ -291,10 +253,6 @@ pub fn classify_subitem_event(event_type: &str) -> Option<(SubitemKind, SubitemE
         SubitemKind::ChatFile,
         SubitemKind::ChatFileFolder,
         SubitemKind::EmailAttachment,
-        SubitemKind::TaskListTask,
-        SubitemKind::TaskListTaskComment,
-        SubitemKind::StructuredDataRecord,
-        SubitemKind::StructuredDataRecordComment,
     ];
 
     for kind in KINDS {
@@ -910,128 +868,6 @@ pub fn extract_email_attachment_fields(
     Ok((blob_id, meta.clone()))
 }
 
-pub fn task_row_metadata_with_creator(
-    meta: serde_json::Value,
-    created_at: chrono::DateTime<chrono::Utc>,
-    created_by: &str,
-) -> Result<serde_json::Value, SubitemError> {
-    let created_by = created_by.trim();
-    if created_by.is_empty() {
-        return Err(SubitemError::Config(
-            "task row created_by must be non-empty".to_string(),
-        ));
-    }
-    let mut obj = meta
-        .as_object()
-        .cloned()
-        .ok_or_else(|| SubitemError::Config("task row meta must be a JSON object".to_string()))?;
-    obj.insert(
-        "created_at".to_string(),
-        serde_json::Value::String(created_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)),
-    );
-    obj.insert(
-        "created_by".to_string(),
-        serde_json::Value::String(created_by.to_string()),
-    );
-    Ok(serde_json::Value::Object(obj))
-}
-
-pub fn merge_task_row_meta(
-    existing_meta: &serde_json::Value,
-    patch: &serde_json::Value,
-) -> Result<serde_json::Value, SubitemError> {
-    let mut merged = existing_meta.as_object().cloned().unwrap_or_default();
-    let patch_obj = patch.as_object().ok_or_else(|| {
-        SubitemError::Config("task row meta patch must be a JSON object".to_string())
-    })?;
-    for (key, value) in patch_obj {
-        if key == "created_at" || key == "created_by" {
-            continue;
-        }
-        merged.insert(key.clone(), value.clone());
-    }
-    Ok(serde_json::Value::Object(merged))
-}
-
-pub fn structured_data_record_content_object(
-    content: &serde_json::Value,
-) -> Result<&serde_json::Map<String, serde_json::Value>, SubitemError> {
-    content.as_object().ok_or_else(|| {
-        SubitemError::Schema("structured-data RECORD content must be object".to_string())
-    })
-}
-
-pub fn structured_data_record_data_from_content(
-    content: &serde_json::Value,
-) -> Result<serde_json::Value, SubitemError> {
-    structured_data_record_content_object(content)?
-        .get("data")
-        .cloned()
-        .ok_or_else(|| {
-            SubitemError::Schema("structured-data RECORD content.data missing".to_string())
-        })
-}
-
-pub fn structured_data_record_display_value_from_content(
-    content: &serde_json::Value,
-    data_json: &serde_json::Value,
-) -> String {
-    if let Some(display_value) = content
-        .as_object()
-        .and_then(|obj| obj.get("display_value"))
-        .and_then(|v| v.as_str())
-    {
-        return display_value.trim().to_string();
-    }
-    if let Some(primary_text) = data_json
-        .as_object()
-        .and_then(|obj| obj.get("name"))
-        .and_then(|v| v.as_str())
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-    {
-        return primary_text.to_string();
-    }
-    match data_json {
-        serde_json::Value::String(v) => v.clone(),
-        _ => data_json.to_string(),
-    }
-}
-
-pub fn structured_data_record_lifecycle_from_content(
-    content: &serde_json::Value,
-    default_state: &str,
-) -> Result<String, SubitemError> {
-    let lifecycle_state = content
-        .as_object()
-        .and_then(|obj| obj.get("lifecycle_state"))
-        .and_then(|v| v.as_str())
-        .unwrap_or(default_state);
-    match lifecycle_state {
-        "DRAFT" | "LIVE" | "ARCHIVED" => Ok(lifecycle_state.to_string()),
-        other => Err(SubitemError::Schema(format!(
-            "structured-data RECORD lifecycle_state `{other}` is invalid"
-        ))),
-    }
-}
-
-pub fn structured_data_record_version_from_content(
-    content: &serde_json::Value,
-    default_version: i64,
-) -> Result<i64, SubitemError> {
-    let version = content
-        .as_object()
-        .and_then(|obj| obj.get("version"))
-        .and_then(|v| v.as_i64())
-        .unwrap_or(default_version);
-    if version <= 0 {
-        return Err(SubitemError::Schema(
-            "structured-data RECORD version must be > 0".to_string(),
-        ));
-    }
-    Ok(version)
-}
-
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct ChatProfileEvent {
     pub chat_kind: String,
@@ -1244,47 +1080,6 @@ pub fn file_version_size_from_content(content: &serde_json::Value) -> Option<i64
 
 pub fn file_version_content_has_size(content: &serde_json::Value) -> bool {
     content.get("size").is_some()
-}
-
-#[derive(Clone, Debug)]
-pub struct TaskOrderEntry {
-    pub item_seq: i64,
-    pub sort_index: i64,
-    pub metadata_json: serde_json::Value,
-}
-
-/// Apply the existing task sibling placement to a list already sorted by index/position.
-pub fn reorder_task_siblings(
-    mut ordered: Vec<TaskOrderEntry>,
-    moving_item_seq: Option<i64>,
-    requested_index: Option<i64>,
-    before_item_seq: Option<Option<i64>>,
-) -> Result<Vec<TaskOrderEntry>, SubitemError> {
-    if let Some(moving_item_seq) = moving_item_seq
-        && let Some(from_pos) = ordered
-            .iter()
-            .position(|entry| entry.item_seq == moving_item_seq)
-    {
-        let moving = ordered.remove(from_pos);
-        let insert_pos = match before_item_seq {
-            Some(Some(anchor)) => ordered
-                .iter()
-                .position(|entry| entry.item_seq == anchor)
-                .ok_or_else(|| {
-                    SubitemError::Policy(format!(
-                        "TASK move anchor {anchor} is not a live destination sibling"
-                    ))
-                })?,
-            Some(None) => ordered.len(),
-            None => requested_index
-                .and_then(|index| usize::try_from(index).ok())
-                .map(|index| index.min(ordered.len()))
-                .unwrap_or(ordered.len()),
-        };
-        ordered.insert(insert_pos, moving);
-    }
-
-    Ok(ordered)
 }
 
 const FILE_VERSION_LEGACY_UUID_NAMESPACE: Uuid =

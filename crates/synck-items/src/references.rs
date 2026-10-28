@@ -3,22 +3,19 @@
 //! Scan every retained event, including deleted items and refs; current heads
 //! cannot establish historical object closure. Direct canonical references are
 //! preserved for unknown event families, without claiming typed reader support.
-//! Only the existing POST, mailcal and TASK compatibility schemas add metadata
-//! references. Drafts, derived artifacts and private jobs are separate roots.
+//! The EMAIL metadata schema currently adds metadata references. Drafts, derived artifacts and private jobs are separate roots.
 
 use serde_json::{Map, Value};
 use synck_vcs::types::{
     BlobId, CommitEventRow, ContentId, EventContent, EventProposal, RefEventProposal,
 };
 
-use crate::{body_events, tasks};
+use crate::body_events;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ReferenceError {
     #[error("{0}")]
     Invalid(String),
-    #[error(transparent)]
-    Task(#[from] tasks::TaskError),
     #[error(transparent)]
     Body(#[from] body_events::BodyEventError),
 }
@@ -142,25 +139,12 @@ fn push_mailcal_blob_references(
 /// Enumerate legacy raw blob strings without changing existing validation order.
 /// Use `event_references` when validated identifiers and body references are needed.
 pub fn event_blob_references(event: &EventProposal) -> Result<Vec<String>, ReferenceError> {
-    let mut refs = tasks::email::event_blob_references(event)?;
+    let mut refs = Vec::new();
     if let Some(EventContent::Blob { blob_id }) = event.set_content.as_ref() {
         refs.push(blob_id.clone());
     }
 
     if let Some(metadata) = event.set_metadata.as_ref() {
-        match event.event_type.as_str() {
-            "POST::CREATE" | "POST::SET_METADATA" | "POST::SET_CONTENT" => {
-                push_optional_blob_id(
-                    &mut refs,
-                    metadata.get("body_markdown_blob_id"),
-                    "body_markdown_blob_id",
-                )?;
-            }
-            "POST::ASSET::CREATE" => {
-                push_optional_blob_id(&mut refs, metadata.get("blob_id"), "blob_id")?;
-            }
-            _ => {}
-        }
         push_mailcal_blob_references(&mut refs, event.event_type.as_str(), metadata)?;
     }
 
@@ -276,36 +260,6 @@ mod tests {
     }
 
     #[test]
-    fn task_snapshot_references_include_every_part_and_reject_malformed_descriptors() {
-        let blob = |id: &str| serde_json::json!({"blob_id":id,"size_bytes":10});
-        let source = serde_json::json!({"state":"saved","generation":1,"identity":{"kind":"personal","owner_id":"alice","account_id":uuid::Uuid::new_v4(),"message_id":"m"},
-            "snapshot":{"captured_at":"2026-09-04T12:00:00Z","raw_rfc822":blob(A),"subject":null,"internet_message_id":null,
-            "from":null,"sender":null,"to":[],"cc":[],"bcc":[],"reply_to":[],"sent_at":null,"received_at":null,
-            "body_markdown":blob(B),"body_html":blob(C),"attachments":[{"attachment_id":"1","filename":"photo.png","mime_type":"image/png","content":blob(D),"is_inline":true,"content_id":"photo"}]}});
-        let mut captured = event(
-            "TASK::CAPTURE_EMAIL",
-            serde_json::json!({"task_list_id":null,"parent_task_id":null,"meta":{"email_source":source}}),
-        );
-        captured.set_content = Some(EventContent::Blob { blob_id: A.into() });
-        captured.base_seq = Some(1);
-        assert_eq!(event_blob_references(&captured).unwrap(), vec![A, B, C, D]);
-        for family in ["TASK::CREATE", "TASK::IMPORT"] {
-            let mut initial = captured.clone();
-            initial.event_type = family.into();
-            initial.base_seq = None;
-            initial.create_item = Some(serde_json::from_value(serde_json::json!({
-                "item_type":"TASK", "name":crate::tasks::history::internal_name(initial.item_id.as_ref().unwrap())
-            })).unwrap());
-            assert_eq!(event_blob_references(&initial).unwrap(), vec![A, B, C, D]);
-        }
-        captured.set_metadata.as_mut().unwrap()["meta"]["email_source"]["snapshot"]["attachments"]
-            [0]["content"]["blob_id"] = serde_json::json!("malformed");
-        assert!(event_blob_references(&captured).is_err());
-        captured.set_metadata = None;
-        assert!(event_blob_references(&captured).is_err());
-    }
-
-    #[test]
     fn provider_mailcal_references_are_explicit_and_deduplicated() {
         let event = event(
             "EMAIL::SET_METADATA",
@@ -391,8 +345,6 @@ mod tests {
             "CHAT::FILE::SET_CONTENT",
             "EMAIL::CREATE",
             "EMAIL::ATTACHMENT::CREATE",
-            "POST::ASSET::CREATE",
-            "TABLE::RECORD::CREATE",
             "CUSTOM::SNAPSHOT",
         ] {
             let mut event = event(
@@ -401,10 +353,6 @@ mod tests {
                     "draft_blob_id":B, "ocr":{"blob_id":C}, "blob_id":D,
                 }),
             );
-            // POST assets explicitly retain their legacy blob_id metadata.
-            if family == "POST::ASSET::CREATE" {
-                event.set_metadata = Some(serde_json::json!({"asset_id":"asset"}));
-            }
             event.set_content = Some(EventContent::Blob { blob_id: A.into() });
             assert_eq!(
                 event_references(&event).unwrap(),
@@ -420,17 +368,7 @@ mod tests {
     #[test]
     fn body_references_are_distinct_and_known_body_shapes_are_validated() {
         let id = ContentId::parse(A).unwrap();
-        for family in [
-            "CHAT::MESSAGE::CREATE",
-            "CHAT::MESSAGE::SET_CONTENT",
-            "POST::COMMENT::CREATE",
-            "TASK_LIST::TASK.COMMENT::CREATE",
-            "TASK::COMMENT::CREATE",
-            "TABLE::RECORD.COMMENT::CREATE",
-            "TABLE::RECORD.COMMENT::SET_CONTENT",
-            "CALENDAR_EVENT::SET_DESCRIPTION",
-            "CALENDAR_EVENT::SET_OCCURRENCE_DESCRIPTION",
-        ] {
+        for family in ["CHAT::MESSAGE::CREATE", "CHAT::MESSAGE::SET_CONTENT"] {
             let mut event = event(family, serde_json::json!({"blob_id":B}));
             event.set_content = Some(EventContent::Content { content_id: id });
             assert_eq!(
@@ -538,8 +476,8 @@ mod tests {
     #[test]
     fn typed_scanning_rejects_invalid_legacy_ids_and_malformed_rows() {
         let legacy = event(
-            "POST::SET_METADATA",
-            serde_json::json!({"body_markdown_blob_id":"invalid"}),
+            "EMAIL::SET_METADATA",
+            serde_json::json!({"mailcal":{"v":1,"body":{"blob_id":"invalid"}}}),
         );
         assert_eq!(event_blob_references(&legacy).unwrap(), vec!["invalid"]);
         assert!(event_references(&legacy).is_err());
@@ -572,23 +510,5 @@ mod tests {
                 .to_string()
                 .starts_with("invalid ref event payload:")
         );
-    }
-
-    #[test]
-    fn legacy_post_creation_retains_the_same_body_field_as_later_updates() {
-        for family in ["POST::CREATE", "POST::SET_METADATA", "POST::SET_CONTENT"] {
-            let mut post = event(family, serde_json::json!({"body_markdown_blob_id":A}));
-            assert_eq!(event_blob_references(&post).unwrap(), vec![A], "{family}");
-            assert_eq!(
-                event_references(&post).unwrap().blobs,
-                vec![BlobId::parse(A).unwrap()],
-                "{family}"
-            );
-            post.set_content = Some(EventContent::Blob { blob_id: B.into() });
-            assert_eq!(event_blob_references(&post).unwrap(), vec![A, B]);
-            post.set_metadata = Some(serde_json::json!({"body_markdown_blob_id":"invalid"}));
-            assert_eq!(event_blob_references(&post).unwrap(), vec!["invalid", B]);
-            assert!(event_references(&post).is_err());
-        }
     }
 }

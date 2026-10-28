@@ -120,7 +120,8 @@ all data required for reconstruction must accompany it for that purpose.
 
 ## Typed reader scope
 
-The 0.2 reader does not interpret hosted TASK, CALENDAR, CALENDAR_EVENT,
+The 0.2 reader does not interpret hosted TASK, TASK_LIST, POST, TABLE, DATABASE,
+CALENDAR, CALENDAR_EVENT,
 TIME_SETTINGS, TIME_BOOK, TIME_ENTRY, CALL, CHAT_ORGANIZATION or FEDERATED_MOUNT
 state. Requesting typed presentation for these families returns an explicit
 unsupported-state error. Core hash verification remains independent of family

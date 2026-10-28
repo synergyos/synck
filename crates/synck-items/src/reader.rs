@@ -12,7 +12,7 @@ use serde_json::Value;
 use synck_vcs::types::{ContentId, EventContent, EventProposal, ItemId, RefEventProposal, RepoId};
 use uuid::Uuid;
 
-use crate::{replica_projection, subitems, tasks};
+use crate::{replica_projection, subitems};
 use subitems::{SubitemEventVerb as Verb, SubitemKind as Kind};
 
 #[derive(Debug, thiserror::Error)]
@@ -112,10 +112,6 @@ pub struct ReadableSubitem {
     pub file_item_id: Option<Uuid>,
     pub parent_folder_id: Option<Uuid>,
     pub size: Option<i64>,
-    pub data: Option<Value>,
-    pub display_value: Option<String>,
-    pub record_version: Option<i64>,
-    pub record_lifecycle: Option<String>,
     pub version_label: Option<String>,
     pub metadata: Value,
     pub content: Value,
@@ -127,17 +123,6 @@ pub struct ChatDetails {
     pub profile: Option<subitems::ChatProfileEvent>,
     pub assistants: BTreeSet<String>,
     pub participants: BTreeMap<String, subitems::ChatUserParticipantEvent>,
-}
-
-#[derive(Clone, Debug, Default, Serialize)]
-pub struct PostDetails {
-    pub channel_id: Option<String>,
-    pub title: Option<String>,
-    pub summary: Option<String>,
-    pub body_blob_id: Option<String>,
-    pub audience_class: Option<String>,
-    pub comments_allowed: Option<bool>,
-    pub lifecycle: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -161,7 +146,6 @@ pub struct AncillaryEvent {
 pub struct ReadableItem {
     pub projection: replica_projection::ReplicaItemProjection,
     pub chat: Option<ChatDetails>,
-    pub post: Option<PostDetails>,
     pub subitems: Vec<ReadableSubitem>,
     pub latest_ref_seq: i64,
     pub legacy_sidecar_roots: Vec<LegacySidecarRoot>,
@@ -185,7 +169,6 @@ pub struct ItemReader {
     poisoned: bool,
     projection: Option<replica_projection::ReplicaItemProjection>,
     chat: Option<ChatDetails>,
-    post: Option<PostDetails>,
     subitems: BTreeMap<(String, SubitemIdentity), ReadableSubitem>,
 }
 
@@ -222,7 +205,6 @@ impl ItemReader {
             poisoned: false,
             projection: None,
             chat: None,
-            post: None,
             subitems: BTreeMap::new(),
         }
     }
@@ -255,7 +237,6 @@ impl ItemReader {
                 .clone()
                 .ok_or_else(|| invalid("item has no creation"))?,
             chat: self.chat.clone(),
-            post: self.post.clone(),
             subitems: self.subitems.values().cloned().collect(),
             latest_ref_seq: self.ref_seq,
             legacy_sidecar_roots: self.legacy_sidecar_roots.clone(),
@@ -624,16 +605,12 @@ impl ItemReader {
         .map_err(invalid)?;
         match kind.as_str() {
             "FILE_VERSION_SET" => self.apply_version_set(event, &context)?,
-            "FILE" | "FOLDER" | "CHAT" | "EMAIL" | "POST" | "TASK_LIST" | "TABLE" | "DATABASE" => {
+            "FILE" | "FOLDER" | "CHAT" | "EMAIL" => {
                 if let Some((subkind, verb)) = subitems::classify_subitem_event(&event.event_type) {
                     if subkind.owning_item_type() != kind {
                         return Err(invalid("subitem family does not match owner"));
                     }
                     self.apply_subitem(subkind, verb, event, &context)?;
-                } else if event.event_type.starts_with("POST::COMMENT::") {
-                    self.apply_post_comment(event, &context)?;
-                } else if event.event_type.starts_with("POST::ASSET::") {
-                    self.apply_post_asset(event, &context)?;
                 } else {
                     self.apply_owner(&kind, event, &context, &mut projection)?;
                 }
@@ -751,50 +728,7 @@ impl ItemReader {
             self.chat = Some(chat);
             return Ok(());
         }
-        if kind == "POST" {
-            let mut post = self.post.clone().unwrap_or_default();
-            match event.event_type.as_str() {
-                "POST::CREATE" | "POST::SET_METADATA" | "POST::SET_CONTENT" => {
-                    for (key, slot) in [
-                        ("channel_id", &mut post.channel_id),
-                        ("title", &mut post.title),
-                        ("audience_class", &mut post.audience_class),
-                        ("lifecycle_state", &mut post.lifecycle),
-                    ] {
-                        if let Some(value) = meta.get(key).and_then(Value::as_str) {
-                            *slot = Some(value.into());
-                        }
-                    }
-                    if let Some(value) = meta.get("summary").and_then(Value::as_str) {
-                        post.summary = Some(value.into());
-                    }
-                    if event.event_type == "POST::CREATE" {
-                        post.audience_class.get_or_insert("INTERNAL_ONLY".into());
-                        post.comments_allowed.get_or_insert(true);
-                        post.lifecycle.get_or_insert("DRAFT".into());
-                    }
-                    if let Some(value) = meta.get("comments_allowed").and_then(Value::as_bool) {
-                        post.comments_allowed = Some(value);
-                    }
-                    post.body_blob_id = match event.set_content.as_ref() {
-                        Some(EventContent::Blob { blob_id }) => Some(blob_id.clone()),
-                        None => meta
-                            .get("body_markdown_blob_id")
-                            .and_then(Value::as_str)
-                            .map(str::to_owned)
-                            .or(post.body_blob_id),
-                        _ => return Err(invalid("POST body requires blob content")),
-                    };
-                }
-                "POST::TRASH" => post.lifecycle = Some("TRASH".into()),
-                "POST::RESTORE" | "POST::PUBLISH" => post.lifecycle = Some("PUBLISHED".into()),
-                "POST::ARCHIVE" => post.lifecycle = Some("ARCHIVED".into()),
-                "POST::TOMBSTONE" => post.lifecycle = Some("TOMBSTONED".into()),
-                _ => return Err(unsupported(kind, &event.event_type)),
-            }
-            self.post = Some(post);
-            return Ok(());
-        }
+
         require_generic_owner_event(kind, event)
     }
 
@@ -835,10 +769,6 @@ impl ItemReader {
             file_item_id: None,
             parent_folder_id: None,
             size: None,
-            data: None,
-            display_value: None,
-            record_version: None,
-            record_lifecycle: None,
             version_label: None,
             metadata: meta,
             content,
@@ -861,32 +791,13 @@ impl ItemReader {
                 .ok_or_else(|| invalid("subitem mutation missing stable item_seq"))?
         };
         let key = (family.into(), SubitemIdentity::Sequence(target));
-        let mut meta = subitems::reconstruct_subitem_meta(event.set_metadata.as_ref());
+        let meta = subitems::reconstruct_subitem_meta(event.set_metadata.as_ref());
         let content = subitems::reconstruct_subitem_content(
             event.set_metadata.as_ref(),
             event.set_content.as_ref(),
         );
         let parent = subitems::meta_get_i64(event.set_metadata.as_ref(), "parent_item_seq");
         let previous = self.subitems.get(&key);
-        let previous_parent = previous.and_then(|row| row.parent_item_seq);
-        let previous_index = previous.map(task_index);
-        if creating && kind == Kind::TaskListTask && meta.get("index").is_none() {
-            let index = self
-                .subitems
-                .values()
-                .filter(|row| {
-                    row.family == family
-                        && row.lifecycle == SubitemLifecycle::Live
-                        && row.parent_item_seq == parent
-                })
-                .map(task_index)
-                .max()
-                .unwrap_or(-1)
-                + 1;
-            meta.as_object_mut()
-                .ok_or_else(|| invalid("task metadata must be object"))?
-                .insert("index".into(), Value::from(index));
-        }
         let mut row = if creating {
             if previous.is_some() {
                 return Err(invalid("duplicate subitem creation"));
@@ -913,102 +824,12 @@ impl ItemReader {
             update_subitem(kind, verb, &mut row, event, &meta, &content, ctx)?;
             row
         };
-        if kind == Kind::StructuredDataRecord
-            && self.projection.as_ref().is_some_and(|item| {
-                item.metadata_json
-                    .get("system_registry")
-                    .and_then(Value::as_bool)
-                    == Some(true)
-                    && item
-                        .metadata_json
-                        .get("system_registry_key")
-                        .and_then(Value::as_str)
-                        == Some("CONTACTS")
-            })
-        {
-            if creating || matches!(verb, Verb::SetMetadata | Verb::SetContent) {
-                read_contact(&mut row)?;
-            } else {
-                row.record_lifecycle = Some(
-                    match verb {
-                        Verb::Trash => "ARCHIVED",
-                        Verb::Tombstone => "TOMBSTONED",
-                        Verb::Restore => "LIVE",
-                        _ => unreachable!(),
-                    }
-                    .into(),
-                );
-                row.lifecycle = parse_lifecycle(row.record_lifecycle.as_deref().unwrap_or("LIVE"))?;
-            }
-        }
         row.latest_position.seq = ctx.item_seq;
-        let before =
-            subitems::meta_get_optional_i64(event.set_metadata.as_ref(), "before_item_seq")?;
-        let reordered = kind == Kind::TaskListTask
-            && !creating
-            && row.lifecycle == SubitemLifecycle::Live
-            && (previous_index != Some(task_index(&row))
-                || previous_parent != row.parent_item_seq
-                || before.is_some());
-        let mut plans = Vec::new();
-        if reordered {
-            let mut siblings = self
-                .subitems
-                .values()
-                .filter(|other| {
-                    other.family == family
-                        && other.created_position.seq != target
-                        && other.lifecycle == SubitemLifecycle::Live
-                        && other.parent_item_seq == row.parent_item_seq
-                })
-                .map(task_order_entry)
-                .collect::<Vec<_>>();
-            siblings.push(task_order_entry(&row));
-            siblings.sort_by_key(|entry| (entry.sort_index, entry.item_seq));
-            plans.push(subitems::reorder_task_siblings(
-                siblings,
-                Some(target),
-                Some(task_index(&row)),
-                before,
-            )?);
-            if previous_parent != row.parent_item_seq {
-                let mut old = self
-                    .subitems
-                    .values()
-                    .filter(|other| {
-                        other.family == family
-                            && other.created_position.seq != target
-                            && other.lifecycle == SubitemLifecycle::Live
-                            && other.parent_item_seq == previous_parent
-                    })
-                    .map(task_order_entry)
-                    .collect::<Vec<_>>();
-                old.sort_by_key(|entry| (entry.sort_index, entry.item_seq));
-                plans.push(old);
-            }
-        }
         let removed_folder = (kind == Kind::ChatFileFolder
             && matches!(verb, Verb::Trash | Verb::Tombstone))
         .then_some(row.stable_id)
         .flatten();
         self.subitems.insert(key, row);
-        for plan in plans {
-            for (index, entry) in plan.into_iter().enumerate() {
-                if let Some(sibling) = self
-                    .subitems
-                    .get_mut(&(family.into(), SubitemIdentity::Sequence(entry.item_seq)))
-                {
-                    sibling.metadata["index"] = Value::from(index as i64);
-                    sibling.data = Some(sibling.metadata.clone());
-                }
-            }
-        }
-        if kind == Kind::TaskListTask && verb == Verb::Tombstone {
-            self.subitems.retain(|_, comment| {
-                !(comment.family == "TASK_LIST::TASK.COMMENT"
-                    && comment.parent_item_seq == Some(target))
-            });
-        }
         if let Some(folder) = removed_folder {
             self.detach_chat_folder(folder);
         }
@@ -1052,39 +873,6 @@ impl ItemReader {
                 }
             }
         }
-    }
-
-    fn apply_uuid_comment(
-        &mut self,
-        family: &str,
-        id_field: &str,
-        body_field: &str,
-        event: &EventProposal,
-        ctx: &ReadContext<'_>,
-    ) -> Result<(), ReadError> {
-        let meta = event
-            .set_metadata
-            .as_ref()
-            .ok_or_else(|| invalid("comment metadata missing"))?;
-        let id = uuid(meta, id_field)?;
-        let content = match event.set_content.as_ref() {
-            Some(EventContent::Json { json }) => json.clone(),
-            _ => return Err(invalid("comment must have hydrated JSON body")),
-        };
-        let body = content
-            .get(body_field)
-            .and_then(Value::as_str)
-            .ok_or_else(|| invalid("comment body missing"))?
-            .to_owned();
-        let key = (family.into(), SubitemIdentity::Uuid(id));
-        if self.subitems.contains_key(&key) {
-            return Ok(());
-        }
-        let mut row = self.blank(family, key.1.clone(), meta.clone(), content, ctx);
-        row.body = Some(body);
-        row.stable_id = Some(id);
-        self.subitems.insert(key, row);
-        Ok(())
     }
 
     fn apply_version_set(
@@ -1241,82 +1029,6 @@ impl ItemReader {
         }
         Ok(())
     }
-
-    fn apply_post_comment(
-        &mut self,
-        event: &EventProposal,
-        ctx: &ReadContext<'_>,
-    ) -> Result<(), ReadError> {
-        match event.event_type.as_str() {
-            "POST::COMMENT::CREATE" => {
-                self.apply_uuid_comment("POST::COMMENT", "comment_id", "body_markdown", event, ctx)
-            }
-            "POST::COMMENT::TRASH" | "POST::COMMENT::RESTORE" | "POST::COMMENT::TOMBSTONE" => {
-                let seq = subitems::meta_get_i64(event.set_metadata.as_ref(), "item_seq")
-                    .ok_or_else(|| invalid("POST comment mutation missing item_seq"))?;
-                let row = self
-                    .subitems
-                    .values_mut()
-                    .find(|row| row.family == "POST::COMMENT" && row.created_position.seq == seq)
-                    .ok_or_else(|| invalid("POST comment target missing"))?;
-                row.lifecycle = lifecycle_for_event(&event.event_type)?;
-                row.latest_position.seq = ctx.item_seq;
-                Ok(())
-            }
-            _ => Err(unsupported("POST", &event.event_type)),
-        }
-    }
-
-    fn apply_post_asset(
-        &mut self,
-        event: &EventProposal,
-        ctx: &ReadContext<'_>,
-    ) -> Result<(), ReadError> {
-        let meta = event
-            .set_metadata
-            .as_ref()
-            .ok_or_else(|| invalid("POST asset metadata missing"))?;
-        let id = uuid(meta, "asset_id")?;
-        let key = ("POST::ASSET".into(), SubitemIdentity::Uuid(id));
-        match event.event_type.as_str() {
-            "POST::ASSET::CREATE" => {
-                let blob = match event.set_content.as_ref() {
-                    Some(EventContent::Blob { blob_id }) => blob_id.clone(),
-                    None => meta
-                        .get("blob_id")
-                        .and_then(Value::as_str)
-                        .ok_or_else(|| invalid("POST asset blob missing"))?
-                        .into(),
-                    _ => return Err(invalid("POST asset requires blob content")),
-                };
-                let mut row = self.subitems.get(&key).cloned().unwrap_or_else(|| {
-                    self.blank("POST::ASSET", key.1.clone(), meta.clone(), Value::Null, ctx)
-                });
-                row.blob_id = Some(blob);
-                row.stable_id = Some(id);
-                row.name = meta
-                    .get("filename")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned);
-                row.size = meta.get("size").and_then(Value::as_i64);
-                row.lifecycle = SubitemLifecycle::Live;
-                row.latest_position.seq = ctx.item_seq;
-                row.metadata = meta.clone();
-                self.subitems.insert(key, row);
-                Ok(())
-            }
-            "POST::ASSET::TOMBSTONE" => {
-                let row = self
-                    .subitems
-                    .get_mut(&key)
-                    .ok_or_else(|| invalid("POST asset target missing"))?;
-                row.lifecycle = SubitemLifecycle::Tombstoned;
-                row.latest_position.seq = ctx.item_seq;
-                Ok(())
-            }
-            _ => Err(unsupported("POST", &event.event_type)),
-        }
-    }
 }
 
 fn require_generic_owner_event(kind: &str, event: &EventProposal) -> Result<(), ReadError> {
@@ -1433,42 +1145,7 @@ fn initialize_subitem(
             row.name = Some(fields.snapshot_name);
             row.metadata = fields.meta;
         }
-        Kind::TaskListTask => {
-            let fields = tasks::normalize_fields(&row.metadata).map_err(invalid)?;
-            row.metadata = subitems::task_row_metadata_with_creator(
-                fields.metadata_json,
-                ctx.occurred_at.unwrap_or(ctx.created_at),
-                ctx.author,
-            )?;
-            row.name = Some(fields.subject);
-            row.data = Some(row.metadata.clone());
-        }
-        Kind::TaskListTaskComment => {
-            row.stable_id = Some(uuid(&row.metadata, "comment_id")?);
-            row.body = Some(comment_body(&row.content)?.trim().into());
-        }
-        Kind::StructuredDataRecord => {
-            row.stable_id = Some(uuid(&row.metadata, "record_id")?);
-            let data = subitems::structured_data_record_data_from_content(&row.content)?;
-            row.display_value = Some(subitems::structured_data_record_display_value_from_content(
-                &row.content,
-                &data,
-            ));
-            row.data = Some(data);
-            row.record_version = Some(subitems::structured_data_record_version_from_content(
-                &row.content,
-                1,
-            )?);
-            row.record_lifecycle = Some(subitems::structured_data_record_lifecycle_from_content(
-                &row.content,
-                "LIVE",
-            )?);
-            row.lifecycle = parse_lifecycle(row.record_lifecycle.as_deref().unwrap_or("LIVE"))?;
-        }
-        Kind::StructuredDataRecordComment => {
-            row.stable_id = Some(uuid(&row.metadata, "comment_id")?);
-            row.body = Some(comment_body(&row.content)?.trim().into());
-        }
+
         Kind::FileVersion => {
             row.blob_id = Some(
                 subitems::file_version_blob_id_from_content(&row.content)
@@ -1483,12 +1160,6 @@ fn initialize_subitem(
     }
     Ok(())
 }
-fn comment_body(content: &Value) -> Result<&str, ReadError> {
-    content
-        .get("body")
-        .and_then(Value::as_str)
-        .ok_or_else(|| invalid("comment body missing"))
-}
 
 fn update_subitem(
     kind: Kind,
@@ -1499,29 +1170,8 @@ fn update_subitem(
     content: &Value,
     ctx: &ReadContext<'_>,
 ) -> Result<(), ReadError> {
-    if kind == Kind::TaskListTaskComment {
-        return Err(unsupported("TASK_LIST", &event.event_type));
-    }
     if matches!(verb, Verb::Trash | Verb::Restore | Verb::Tombstone) {
-        if kind == Kind::StructuredDataRecord {
-            row.record_lifecycle = Some(
-                if verb == Verb::Restore {
-                    "LIVE"
-                } else {
-                    "ARCHIVED"
-                }
-                .into(),
-            );
-        }
-        row.lifecycle = if kind == Kind::StructuredDataRecord {
-            if verb == Verb::Restore {
-                SubitemLifecycle::Live
-            } else {
-                SubitemLifecycle::Archived
-            }
-        } else if (kind == Kind::StructuredDataRecordComment || kind == Kind::FileVersion)
-            && verb == Verb::Trash
-        {
+        row.lifecycle = if kind == Kind::FileVersion && verb == Verb::Trash {
             SubitemLifecycle::Tombstoned
         } else {
             lifecycle_for_event(&event.event_type)?
@@ -1620,56 +1270,7 @@ fn update_subitem(
             row.parent_folder_id = fields.parent_folder_id;
             row.metadata = fields.meta;
         }
-        Kind::TaskListTask => {
-            if let Some(parent) =
-                subitems::meta_get_optional_i64(event.set_metadata.as_ref(), "parent_item_seq")?
-            {
-                row.parent_item_seq = parent;
-            }
-            if let Some(meta) = replacement {
-                row.metadata = subitems::merge_task_row_meta(&row.metadata, &meta)?;
-            }
-            let fields = tasks::normalize_fields(&row.metadata).map_err(invalid)?;
-            row.name = Some(fields.subject);
-            row.metadata = fields.metadata_json;
-            row.data = Some(row.metadata.clone());
-        }
-        Kind::TaskListTaskComment => return Err(unsupported("TASK_LIST", &event.event_type)),
-        Kind::StructuredDataRecord => {
-            if replacement.as_ref().is_some_and(|next| {
-                next.get("record_id")
-                    .is_some_and(|id| Some(id) != row.metadata.get("record_id"))
-            }) {
-                return Err(invalid("record identity changed"));
-            }
-            if !content.is_null() {
-                if content.get("data").is_some() {
-                    row.data = Some(subitems::structured_data_record_data_from_content(content)?);
-                }
-                let data = row
-                    .data
-                    .as_ref()
-                    .ok_or_else(|| invalid("record data missing"))?;
-                row.display_value = Some(
-                    subitems::structured_data_record_display_value_from_content(content, data),
-                );
-                row.record_version = Some(subitems::structured_data_record_version_from_content(
-                    content,
-                    row.record_version.unwrap_or(1),
-                )?);
-                row.record_lifecycle =
-                    Some(subitems::structured_data_record_lifecycle_from_content(
-                        content,
-                        row.record_lifecycle.as_deref().unwrap_or("LIVE"),
-                    )?);
-            }
-            row.lifecycle = parse_lifecycle(row.record_lifecycle.as_deref().unwrap_or("LIVE"))?;
-        }
-        Kind::StructuredDataRecordComment => {
-            if !content.is_null() {
-                row.body = Some(comment_body(content)?.trim().into());
-            }
-        }
+
         Kind::FileVersion => {
             if let Some(meta) = replacement {
                 if let Some(next) = meta
@@ -1734,50 +1335,6 @@ fn update_subitem(
         }
     }
     row.latest_position.seq = ctx.item_seq;
-    Ok(())
-}
-
-fn task_index(row: &ReadableSubitem) -> i64 {
-    row.metadata
-        .get("index")
-        .and_then(Value::as_i64)
-        .filter(|index| *index >= 0)
-        .unwrap_or(row.created_position.seq)
-}
-fn task_order_entry(row: &ReadableSubitem) -> subitems::TaskOrderEntry {
-    subitems::TaskOrderEntry {
-        item_seq: row.created_position.seq,
-        sort_index: task_index(row),
-        metadata_json: row.metadata.clone(),
-    }
-}
-fn read_contact(row: &mut ReadableSubitem) -> Result<(), ReadError> {
-    let data = row
-        .data
-        .as_ref()
-        .ok_or_else(|| invalid("contact data missing"))?;
-    if data.get("schema_version").and_then(Value::as_i64) != Some(1) {
-        return Err(unsupported("TABLE_CONTACTS", "contact schema_version"));
-    }
-    let id = uuid(data, "contact_id")?;
-    if row.stable_id != Some(id) {
-        return Err(invalid("contact record_id differs from contact_id"));
-    }
-    row.name = Some(
-        data.get("display_name")
-            .and_then(Value::as_str)
-            .ok_or_else(|| invalid("contact display_name missing"))?
-            .into(),
-    );
-    row.display_value = row.name.clone();
-    row.record_lifecycle = Some(
-        data.get("lifecycle_state")
-            .and_then(Value::as_str)
-            .ok_or_else(|| invalid("contact lifecycle missing"))?
-            .into(),
-    );
-    row.body = data.get("notes").and_then(Value::as_str).map(str::to_owned);
-    row.lifecycle = parse_lifecycle(row.record_lifecycle.as_deref().unwrap_or("LIVE"))?;
     Ok(())
 }
 

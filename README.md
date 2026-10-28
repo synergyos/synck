@@ -133,8 +133,8 @@ synck item export FILE_ID ./report.pdf --path ./exported-repository
 synck repository log ./exported-repository
 ```
 
-Files, chats, email, posts, legacy task lists and table records are readable
-at any point in their history with `--through`. To edit the files
+Files, chats and email are readable at any point in their history with
+`--through`. To edit the files
 with ordinary applications, make your own copy and check it out:
 
 ```sh
