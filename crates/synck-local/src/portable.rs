@@ -1674,6 +1674,13 @@ impl PortableRepository {
     /// failure. Never called by open/read, and never allowed for followers.
     pub async fn finalize(&mut self) -> Result<()> {
         self.writable()?;
+        self.storage
+            .repair_publication_counter(self.repo_id())
+            .map_err(corrupt)?;
+        self.finish_acceptance().await
+    }
+
+    async fn finish_acceptance(&mut self) -> Result<()> {
         while self
             .core()
             .sequence_repo_activity(self.repo_id().clone(), PAGE)
@@ -1696,7 +1703,7 @@ impl PortableRepository {
 
     async fn accepted(&mut self, commit: AcceptedCommit) -> Result<CommitId> {
         let id = commit.commit_id;
-        self.finalize()
+        self.finish_acceptance()
             .await
             .map_err(|error| LocalError::AcceptedNeedsRecovery {
                 commit_id: id.to_string(),

@@ -1641,35 +1641,131 @@ fn historical_comparison_reads_only_changed_file_content() {
 fn numeric_repository_sequences_are_exact_revisions() {
     let temporary = committed_repository();
     let root = temporary.path();
-    let connection = rusqlite::Connection::open(root.join(".synck/repository.sqlite3")).unwrap();
-    connection
-        .execute("UPDATE vcs_repo_activity_heads SET next_repo_seq = 4", [])
+    let db = rusqlite::Connection::open(root.join(".synck/repository.sqlite3")).unwrap();
+    db.execute("UPDATE vcs_repo_activity_heads SET next_repo_seq = 4", [])
         .unwrap();
-    drop(connection);
-
+    let before: (i64, i64) = db
+        .query_row(
+            "SELECT (SELECT count(*) FROM vcs_commits), (SELECT count(*) FROM vcs_events)",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
     fs::write(root.join("file.txt"), b"changed").unwrap();
+    let rejected = synck(root, &["commit", "-m", "must not be accepted"]);
+    assert!(!rejected.status.success());
+    let error = String::from_utf8_lossy(&rejected.stderr);
     assert!(
-        synck(root, &["commit", "-m", "third sequence"])
-            .status
-            .success()
+        error.contains("integrity error")
+            && error.contains("publication counter")
+            && error.contains("finalize"),
+        "{error}"
     );
-
-    let compared = synck(root, &["compare", "2", "4"]);
+    let after: (i64, i64) = db
+        .query_row(
+            "SELECT (SELECT count(*) FROM vcs_commits), (SELECT count(*) FROM vcs_events)",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        after, before,
+        "rejected commit must leave no accepted history"
+    );
+    let repaired = synck(root, &["repository", "finalize", "."]);
+    assert!(
+        repaired.status.success(),
+        "{}",
+        String::from_utf8_lossy(&repaired.stderr)
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT next_repo_seq FROM vcs_repo_activity_heads",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        3
+    );
+    let committed = synck(root, &["commit", "-m", "third sequence"]);
+    assert!(
+        committed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&committed.stderr)
+    );
+    let compared = synck(root, &["compare", "2", "3"]);
     assert!(
         compared.status.success(),
         "{}",
         String::from_utf8_lossy(&compared.stderr)
     );
     assert_eq!(String::from_utf8(compared.stdout).unwrap(), "M file.txt\n");
-
-    let missing = synck(root, &["compare", "2", "3"]);
+    assert!(synck(root, &["--json", "log"]).status.success());
+    assert!(synck(root, &["fsck"]).status.success());
+    let missing = synck(root, &["compare", "2", "4"]);
     assert_eq!(missing.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&missing.stderr).contains("revision does not exist: 3"));
-
+    assert!(String::from_utf8_lossy(&missing.stderr).contains("revision does not exist: 4"));
     for invalid in ["0", "01", "+1", "-1", " 1", "1 ", "9223372036854775808"] {
-        let output = synck(root, &["compare", "2", invalid]);
-        assert!(!output.status.success(), "revision {invalid:?}");
+        assert!(
+            !synck(root, &["compare", "2", invalid]).status.success(),
+            "revision {invalid:?}"
+        );
     }
+}
+
+#[test]
+fn finalize_repairs_counter_and_publishes_previously_accepted_commit() {
+    let temporary = committed_repository();
+    let root = temporary.path();
+    fs::write(root.join("file.txt"), b"accepted").unwrap();
+    assert!(synck(root, &["commit", "-m", "accepted"]).status.success());
+    let db = rusqlite::Connection::open(root.join(".synck/repository.sqlite3")).unwrap();
+    let accepted: Vec<u8> = db
+        .query_row(
+            "SELECT commit_id FROM vcs_commits WHERE repo_seq=3",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let checkpoint: Vec<u8> = db
+        .query_row(
+            "SELECT checkpoint FROM vcs_checkpoints WHERE repo_seq=3",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    // Recreate an older writer's accepted-but-unpublished state and bad counter.
+    db.execute_batch("BEGIN IMMEDIATE; DELETE FROM vcs_checkpoints WHERE repo_seq=3; UPDATE vcs_commits SET repo_seq=NULL WHERE repo_seq=3; UPDATE vcs_repo_activity_heads SET next_repo_seq=7; COMMIT;").unwrap();
+    fs::write(root.join("file.txt"), b"unsaved working edit").unwrap();
+    assert!(!synck(root, &["fsck"]).status.success());
+    for _ in 0..2 {
+        let finalized = synck(root, &["repository", "finalize", "."]);
+        assert!(
+            finalized.status.success(),
+            "{}",
+            String::from_utf8_lossy(&finalized.stderr)
+        );
+    }
+    let restored: (Vec<u8>, Vec<u8>) = db
+        .query_row(
+            "SELECT commit_id,checkpoint FROM vcs_checkpoints WHERE repo_seq=3",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(restored, (accepted, checkpoint));
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM vcs_commits", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        3
+    );
+    assert_eq!(
+        fs::read(root.join("file.txt")).unwrap(),
+        b"unsaved working edit"
+    );
+    assert!(synck(root, &["--json", "log"]).status.success());
+    assert!(synck(root, &["fsck"]).status.success());
 }
 
 #[test]

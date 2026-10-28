@@ -1544,20 +1544,13 @@ impl StorageTxn for SqliteTxn {
         if limit == 0 {
             return Ok(0);
         }
+        let next = checked_publication_counter(self.conn()?, repo_id)?;
         ensure_history_generation(self.conn()?, repo_id)?;
         let now = format_timestamp(Utc::now());
         self.conn()?
             .execute(
                 "INSERT INTO vcs_repo_activity_heads (repo_id, next_repo_seq, updated_at) VALUES (?1, 1, ?2) ON CONFLICT(repo_id) DO NOTHING",
                 params![repo_id.as_str(), now],
-            )
-            .map_err(map_sqlite_error)?;
-        let next: i64 = self
-            .conn()?
-            .query_row(
-                "SELECT next_repo_seq FROM vcs_repo_activity_heads WHERE repo_id = ?1",
-                [repo_id.as_str()],
-                |row| row.get(0),
             )
             .map_err(map_sqlite_error)?;
         let limit = checked_limit(limit)?;
@@ -1621,6 +1614,9 @@ impl StorageTxn for SqliteTxn {
         occurred_at: Option<Timestamp>,
         created_at: Timestamp,
     ) -> Result<(), StorageError> {
+        if repo_seq.is_none() {
+            checked_publication_counter(self.conn()?, repo_id)?;
+        }
         self.conn()?
             .execute(
                 "INSERT INTO vcs_commits (repo_id, commit_pk, commit_id, repo_seq, operation_id, format_version, import_job_id, author_id, committer_id, message, occurred_at, created_at, event_count, events_digest) VALUES (?1, ?2, NULL, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, NULL, NULL)",
@@ -2046,69 +2042,128 @@ impl SqliteStorage {
     pub fn verify_checkpoints(&self, repo_id: &RepoId) -> Result<(), StorageError> {
         let conn = self.open_readonly()?;
         conn.execute_batch("BEGIN").map_err(map_sqlite_error)?;
-        let generation: String = conn
-            .query_row(
-                "SELECT generation FROM vcs_history_generations WHERE repo_id=?1",
-                [repo_id.as_str()],
-                |row| row.get(0),
-            )
+        verify_checkpoints_in(&conn, repo_id)
+    }
+
+    /// Repair only the derived counter, after verifying published history.
+    /// Acceptance and sequencing use the same SQLite write exclusion.
+    pub fn repair_publication_counter(&self, repo_id: &RepoId) -> Result<(), StorageError> {
+        let mut conn = self.open_writable()?;
+        let txn = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(map_sqlite_error)?;
-        CommitPk::parse(generation).map_err(|error| StorageError::Other {
-            detail: format!("invalid history generation: {error}"),
-        })?;
-        let mut query = conn.prepare(
-            "SELECT c.repo_seq,c.commit_id,c.created_at,p.commit_id,p.checkpoint FROM vcs_commits c LEFT JOIN vcs_checkpoints p ON p.repo_id=c.repo_id AND p.repo_seq=c.repo_seq WHERE c.repo_id=?1 AND c.repo_seq IS NOT NULL ORDER BY c.repo_seq",
-        ).map_err(map_sqlite_error)?;
-        let mut rows = query.query([repo_id.as_str()]).map_err(map_sqlite_error)?;
-        let mut previous = synck_vcs::checkpoint::GENESIS;
-        let mut last = 0i64;
-        let mut count = 0i64;
-        while let Some(row) = rows.next().map_err(map_sqlite_error)? {
-            let seq: i64 = row.get(0).map_err(map_sqlite_error)?;
-            let commit: Vec<u8> = row.get(1).map_err(map_sqlite_error)?;
-            let accepted: String = row.get(2).map_err(map_sqlite_error)?;
-            let published_commit: Option<Vec<u8>> = row.get(3).map_err(map_sqlite_error)?;
-            let published_digest: Option<Vec<u8>> = row.get(4).map_err(map_sqlite_error)?;
-            if last.checked_add(1) != Some(seq)
-                || published_commit.as_deref() != Some(commit.as_slice())
-            {
-                return Err(StorageError::Other {
-                    detail: format!("checkpoint placement mismatch at sequence {seq}"),
-                });
-            }
-            let id = commit_id_from_digest_bytes(&commit).map_err(|error| StorageError::Other {
-                detail: error.to_string(),
-            })?;
-            let digest = synck_vcs::checkpoint::digest(
-                &previous,
-                seq as u64,
-                &id,
-                parse_timestamp(&accepted)?,
-            )
-            .map_err(|error| StorageError::Other {
-                detail: error.to_string(),
-            })?;
-            if published_digest.as_deref() != Some(digest.as_slice()) {
-                return Err(StorageError::Other {
-                    detail: format!("checkpoint digest mismatch at sequence {seq}"),
-                });
-            }
-            previous = digest;
-            last = seq;
-            count += 1;
+        let next = next_published_sequence(&txn, repo_id)?;
+        if next == 1 {
+            ensure_history_generation(&txn, repo_id)?;
         }
-        let stored: i64 = conn
-            .query_row(
-                "SELECT count(*) FROM vcs_checkpoints WHERE repo_id=?1",
-                [repo_id.as_str()],
-                |row| row.get(0),
-            )
-            .map_err(map_sqlite_error)?;
-        if stored != count {
+        verify_checkpoints_in(&txn, repo_id)?;
+        txn.execute(
+            "INSERT INTO vcs_repo_activity_heads (repo_id,next_repo_seq,updated_at) VALUES (?1,?2,?3)
+             ON CONFLICT(repo_id) DO UPDATE SET next_repo_seq=excluded.next_repo_seq,updated_at=excluded.updated_at",
+            params![repo_id.as_str(), next, format_timestamp(Utc::now())],
+        ).map_err(map_sqlite_error)?;
+        txn.commit().map_err(map_sqlite_error)
+    }
+}
+
+fn verify_checkpoints_in(conn: &Connection, repo_id: &RepoId) -> Result<(), StorageError> {
+    let generation: String = conn
+        .query_row(
+            "SELECT generation FROM vcs_history_generations WHERE repo_id=?1",
+            [repo_id.as_str()],
+            |row| row.get(0),
+        )
+        .map_err(map_sqlite_error)?;
+    CommitPk::parse(generation).map_err(|error| StorageError::Other {
+        detail: format!("invalid history generation: {error}"),
+    })?;
+    let mut query = conn.prepare(
+        "SELECT c.repo_seq,c.commit_id,c.created_at,p.commit_id,p.checkpoint FROM vcs_commits c LEFT JOIN vcs_checkpoints p ON p.repo_id=c.repo_id AND p.repo_seq=c.repo_seq WHERE c.repo_id=?1 AND c.repo_seq IS NOT NULL ORDER BY c.repo_seq",
+    ).map_err(map_sqlite_error)?;
+    let mut rows = query.query([repo_id.as_str()]).map_err(map_sqlite_error)?;
+    let mut previous = synck_vcs::checkpoint::GENESIS;
+    let mut last = 0i64;
+    let mut count = 0i64;
+    while let Some(row) = rows.next().map_err(map_sqlite_error)? {
+        let seq: i64 = row.get(0).map_err(map_sqlite_error)?;
+        let commit: Vec<u8> = row.get(1).map_err(map_sqlite_error)?;
+        let accepted: String = row.get(2).map_err(map_sqlite_error)?;
+        let published_commit: Option<Vec<u8>> = row.get(3).map_err(map_sqlite_error)?;
+        let published_digest: Option<Vec<u8>> = row.get(4).map_err(map_sqlite_error)?;
+        if last.checked_add(1) != Some(seq)
+            || published_commit.as_deref() != Some(commit.as_slice())
+        {
             return Err(StorageError::Other {
-                detail: "checkpoint without a published commit".into(),
+                detail: format!("checkpoint placement mismatch at sequence {seq}"),
             });
         }
-        Ok(())
+        let id = commit_id_from_digest_bytes(&commit).map_err(|error| StorageError::Other {
+            detail: error.to_string(),
+        })?;
+        let digest = synck_vcs::checkpoint::digest(
+            &previous,
+            seq as u64,
+            &id,
+            parse_timestamp(&accepted)?,
+        )
+        .map_err(|error| StorageError::Other {
+            detail: error.to_string(),
+        })?;
+        if published_digest.as_deref() != Some(digest.as_slice()) {
+            return Err(StorageError::Other {
+                detail: format!("checkpoint digest mismatch at sequence {seq}"),
+            });
+        }
+        previous = digest;
+        last = seq;
+        count += 1;
     }
+    let stored: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM vcs_checkpoints WHERE repo_id=?1",
+            [repo_id.as_str()],
+            |row| row.get(0),
+        )
+        .map_err(map_sqlite_error)?;
+    if stored != count {
+        return Err(StorageError::Other {
+            detail: "checkpoint without a published commit".into(),
+        });
+    }
+    Ok(())
+}
+
+// MAX uses the publication index; pending accepted commits do not consume positions.
+fn next_published_sequence(conn: &Connection, repo_id: &RepoId) -> Result<i64, StorageError> {
+    let last: i64 = conn
+        .query_row(
+            "SELECT COALESCE(MAX(repo_seq),0) FROM vcs_commits WHERE repo_id=?1",
+            [repo_id.as_str()],
+            |row| row.get(0),
+        )
+        .map_err(map_sqlite_error)?;
+    last.checked_add(1).ok_or_else(|| StorageError::Other {
+        detail: "repository sequence exhausted".into(),
+    })
+}
+
+fn checked_publication_counter(conn: &Connection, repo_id: &RepoId) -> Result<i64, StorageError> {
+    let expected = next_published_sequence(conn, repo_id)?;
+    let stored: Option<i64> = conn
+        .query_row(
+            "SELECT next_repo_seq FROM vcs_repo_activity_heads WHERE repo_id=?1",
+            [repo_id.as_str()],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(map_sqlite_error)?;
+    // A new, never-published repository has no counter yet.
+    if stored != Some(expected) && !(stored.is_none() && expected == 1) {
+        return Err(StorageError::Other {
+            detail: format!(
+                "integrity error: repository publication counter disagrees with history: expected {expected}, stored {stored:?}; run synck repository finalize"
+            ),
+        });
+    }
+    Ok(expected)
 }

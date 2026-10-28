@@ -604,8 +604,13 @@ additional owned tables, unique constraints, views or triggers are not.
 - `vcs_items` is the canonical accepted structural head, including accepted but
   unpublished changes. Replay must reproduce its name, name key, type, parent,
   lifecycle, item/ref heads, creation attribution and federation fields.
-- `vcs_repo_activity_heads.next_repo_seq` is the next publication position and
-  must exceed all published positions. `updated_at` is operational allocation
+- `vcs_repo_activity_heads.next_repo_seq` is exactly one greater than the last
+  published position (1 before first publication). Before accepting unsequenced
+  commits or publishing them, SQLite checks this counter against canonical
+  history in the same write transaction; disagreement is an integrity error.
+  Explicit `repository finalize` verifies the published checkpoint chain and
+  recomputes this derived counter transactionally before resuming publication.
+  It never renumbers published commits. `updated_at` is operational allocation
   time. `vcs_checkpoints` has exactly one matching row per published commit and
   none for unpublished commits. `vcs_history_generations` has one generation.
 - `vcs_metadata_objects` stores available framed metadata objects. Absence is
