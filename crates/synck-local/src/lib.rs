@@ -12,6 +12,7 @@ mod inspection;
 mod integrity;
 mod local_database;
 mod monitor;
+mod name_repairs;
 mod objects;
 mod ooxml;
 pub mod portable;

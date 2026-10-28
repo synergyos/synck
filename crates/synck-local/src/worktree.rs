@@ -887,6 +887,7 @@ impl Repository {
             scan_started_at,
             &mut working,
         )?;
+        crate::name_repairs::validate(self.root(), &working)?;
         Ok(working)
     }
 
@@ -917,13 +918,7 @@ impl Repository {
                 &mut working,
             )?;
         }
-        validate_root_names(
-            self.root(),
-            &tracked,
-            ignore,
-            native_hidden_mode,
-            self.config().reserves_file_version_namespace(),
-        )?;
+        crate::name_repairs::validate(self.root(), &working)?;
         Ok(working)
     }
 }
@@ -949,6 +944,7 @@ pub(crate) fn scan_entry_without_ignore(
         normalized_time(SystemTime::now())?,
         &mut working,
     )?;
+    crate::name_repairs::validate(root, &working)?;
     Ok(working)
 }
 
@@ -1047,6 +1043,7 @@ fn scan_tree(
         normalized_time(SystemTime::now())?,
         &mut working,
     )?;
+    crate::name_repairs::validate(root, &working)?;
     Ok(working)
 }
 
@@ -1974,7 +1971,6 @@ fn scan_dir(
         .collect::<std::io::Result<Vec<_>>>()
         .at("read directory", relative_dir)?;
     entries.sort_by_key(|entry| entry.file_name());
-    let mut keys = HashMap::new();
 
     for entry in entries {
         let name_os: OsString = entry.file_name();
@@ -2024,16 +2020,6 @@ fn scan_dir(
                 "nested .synck entry is not supported: {display}"
             )));
         }
-        if reserve_file_version_namespace && is_root && repository_root {
-            let name_key = compute_name_key(name).map_err(|error| {
-                LocalError::Invalid(format!("invalid name {display:?}: {error}"))
-            })?;
-            if synck_file_folder::file_version_set::is_reserved_namespace_name_key(&name_key) {
-                return Err(LocalError::Invalid(format!(
-                    "reserved internal root name: {display}"
-                )));
-            }
-        }
         let exact = tracked.contains(&display);
         let descendant = has_tracked_descendant(tracked, &display);
         let native_hidden = native_hidden_mode != NativeHiddenMode::Skip
@@ -2056,26 +2042,9 @@ fn scan_dir(
         if ignored {
             continue;
         }
-        let name_key = compute_name_key(name)
-            .map_err(|error| LocalError::Invalid(format!("invalid name {display:?}: {error}")))?;
-        if reserve_file_version_namespace
-            && is_root
-            && repository_root
-            && synck_file_folder::file_version_set::is_reserved_namespace_name_key(&name_key)
-        {
-            return Err(LocalError::Invalid(format!(
-                "reserved internal root name: {display}"
-            )));
-        }
-        if let Some(previous) = keys.insert(name_key, name.to_string()) {
-            return Err(LocalError::Invalid(format!(
-                "portable name collision in {}: {previous:?} and {name:?}",
-                if display_dir.is_empty() {
-                    "."
-                } else {
-                    display_dir
-                }
-            )));
+        if reserve_file_version_namespace && is_root && repository_root
+            && compute_name_key(name).is_ok_and(|key| synck_file_folder::file_version_set::is_reserved_namespace_name_key(&key)) {
+            return Err(LocalError::Invalid(format!("reserved internal root name: {display}")));
         }
 
         if file_type.is_dir() && !is_cap_link_or_reparse(&metadata) {
@@ -2269,15 +2238,6 @@ fn scan_scope(
             "nested .synck entry is not supported: {scope}"
         )));
     }
-    if reserve_file_version_namespace && !scope.contains('/') {
-        let name_key = compute_name_key(name)
-            .map_err(|error| LocalError::Invalid(format!("invalid name {scope:?}: {error}")))?;
-        if synck_file_folder::file_version_set::is_reserved_namespace_name_key(&name_key) {
-            return Err(LocalError::Invalid(format!(
-                "reserved internal root name: {scope}"
-            )));
-        }
-    }
     let exact = tracked.contains(scope);
     let descendant = has_tracked_descendant(tracked, scope);
     let native_hidden =
@@ -2298,15 +2258,9 @@ fn scan_scope(
     {
         return Ok(());
     }
-    let name_key = compute_name_key(name)
-        .map_err(|error| LocalError::Invalid(format!("invalid name {scope:?}: {error}")))?;
-    if reserve_file_version_namespace
-        && !scope.contains('/')
-        && synck_file_folder::file_version_set::is_reserved_namespace_name_key(&name_key)
-    {
-        return Err(LocalError::Invalid(format!(
-            "reserved internal root name: {scope}"
-        )));
+    if reserve_file_version_namespace && !scope.contains('/')
+        && compute_name_key(name).is_ok_and(|key| synck_file_folder::file_version_set::is_reserved_namespace_name_key(&key)) {
+        return Err(LocalError::Invalid(format!("reserved internal root name: {scope}")));
     }
     if file_type.is_dir() && !is_cap_link_or_reparse(&metadata) {
         let opened = root
@@ -2359,67 +2313,6 @@ fn scan_scope(
             "unsupported filesystem entry: {scope}"
         )))
     }
-}
-
-fn validate_root_names(
-    root: &Dir,
-    tracked: &BTreeSet<String>,
-    ignore: &Gitignore,
-    native_hidden_mode: NativeHiddenMode,
-    reserve_file_version_namespace: bool,
-) -> Result<()> {
-    let mut entries = root
-        .entries()
-        .at("read directory", ".")?
-        .collect::<std::io::Result<Vec<_>>>()
-        .at("read directory", ".")?;
-    entries.sort_by_key(|entry| entry.file_name());
-    let mut keys = HashMap::new();
-    for entry in entries {
-        let name_os = entry.file_name();
-        let name = name_os
-            .to_str()
-            .ok_or_else(|| LocalError::Invalid("non-Unicode name below .".to_string()))?;
-        if name == ".synck" || is_reserved(name, ".synck-init-") {
-            continue;
-        }
-        let metadata = root.symlink_metadata(name).at("inspect", name)?;
-        let key = compute_name_key(name)
-            .map_err(|error| LocalError::Invalid(format!("invalid name {name:?}: {error}")))?;
-        if reserve_file_version_namespace
-            && synck_file_folder::file_version_set::is_reserved_namespace_name_key(&key)
-        {
-            return Err(LocalError::Invalid(format!(
-                "reserved internal root name: {name}"
-            )));
-        }
-        let exact = tracked.contains(name);
-        let descendant = has_tracked_descendant(tracked, name);
-        let native_hidden = native_hidden_mode == NativeHiddenMode::Ignore
-            && (name.starts_with('.') || native_hidden(root, &name_os, &metadata, name)?);
-        if !exact
-            && !descendant
-            && ignored_untracked_entry(
-                ignore,
-                Path::new(name),
-                metadata.file_type().is_dir(),
-                native_hidden,
-                if native_hidden_mode == NativeHiddenMode::Ignore {
-                    HiddenFilesMode::Ignore
-                } else {
-                    HiddenFilesMode::Track
-                },
-            )
-        {
-            continue;
-        }
-        if let Some(previous) = keys.insert(key, name.to_string()) {
-            return Err(LocalError::Invalid(format!(
-                "portable name collision in .: {previous:?} and {name:?}"
-            )));
-        }
-    }
-    Ok(())
 }
 
 fn inspect_file(

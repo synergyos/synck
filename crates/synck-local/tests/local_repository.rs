@@ -3184,3 +3184,30 @@ async fn atomic_commit_exceeds_old_event_cap_and_includes_a_rename() {
     assert!(repository.status().await.unwrap().is_empty());
     repository.verify_complete().await.unwrap();
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn init_reports_all_invalid_names_with_noncolliding_fixes() {
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path();
+    fs::write(root.join(".synckignore"), b"ignored:entry\n").unwrap();
+    for name in ["bad:name", "bad?name", "bad_name", "ignored:entry"] {
+        fs::write(root.join(name), name.as_bytes()).unwrap();
+    }
+    fs::create_dir(root.join("folder?")).unwrap();
+    fs::write(root.join("folder?/NUL.txt"), b"keep").unwrap();
+    let error = init(root, "author").await.unwrap_err().to_string();
+    for diagnostic in [
+        "4 non-portable name(s)",
+        "\"bad:name\" -> \"bad_name (2)\"",
+        "\"bad?name\" -> \"bad_name (3)\"",
+        "\"folder?\" -> \"folder_\"",
+        "\"folder?/NUL.txt\" -> \"folder_/_NUL.txt\"",
+    ] {
+        assert!(error.contains(diagnostic), "missing {diagnostic}: {error}");
+    }
+    assert!(!error.contains("ignored:entry"));
+    assert!(!root.join(".synck").exists());
+    assert_eq!(fs::read(root.join("bad:name")).unwrap(), b"bad:name");
+    assert_eq!(fs::read(root.join("folder?/NUL.txt")).unwrap(), b"keep");
+}

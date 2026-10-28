@@ -192,3 +192,15 @@ prepared descendant set and protect its item heads under the ordinary acceptance
 locks. The transaction rereads at most the expected count plus one for each
 root; an extra descendant or changed membership rejects the proposal as stale.
 This query bound detects races; it does not impose a format or commit-size limit.
+
+## Portable-name diagnostics
+
+Filesystem discovery applies ignore rules before portable-name validation. It
+collects all observed name violations into one diagnostic, with original and
+proposed paths quoted so control characters remain visible. Valid sibling names
+are reserved before repairing invalid spellings; equal valid case-fold keys keep
+the lexicographically first spelling. Remaining conflicts receive ` (2)`,
+` (3)`, and so on, with UTF-8 truncation before the suffix when needed.
+Suggestions also avoid existing ignored filesystem entries. A renamed ancestor
+is reflected in every reported descendant destination. Diagnostics do not rename
+files or publish a repository when initialization fails.
