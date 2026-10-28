@@ -260,6 +260,29 @@ fn input(records: &[Value]) -> Cursor<Vec<u8>> {
 }
 
 #[tokio::test]
+async fn bundle_metadata_preserves_salts_and_rolls_back_invalid_objects() {
+    let (directory, _, repo_id, records) = fixture().await;
+    let metadata = synck_vcs::metadata::Metadata::new(json!({"subject":"exact original"})).unwrap();
+    let record = json!({"type":"metadata", "object_id":metadata.id(), "payload_hex":hex::encode(metadata.payload())});
+    let mut valid = records.clone();
+    valid.insert(1, record.clone());
+    let target = SqliteStorage::new(directory.path().join("metadata.sqlite"));
+    target.import_bundle(&mut input(&valid)).await.unwrap();
+    assert_eq!(target.get_metadata(&repo_id, &metadata.id()).unwrap().unwrap().payload(), metadata.payload());
+    for case in 0..3 {
+        let mut invalid = valid.clone();
+        match case {
+            0 => invalid[1]["payload_hex"] = json!("00".repeat(metadata.payload().len())),
+            1 => invalid.insert(2, record.clone()),
+            _ => { invalid.remove(1); invalid.push(record.clone()); },
+        }
+        let target = SqliteStorage::new(directory.path().join(format!("invalid-metadata-{case}.sqlite")));
+        assert!(matches!(target.import_bundle(&mut input(&invalid)).await, Err(ImportFailure::BeforeCommit(_))));
+        assert_eq!(target.open_readonly().unwrap().query_row("SELECT count(*) FROM vcs_metadata_objects", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
+    }
+}
+
+#[tokio::test]
 async fn mixed_history_import_preserves_ids_ref_heads_gaps_and_next_append() {
     let (directory, source, repo_id, records) = fixture().await;
     let target = SqliteStorage::new(directory.path().join("target.sqlite"));
@@ -307,7 +330,7 @@ async fn mixed_history_import_preserves_ids_ref_heads_gaps_and_next_append() {
         connection
             .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
             .unwrap(),
-        6
+        7
     );
     let mut state = target.state_index_store(repo_id.clone()).unwrap();
     assert_eq!(

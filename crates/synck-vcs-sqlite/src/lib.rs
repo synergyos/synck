@@ -4,6 +4,7 @@ pub mod bundle;
 pub mod schema;
 mod state;
 mod storage;
+mod metadata;
 
 pub use state::SqliteStateStore;
 pub use storage::{SqliteStorage, format_timestamp, parse_timestamp, validate_database_family};

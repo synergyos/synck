@@ -21,7 +21,7 @@ use synck_vcs::types::{
 };
 
 const APPLICATION_ID: i32 = 0x5359_4E4B;
-const SCHEMA_VERSION: i32 = 6;
+const SCHEMA_VERSION: i32 = 7;
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const GET_ITEMS_CHUNK: usize = 500;
 const USER_SCHEMA_OBJECT_COUNT_SQL: &str =

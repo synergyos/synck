@@ -1406,6 +1406,7 @@ impl PortableRepository {
     }
 
     pub async fn verify(&self) -> Result<VerificationReport> {
+        self.storage.verify_metadata_objects(self.repo_id()).map_err(corrupt)?;
         self.storage
             .verify_checkpoints(self.repo_id())
             .map_err(corrupt)?;
@@ -1419,6 +1420,7 @@ impl PortableRepository {
         }
         let connection = self.storage.open_readonly().map_err(corrupt)?;
         for table in [
+            "vcs_metadata_objects",
             "vcs_commits",
             "vcs_checkpoints",
             "vcs_history_generations",

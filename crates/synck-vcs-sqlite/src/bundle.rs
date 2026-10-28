@@ -263,6 +263,7 @@ async fn install(
 ) -> Result<BundleImportReport, String> {
     let repo_id = header.repo_id();
     for table in [
+        "vcs_metadata_objects",
         "vcs_commits",
         "vcs_checkpoints",
         "vcs_events",
@@ -295,8 +296,24 @@ async fn install(
     let mut commits = 0;
     let mut items_started = false;
     let mut domains_started = false;
+    let mut metadata_ids = std::collections::HashSet::new();
     while let Some(record) = read_record(reader, header.bundle_format_version())? {
         match record {
+            BundleRecord::Metadata(record) => {
+                if last_repo_seq.is_some() || items_started || domains_started || pending.is_some() {
+                    return Err("metadata objects must precede history".into());
+                }
+                if !metadata_ids.insert(record.object_id.clone()) {
+                    return Err("duplicate metadata object".into());
+                }
+                if record.payload_hex.len() > 2 * (synck_vcs::object::HEADER_BYTES + synck_vcs::metadata::MAX_METADATA_BYTES)
+                    || !record.payload_hex.bytes().all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f')) {
+                    return Err("invalid metadata payload hex".into());
+                }
+                let bytes = hex::decode(record.payload_hex).map_err(detail)?;
+                let metadata = synck_vcs::metadata::Metadata::verify(&record.object_id, bytes).map_err(detail)?;
+                crate::metadata::insert(txn.conn().map_err(detail)?, repo_id, &metadata).map_err(detail)?;
+            }
             BundleRecord::Commit(record) => {
                 if items_started || domains_started || pending.is_some() {
                     return Err("commit after items/domains or incomplete commit".into());

@@ -1467,6 +1467,7 @@ version = "0.1.1"
 dependencies = [
  "async-trait",
  "chrono",
+ "hex",
  "rusqlite",
  "serde_json",
  "synck-vcs",

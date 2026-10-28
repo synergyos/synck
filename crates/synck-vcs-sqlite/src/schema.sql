@@ -1,3 +1,10 @@
+CREATE TABLE vcs_metadata_objects (
+    repo_id TEXT NOT NULL,
+    object_id BLOB NOT NULL CHECK (length(object_id) = 32),
+    payload BLOB NOT NULL CHECK (length(payload) BETWEEN 49 AND 1048625),
+    PRIMARY KEY (repo_id, object_id)
+) STRICT;
+
 CREATE TABLE vcs_items (
     repo_id TEXT NOT NULL,
     item_id TEXT NOT NULL,

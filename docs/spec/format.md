@@ -101,6 +101,30 @@ in `vectors/objects.json`.
 Implementation status: the identifier type and UTF8-body writer use this
 framing. The RAW file store and metadata envelope conversion are still pending.
 
+### Metadata payloads
+
+A metadata payload is a `UTF8` object containing exactly one canonical RFC 8785
+JSON object, at most 1,048,576 application bytes. Scalars and arrays at the root,
+noncanonical JSON, duplicate keys and integers without a lossless canonical
+representation are rejected. A writer uses a fresh salt even for identical JSON.
+`vectors/metadata.json` fixes the JSON, stored bytes and digest independently.
+
+SQLite stores available payloads in
+`vcs_metadata_objects(repo_id TEXT, object_id BLOB, payload BLOB)`, with the first
+two columns forming the primary key. `object_id` is the raw 32-byte digest;
+`payload` includes the entire 49-byte header and JSON bytes. No foreign key makes
+an event depend on object presence. Missing payloads return “not present”; present
+payloads with invalid framing, codec, JSON or digest are corrupt. Verification
+does not repair them. Re-inserting the same ID is idempotent only for exact bytes.
+
+Bundle format 5 permits `metadata` records immediately after its header and
+before history. Each has exactly `type` (`metadata`), `object_id` (canonical
+`sha256:` spelling), and `payload_hex` (lowercase hexadecimal of the whole stored
+object). Duplicate IDs and metadata records after history are rejected. Import
+validates the payload and installs it in the same transaction as history; an
+invalid record rolls back both. Complete SQLite copies preserve these rows.
+The event-envelope conversion to these references remains in progress.
+
 ## Commit size
 
 The format imposes no fixed per-commit event-count or aggregate byte cap.
@@ -168,7 +192,7 @@ the portable content boundary.
 
 ## SQLite schema version policy
 
-Core SQLite uses application ID `0x53594E4B` and schema version 6. The adapter
+Core SQLite uses application ID `0x53594E4B` and schema version 7. The adapter
 creates this schema directly and refuses prior schema versions without modifying
 their version stamps or definitions. There are no core or local schema migrations.
 The current local projection schema is 11, in `repository.local.sqlite3`.

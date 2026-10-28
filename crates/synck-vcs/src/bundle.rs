@@ -144,6 +144,15 @@ pub struct BundleFederationDomainRecord {
     pub updated_at: String,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BundleMetadataRecord {
+    #[serde(rename = "type")]
+    pub r#type: String,
+    pub object_id: crate::types::ObjectId,
+    pub payload_hex: String,
+}
+
 fn decode_commit_record(
     value: serde_json::Value,
     bundle_format_version: u32,
@@ -173,6 +182,7 @@ fn decode_commit_record(
 /// A single typed body record. Importers enforce section order and complete commits.
 #[derive(Debug)]
 pub enum BundleRecord {
+    Metadata(BundleMetadataRecord),
     Commit(BundleCommitRecord),
     Event(BundleEventRecord),
     RefEvent(BundleRefEventRecord),
@@ -206,6 +216,9 @@ pub fn read_record(reader: &mut dyn BufRead, version: u32) -> Result<Option<Bund
         .and_then(|value| value.as_str())
         .ok_or_else(|| "record missing string field: type".to_string())?;
     let record = match kind {
+        "metadata" => BundleRecord::Metadata(
+            serde_json::from_value(value).map_err(|error| format!("decode metadata: {error}"))?,
+        ),
         "commit" => BundleRecord::Commit(decode_commit_record(value, version)?),
         "event" => BundleRecord::Event(
             serde_json::from_value(value).map_err(|error| format!("decode event: {error}"))?,
