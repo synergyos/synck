@@ -74,6 +74,19 @@ pub(crate) fn validate_config(config: &Config) -> Result<()> {
 }
 
 impl Repository {
+    /// Warn about selected paths that legacy Windows applications may reject.
+    pub async fn checkout_path_warnings(&self) -> Result<Vec<std::path::PathBuf>> {
+        #[cfg(windows)]
+        {
+            let tree = self.complete_file_tree().await?;
+            Ok(crate::path_warnings::long_paths(self.root_path(), tree.keys()
+                .filter(|path| selected(self.checkout_paths().unwrap_or(&[]), path))
+                .map(String::as_str)))
+        }
+        #[cfg(not(windows))]
+        Ok(Vec::new())
+    }
+
     pub fn checkout_paths(&self) -> Option<&[String]> {
         self.config().checkout.as_ref().map(|c| c.paths.as_slice())
     }

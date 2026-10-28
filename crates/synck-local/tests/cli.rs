@@ -15,6 +15,47 @@ use sha2::{Digest, Sha256};
 
 const CLEAN_STATUS_OUTPUT: &[u8] = b"nothing to commit, working tree clean\n";
 
+#[test]
+fn long_paths_survive_commit_rename_and_checkout() {
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path().join("source");
+    let initialized = synck(temporary.path(), &["init", root.to_str().unwrap(), "--author", "author"]);
+    assert!(initialized.status.success(), "{:?}", initialized);
+    let relative = (0..4).map(|i| format!("{i}{}", "a".repeat(63))).collect::<Vec<_>>().join("/");
+    fs::create_dir_all(root.join(&relative)).unwrap();
+    fs::write(root.join(&relative).join("before.txt"), b"long path bytes").unwrap();
+    let committed = synck(&root, &["commit", "-m", "Long path"]);
+    assert!(committed.status.success(), "{:?}", committed);
+    fs::rename(root.join(&relative).join("before.txt"), root.join(&relative).join("after.txt")).unwrap();
+    let committed = synck(&root, &["commit", "-m", "Rename long path"]);
+    assert!(committed.status.success(), "{:?}", committed);
+    let status = synck(&root, &["status"]);
+    assert!(status.status.success(), "{:?}", status);
+    assert_eq!(status.stdout, CLEAN_STATUS_OUTPUT);
+    if cfg!(windows) {
+        assert!(String::from_utf8_lossy(&status.stderr).contains("after.txt"));
+        assert!(String::from_utf8_lossy(&status.stderr).contains("260 UTF-16"));
+    } else {
+        assert!(status.stderr.is_empty());
+    }
+    let archive = temporary.path().join("archive");
+    let copy = temporary.path().join("copy");
+    for (cwd, args) in [
+        (root.as_path(), vec!["archive", archive.to_str().unwrap()]),
+        (temporary.path(), vec!["repository", "import", archive.to_str().unwrap(), copy.to_str().unwrap()]),
+    ] {
+        let output = synck(cwd, &args);
+        assert!(output.status.success(), "{:?}", output);
+    }
+    let checkout = synck(&copy, &["repository", "checkout", ".", "--author", "author"]);
+    assert!(checkout.status.success(), "{:?}", checkout);
+    assert_eq!(fs::read(copy.join(&relative).join("after.txt")).unwrap(), b"long path bytes");
+    assert!(!copy.join(&relative).join("before.txt").exists());
+    if cfg!(windows) {
+        assert!(String::from_utf8_lossy(&checkout.stderr).contains("after.txt"));
+    }
+}
+
 fn synck(root: &std::path::Path, arguments: &[&str]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_synck"))
         .current_dir(root)

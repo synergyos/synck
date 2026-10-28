@@ -341,6 +341,15 @@ impl Repository {
         Ok(changes)
     }
 
+    /// Status plus Windows interoperability warnings, from the same observation.
+    pub async fn status_with_path_warnings(&self) -> Result<(Vec<Change>, Vec<PathBuf>)> {
+        let (_, working, changes, _) = self.changes().await?;
+        let warnings = crate::path_warnings::long_paths(
+            self.root_path(), working.keys().map(String::as_str),
+        );
+        Ok((changes, warnings))
+    }
+
     pub async fn commit(&self, message: &str) -> Result<CommitOutcome> {
         self.commit_selected(self.root_path(), &[], Some(message))
             .await

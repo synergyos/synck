@@ -926,7 +926,8 @@ async fn run_checkout(
         }
         .await,
         Command::Status => async {
-            let changes = repository.status().await.map_err(|error| (error, false))?;
+            let (changes, warnings) = repository.status_with_path_warnings().await.map_err(|error| (error, false))?;
+            print_path_warnings(&warnings);
             if json {
                 println!("{}", status_json(&changes));
             } else {
@@ -1615,6 +1616,7 @@ async fn run_portable(command: &PortableCommand) -> synck_local::Result<()> {
         } => async {
             let mut repository = PortableRepository::open(path)?;
             repository.enable_checkout(author, paths).await?;
+            print_path_warnings(&repository.checkout_path_warnings().await?);
             println!(
                 "{}",
                 json!({"schema_version":1,"repo_id":repository.repo_id(),"checkout_paths":repository.checkout_paths(),"authority":repository.authority()})
@@ -1625,6 +1627,7 @@ async fn run_portable(command: &PortableCommand) -> synck_local::Result<()> {
         PortableCommand::CheckoutSelection { path, paths, .. } => async {
             let mut repository = Repository::discover(path).await?;
             repository.set_checkout_paths(paths).await?;
+            print_path_warnings(&repository.checkout_path_warnings().await?);
             println!(
                 "{}",
                 json!({"schema_version":1,"repo_id":repository.repository_id(),"checkout_paths":repository.checkout_paths()})
@@ -2176,6 +2179,12 @@ fn status_json(changes: &[synck_local::Change]) -> Value {
         "schema_version": cli_json::SCHEMA_VERSION,
         "changes": changes.iter().map(cli_json::change).collect::<Vec<_>>(),
     })
+}
+
+fn print_path_warnings(paths: &[PathBuf]) {
+    for path in paths {
+        eprintln!("warning: path exceeds 260 UTF-16 units; other Windows applications may reject it: {:?}", path);
+    }
 }
 
 #[cfg(test)]

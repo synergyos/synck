@@ -652,6 +652,10 @@ impl PortableRepository {
             .map(|checkout| checkout.paths.as_slice())
     }
 
+    pub async fn checkout_path_warnings(&self) -> Result<Vec<PathBuf>> {
+        self.checkout_adapter()?.checkout_path_warnings().await
+    }
+
     /// Enable an independent filesystem checkout in this complete repository.
     /// The existing source may remain live. There is no synchronization or rejoin.
     pub async fn enable_checkout(&mut self, author: &str, paths: &[String]) -> Result<()> {

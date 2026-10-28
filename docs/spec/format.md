@@ -30,6 +30,13 @@ Strip any space or dot exposed by truncation. For sibling collisions append
 renaming requires explicit `--fix-names`; validation alone never renames files.
 Non-UTF-8 names are errors, never guessed encodings.
 
+Whole-path length is not a repository constraint: it depends on the checkout's
+location. The Windows MSVC CLI embeds a `longPathAware` manifest and uses extended
+absolute paths for filesystem operations. Windows status and checkout commands
+warn on stderr for each observed/selected path whose ordinary absolute spelling
+exceeds 260 UTF-16 code units, excluding the `\\?\` prefix. These warnings do
+not reject history or change names. Other applications can have shorter limits.
+
 ## Source attribution
 
 The generated case-folding table uses the Unicode 17.0.0 data from
