@@ -1,11 +1,10 @@
 //! Storage-independent canonical NDJSON bundle records and validation.
 //!
 //! The source schema in a header is provenance, not a target schema instruction.
-//! These records preserve the existing bundle v1-v4 wire representation.
+//! Only the current bundle encoding is accepted.
 use crate::config::SYNCKHUB_MAX_EVENT_PAYLOAD_BYTES;
 use crate::types::{
-    COMMIT_FORMAT_VERSION, EventProposal, IMPORT_COMMIT_FORMAT_VERSION,
-    REF_IMPORT_COMMIT_FORMAT_VERSION, RefEventProposal, RepoId, Sha256Digest,
+    COMMIT_FORMAT_VERSION, EventProposal, RefEventProposal, RepoId, Sha256Digest,
     canonical_event_proposal_bytes, canonical_ref_event_proposal_bytes,
     compute_sha256_digest_bytes, sha256_digest_to_digest_bytes,
 };
@@ -34,10 +33,7 @@ impl std::fmt::Display for ImportFailure {
 pub const SCHEMA_META_SUBSYSTEM_VCS: &str = "synck_vcs_pg";
 pub const SCHEMA_META_SUBSYSTEM_SQLITE: &str = "synck_vcs_sqlite";
 
-pub const BUNDLE_FORMAT_VERSION_V1: u32 = 1;
-pub const BUNDLE_FORMAT_VERSION_V2: u32 = 2;
-pub const BUNDLE_FORMAT_VERSION_V3: u32 = 3;
-pub const BUNDLE_FORMAT_VERSION_V4: u32 = 4;
+pub const BUNDLE_FORMAT_VERSION: u32 = 5;
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -53,6 +49,7 @@ pub struct BundleHeaderRecord {
     pub r#type: String,
     pub bundle_format_version: u32,
     pub repo_id: String,
+    pub history_generation: String,
     pub exported_at: String,
     pub schema: BundleSchema,
     pub commit_format_version: i32,
@@ -64,12 +61,10 @@ pub struct BundleCommitRecord {
     #[serde(rename = "type")]
     pub r#type: String,
     pub commit_id: String,
-    pub parent_commit_id: Option<String>,
+    pub checkpoint: Sha256Digest,
     pub repo_seq: i64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub operation_id: Option<Option<String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub import_job_id: Option<Option<String>>,
+    pub operation_id: Option<String>,
+    pub import_job_id: Option<String>,
     pub format_version: i32,
     pub author_id: String,
     pub committer_id: String,
@@ -153,32 +148,21 @@ fn decode_commit_record(
     value: serde_json::Value,
     bundle_format_version: u32,
 ) -> Result<BundleCommitRecord, String> {
-    let has_operation_id = value.get("operation_id").is_some();
-    let has_import_job_id = value.get("import_job_id").is_some();
-    if bundle_format_version == BUNDLE_FORMAT_VERSION_V1 && has_operation_id {
-        return Err("bundle v1 commit forbids operation_id".to_string());
-    }
-    if bundle_format_version == BUNDLE_FORMAT_VERSION_V2 && !has_operation_id {
-        return Err("bundle v2 commit requires operation_id".to_string());
-    }
-    if bundle_format_version < BUNDLE_FORMAT_VERSION_V3 && has_import_job_id {
+    if bundle_format_version != BUNDLE_FORMAT_VERSION {
         return Err(format!(
-            "bundle v{bundle_format_version} commit forbids import_job_id"
+            "unsupported bundle_format_version: {bundle_format_version}"
         ));
     }
-    if bundle_format_version >= BUNDLE_FORMAT_VERSION_V3
-        && (!has_operation_id || !has_import_job_id)
-    {
-        return Err(format!(
-            "bundle v{bundle_format_version} commit requires operation_id and import_job_id"
-        ));
+    for field in ["operation_id", "import_job_id"] {
+        if value.get(field).is_none() {
+            return Err(format!("commit requires {field}"));
+        }
     }
     let record: BundleCommitRecord =
         serde_json::from_value(value).map_err(|error| format!("decode commit: {error}"))?;
     if record
         .operation_id
-        .as_ref()
-        .and_then(|operation_id| operation_id.as_deref())
+        .as_deref()
         .is_some_and(|operation_id| operation_id.trim().is_empty())
     {
         return Err("operation_id must be null or nonblank".to_string());
@@ -198,6 +182,9 @@ pub enum BundleRecord {
 
 /// Read one body record, preserving the existing blank-line and strict-field rules.
 pub fn read_record(reader: &mut dyn BufRead, version: u32) -> Result<Option<BundleRecord>, String> {
+    if version != BUNDLE_FORMAT_VERSION {
+        return Err(format!("unsupported bundle_format_version: {version}"));
+    }
     let mut line = String::new();
     loop {
         line.clear();
@@ -223,10 +210,9 @@ pub fn read_record(reader: &mut dyn BufRead, version: u32) -> Result<Option<Bund
         "event" => BundleRecord::Event(
             serde_json::from_value(value).map_err(|error| format!("decode event: {error}"))?,
         ),
-        "ref_event" if version == BUNDLE_FORMAT_VERSION_V4 => BundleRecord::RefEvent(
+        "ref_event" => BundleRecord::RefEvent(
             serde_json::from_value(value).map_err(|error| format!("decode ref_event: {error}"))?,
         ),
-        "ref_event" => return Err(format!("bundle v{version} forbids ref_event records")),
         "item" => BundleRecord::Item(
             serde_json::from_value(value).map_err(|error| format!("decode item: {error}"))?,
         ),
@@ -242,11 +228,15 @@ pub fn read_record(reader: &mut dyn BufRead, version: u32) -> Result<Option<Bund
 /// A validated bundle header. The reader is positioned at the first body record.
 pub struct BundleHeader {
     repo_id: RepoId,
+    history_generation: String,
     bundle_format_version: u32,
     source_schema: BundleSchema,
 }
 
 impl BundleHeader {
+    pub fn history_generation(&self) -> &str {
+        &self.history_generation
+    }
     pub fn repo_id(&self) -> &RepoId {
         &self.repo_id
     }
@@ -284,17 +274,22 @@ pub fn read_header(reader: &mut dyn BufRead) -> Result<BundleHeader, String> {
     }
     let header: BundleHeaderRecord =
         serde_json::from_value(value).map_err(|e| format!("decode header: {e}"))?;
-    let expected_commit_format_version = match header.bundle_format_version {
-        BUNDLE_FORMAT_VERSION_V1 | BUNDLE_FORMAT_VERSION_V2 => COMMIT_FORMAT_VERSION,
-        BUNDLE_FORMAT_VERSION_V3 => IMPORT_COMMIT_FORMAT_VERSION,
-        BUNDLE_FORMAT_VERSION_V4 => REF_IMPORT_COMMIT_FORMAT_VERSION,
-        version => return Err(format!("unsupported bundle_format_version: {version}")),
-    };
-    if header.commit_format_version != expected_commit_format_version {
+    if header.bundle_format_version != BUNDLE_FORMAT_VERSION {
         return Err(format!(
-            "unsupported commit_format_version: {} (code expects {})",
-            header.commit_format_version, expected_commit_format_version
+            "unsupported bundle_format_version: {}",
+            header.bundle_format_version
         ));
+    }
+    if header.commit_format_version != COMMIT_FORMAT_VERSION {
+        return Err(format!(
+            "unsupported commit_format_version: {}",
+            header.commit_format_version
+        ));
+    }
+    let generation =
+        uuid::Uuid::parse_str(&header.history_generation).map_err(|e| e.to_string())?;
+    if generation.get_version_num() != 7 || generation.to_string() != header.history_generation {
+        return Err("history_generation must be canonical UUIDv7".into());
     }
     if !matches!(
         header.schema.subsystem.as_str(),
@@ -314,6 +309,7 @@ pub fn read_header(reader: &mut dyn BufRead) -> Result<BundleHeader, String> {
         repo_id: RepoId::parse(&header.repo_id).map_err(|e| e.to_string())?,
         bundle_format_version: header.bundle_format_version,
         source_schema: header.schema,
+        history_generation: header.history_generation,
     })
 }
 
@@ -415,7 +411,9 @@ mod bundle_tests {
         serde_json::json!({
             "type": "commit",
             "commit_id": format!("sha256:{}", "a".repeat(64)),
-            "parent_commit_id": null,
+            "checkpoint": format!("sha256:{}", "c".repeat(64)),
+            "operation_id": null,
+            "import_job_id": null,
             "repo_seq": 1,
             "format_version": COMMIT_FORMAT_VERSION,
             "author_id": "author",
@@ -447,57 +445,20 @@ mod bundle_tests {
     }
 
     #[test]
-    fn bundle_commit_versions_distinguish_missing_null_and_exact_operation_id() {
-        let v1 = commit_json();
-        assert!(decode_commit_record(v1.clone(), BUNDLE_FORMAT_VERSION_V1).is_ok());
-        assert!(decode_commit_record(v1.clone(), BUNDLE_FORMAT_VERSION_V2).is_err());
-
-        let mut null = v1.clone();
-        null["operation_id"] = serde_json::Value::Null;
-        assert!(decode_commit_record(null.clone(), BUNDLE_FORMAT_VERSION_V1).is_err());
-        assert_eq!(
-            decode_commit_record(null, BUNDLE_FORMAT_VERSION_V2)
-                .unwrap()
-                .operation_id,
-            None
-        );
-        let mut exported_null = decode_commit_record(v1.clone(), BUNDLE_FORMAT_VERSION_V1).unwrap();
-        exported_null.operation_id = Some(None);
-        assert_eq!(
-            serde_json::to_value(exported_null).unwrap()["operation_id"],
-            serde_json::Value::Null
-        );
-
-        let mut exact = v1.clone();
-        exact["operation_id"] = serde_json::json!("  exact value  ");
-        assert_eq!(
-            decode_commit_record(exact, BUNDLE_FORMAT_VERSION_V2)
-                .unwrap()
-                .operation_id,
-            Some(Some("  exact value  ".to_string()))
-        );
-
-        let mut blank = v1;
-        blank["operation_id"] = serde_json::json!(" \t ");
-        assert!(decode_commit_record(blank, BUNDLE_FORMAT_VERSION_V2).is_err());
-
-        let mut v3 = commit_json();
-        v3["operation_id"] = serde_json::Value::Null;
-        v3["import_job_id"] = serde_json::json!("550e8400-e29b-41d4-a716-446655440000");
-        let decoded = decode_commit_record(v3, BUNDLE_FORMAT_VERSION_V3).unwrap();
-        assert_eq!(
-            decoded.import_job_id,
-            Some(Some("550e8400-e29b-41d4-a716-446655440000".to_string()))
-        );
-
-        let mut missing_import = commit_json();
-        missing_import["operation_id"] = serde_json::Value::Null;
-        assert!(decode_commit_record(missing_import, BUNDLE_FORMAT_VERSION_V3).is_err());
-
-        let mut old_with_import = commit_json();
-        old_with_import["operation_id"] = serde_json::Value::Null;
-        old_with_import["import_job_id"] = serde_json::Value::Null;
-        assert!(decode_commit_record(old_with_import, BUNDLE_FORMAT_VERSION_V2).is_err());
+    fn bundle_commit_requires_explicit_optional_fields_and_current_version() {
+        let value = commit_json();
+        assert!(decode_commit_record(value.clone(), BUNDLE_FORMAT_VERSION).is_ok());
+        for version in 1..BUNDLE_FORMAT_VERSION {
+            assert!(decode_commit_record(value.clone(), version).is_err());
+        }
+        for field in ["operation_id", "import_job_id"] {
+            let mut missing = value.clone();
+            missing.as_object_mut().unwrap().remove(field);
+            assert!(decode_commit_record(missing, BUNDLE_FORMAT_VERSION).is_err());
+        }
+        let mut blank = value;
+        blank["operation_id"] = serde_json::json!(" ");
+        assert!(decode_commit_record(blank, BUNDLE_FORMAT_VERSION).is_err());
     }
 
     #[test]

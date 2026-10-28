@@ -52,6 +52,7 @@ impl PendingEvent {
 }
 
 struct PendingCommit {
+    checkpoint: Sha256Digest,
     row: SealedCommitInsert,
     events: Vec<PendingEvent>,
     payload_bytes: usize,
@@ -63,19 +64,15 @@ impl PendingCommit {
             return Err("commit event_count exceeds supported canonical bounds".into());
         }
         Ok(Self {
+            checkpoint: record.checkpoint,
             row: SealedCommitInsert {
-                // Bundle v4 has no physical commit_pk. Allocate a target surrogate;
+                // The bundle has no physical commit_pk. Allocate a target surrogate;
                 // canonical commit/item/ref identities and sequences are unchanged.
                 commit_pk: CommitPk::new(),
                 repo_seq: Some(record.repo_seq),
-                parent_commit_id: record
-                    .parent_commit_id
-                    .map(CommitId::parse)
-                    .transpose()
-                    .map_err(|error| error.to_string())?,
-                operation_id: record.operation_id.flatten(),
+                operation_id: record.operation_id,
                 format_version: record.format_version,
-                import_job_id: record.import_job_id.flatten(),
+                import_job_id: record.import_job_id,
                 author_id: record.author_id,
                 committer_id: record.committer_id,
                 message: record.message,
@@ -121,10 +118,11 @@ impl PendingCommit {
         let row = self.row;
         let commit = VerifyCommit {
             commit_id: Some(row.commit_id.clone()),
-            parent_commit_id: row.parent_commit_id.clone(),
             repo_seq: row.repo_seq,
             format_version: row.format_version,
             import_job_id: row.import_job_id.clone(),
+            committer_id: row.committer_id.clone(),
+            occurred_at: row.occurred_at,
             author_id: row.author_id.clone(),
             message: row.message.clone(),
             event_count: Some(row.event_count),
@@ -138,6 +136,18 @@ impl PendingCommit {
         txn.insert_commits_sealed(repo_id, std::slice::from_ref(&row))
             .await
             .map_err(detail)?;
+        let published: Vec<u8> = txn
+            .conn()
+            .map_err(detail)?
+            .query_row(
+                "SELECT checkpoint FROM vcs_checkpoints WHERE repo_id=?1 AND repo_seq=?2",
+                params![repo_id.as_str(), row.repo_seq],
+                |row| row.get(0),
+            )
+            .map_err(detail)?;
+        if published != synck_vcs::types::sha256_digest_to_digest_bytes(&self.checkpoint) {
+            return Err("bundle checkpoint mismatch".into());
+        }
         for event in self.events {
             match event {
                 PendingEvent::Item(event, created_at) => txn
@@ -254,6 +264,7 @@ async fn install(
     let repo_id = header.repo_id();
     for table in [
         "vcs_commits",
+        "vcs_checkpoints",
         "vcs_events",
         "vcs_ref_events",
         "vcs_items",
@@ -276,6 +287,10 @@ async fn install(
             return Err(format!("bundle target repository is not empty: {table}"));
         }
     }
+    txn.conn().map_err(detail)?.execute(
+        "INSERT INTO vcs_history_generations(repo_id,generation) VALUES (?1,?2) ON CONFLICT(repo_id) DO UPDATE SET generation=excluded.generation",
+        params![repo_id.as_str(), header.history_generation()],
+    ).map_err(detail)?;
     let mut verifier = SemanticVerifier::new();
     let mut pending: Option<PendingCommit> = None;
     let mut last_repo_seq = None;

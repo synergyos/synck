@@ -269,10 +269,11 @@ async fn project_commit_inner<S: StateProjectorStore>(
     let repo_seq = commit.repo_seq.expect("caller checked repository sequence");
     let verify_commit = VerifyCommit {
         commit_id: Some(commit.commit_id.clone()),
-        parent_commit_id: commit.parent_commit_id.clone(),
         repo_seq: commit.repo_seq,
         format_version: commit.format_version,
         import_job_id: commit.import_job_id.clone(),
+        committer_id: commit.committer_id.clone(),
+        occurred_at: commit.occurred_at,
         author_id: commit.author_id.clone(),
         message: commit.message.clone(),
         event_count: Some(commit.event_count),
@@ -1209,18 +1210,18 @@ mod tests {
         let payload = canonical_event_proposal_bytes(&proposal).unwrap();
         let payload_digest = compute_sha256_digest_bytes(&payload);
         let events_digest = Sha256Digest::parse(sha256_prefixed_hex_from_digest_bytes(
-            compute_sha256_digest_bytes(&payload_digest),
+            compute_sha256_digest_bytes(&[&[0u8][..], &payload_digest[..]].concat()),
         ))
         .unwrap();
         let author = "alice".to_string();
         let commit_bytes =
-            canonical_commit_bytes_for_hash(&author, None, None, 1, &events_digest).unwrap();
+            canonical_commit_bytes_for_hash(&author, &author, None, None, None, 1, &events_digest)
+                .unwrap();
         let commit_id = compute_commit_id(&commit_bytes);
         let created_at = Utc.timestamp_opt(1_688_169_600, 0).unwrap();
         let commit = CommitRow {
             repo_id: repo_id.clone(),
             commit_id: commit_id.clone(),
-            parent_commit_id: None,
             repo_seq: Some(1),
             format_version: COMMIT_FORMAT_VERSION,
             import_job_id: None,

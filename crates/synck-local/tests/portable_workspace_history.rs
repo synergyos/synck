@@ -88,11 +88,20 @@ async fn append(storage: &SqliteStorage, core: &Repo, repo: &RepoId, events: Vec
 // attached refs; hosted export uses its production PostgreSQL producer.
 async fn export_fixture(storage: &SqliteStorage, repo: &RepoId, transfer: &Path) -> BundleSnapshot {
     fs::create_dir_all(transfer.join("objects")).unwrap();
+    let generation: String = storage
+        .open_readonly()
+        .unwrap()
+        .query_row(
+            "SELECT generation FROM vcs_history_generations WHERE repo_id=?1",
+            [repo.as_str()],
+            |row| row.get(0),
+        )
+        .unwrap();
     let mut records = vec![
-        json!({"type":"synck_vcs_bundle_header","bundle_format_version":4,
-        "repo_id":repo,"exported_at":"2026-10-26T12:00:00Z",
+        json!({"type":"synck_vcs_bundle_header","bundle_format_version":5,
+        "repo_id":repo,"history_generation":generation,"exported_at":"2026-10-26T12:00:00Z",
         "schema":{"subsystem":"synck_vcs_sqlite","schema_id":"core-v5"},
-        "commit_format_version":5}),
+        "commit_format_version":6}),
     ];
     let commits = storage
         .list_commits_by_repo_seq_readonly(repo, 1, None, 100)
@@ -103,6 +112,19 @@ async fn export_fixture(storage: &SqliteStorage, repo: &RepoId, transfer: &Path)
         let mut record = serde_json::to_value(&commit).unwrap();
         let object = record.as_object_mut().unwrap();
         object.remove("repo_id");
+        let checkpoint: Vec<u8> = storage
+            .open_readonly()
+            .unwrap()
+            .query_row(
+                "SELECT checkpoint FROM vcs_checkpoints WHERE repo_id=?1 AND repo_seq=?2",
+                rusqlite::params![repo.as_str(), commit.repo_seq],
+                |row| row.get(0),
+            )
+            .unwrap();
+        object.insert(
+            "checkpoint".into(),
+            json!(format!("sha256:{}", hex::encode(checkpoint))),
+        );
         object.insert("type".into(), json!("commit"));
         let operation_id: Option<String> = storage.open_readonly().unwrap().query_row(
             "SELECT operation_id FROM vcs_commits WHERE repo_id=?1 AND lower(hex(commit_id))=?2",

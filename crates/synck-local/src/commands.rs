@@ -5497,6 +5497,7 @@ fn expected_revert_commit_id(intent: &RevertIntent, author: &str) -> Result<Comm
     let mut digest = Sha256::new();
     for event in &intent.events {
         let canonical = canonical_event_proposal_bytes(event)?;
+        digest.update([synck_vcs::types::COMMIT_EVENT_FAMILY_ITEM]);
         digest.update(compute_sha256_digest_bytes(&canonical));
     }
     let events_digest = Sha256Digest::parse(sha256_prefixed_hex_from_digest_bytes(
@@ -5505,6 +5506,8 @@ fn expected_revert_commit_id(intent: &RevertIntent, author: &str) -> Result<Comm
     .expect("internal SHA-256 digest is valid");
     let commit = canonical_commit_bytes_for_hash(
         &author.to_string(),
+        &author.to_string(),
+        None,
         Some(&intent.message),
         None,
         intent.events.len(),
@@ -7604,6 +7607,7 @@ mod tests {
             });
             let payload = canonical_event_proposal_bytes(event).unwrap();
             let digest = compute_sha256_digest_bytes(&payload);
+            aggregate_digest.update([synck_vcs::types::COMMIT_EVENT_FAMILY_ITEM]);
             aggregate_digest.update(digest);
             rows.push(EventRow {
                 repo_id: repo_id.clone(),
@@ -7631,6 +7635,8 @@ mod tests {
         let commit_id = compute_commit_id(
             &canonical_commit_bytes_for_hash(
                 &"test".to_string(),
+                &"test".to_string(),
+                None,
                 message,
                 None,
                 events.len(),
@@ -7645,7 +7651,6 @@ mod tests {
             CommitRow {
                 repo_id: repo_id.clone(),
                 commit_id,
-                parent_commit_id: None,
                 repo_seq: Some(1),
                 format_version: COMMIT_FORMAT_VERSION,
                 import_job_id: None,

@@ -9,8 +9,7 @@ use sha2::{Digest, Sha256};
 
 use crate::types::{
     COMMIT_EVENT_FAMILY_ITEM, COMMIT_EVENT_FAMILY_REF, COMMIT_FORMAT_VERSION, CommitId,
-    EventProposal, IMPORT_COMMIT_FORMAT_VERSION, ItemId, REF_COMMIT_FORMAT_VERSION,
-    REF_IMPORT_COMMIT_FORMAT_VERSION, RefEventProposal, SequencingMode, Sha256Digest,
+    EventProposal, ItemId, RefEventProposal, SequencingMode, Sha256Digest,
     canonical_event_proposal_bytes, canonical_ref_event_proposal_bytes,
     canonical_stored_commit_bytes_for_hash, compute_commit_id, compute_sha256_digest_bytes,
     sha256_prefixed_hex_from_digest_bytes,
@@ -19,11 +18,12 @@ use crate::types::{
 #[derive(Clone, Debug)]
 pub struct VerifyCommit {
     pub commit_id: Option<CommitId>,
-    pub parent_commit_id: Option<CommitId>,
     pub repo_seq: Option<i64>,
     pub format_version: i32,
     pub import_job_id: Option<String>,
     pub author_id: String,
+    pub committer_id: String,
+    pub occurred_at: Option<crate::types::Timestamp>,
     pub message: Option<String>,
     pub event_count: Option<i32>,
     pub events_digest: Option<Sha256Digest>,
@@ -97,7 +97,6 @@ pub struct CommitEnvelopeValidator {
     label: String,
     next_event_index: usize,
     refs_started: bool,
-    saw_ref: bool,
     events_hasher: Sha256,
     findings: Vec<String>,
 }
@@ -124,16 +123,7 @@ impl CommitEnvelopeValidator {
             }
             None => findings.push(format!("{label}: repo_seq is absent")),
         }
-        if commit.parent_commit_id.is_some() {
-            findings.push(format!("{label}: parent_commit_id must be absent"));
-        }
-        if !matches!(
-            commit.format_version,
-            COMMIT_FORMAT_VERSION
-                | IMPORT_COMMIT_FORMAT_VERSION
-                | REF_COMMIT_FORMAT_VERSION
-                | REF_IMPORT_COMMIT_FORMAT_VERSION
-        ) {
+        if !matches!(commit.format_version, COMMIT_FORMAT_VERSION) {
             findings.push(format!(
                 "{label}: unsupported commit format {}",
                 commit.format_version
@@ -150,7 +140,6 @@ impl CommitEnvelopeValidator {
             label,
             next_event_index: 0,
             refs_started: false,
-            saw_ref: false,
             events_hasher: Sha256::new(),
             findings,
         }
@@ -344,15 +333,6 @@ impl CommitEnvelopeValidator {
     ) -> Option<RefEventProposal> {
         let context = format!("{} ref event {}", self.label, event.commit_event_idx);
         self.refs_started = true;
-        self.saw_ref = true;
-        if !matches!(
-            self.commit.format_version,
-            REF_COMMIT_FORMAT_VERSION | REF_IMPORT_COMMIT_FORMAT_VERSION
-        ) {
-            self.findings.push(format!(
-                "{context}: legacy commit format contains a ref event"
-            ));
-        }
         if usize::try_from(event.commit_event_idx).ok() != Some(self.next_event_index) {
             self.findings
                 .push(format!("{context}: event index is not contiguous"));
@@ -447,14 +427,6 @@ impl CommitEnvelopeValidator {
             self.findings
                 .push(format!("{}: event count mismatch", self.label));
         }
-        if matches!(
-            self.commit.format_version,
-            REF_COMMIT_FORMAT_VERSION | REF_IMPORT_COMMIT_FORMAT_VERSION
-        ) && !self.saw_ref
-        {
-            self.findings
-                .push(format!("{}: ref commit contains no ref event", self.label));
-        }
         let digest_bytes: [u8; 32] = self.events_hasher.finalize().into();
         let events_digest =
             Sha256Digest::parse(sha256_prefixed_hex_from_digest_bytes(digest_bytes))
@@ -466,8 +438,9 @@ impl CommitEnvelopeValidator {
         match canonical_stored_commit_bytes_for_hash(
             self.commit.format_version,
             &self.commit.author_id,
+            &self.commit.committer_id,
+            self.commit.occurred_at,
             self.commit.message.as_deref(),
-            None,
             self.commit.import_job_id.as_deref(),
             self.next_event_index,
             &events_digest,
@@ -498,12 +471,7 @@ impl CommitEnvelopeValidator {
             self.findings
                 .push(format!("{context}: payload digest mismatch"));
         }
-        if matches!(
-            self.commit.format_version,
-            REF_COMMIT_FORMAT_VERSION | REF_IMPORT_COMMIT_FORMAT_VERSION
-        ) {
-            self.events_hasher.update([event_family]);
-        }
+        self.events_hasher.update([event_family]);
         self.events_hasher.update(payload_digest);
     }
 }
@@ -529,6 +497,7 @@ mod tests {
                 proposal.item_id = Some(item_id.clone());
                 let payload = canonical_event_proposal_bytes(&proposal).unwrap();
                 let payload_digest = compute_sha256_digest_bytes(&payload);
+                digest_input.push(COMMIT_EVENT_FAMILY_ITEM);
                 digest_input.extend_from_slice(&payload_digest);
                 VerifyEvent {
                     commit_event_idx: i32::try_from(index).unwrap(),
@@ -547,15 +516,23 @@ mod tests {
         ))
         .unwrap();
         let author = "author".to_string();
-        let commit_bytes =
-            canonical_commit_bytes_for_hash(&author, None, None, events.len(), &events_digest)
-                .unwrap();
+        let commit_bytes = canonical_commit_bytes_for_hash(
+            &author,
+            &author,
+            None,
+            None,
+            None,
+            events.len(),
+            &events_digest,
+        )
+        .unwrap();
         let commit = VerifyCommit {
             commit_id: Some(compute_commit_id(&commit_bytes)),
-            parent_commit_id: None,
             repo_seq: Some(1),
             format_version: COMMIT_FORMAT_VERSION,
             import_job_id: None,
+            committer_id: author.clone(),
+            occurred_at: None,
             author_id: author,
             message: None,
             event_count: Some(i32::try_from(events.len()).unwrap()),

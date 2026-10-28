@@ -19,17 +19,14 @@ use crate::types::{
     COMMIT_FORMAT_VERSION, CommitEventRow, CommitPk, CommitProposal, CommitRow, ContentId,
     CreatedItemInfo, EventContent, EventInsertRow, EventProposal, EventRow,
     FILE_FOLDER_MAX_CLOSURE_DESCENDANTS, FederatedDomainProposal, FederatedProposal,
-    IMPORT_COMMIT_FORMAT_VERSION, IngestedCommit, IngestedDomainCommit, ItemCursor, ItemId,
-    ItemRow, LifecycleState, REF_COMMIT_FORMAT_VERSION, REF_IMPORT_COMMIT_FORMAT_VERSION,
+    IngestedCommit, IngestedDomainCommit, ItemCursor, ItemId, ItemRow, LifecycleState,
     RefEventInsertRow, RefEventProposal, RepoEventCursor, RepoId, SequencingMode, Sha256Digest,
     SubtreeClosureGuard, Timestamp,
 };
 use crate::types::{
     CommitId, canonical_commit_bytes_for_hash, canonical_event_proposal_bytes,
-    canonical_import_commit_bytes_for_hash, canonical_ref_commit_bytes_for_hash,
-    canonical_ref_event_proposal_bytes, canonical_ref_import_commit_bytes_for_hash,
-    compute_commit_id, compute_sha256_digest_bytes, now, sha256_prefixed_hex_from_digest_bytes,
-    validate_import_job_id,
+    canonical_ref_event_proposal_bytes, compute_commit_id, compute_sha256_digest_bytes, now,
+    sha256_prefixed_hex_from_digest_bytes, validate_import_job_id,
 };
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -1130,7 +1127,6 @@ impl Repo {
                 import_job_id,
             } => (subtree_guards, true, import_job_id),
         };
-        let parent_commit_id: Option<CommitId> = None;
         let repo_seq: Option<i64> = None;
         let operation_id = proposal
             .operation_id
@@ -1936,9 +1932,7 @@ impl Repo {
             let parent_before = event_parent_before[idx].clone();
 
             let event_hash = compute_sha256_digest_bytes(&payload);
-            if !ref_events.is_empty() {
-                events_digest_hasher.update([COMMIT_EVENT_FAMILY_ITEM]);
-            }
+            events_digest_hasher.update([COMMIT_EVENT_FAMILY_ITEM]);
             events_digest_hasher.update(event_hash);
 
             let event_row = EventInsertRow {
@@ -1984,51 +1978,16 @@ impl Repo {
             Sha256Digest::parse(sha256_prefixed_hex_from_digest_bytes(events_digest_bytes))
                 .expect("internal sha256 digest construction must be valid");
 
-        let (format_version, canonical_commit_bytes) = match (import_job_id, ref_events.is_empty())
-        {
-            (Some(import_job_id), true) => (
-                IMPORT_COMMIT_FORMAT_VERSION,
-                canonical_import_commit_bytes_for_hash(
-                    &proposal.author_id,
-                    proposal.message.as_deref(),
-                    parent_commit_id.as_ref(),
-                    import_job_id,
-                    combined_event_count,
-                    &events_digest,
-                )?,
-            ),
-            (None, true) => (
-                COMMIT_FORMAT_VERSION,
-                canonical_commit_bytes_for_hash(
-                    &proposal.author_id,
-                    proposal.message.as_deref(),
-                    parent_commit_id.as_ref(),
-                    combined_event_count,
-                    &events_digest,
-                )?,
-            ),
-            (Some(import_job_id), false) => (
-                REF_IMPORT_COMMIT_FORMAT_VERSION,
-                canonical_ref_import_commit_bytes_for_hash(
-                    &proposal.author_id,
-                    proposal.message.as_deref(),
-                    parent_commit_id.as_ref(),
-                    import_job_id,
-                    combined_event_count,
-                    &events_digest,
-                )?,
-            ),
-            (None, false) => (
-                REF_COMMIT_FORMAT_VERSION,
-                canonical_ref_commit_bytes_for_hash(
-                    &proposal.author_id,
-                    proposal.message.as_deref(),
-                    parent_commit_id.as_ref(),
-                    combined_event_count,
-                    &events_digest,
-                )?,
-            ),
-        };
+        let format_version = COMMIT_FORMAT_VERSION;
+        let canonical_commit_bytes = canonical_commit_bytes_for_hash(
+            &proposal.author_id,
+            &proposal.committer_id,
+            proposal.occurred_at,
+            proposal.message.as_deref(),
+            import_job_id,
+            combined_event_count,
+            &events_digest,
+        )?;
         let commit_id = compute_commit_id(&canonical_commit_bytes);
 
         if let Err(err) = txn
@@ -2036,7 +1995,6 @@ impl Repo {
                 &repo_id,
                 &commit_pk,
                 repo_seq,
-                parent_commit_id.as_ref(),
                 Some(operation_id.as_str()),
                 format_version,
                 import_job_id,
@@ -2312,7 +2270,6 @@ impl Repo {
         let mut append_events_ms = 0u64;
         let mut update_item_ms = 0u64;
         let res: Result<(IngestedCommit, CommitRow, Vec<EventProposal>, bool), CoreError> = async {
-            let parent_commit_id: Option<CommitId> = None;
             let repo_seq: Option<i64> = None;
 
             // Serialize ingest writes per federation stream id. This gives "single writer per
@@ -2492,7 +2449,6 @@ impl Repo {
 
             // Build a local CommitProposal using the federated events. We treat
             // the federated input as a proposal; the local repo owns commit_id,
-            // parent_commit_id, and repo_seq.
             let mut local_proposal = CommitProposal {
                 author_id: proposal.author_id.clone(),
                 committer_id: proposal.committer_id.clone(),
@@ -2605,6 +2561,7 @@ impl Repo {
                 let parent_before = event_parent_before[idx].clone();
 
                 let event_hash = compute_sha256_digest_bytes(&payload);
+                events_digest_hasher.update([COMMIT_EVENT_FAMILY_ITEM]);
                 events_digest_hasher.update(event_hash);
 
                 let event_row = EventInsertRow {
@@ -2631,13 +2588,7 @@ impl Repo {
             ))
             .expect("internal sha256 digest construction must be valid");
 
-            let canonical_commit_bytes = canonical_commit_bytes_for_hash(
-                &local_proposal.author_id,
-                local_proposal.message.as_deref(),
-                parent_commit_id.as_ref(),
-                local_proposal.events.len(),
-                &events_digest,
-            )?;
+            let canonical_commit_bytes = canonical_commit_bytes_for_hash(&local_proposal.author_id, &local_proposal.committer_id, local_proposal.occurred_at, local_proposal.message.as_deref(), None, local_proposal.events.len(), &events_digest)?;
             let commit_id = compute_commit_id(&canonical_commit_bytes);
             build_rows_ms = build_rows_start.elapsed().as_millis() as u64;
 
@@ -2647,7 +2598,6 @@ impl Repo {
                     &repo_id,
                     &commit_pk,
                     repo_seq,
-                    parent_commit_id.as_ref(),
                     None,
                     COMMIT_FORMAT_VERSION,
                     None,
@@ -2680,7 +2630,6 @@ impl Repo {
             let commit_row = CommitRow {
                 repo_id: repo_id.clone(),
                 commit_id: commit_id.clone(),
-                parent_commit_id: parent_commit_id.clone(),
                 repo_seq,
                 format_version: COMMIT_FORMAT_VERSION,
                 import_job_id: None,
@@ -2946,7 +2895,6 @@ impl Repo {
 
                 let build_rows_start = Instant::now();
                 let proposal_created_at = txn.acceptance_timestamp().await?;
-                let parent_commit_id: Option<CommitId> = None;
                 let repo_seq: Option<i64> = None;
                 let item_id = item_row.item_id.clone();
 
@@ -2962,6 +2910,7 @@ impl Repo {
                         ev.event_type.as_str(),
                     )?;
                     let event_hash = compute_sha256_digest_bytes(&payload);
+                    events_digest_hasher.update([COMMIT_EVENT_FAMILY_ITEM]);
                     events_digest_hasher.update(event_hash);
                     event_rows.push(EventInsertRow {
                         repo_id: repo_id.clone(),
@@ -2985,8 +2934,10 @@ impl Repo {
                         .expect("internal sha256 digest construction must be valid");
                 let canonical_commit_bytes = canonical_commit_bytes_for_hash(
                     &proposal.author_id,
+                    &proposal.committer_id,
+                    proposal.occurred_at,
                     proposal.message.as_deref(),
-                    parent_commit_id.as_ref(),
+                    None,
                     proposal.events.len(),
                     &events_digest,
                 )?;
@@ -2996,7 +2947,6 @@ impl Repo {
                 sealed_commits.push(SealedCommitInsert {
                     commit_pk: commit_pk.clone(),
                     repo_seq,
-                    parent_commit_id,
                     operation_id: None,
                     format_version: COMMIT_FORMAT_VERSION,
                     import_job_id: None,
@@ -3033,7 +2983,6 @@ impl Repo {
                                     &repo_id,
                                     &commit.commit_pk,
                                     commit.repo_seq,
-                                    commit.parent_commit_id.as_ref(),
                                     commit.operation_id.as_deref(),
                                     commit.format_version,
                                     commit.import_job_id.as_deref(),
@@ -3356,7 +3305,6 @@ impl Repo {
                 });
             }
 
-            let parent_commit_id: Option<CommitId> = None;
             let repo_seq: Option<i64> = None;
             let commit_created_at = txn.acceptance_timestamp().await?;
 
@@ -3620,9 +3568,7 @@ impl Repo {
                 let parent_before = event_parent_before[idx].clone();
 
                 let event_hash = compute_sha256_digest_bytes(&payload);
-                if !proposal.ref_events.is_empty() {
-                    events_digest_hasher.update([COMMIT_EVENT_FAMILY_ITEM]);
-                }
+                events_digest_hasher.update([COMMIT_EVENT_FAMILY_ITEM]);
                 events_digest_hasher.update(event_hash);
 
                 let event_row = EventInsertRow {
@@ -3673,29 +3619,16 @@ impl Repo {
                 Sha256Digest::parse(sha256_prefixed_hex_from_digest_bytes(events_digest_bytes))
                     .expect("internal sha256 digest construction must be valid");
 
-            let (format_version, canonical_commit_bytes) = if proposal.ref_events.is_empty() {
-                (
-                    COMMIT_FORMAT_VERSION,
-                    canonical_commit_bytes_for_hash(
-                        &local_proposal.author_id,
-                        local_proposal.message.as_deref(),
-                        parent_commit_id.as_ref(),
-                        combined_event_count,
-                        &events_digest,
-                    )?,
-                )
-            } else {
-                (
-                    REF_COMMIT_FORMAT_VERSION,
-                    canonical_ref_commit_bytes_for_hash(
-                        &local_proposal.author_id,
-                        local_proposal.message.as_deref(),
-                        parent_commit_id.as_ref(),
-                        combined_event_count,
-                        &events_digest,
-                    )?,
-                )
-            };
+            let format_version = COMMIT_FORMAT_VERSION;
+            let canonical_commit_bytes = canonical_commit_bytes_for_hash(
+                &local_proposal.author_id,
+                &local_proposal.committer_id,
+                local_proposal.occurred_at,
+                local_proposal.message.as_deref(),
+                None,
+                combined_event_count,
+                &events_digest,
+            )?;
             let commit_id = compute_commit_id(&canonical_commit_bytes);
 
             if let Err(err) = txn
@@ -3703,7 +3636,6 @@ impl Repo {
                     &repo_id,
                     &commit_pk,
                     repo_seq,
-                    parent_commit_id.as_ref(),
                     local_proposal.operation_id.as_deref(),
                     format_version,
                     None,

@@ -1,0 +1,76 @@
+[
+  {
+    "name": "item",
+    "events": [
+      {
+        "family": 0,
+        "payload": "{\"base_seq\":1,\"event_type\":\"FILE::RENAME\",\"item_id\":\"01890c6c-1111-7777-8888-aaaaaaaaaaaa\",\"set_name\":\"résumé.txt\"}",
+        "digest": "sha256:45a0ea9e95e82fe0d21a5138bd59bdd4245b4107cb3c5729a77da2d6f47dd47f"
+      }
+    ],
+    "header": {
+      "object_type": "vcs_commit",
+      "format_version": 6,
+      "author_id": "alice",
+      "committer_id": "alice",
+      "occurred_at": null,
+      "message": null,
+      "import_job_id": null,
+      "event_count": 1,
+      "events_digest": "sha256:c972fe9f21b2df76769781875082aefd0fa17b54b2aa13ddbf73d66809993f98"
+    },
+    "canonical": "{\"author_id\":\"alice\",\"committer_id\":\"alice\",\"event_count\":1,\"events_digest\":\"sha256:c972fe9f21b2df76769781875082aefd0fa17b54b2aa13ddbf73d66809993f98\",\"format_version\":6,\"import_job_id\":null,\"message\":null,\"object_type\":\"vcs_commit\",\"occurred_at\":null}",
+    "commit_id": "sha256:9ef5cc253fe0631374c56f0db729e2477c117a9ce9522d4b8f45e7378f19cadb"
+  },
+  {
+    "name": "mixed",
+    "events": [
+      {
+        "family": 0,
+        "payload": "{\"base_seq\":1,\"event_type\":\"FILE::RENAME\",\"item_id\":\"01890c6c-1111-7777-8888-aaaaaaaaaaaa\",\"set_name\":\"résumé.txt\"}",
+        "digest": "sha256:45a0ea9e95e82fe0d21a5138bd59bdd4245b4107cb3c5729a77da2d6f47dd47f"
+      },
+      {
+        "family": 1,
+        "payload": "{\"base_ref_seq\":0,\"event_type\":\"FILE_VERSION::CREATE\",\"owner_item_id\":\"01890c6c-1111-7777-8888-aaaaaaaaaaaa\"}",
+        "digest": "sha256:a261b5db146d8ab9a4bf0b6a99c33ae0e8b94e59fc44a23f508be341e328d90e"
+      }
+    ],
+    "header": {
+      "object_type": "vcs_commit",
+      "format_version": 6,
+      "author_id": "alice",
+      "committer_id": "bob",
+      "occurred_at": "2026-10-28T12:34:56.123456789Z",
+      "message": null,
+      "import_job_id": "550e8400-e29b-41d4-a716-446655440000",
+      "event_count": 2,
+      "events_digest": "sha256:8baa0dd8ea617600d514875d9782cd951712cd1603e32bff5f7d9daf7b04ccd5"
+    },
+    "canonical": "{\"author_id\":\"alice\",\"committer_id\":\"bob\",\"event_count\":2,\"events_digest\":\"sha256:8baa0dd8ea617600d514875d9782cd951712cd1603e32bff5f7d9daf7b04ccd5\",\"format_version\":6,\"import_job_id\":\"550e8400-e29b-41d4-a716-446655440000\",\"message\":null,\"object_type\":\"vcs_commit\",\"occurred_at\":\"2026-10-28T12:34:56.123456789Z\"}",
+    "commit_id": "sha256:0e8b63b9c57d7dbd9fdc2c8f960a757e1fbf8237c3c6e7e2d712889e11384771"
+  },
+  {
+    "name": "reference",
+    "events": [
+      {
+        "family": 1,
+        "payload": "{\"base_ref_seq\":0,\"event_type\":\"FILE_VERSION::CREATE\",\"owner_item_id\":\"01890c6c-1111-7777-8888-aaaaaaaaaaaa\"}",
+        "digest": "sha256:a261b5db146d8ab9a4bf0b6a99c33ae0e8b94e59fc44a23f508be341e328d90e"
+      }
+    ],
+    "header": {
+      "object_type": "vcs_commit",
+      "format_version": 6,
+      "author_id": "alice",
+      "committer_id": "bob",
+      "occurred_at": "1969-12-31T23:59:59.000000001Z",
+      "message": null,
+      "import_job_id": null,
+      "event_count": 1,
+      "events_digest": "sha256:e1b4cc9abf35f78b1abce88b0508c8f5aaba0affe19ae4c316b06e421694b5d7"
+    },
+    "canonical": "{\"author_id\":\"alice\",\"committer_id\":\"bob\",\"event_count\":1,\"events_digest\":\"sha256:e1b4cc9abf35f78b1abce88b0508c8f5aaba0affe19ae4c316b06e421694b5d7\",\"format_version\":6,\"import_job_id\":null,\"message\":null,\"object_type\":\"vcs_commit\",\"occurred_at\":\"1969-12-31T23:59:59.000000001Z\"}",
+    "commit_id": "sha256:1ec5704031c040c77e3ae353db390e7c1975f528b3e6d746a624436fc74aed4c"
+  }
+]

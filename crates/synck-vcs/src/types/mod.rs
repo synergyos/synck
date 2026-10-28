@@ -552,7 +552,6 @@ pub struct CommitRow {
     pub repo_id: RepoId,
     /// Hash of the version-selected canonical commit header and ordered events.
     pub commit_id: CommitId,
-    pub parent_commit_id: Option<CommitId>,
     /// Repository-local placement assigned after acceptance; not part of
     /// canonical commit identity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -989,162 +988,45 @@ pub fn canonical_ref_event_proposal_bytes(ev: &RefEventProposal) -> Result<Vec<u
     canonical_json_bytes(&value)
 }
 
-/// Ordinary commits retain their existing formats. Ref-bearing commits use
-/// distinct formats because their event digest includes an event-family tag.
-pub const COMMIT_FORMAT_VERSION: i32 = 2;
-pub const IMPORT_COMMIT_FORMAT_VERSION: i32 = 3;
-pub const REF_COMMIT_FORMAT_VERSION: i32 = 4;
-pub const REF_IMPORT_COMMIT_FORMAT_VERSION: i32 = 5;
+/// The sole accepted commit encoding for Synck 0.2.
+pub const COMMIT_FORMAT_VERSION: i32 = 6;
 pub const COMMIT_EVENT_FAMILY_ITEM: u8 = 0;
 pub const COMMIT_EVENT_FAMILY_REF: u8 = 1;
 
-fn canonical_regular_commit_bytes_for_hash(
-    format_version: i32,
-    author_id: &AuthorId,
-    message: Option<&str>,
-    parent_commit_id: Option<&CommitId>,
-    event_count: usize,
-    events_digest: &Sha256Digest,
-) -> Result<Vec<u8>, CoreError> {
-    if event_count < 1 {
-        return Err(CoreError::EmptyCommit);
-    }
-
-    #[derive(Serialize)]
-    struct CanonicalCommit<'a> {
-        object_type: &'static str,
-        format_version: i32,
-        author_id: &'a str,
-        message: Option<&'a str>,
-        parent_commit_id: Option<&'a str>,
-        event_count: u64,
-        events_digest: &'a str,
-    }
-
-    let value = serde_json::to_value(CanonicalCommit {
-        object_type: "vcs_commit",
-        format_version,
-        author_id,
-        message,
-        parent_commit_id: parent_commit_id.map(|id| id.as_str()),
-        event_count: event_count as u64,
-        events_digest: events_digest.as_str(),
-    })
-    .map_err(|e| CoreError::InvalidProposal(e.to_string()))?;
-    canonical_json_bytes(&value)
-}
-
+/// Repository placement and acceptance time belong to the checkpoint, not this
+/// content identity. Optional values are explicit JSON nulls.
 pub fn canonical_commit_bytes_for_hash(
     author_id: &AuthorId,
+    committer_id: &CommitterId,
+    occurred_at: Option<Timestamp>,
     message: Option<&str>,
-    parent_commit_id: Option<&CommitId>,
+    import_job_id: Option<&str>,
     event_count: usize,
     events_digest: &Sha256Digest,
 ) -> Result<Vec<u8>, CoreError> {
-    canonical_regular_commit_bytes_for_hash(
-        COMMIT_FORMAT_VERSION,
-        author_id,
-        message,
-        parent_commit_id,
-        event_count,
-        events_digest,
-    )
-}
-
-fn canonical_import_commit_bytes_for_version(
-    format_version: i32,
-    author_id: &AuthorId,
-    message: Option<&str>,
-    parent_commit_id: Option<&CommitId>,
-    import_job_id: &str,
-    event_count: usize,
-    events_digest: &Sha256Digest,
-) -> Result<Vec<u8>, CoreError> {
-    validate_import_job_id(import_job_id)?;
-    if event_count < 1 {
+    if event_count == 0 {
         return Err(CoreError::EmptyCommit);
     }
-
-    #[derive(Serialize)]
-    struct CanonicalImportCommit<'a> {
-        object_type: &'static str,
-        format_version: i32,
-        author_id: &'a str,
-        message: Option<&'a str>,
-        parent_commit_id: Option<&'a str>,
-        import_job_id: &'a str,
-        event_count: u64,
-        events_digest: &'a str,
+    if let Some(id) = import_job_id {
+        validate_import_job_id(id)?;
     }
-
-    let value = serde_json::to_value(CanonicalImportCommit {
-        object_type: "vcs_commit",
-        format_version,
-        author_id,
-        message,
-        parent_commit_id: parent_commit_id.map(|id| id.as_str()),
-        import_job_id,
-        event_count: event_count as u64,
-        events_digest: events_digest.as_str(),
-    })
-    .map_err(|e| CoreError::InvalidProposal(e.to_string()))?;
+    if occurred_at.is_some_and(|time| time.timestamp_subsec_nanos() >= 1_000_000_000) {
+        return Err(CoreError::InvalidProposal(
+            "leap seconds are not supported".into(),
+        ));
+    }
+    let value = serde_json::json!({
+        "object_type": "vcs_commit",
+        "format_version": COMMIT_FORMAT_VERSION,
+        "author_id": author_id,
+        "committer_id": committer_id,
+        "occurred_at": occurred_at.map(|time| time.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true)),
+        "message": message,
+        "import_job_id": import_job_id,
+        "event_count": event_count,
+        "events_digest": events_digest.as_str(),
+    });
     canonical_json_bytes(&value)
-}
-
-/// Build canonical current import commit bytes (for hashing only; not stored).
-pub fn canonical_import_commit_bytes_for_hash(
-    author_id: &AuthorId,
-    message: Option<&str>,
-    parent_commit_id: Option<&CommitId>,
-    import_job_id: &str,
-    event_count: usize,
-    events_digest: &Sha256Digest,
-) -> Result<Vec<u8>, CoreError> {
-    canonical_import_commit_bytes_for_version(
-        IMPORT_COMMIT_FORMAT_VERSION,
-        author_id,
-        message,
-        parent_commit_id,
-        import_job_id,
-        event_count,
-        events_digest,
-    )
-}
-
-pub fn canonical_ref_commit_bytes_for_hash(
-    author_id: &AuthorId,
-    message: Option<&str>,
-    parent_commit_id: Option<&CommitId>,
-    event_count: usize,
-    events_digest: &Sha256Digest,
-) -> Result<Vec<u8>, CoreError> {
-    canonical_regular_commit_bytes_for_hash(
-        REF_COMMIT_FORMAT_VERSION,
-        author_id,
-        message,
-        parent_commit_id,
-        event_count,
-        events_digest,
-    )
-}
-
-pub fn canonical_ref_import_commit_bytes_for_hash(
-    author_id: &AuthorId,
-    message: Option<&str>,
-    parent_commit_id: Option<&CommitId>,
-    import_job_id: &str,
-    event_count: usize,
-    events_digest: &Sha256Digest,
-) -> Result<Vec<u8>, CoreError> {
-    canonical_import_commit_bytes_for_version(
-        REF_IMPORT_COMMIT_FORMAT_VERSION,
-        author_id,
-        message,
-        parent_commit_id,
-        import_job_id,
-        event_count,
-        events_digest,
-    )
 }
 
 pub fn validate_import_job_id(import_job_id: &str) -> Result<(), CoreError> {
@@ -1159,68 +1041,31 @@ pub fn validate_import_job_id(import_job_id: &str) -> Result<(), CoreError> {
     Ok(())
 }
 
-/// Recompute canonical bytes for an already stored commit using strict format
-/// dispatch. Unknown versions have no fallback interpretation.
+/// Reject every previous format rather than guessing an interpretation.
 pub fn canonical_stored_commit_bytes_for_hash(
     format_version: i32,
     author_id: &AuthorId,
+    committer_id: &CommitterId,
+    occurred_at: Option<Timestamp>,
     message: Option<&str>,
-    parent_commit_id: Option<&CommitId>,
     import_job_id: Option<&str>,
     event_count: usize,
     events_digest: &Sha256Digest,
 ) -> Result<Vec<u8>, CoreError> {
-    match (format_version, import_job_id) {
-        (COMMIT_FORMAT_VERSION, None) => canonical_commit_bytes_for_hash(
-            author_id,
-            message,
-            parent_commit_id,
-            event_count,
-            events_digest,
-        ),
-        (IMPORT_COMMIT_FORMAT_VERSION, Some(import_job_id)) => {
-            canonical_import_commit_bytes_for_hash(
-                author_id,
-                message,
-                parent_commit_id,
-                import_job_id,
-                event_count,
-                events_digest,
-            )
-        }
-        (REF_COMMIT_FORMAT_VERSION, None) => canonical_ref_commit_bytes_for_hash(
-            author_id,
-            message,
-            parent_commit_id,
-            event_count,
-            events_digest,
-        ),
-        (REF_IMPORT_COMMIT_FORMAT_VERSION, Some(import_job_id)) => {
-            canonical_ref_import_commit_bytes_for_hash(
-                author_id,
-                message,
-                parent_commit_id,
-                import_job_id,
-                event_count,
-                events_digest,
-            )
-        }
-        (COMMIT_FORMAT_VERSION, Some(_)) => Err(CoreError::InvalidProposal(
-            "regular commit must not carry import_job_id".to_string(),
-        )),
-        (IMPORT_COMMIT_FORMAT_VERSION, None) => Err(CoreError::InvalidProposal(
-            "import commit requires import_job_id".to_string(),
-        )),
-        (REF_COMMIT_FORMAT_VERSION, Some(_)) => Err(CoreError::InvalidProposal(
-            "ref commit must not carry import_job_id".to_string(),
-        )),
-        (REF_IMPORT_COMMIT_FORMAT_VERSION, None) => Err(CoreError::InvalidProposal(
-            "ref import commit requires import_job_id".to_string(),
-        )),
-        (other, _) => Err(CoreError::InvalidProposal(format!(
-            "unsupported commit format version: {other}"
-        ))),
+    if format_version != COMMIT_FORMAT_VERSION {
+        return Err(CoreError::InvalidProposal(format!(
+            "unsupported commit format version: {format_version}"
+        )));
     }
+    canonical_commit_bytes_for_hash(
+        author_id,
+        committer_id,
+        occurred_at,
+        message,
+        import_job_id,
+        event_count,
+        events_digest,
+    )
 }
 
 #[cfg(test)]
@@ -1455,138 +1300,6 @@ mod tests {
             let replay: EventProposal = serde_json::from_slice(&bytes).unwrap();
             assert_eq!(canonical_event_proposal_bytes(&replay).unwrap(), bytes);
         }
-    }
-
-    #[test]
-    fn canonical_commit_identity_has_only_versioned_content_fields() {
-        let digest = Sha256Digest::parse(
-            "sha256:1111111111111111111111111111111111111111111111111111111111111111",
-        )
-        .unwrap();
-        let bytes =
-            canonical_commit_bytes_for_hash(&"author-1".to_string(), None, None, 1, &digest)
-                .unwrap();
-        let s = String::from_utf8(bytes).unwrap();
-        assert_eq!(
-            s,
-            concat!(
-                r#"{"author_id":"author-1","event_count":1,"events_digest":""#,
-                r#"sha256:1111111111111111111111111111111111111111111111111111111111111111"#,
-                r#"","format_version":2,"message":null,"object_type":"vcs_commit","parent_commit_id":null}"#,
-            )
-        );
-    }
-
-    #[test]
-    fn import_commit_hash_binds_canonical_uuidv4_job_identity() {
-        let digest = Sha256Digest::parse(
-            "sha256:1111111111111111111111111111111111111111111111111111111111111111",
-        )
-        .unwrap();
-        let job_id = "550e8400-e29b-41d4-a716-446655440000";
-        let bytes = canonical_import_commit_bytes_for_hash(
-            &"author-1".to_string(),
-            Some("import"),
-            None,
-            job_id,
-            1,
-            &digest,
-        )
-        .unwrap();
-        let json = String::from_utf8(bytes).unwrap();
-        assert_eq!(
-            json,
-            concat!(
-                r#"{"author_id":"author-1","event_count":1,"events_digest":""#,
-                r#"sha256:1111111111111111111111111111111111111111111111111111111111111111"#,
-                r#"","format_version":3,"import_job_id":"550e8400-e29b-41d4-a716-446655440000","message":"import","object_type":"vcs_commit","parent_commit_id":null}"#,
-            )
-        );
-
-        for invalid in [
-            "550E8400-E29B-41D4-A716-446655440000",
-            "01890c6c-1111-7777-8888-aaaaaaaaaaaa",
-            "not-a-uuid",
-        ] {
-            assert!(
-                canonical_import_commit_bytes_for_hash(
-                    &"author-1".to_string(),
-                    None,
-                    None,
-                    invalid,
-                    1,
-                    &digest,
-                )
-                .is_err()
-            );
-        }
-    }
-
-    #[test]
-    fn ref_commit_formats_have_fixed_canonical_identities() {
-        let digest = Sha256Digest::parse(
-            "sha256:1111111111111111111111111111111111111111111111111111111111111111",
-        )
-        .unwrap();
-        let regular =
-            canonical_ref_commit_bytes_for_hash(&"author-1".to_string(), None, None, 2, &digest)
-                .unwrap();
-        assert_eq!(
-            compute_commit_id(&regular).as_str(),
-            "sha256:7a2dbcd2f731b029effaa1b8a568615859cb093358694dc4e76bae77db23a345"
-        );
-        let imported = canonical_ref_import_commit_bytes_for_hash(
-            &"author-1".to_string(),
-            Some("import"),
-            None,
-            "550e8400-e29b-41d4-a716-446655440000",
-            2,
-            &digest,
-        )
-        .unwrap();
-        assert_eq!(
-            compute_commit_id(&imported).as_str(),
-            "sha256:a65f1fa3d7cc49aed797a04c28ead3c186500686ce613c3fde2d87ba30aaff5f"
-        );
-    }
-
-    #[test]
-    fn stored_commit_hash_dispatch_rejects_format_provenance_mismatch() {
-        let digest = Sha256Digest::parse(
-            "sha256:1111111111111111111111111111111111111111111111111111111111111111",
-        )
-        .unwrap();
-        let author = "author-1".to_string();
-        let job_id = "550e8400-e29b-41d4-a716-446655440000";
-
-        assert!(
-            canonical_stored_commit_bytes_for_hash(
-                COMMIT_FORMAT_VERSION,
-                &author,
-                None,
-                None,
-                Some(job_id),
-                1,
-                &digest,
-            )
-            .is_err()
-        );
-        assert!(
-            canonical_stored_commit_bytes_for_hash(
-                IMPORT_COMMIT_FORMAT_VERSION,
-                &author,
-                None,
-                None,
-                None,
-                1,
-                &digest,
-            )
-            .is_err()
-        );
-        assert!(
-            canonical_stored_commit_bytes_for_hash(6, &author, None, None, None, 1, &digest,)
-                .is_err()
-        );
     }
 
     #[test]

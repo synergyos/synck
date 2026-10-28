@@ -74,3 +74,46 @@ Storage integers and available resources still bound representable commits.
 Local commits are atomic, including moves and renames; no batch command or
 batch recovery journal is part of 0.2. Pagination limits apply to individual
 read requests, never to the validity of a stored commit.
+
+## Commit identity
+
+Commit format 6 is the only accepted encoding. The canonical header is RFC 8785
+JSON with exactly these fields (including explicit nulls for absent values):
+`object_type` (`vcs_commit`), `format_version` (6), `author_id`, `committer_id`,
+`occurred_at`, `message`, `import_job_id`, `event_count`, and `events_digest`.
+The optional origin timestamp is UTC RFC 3339 with exactly nine fractional digits
+and `Z`; leap seconds are rejected. An import job is null or a canonical lowercase
+UUIDv4. The positive event count is the number of item and attached-reference
+events combined. The commit ID is SHA-256 of these canonical UTF-8 bytes,
+represented as `sha256:` followed by 64 lowercase hexadecimal digits.
+
+Each event digest is SHA-256 of its canonical envelope bytes. The aggregate
+`events_digest` hashes the concatenation, in commit-event-index order, of one
+family byte followed by the raw 32-byte event digest. The family byte is 0 for
+an item event and 1 for an attached-reference event. Item events precede attached
+reference events, and indexes are contiguous from zero across both families.
+Every commit uses this framing, including commits with no references.
+
+Repository ID, repository sequence, acceptance timestamp, operation ID, and the
+physical commit-row surrogate do not participate in commit identity. There is
+no parent-commit field. The publication checkpoint authenticates sequence and
+acceptance time separately. Changing author, committer, origin timestamp,
+message, import identity, or events changes the commit ID. The independently
+calculated vectors in `vectors/commits.json` include item-only, reference-only,
+and mixed commits, distinct committer identity and nanosecond timestamps.
+
+## History bundle boundary
+
+The NDJSON history bundle accepts version 5 only, with commit format 6. Its header
+carries `history_generation`, a canonical UUIDv7, alongside `repo_id`, export time,
+and source-schema provenance. Each commit record carries its `checkpoint` as a
+`sha256:` digest; it has no parent-commit field. `operation_id` and `import_job_id`
+are required keys whose values may be null. A non-null operation ID must be
+nonblank. The importer preserves the generation and reconstructs and verifies
+every checkpoint from the accepted commit IDs, positions and acceptance times.
+
+Import is atomic into an empty repository. Invalid history or a checkpoint
+mismatch rolls back both canonical history and generation. Imported copies keep
+the same generation; an empty imported history still installs the generation.
+A history bundle by itself is not a complete archival export: object bytes and
+all data required for reconstruction must accompany it for that purpose.

@@ -758,6 +758,7 @@ mod tests {
             .collect::<Vec<_>>();
         let mut event_stream = Sha256::new();
         for event_digest in &event_digests {
+            event_stream.update([synck_vcs::types::COMMIT_EVENT_FAMILY_ITEM]);
             event_stream.update(event_digest);
         }
         let events_digest_bytes: [u8; 32] = event_stream.finalize().into();
@@ -766,6 +767,8 @@ mod tests {
         let message = "version sidecar";
         let commit_bytes = canonical_commit_bytes_for_hash(
             &author,
+            &author,
+            None,
             Some(message),
             None,
             events.len(),
@@ -790,10 +793,10 @@ mod tests {
         transaction
             .execute(
                 "INSERT INTO vcs_commits (
-                     repo_id, commit_pk, commit_id, parent_commit_id, repo_seq, operation_id,
+                     repo_id, commit_pk, commit_id, repo_seq, operation_id,
                      format_version, author_id, committer_id, message, occurred_at, created_at,
                      event_count, events_digest, import_job_id
-                 ) VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6, ?7, ?7, ?8, NULL, ?9, ?10, ?11, NULL)",
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, ?8, NULL, ?9, ?10, ?11, NULL)",
                 rusqlite::params![
                     repo_id,
                     commit_pk.as_str(),

@@ -5,14 +5,13 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use synck_file_folder::{
     BlobRef, CurrentItem, ImmutableItemKind, Intent, IntentProposal, ItemBase, Location,
-    ProfileLifecycleState, SemanticErrorCode, validate_projected_proposal, compute_operation_id,
-    project_commit, project_proposal_events, validate_and_materialize,
+    ProfileLifecycleState, SemanticErrorCode, compute_operation_id, project_commit,
+    project_proposal_events, validate_and_materialize, validate_projected_proposal,
 };
 use synck_vcs::types::{
     BlobId, COMMIT_FORMAT_VERSION, CommitId, CommitRow, EventContent, EventProposal, EventRow,
-    IMPORT_COMMIT_FORMAT_VERSION, ItemId, RepoId, Sha256Digest, canonical_commit_bytes_for_hash,
-    canonical_event_proposal_bytes, canonical_import_commit_bytes_for_hash, compute_commit_id,
-    compute_sha256_digest_bytes, sha256_prefixed_hex_from_digest_bytes,
+    ItemId, RepoId, Sha256Digest, canonical_commit_bytes_for_hash, canonical_event_proposal_bytes,
+    compute_commit_id, compute_sha256_digest_bytes, sha256_prefixed_hex_from_digest_bytes,
 };
 
 const INTENTS_FIXTURE: &str = include_str!("fixtures/v1/intents.json");
@@ -1140,7 +1139,7 @@ fn projector_preserves_visible_changes_and_profile_heads_only() {
 }
 
 #[test]
-fn projector_accepts_hash_bound_format_three_import_commits() {
+fn projector_accepts_hash_bound_import_identity() {
     let folder_id = item(41);
     let mut create = event(folder_id, "FOLDER::CREATE", None);
     create.create_item = Some(synck_vcs::types::CreateItem {
@@ -1150,17 +1149,18 @@ fn projector_accepts_hash_bound_format_three_import_commits() {
     });
     let (mut commit, mut rows) = accepted_commit(vec![create], Some("import"));
     let job_id = "550e8400-e29b-41d4-a716-446655440000";
-    let bytes = canonical_import_commit_bytes_for_hash(
+    let bytes = canonical_commit_bytes_for_hash(
         &commit.author_id,
+        &commit.committer_id,
+        commit.occurred_at,
         commit.message.as_deref(),
-        None,
-        job_id,
+        Some(job_id),
         rows.len(),
         &commit.events_digest,
     )
     .unwrap();
     let commit_id = compute_commit_id(&bytes);
-    commit.format_version = IMPORT_COMMIT_FORMAT_VERSION;
+    commit.format_version = COMMIT_FORMAT_VERSION;
     commit.import_job_id = Some(job_id.to_string());
     commit.commit_id = commit_id.clone();
     for row in &mut rows {
@@ -1540,6 +1540,7 @@ fn accepted_commit(
     for (index, proposal) in proposals.iter().enumerate() {
         let payload = canonical_event_proposal_bytes(proposal).unwrap();
         let digest = compute_sha256_digest_bytes(&payload);
+        digest_hasher.update([synck_vcs::types::COMMIT_EVENT_FAMILY_ITEM]);
         digest_hasher.update(digest);
         let item_id = proposal.item_id.clone().unwrap();
         let item_seq = item_heads
@@ -1552,9 +1553,16 @@ fn accepted_commit(
     let events_digest =
         Sha256Digest::parse(sha256_prefixed_hex_from_digest_bytes(events_digest_bytes)).unwrap();
     let author = "author".to_string();
-    let commit_bytes =
-        canonical_commit_bytes_for_hash(&author, message, None, rows.len(), &events_digest)
-            .unwrap();
+    let commit_bytes = canonical_commit_bytes_for_hash(
+        &author,
+        &"committer".to_string(),
+        None,
+        message,
+        None,
+        rows.len(),
+        &events_digest,
+    )
+    .unwrap();
     let commit_id = compute_commit_id(&commit_bytes);
     let accepted_at = "2026-08-20T12:00:00Z".parse().unwrap();
     let event_rows = rows
@@ -1583,7 +1591,6 @@ fn accepted_commit(
         CommitRow {
             repo_id,
             commit_id,
-            parent_commit_id: None,
             repo_seq: Some(1),
             format_version: COMMIT_FORMAT_VERSION,
             import_job_id: None,

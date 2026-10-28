@@ -5,8 +5,7 @@ use sha2::{Digest, Sha256};
 use synck_vcs::naming::compute_name_key;
 use synck_vcs::types::{
     BlobId, COMMIT_EVENT_FAMILY_ITEM, COMMIT_EVENT_FAMILY_REF, COMMIT_FORMAT_VERSION,
-    CommitEventRow, CommitRow, EventContent, EventProposal, EventRow, IMPORT_COMMIT_FORMAT_VERSION,
-    ItemId, REF_COMMIT_FORMAT_VERSION, REF_IMPORT_COMMIT_FORMAT_VERSION, RefEventProposal,
+    CommitEventRow, CommitRow, EventContent, EventProposal, EventRow, ItemId, RefEventProposal,
     RefEventRow, canonical_event_proposal_bytes, canonical_ref_event_proposal_bytes,
     canonical_stored_commit_bytes_for_hash, compute_commit_id, compute_sha256_digest_bytes,
     sha256_prefixed_hex_from_digest_bytes,
@@ -44,8 +43,8 @@ pub fn project_commit(
     project_commit_with_refs(commit, events, &[], immutable_kinds)
 }
 
-/// Project one complete accepted commit. Ref-bearing commit formats require the
-/// complete tagged event list so the aggregate digest and commit ID remain
+/// Project one complete accepted commit. The complete tagged event list is
+/// required so the aggregate digest and commit ID remain
 /// authenticated before out-of-profile ref events are omitted.
 pub fn project_commit_events(
     commit: &CommitRow,
@@ -85,25 +84,15 @@ fn project_commit_with_refs(
             "projected commit must have a positive repo_seq",
         )
     })?;
-    let ref_format = matches!(
-        commit.format_version,
-        REF_COMMIT_FORMAT_VERSION | REF_IMPORT_COMMIT_FORMAT_VERSION
-    );
     let total_events = events.len().checked_add(ref_events.len()).ok_or_else(|| {
         error(
             SemanticErrorCode::MalformedProfileEvent,
             "commit event count overflows",
         )
     })?;
-    if !matches!(
-        commit.format_version,
-        COMMIT_FORMAT_VERSION
-            | IMPORT_COMMIT_FORMAT_VERSION
-            | REF_COMMIT_FORMAT_VERSION
-            | REF_IMPORT_COMMIT_FORMAT_VERSION
-    ) || commit.event_count < 0
+    if !matches!(commit.format_version, COMMIT_FORMAT_VERSION)
+        || commit.event_count < 0
         || commit.event_count as usize != total_events
-        || ref_format == ref_events.is_empty()
     {
         return Err(error(
             SemanticErrorCode::MalformedProfileEvent,
@@ -111,7 +100,7 @@ fn project_commit_with_refs(
         ));
     }
     let kind_map = exact_kind_map(immutable_kinds)?;
-    let parsed = parse_and_verify_events(commit, repo_seq, events, ref_events, ref_format)?;
+    let parsed = parse_and_verify_events(commit, repo_seq, events, ref_events)?;
     let created_types = collect_created_types(&parsed)?;
     validate_kind_map_exactness(&parsed, &created_types, &kind_map)?;
 
@@ -306,7 +295,6 @@ fn parse_and_verify_events<'a>(
     repo_seq: i64,
     events: &'a [EventRow],
     ref_events: &[RefEventRow],
-    ref_format: bool,
 ) -> Result<Vec<(&'a EventRow, EventProposal)>, SemanticError> {
     let mut parsed = Vec::with_capacity(events.len());
     let mut aggregate_digest = Sha256::new();
@@ -329,9 +317,7 @@ fn parse_and_verify_events<'a>(
                 "event payload digest mismatch",
             ));
         }
-        if ref_format {
-            aggregate_digest.update([COMMIT_EVENT_FAMILY_ITEM]);
-        }
+        aggregate_digest.update([COMMIT_EVENT_FAMILY_ITEM]);
         aggregate_digest.update(digest);
         let proposal: EventProposal = serde_json::from_slice(&row.payload).map_err(|failure| {
             error(
@@ -481,8 +467,9 @@ fn parse_and_verify_events<'a>(
     let commit_bytes = canonical_stored_commit_bytes_for_hash(
         commit.format_version,
         &commit.author_id,
+        &commit.committer_id,
+        commit.occurred_at,
         commit.message.as_deref(),
-        commit.parent_commit_id.as_ref(),
         commit.import_job_id.as_deref(),
         events.len() + ref_events.len(),
         &commit.events_digest,
@@ -1009,7 +996,6 @@ fn core_canonical_error(failure: synck_vcs::errors::CoreError) -> SemanticError 
     )
 }
 
-
 fn error(code: SemanticErrorCode, detail: impl Into<String>) -> SemanticError {
     SemanticError::new(code, detail)
 }
@@ -1017,7 +1003,7 @@ fn error(code: SemanticErrorCode, detail: impl Into<String>) -> SemanticError {
 #[cfg(test)]
 mod tests {
     use synck_vcs::types::{
-        CommitId, REF_COMMIT_FORMAT_VERSION, RefEventProposal, RefEventRow, RepoId, Sha256Digest,
+        COMMIT_FORMAT_VERSION, CommitId, RefEventProposal, RefEventRow, RepoId, Sha256Digest,
         canonical_ref_event_proposal_bytes, canonical_stored_commit_bytes_for_hash, now,
     };
 
@@ -1046,7 +1032,8 @@ mod tests {
         .unwrap();
         let author = "author".to_string();
         let commit_bytes = canonical_stored_commit_bytes_for_hash(
-            REF_COMMIT_FORMAT_VERSION,
+            COMMIT_FORMAT_VERSION,
+            &author,
             &author,
             None,
             None,
@@ -1059,9 +1046,8 @@ mod tests {
         let commit = CommitRow {
             repo_id: repo_id.clone(),
             commit_id: commit_id.clone(),
-            parent_commit_id: None,
             repo_seq: Some(1),
-            format_version: REF_COMMIT_FORMAT_VERSION,
+            format_version: COMMIT_FORMAT_VERSION,
             import_job_id: None,
             author_id: author.clone(),
             committer_id: author,

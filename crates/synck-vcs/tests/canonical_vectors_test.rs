@@ -10,6 +10,7 @@ fn compute_events_digest(event_bytes: &[Vec<u8>]) -> Sha256Digest {
     let mut hasher = sha2::Sha256::new();
     for bytes in event_bytes {
         let event_hash = compute_sha256_digest_bytes(bytes);
+        hasher.update([0]);
         hasher.update(event_hash);
     }
     let digest: [u8; 32] = hasher.finalize().into();
@@ -20,14 +21,16 @@ fn compute_events_digest(event_bytes: &[Vec<u8>]) -> Sha256Digest {
 fn compute_commit_id_for_events(
     author_id: &str,
     message: Option<&str>,
-    parent_commit_id: Option<&CommitId>,
+    _parent_commit_id: Option<&CommitId>,
     event_bytes: &[Vec<u8>],
 ) -> (String, String, String) {
     let events_digest = compute_events_digest(event_bytes);
     let commit_bytes = canonical_commit_bytes_for_hash(
         &author_id.to_string(),
+        &author_id.to_string(),
+        None,
         message,
-        parent_commit_id,
+        None,
         event_bytes.len(),
         &events_digest,
     )
@@ -51,11 +54,11 @@ fn canonical_vector_content_reference_does_not_change_commit_format() {
     let (digest, _, commit_id) = compute_commit_id_for_events("human", None, None, &[bytes]);
     assert_eq!(
         digest,
-        "sha256:e9fa79a66dfde68c71ce717f200e07b435352b52467ece0124b4aedc6c6ee341"
+        "sha256:ce66c68cbf6cdf5e4671923aadb6c3010cf06cd37b79165df945386fda5cf078"
     );
     assert_eq!(
         commit_id,
-        "sha256:8f35cfde7189b20d9898d135f08691b079d8db1a60332a4bfb4d9e259aa19ae7"
+        "sha256:5832264e0fedaacd515fd4f6c4fbbac249ceb5aa223c98a1d1042d6f27408b87"
     );
 }
 
@@ -94,10 +97,10 @@ fn canonical_vector_create_item() {
     let expected_event_hash =
         "sha256:c4450657eb41f5b4f2b44290b459265c68bd1ae2ce2489cc2d140b69ffdb6505";
     let expected_events_digest =
-        "sha256:4fb901d0e362bb6fa5a8f01da2b49a84d5852a4a7553236810bd35f41168783a";
-    let expected_commit_json = "{\"author_id\":\"author-1\",\"event_count\":1,\"events_digest\":\"sha256:4fb901d0e362bb6fa5a8f01da2b49a84d5852a4a7553236810bd35f41168783a\",\"format_version\":2,\"message\":\"first\",\"object_type\":\"vcs_commit\",\"parent_commit_id\":null}";
+        "sha256:8039be6671e20d856866b03828312241c0a2768ad3a66b9263e976984a066e8c";
+    let expected_commit_json = "{\"author_id\":\"author-1\",\"committer_id\":\"author-1\",\"event_count\":1,\"events_digest\":\"sha256:8039be6671e20d856866b03828312241c0a2768ad3a66b9263e976984a066e8c\",\"format_version\":6,\"import_job_id\":null,\"message\":\"first\",\"object_type\":\"vcs_commit\",\"occurred_at\":null}";
     let expected_commit_id =
-        "sha256:02e539da96333d0576c331db0b23dcaa2dd136ef76d212bfae5828b62b8554d3";
+        "sha256:bf9e962d3e2a09bc9203e6213bf0a08ee38a750c93c6c284741958381fc0aca8";
 
     assert_eq!(event_json, expected_event_json);
     assert_eq!(event_hash, expected_event_hash);
@@ -139,10 +142,10 @@ fn canonical_vector_update_text() {
     let expected_event_hash =
         "sha256:2c775fe5631c3baaa7799d6b0eef75c3db61afe7ff6bfed3d8412b1d364bb4b6";
     let expected_events_digest =
-        "sha256:53995897b30b2aace948af74c353c9d013009e38685adf76378082c09add5522";
-    let expected_commit_json = "{\"author_id\":\"author-2\",\"event_count\":1,\"events_digest\":\"sha256:53995897b30b2aace948af74c353c9d013009e38685adf76378082c09add5522\",\"format_version\":2,\"message\":null,\"object_type\":\"vcs_commit\",\"parent_commit_id\":null}";
+        "sha256:53cc9b22551f9939dab4178acf10a06a6ad5c870560dc1d488fd32b71d776189";
+    let expected_commit_json = "{\"author_id\":\"author-2\",\"committer_id\":\"author-2\",\"event_count\":1,\"events_digest\":\"sha256:53cc9b22551f9939dab4178acf10a06a6ad5c870560dc1d488fd32b71d776189\",\"format_version\":6,\"import_job_id\":null,\"message\":null,\"object_type\":\"vcs_commit\",\"occurred_at\":null}";
     let expected_commit_id =
-        "sha256:67d1115d6c65e56a32fbf5f41a108248a04c8ed40d28f77ba0e08fa86aec68bd";
+        "sha256:7d874225c9ef5e8c1eda2231e7aef4aa5186b91576732d1c49cea499b3471ce4";
 
     assert_eq!(event_json, expected_event_json);
     assert_eq!(event_hash, expected_event_hash);
@@ -182,10 +185,10 @@ fn canonical_vector_set_parent_move_to_root() {
     let expected_event_hash =
         "sha256:0ff22bb475411d497b0048d222c65bcfaf2832edfdfe432770c6dedf9d8a3ddb";
     let expected_events_digest =
-        "sha256:29ed11b6ce464187e7238a09c18c818212a98a736bb733a02a187e62462d14fd";
-    let expected_commit_json = "{\"author_id\":\"author-3\",\"event_count\":1,\"events_digest\":\"sha256:29ed11b6ce464187e7238a09c18c818212a98a736bb733a02a187e62462d14fd\",\"format_version\":2,\"message\":null,\"object_type\":\"vcs_commit\",\"parent_commit_id\":null}";
+        "sha256:8c21e2a50d74ab0c8865672bed3c1f78cdf0dff36219abeed8983a5cf420a188";
+    let expected_commit_json = "{\"author_id\":\"author-3\",\"committer_id\":\"author-3\",\"event_count\":1,\"events_digest\":\"sha256:8c21e2a50d74ab0c8865672bed3c1f78cdf0dff36219abeed8983a5cf420a188\",\"format_version\":6,\"import_job_id\":null,\"message\":null,\"object_type\":\"vcs_commit\",\"occurred_at\":null}";
     let expected_commit_id =
-        "sha256:635555157653ef8355d2455c177ebd00ec79a35458517042c565e566e883cd3b";
+        "sha256:0983533cb3fd10db144bc8b423ae8a2623f338302e3edba14d75c76a6d43a008";
 
     assert_eq!(event_json, expected_event_json);
     assert_eq!(event_hash, expected_event_hash);
@@ -227,10 +230,10 @@ fn canonical_vector_set_parent_move_under_folder() {
     let expected_event_hash =
         "sha256:1fbea02a66f32238b3475294f2b5bc11f1cf99a183cb5f124d1b02879f1e41b5";
     let expected_events_digest =
-        "sha256:cafb4b2f65714f20c032a6ae1bdd70cc9c69d124d169bfdda52461f380b9c76b";
-    let expected_commit_json = "{\"author_id\":\"author-4\",\"event_count\":1,\"events_digest\":\"sha256:cafb4b2f65714f20c032a6ae1bdd70cc9c69d124d169bfdda52461f380b9c76b\",\"format_version\":2,\"message\":null,\"object_type\":\"vcs_commit\",\"parent_commit_id\":null}";
+        "sha256:8b914cddbd62473d48fc866cd970d452732fb28b4ff678b77a7c720b2944f536";
+    let expected_commit_json = "{\"author_id\":\"author-4\",\"committer_id\":\"author-4\",\"event_count\":1,\"events_digest\":\"sha256:8b914cddbd62473d48fc866cd970d452732fb28b4ff678b77a7c720b2944f536\",\"format_version\":6,\"import_job_id\":null,\"message\":null,\"object_type\":\"vcs_commit\",\"occurred_at\":null}";
     let expected_commit_id =
-        "sha256:a0c459189f453209ca822a90cf1a1b28222fd8f35604a1194a3e394b57058c1f";
+        "sha256:d047f52aeed915f37985aba31aa49857094f3b5732186bbc5a52397533aa364c";
 
     assert_eq!(event_json, expected_event_json);
     assert_eq!(event_hash, expected_event_hash);
@@ -270,10 +273,10 @@ fn canonical_vector_federation_transition_federate() {
     let expected_event_hash =
         "sha256:61bc1b9f48d5c2d4555753c9f714d0dd525ee16e75c7c1b3ecfeeeac2b0b4a40";
     let expected_events_digest =
-        "sha256:bdaea83d60782abce8cb3661ec459b7553d6bf35097199907c7e25cad273cbd8";
-    let expected_commit_json = "{\"author_id\":\"author-5\",\"event_count\":1,\"events_digest\":\"sha256:bdaea83d60782abce8cb3661ec459b7553d6bf35097199907c7e25cad273cbd8\",\"format_version\":2,\"message\":\"federate\",\"object_type\":\"vcs_commit\",\"parent_commit_id\":null}";
+        "sha256:7382152c11bc7032bf6a95624f72b761a1623e80640cf809dc917e682bf2c0af";
+    let expected_commit_json = "{\"author_id\":\"author-5\",\"committer_id\":\"author-5\",\"event_count\":1,\"events_digest\":\"sha256:7382152c11bc7032bf6a95624f72b761a1623e80640cf809dc917e682bf2c0af\",\"format_version\":6,\"import_job_id\":null,\"message\":\"federate\",\"object_type\":\"vcs_commit\",\"occurred_at\":null}";
     let expected_commit_id =
-        "sha256:84435d2a404dd284b0491330acb156a4bc85416742ffad845d49b47f57992910";
+        "sha256:2fbfe58370d3cd024ecb29c25a35662f6bdbe478e80de1f20a19841f780e070d";
 
     assert_eq!(event_json, expected_event_json);
     assert_eq!(event_hash, expected_event_hash);
@@ -346,10 +349,10 @@ fn canonical_vector_json_numbers_exponent_and_negative_zero() {
     let expected_event_hash =
         "sha256:f7e3c53aff4c0a9e6f47a4183b7b9ebc9a9acc02fe9e417c17d290d9e7806e98";
     let expected_events_digest =
-        "sha256:6579d303b82504165b6ad6fa0ef47891da6a70b82ebb45ccc5d432d04d5abe1e";
-    let expected_commit_json = "{\"author_id\":\"author-9\",\"event_count\":1,\"events_digest\":\"sha256:6579d303b82504165b6ad6fa0ef47891da6a70b82ebb45ccc5d432d04d5abe1e\",\"format_version\":2,\"message\":null,\"object_type\":\"vcs_commit\",\"parent_commit_id\":null}";
+        "sha256:f8056ab5392df252b7cac165bf5ba55a99519aea73575a918400899c51432e80";
+    let expected_commit_json = "{\"author_id\":\"author-9\",\"committer_id\":\"author-9\",\"event_count\":1,\"events_digest\":\"sha256:f8056ab5392df252b7cac165bf5ba55a99519aea73575a918400899c51432e80\",\"format_version\":6,\"import_job_id\":null,\"message\":null,\"object_type\":\"vcs_commit\",\"occurred_at\":null}";
     let expected_commit_id =
-        "sha256:ebcfa0ed2e7b1bf37339adf8630c8d1f23d4c17a6ae454bb2df398d39671fdc0";
+        "sha256:f6cac05475ad8246712f07fe0969f9f98e60f13bd300ddddce3fe08d80fe33e7";
 
     assert_eq!(event_json, expected_event_json);
     assert_eq!(event_hash, expected_event_hash);
@@ -396,10 +399,10 @@ fn canonical_vector_unicode_control_chars_and_separators() {
     let expected_event_hash =
         "sha256:5a125fc06464b548a84db7d67a1206d5f009bbc8680e102fe990e415c20d52e4";
     let expected_events_digest =
-        "sha256:238b0e26b591d0f30a820675852ccbf1f49e0786b9f0fe1bacb9a0ce59f0b545";
-    let expected_commit_json = "{\"author_id\":\"author-10\",\"event_count\":1,\"events_digest\":\"sha256:238b0e26b591d0f30a820675852ccbf1f49e0786b9f0fe1bacb9a0ce59f0b545\",\"format_version\":2,\"message\":null,\"object_type\":\"vcs_commit\",\"parent_commit_id\":null}";
+        "sha256:26dcd38286c4e4d8a939e7f8443436f39041384cbded8eb791e96680aab1acc2";
+    let expected_commit_json = "{\"author_id\":\"author-10\",\"committer_id\":\"author-10\",\"event_count\":1,\"events_digest\":\"sha256:26dcd38286c4e4d8a939e7f8443436f39041384cbded8eb791e96680aab1acc2\",\"format_version\":6,\"import_job_id\":null,\"message\":null,\"object_type\":\"vcs_commit\",\"occurred_at\":null}";
     let expected_commit_id =
-        "sha256:23aec1bec7e8677cdd8bd1bd545f7b2d98d1daeb4c67b40cdb3bc33fb7bc298a";
+        "sha256:3c2bf9e7e50e8e3284b622ead97bfcb8605c6e38edd4f0c05955eeadf1429505";
 
     assert_eq!(event_json, expected_event_json);
     assert_eq!(event_hash, expected_event_hash);
@@ -439,10 +442,10 @@ fn canonical_vector_federation_transition_unfederate() {
     let expected_event_hash =
         "sha256:741290999d66ba4877a1b3f9abb059cca66c9609d9a0c573967d0cd383469d8c";
     let expected_events_digest =
-        "sha256:80d414401391f7c20af0cba77154e02b72416c1f31a28fe10160461acf5e826d";
-    let expected_commit_json = "{\"author_id\":\"author-11\",\"event_count\":1,\"events_digest\":\"sha256:80d414401391f7c20af0cba77154e02b72416c1f31a28fe10160461acf5e826d\",\"format_version\":2,\"message\":\"unfederate\",\"object_type\":\"vcs_commit\",\"parent_commit_id\":null}";
+        "sha256:85ace6c4f7d4618d1b6e6e6abf076159f6bb07b9ecff23e6733863c148be146f";
+    let expected_commit_json = "{\"author_id\":\"author-11\",\"committer_id\":\"author-11\",\"event_count\":1,\"events_digest\":\"sha256:85ace6c4f7d4618d1b6e6e6abf076159f6bb07b9ecff23e6733863c148be146f\",\"format_version\":6,\"import_job_id\":null,\"message\":\"unfederate\",\"object_type\":\"vcs_commit\",\"occurred_at\":null}";
     let expected_commit_id =
-        "sha256:f1f380ce38a9c8db92fbef8613c87701bec72d4bdf5da386fd21891bf5f36e80";
+        "sha256:038a3342cde0b19c99c2c2c5b2cd4d404686bcecc72f6eb3938a92eea8933642";
 
     assert_eq!(event_json, expected_event_json);
     assert_eq!(event_hash, expected_event_hash);
@@ -488,10 +491,10 @@ fn canonical_vector_unicode_metadata_and_text() {
     let expected_event_hash =
         "sha256:67c52e35b4f57df0c91d24ec733dadf45eec79a23559d10bc0efb56bc17656e6";
     let expected_events_digest =
-        "sha256:75590b63837e92a20690340f158b7ac03e04f6534dea2f69f2fb3e819e000f14";
-    let expected_commit_json = "{\"author_id\":\"author-7\",\"event_count\":1,\"events_digest\":\"sha256:75590b63837e92a20690340f158b7ac03e04f6534dea2f69f2fb3e819e000f14\",\"format_version\":2,\"message\":null,\"object_type\":\"vcs_commit\",\"parent_commit_id\":null}";
+        "sha256:d1b2e92d203c33d40d086c82406efd175584b843b70229de31d7a4517162d8b9";
+    let expected_commit_json = "{\"author_id\":\"author-7\",\"committer_id\":\"author-7\",\"event_count\":1,\"events_digest\":\"sha256:d1b2e92d203c33d40d086c82406efd175584b843b70229de31d7a4517162d8b9\",\"format_version\":6,\"import_job_id\":null,\"message\":null,\"object_type\":\"vcs_commit\",\"occurred_at\":null}";
     let expected_commit_id =
-        "sha256:3f0d3d1d06dc918989db0faa779c6b33b1ab58ff7ed0c1e27a6ca3771445d586";
+        "sha256:b578fdb641778b0a70f3f7cd2b45b08970acad5e6ee433bbdbe4e4a9e0ce63f4";
 
     assert_eq!(event_json, expected_event_json);
     assert_eq!(event_hash, expected_event_hash);
@@ -534,10 +537,10 @@ fn canonical_vector_large_payload_digest_stability() {
     let expected_event_hash =
         "sha256:294b710e8f11be6330acb7440ea71356cc156a8a6e2c0c9c94d3c9b8d5c747b7";
     let expected_events_digest =
-        "sha256:761dc37f48725c11e3d2b845d16f33f5e7d06e20569313a2ab1db1afa9994d3b";
-    let expected_commit_json = "{\"author_id\":\"author-8\",\"event_count\":1,\"events_digest\":\"sha256:761dc37f48725c11e3d2b845d16f33f5e7d06e20569313a2ab1db1afa9994d3b\",\"format_version\":2,\"message\":\"big\",\"object_type\":\"vcs_commit\",\"parent_commit_id\":null}";
+        "sha256:f7ffd4f76c39384f08bad6e650ef2bd0fd67e0b79084d63aee660ee75be3d935";
+    let expected_commit_json = "{\"author_id\":\"author-8\",\"committer_id\":\"author-8\",\"event_count\":1,\"events_digest\":\"sha256:f7ffd4f76c39384f08bad6e650ef2bd0fd67e0b79084d63aee660ee75be3d935\",\"format_version\":6,\"import_job_id\":null,\"message\":\"big\",\"object_type\":\"vcs_commit\",\"occurred_at\":null}";
     let expected_commit_id =
-        "sha256:db6e2c756842d46ee1015d13dc14e0d42d8bb4105a5a7260635bff809c47f46a";
+        "sha256:e71742447c1ab27f91dc9aacaa51933e710e12d41ff031c494e28934ab336e73";
 
     assert_eq!(event_hash, expected_event_hash);
     assert_eq!(events_digest, expected_events_digest);

@@ -13,9 +13,9 @@ use synck_vcs::state::{
 };
 use synck_vcs::storage::{Storage, StorageBackend};
 use synck_vcs::types::{
-    CommitEventRow, CommitProposal, CreateItem, EventProposal, FILE_FOLDER_MAX_CLOSURE_DESCENDANTS,
-    FederatedProposal, ItemCursor, ItemId, ItemRow, LifecycleState, REF_COMMIT_FORMAT_VERSION,
-    RefEventProposal, RepoEventCursor, RepoId, SequencingMode, SubtreeClosureGuard,
+    COMMIT_FORMAT_VERSION, CommitEventRow, CommitProposal, CreateItem, EventProposal,
+    FILE_FOLDER_MAX_CLOSURE_DESCENDANTS, FederatedProposal, ItemCursor, ItemId, ItemRow,
+    LifecycleState, RefEventProposal, RepoEventCursor, RepoId, SequencingMode, SubtreeClosureGuard,
 };
 use synck_vcs_sqlite::{SqliteStorage, format_timestamp, parse_timestamp};
 
@@ -327,7 +327,7 @@ async fn ref_ledger_has_independent_cas_order_and_legacy_baseline() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(stored.format_version, REF_COMMIT_FORMAT_VERSION);
+    assert_eq!(stored.format_version, COMMIT_FORMAT_VERSION);
 
     let stale = repo
         .append_with_refs(
@@ -654,7 +654,7 @@ async fn replay_reads_use_exact_operation_and_commit_bounds() {
 }
 
 #[tokio::test]
-async fn committer_does_not_change_canonical_commit_identity() {
+async fn committer_changes_canonical_commit_identity() {
     let (_directory, storage) = backend();
     storage.init_schema().await.unwrap();
     let repo = Repo::new(
@@ -694,7 +694,7 @@ async fn committer_does_not_change_canonical_commit_identity() {
         .await
         .unwrap();
 
-    assert_eq!(first.commit_id, second.commit_id);
+    assert_ne!(first.commit_id, second.commit_id);
 }
 
 fn create_item_event(

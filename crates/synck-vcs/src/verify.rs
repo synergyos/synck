@@ -361,7 +361,7 @@ mod tests {
     use super::*;
     use crate::types::{
         COMMIT_EVENT_FAMILY_ITEM, COMMIT_EVENT_FAMILY_REF, COMMIT_FORMAT_VERSION, CreateItem,
-        REF_COMMIT_FORMAT_VERSION, RefEventProposal, Sha256Digest, canonical_commit_bytes_for_hash,
+        RefEventProposal, Sha256Digest, canonical_commit_bytes_for_hash,
         canonical_event_proposal_bytes, canonical_ref_event_proposal_bytes,
         canonical_stored_commit_bytes_for_hash, compute_commit_id, compute_sha256_digest_bytes,
         sha256_prefixed_hex_from_digest_bytes,
@@ -390,20 +390,29 @@ mod tests {
         };
         let payload = canonical_event_proposal_bytes(&proposal).unwrap();
         let payload_digest = compute_sha256_digest_bytes(&payload);
-        let events_digest_bytes = compute_sha256_digest_bytes(&payload_digest);
+        let events_digest_bytes =
+            compute_sha256_digest_bytes(&[&[0u8][..], &payload_digest[..]].concat());
         let events_digest =
             Sha256Digest::parse(sha256_prefixed_hex_from_digest_bytes(events_digest_bytes))
                 .unwrap();
         let author = "author".to_string();
-        let commit_bytes =
-            canonical_commit_bytes_for_hash(&author, Some("message"), None, 1, &events_digest)
-                .unwrap();
+        let commit_bytes = canonical_commit_bytes_for_hash(
+            &author,
+            &author,
+            None,
+            Some("message"),
+            None,
+            1,
+            &events_digest,
+        )
+        .unwrap();
         let commit = VerifyCommit {
             commit_id: Some(compute_commit_id(&commit_bytes)),
-            parent_commit_id: None,
             repo_seq: Some(1),
             format_version: COMMIT_FORMAT_VERSION,
             import_job_id: None,
+            committer_id: author.clone(),
+            occurred_at: None,
             author_id: author,
             message: Some("message".to_string()),
             event_count: Some(1),
@@ -494,7 +503,8 @@ mod tests {
             Sha256Digest::parse(sha256_prefixed_hex_from_digest_bytes(digest)).unwrap();
         let author = "author".to_string();
         let commit_bytes = canonical_stored_commit_bytes_for_hash(
-            REF_COMMIT_FORMAT_VERSION,
+            COMMIT_FORMAT_VERSION,
+            &author,
             &author,
             None,
             None,
@@ -505,10 +515,11 @@ mod tests {
         .unwrap();
         VerifyCommit {
             commit_id: Some(compute_commit_id(&commit_bytes)),
-            parent_commit_id: None,
             repo_seq: Some(repo_seq),
-            format_version: REF_COMMIT_FORMAT_VERSION,
+            format_version: COMMIT_FORMAT_VERSION,
             import_job_id: None,
+            committer_id: author.clone(),
+            occurred_at: None,
             author_id: author,
             message: None,
             event_count: Some(event_count as i32),
@@ -654,7 +665,8 @@ mod tests {
         .unwrap();
         let author = "author".to_string();
         let commit_bytes = canonical_stored_commit_bytes_for_hash(
-            REF_COMMIT_FORMAT_VERSION,
+            COMMIT_FORMAT_VERSION,
+            &author,
             &author,
             None,
             None,
@@ -665,10 +677,11 @@ mod tests {
         .unwrap();
         let commit = VerifyCommit {
             commit_id: Some(compute_commit_id(&commit_bytes)),
-            parent_commit_id: None,
             repo_seq: Some(2),
-            format_version: REF_COMMIT_FORMAT_VERSION,
+            format_version: COMMIT_FORMAT_VERSION,
             import_job_id: None,
+            committer_id: author.clone(),
+            occurred_at: None,
             author_id: author,
             message: None,
             event_count: Some(2),
@@ -689,7 +702,7 @@ mod tests {
     }
 
     #[test]
-    fn ref_commit_format_requires_a_ref_event() {
+    fn the_same_commit_format_accepts_item_only_history() {
         let (_, events, _) = valid_history();
         let event = &events[0];
         let mut hasher = Sha256::new();
@@ -701,7 +714,8 @@ mod tests {
         .unwrap();
         let author = "author".to_string();
         let commit_bytes = canonical_stored_commit_bytes_for_hash(
-            REF_COMMIT_FORMAT_VERSION,
+            COMMIT_FORMAT_VERSION,
+            &author,
             &author,
             None,
             None,
@@ -712,10 +726,11 @@ mod tests {
         .unwrap();
         let commit = VerifyCommit {
             commit_id: Some(compute_commit_id(&commit_bytes)),
-            parent_commit_id: None,
             repo_seq: Some(1),
-            format_version: REF_COMMIT_FORMAT_VERSION,
+            format_version: COMMIT_FORMAT_VERSION,
             import_job_id: None,
+            committer_id: author.clone(),
+            occurred_at: None,
             author_id: author,
             message: None,
             event_count: Some(1),
@@ -723,10 +738,22 @@ mod tests {
         };
         let mut verifier = SemanticVerifier::new();
         let findings = verifier.verify_commit(&commit, &events);
+        assert!(findings.is_empty(), "{findings:?}");
+        let mut changed = commit.clone();
+        changed.committer_id = "another committer".into();
+        let findings = SemanticVerifier::new().verify_commit(&changed, &events);
         assert!(
             findings
                 .iter()
-                .any(|finding| finding.contains("ref commit contains no ref event"))
+                .any(|finding| finding.contains("commit ID mismatch"))
+        );
+        changed = commit;
+        changed.occurred_at = Some("2026-10-28T12:00:00Z".parse().unwrap());
+        let findings = SemanticVerifier::new().verify_commit(&changed, &events);
+        assert!(
+            findings
+                .iter()
+                .any(|finding| finding.contains("commit ID mismatch"))
         );
     }
 }

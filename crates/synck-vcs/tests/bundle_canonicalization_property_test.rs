@@ -1,8 +1,8 @@
 use serde_json::Value;
 use synck_vcs::types::{
-    CommitId, CreateItem, EventContent, EventProposal, ItemId, Sha256Digest,
-    canonical_commit_bytes_for_hash, canonical_event_proposal_bytes, compute_sha256_digest_bytes,
-    sha256_digest_to_digest_bytes, sha256_prefixed_hex_from_digest_bytes,
+    CreateItem, EventContent, EventProposal, ItemId, Sha256Digest, canonical_commit_bytes_for_hash,
+    canonical_event_proposal_bytes, compute_sha256_digest_bytes, sha256_digest_to_digest_bytes,
+    sha256_prefixed_hex_from_digest_bytes,
 };
 use uuid::Uuid;
 
@@ -273,21 +273,16 @@ fn canonical_commit_bytes_are_canonical_json() {
             None
         };
 
-        let parent_commit_id = if rng.next_bool() {
-            let digest = gen_sha256_id(&mut rng);
-            Some(CommitId::parse(digest).expect("commit id must parse"))
-        } else {
-            None
-        };
-
         let events_digest =
             Sha256Digest::parse(gen_sha256_id(&mut rng)).expect("events_digest must parse");
         let event_count = (rng.next_u32() % 100) as usize + 1;
 
         let b1 = canonical_commit_bytes_for_hash(
             &author_id,
+            &author_id,
+            None,
             message.as_deref(),
-            parent_commit_id.as_ref(),
+            None,
             event_count,
             &events_digest,
         )

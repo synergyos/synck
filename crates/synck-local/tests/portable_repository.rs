@@ -568,17 +568,19 @@ fn frozen_sidecar_transfer(root: &PathBuf, baseline: bool) -> (PathBuf, ItemId) 
     let terminal = groups.len() as i64;
     let timestamp = "2026-01-01T00:00:00.000000000Z";
     let mut records = vec![
-        json!({"type":"synck_vcs_bundle_header","bundle_format_version":4,"repo_id":repo,"exported_at":timestamp,"schema":{"subsystem":"synck_vcs_pg","schema_id":"historical-fixture"},"commit_format_version":5}),
+        json!({"type":"synck_vcs_bundle_header","bundle_format_version":5,"repo_id":repo,"history_generation":synck_vcs::types::CommitPk::new(),"exported_at":timestamp,"schema":{"subsystem":"synck_vcs_pg","schema_id":"historical-fixture"},"commit_format_version":6}),
     ];
     let mut heads = std::collections::BTreeMap::<ItemId, i64>::new();
+    let mut checkpoint = synck_vcs::checkpoint::GENESIS;
     for (offset, (events, reference)) in groups.into_iter().enumerate() {
         let seq = offset as i64 + 1;
-        let format = if reference.is_some() { 4 } else { 2 };
+        let format = synck_vcs::types::COMMIT_FORMAT_VERSION;
         let mut hasher = Sha256::new();
         let mut rows = Vec::new();
         for (index, event) in events.into_iter().enumerate() {
             let payload = canonical_event_proposal_bytes(&event).unwrap();
             let digest = Sha256::digest(&payload);
+            hasher.update([synck_vcs::types::COMMIT_EVENT_FAMILY_ITEM]);
             hasher.update(digest);
             let id = event.item_id.clone().unwrap();
             let head = heads.entry(id.clone()).or_default();
@@ -597,6 +599,7 @@ fn frozen_sidecar_transfer(root: &PathBuf, baseline: bool) -> (PathBuf, ItemId) 
             &canonical_stored_commit_bytes_for_hash(
                 format,
                 &"legacy-author".into(),
+                &"legacy-author".into(),
                 None,
                 None,
                 None,
@@ -605,7 +608,10 @@ fn frozen_sidecar_transfer(root: &PathBuf, baseline: bool) -> (PathBuf, ItemId) 
             )
             .unwrap(),
         );
-        records.push(json!({"type":"commit","commit_id":id,"parent_commit_id":null,"repo_seq":seq,"operation_id":null,"import_job_id":null,"format_version":format,"author_id":"legacy-author","committer_id":"legacy-author","message":null,"occurred_at":null,"created_at":timestamp,"event_count":rows.len(),"events_digest":digest}));
+        checkpoint =
+            synck_vcs::checkpoint::digest(&checkpoint, seq as u64, &id, timestamp.parse().unwrap())
+                .unwrap();
+        records.push(json!({"type":"commit","commit_id":id,"checkpoint":format!("sha256:{}",hex::encode(checkpoint)),"repo_seq":seq,"operation_id":null,"import_job_id":null,"format_version":format,"author_id":"legacy-author","committer_id":"legacy-author","message":null,"occurred_at":null,"created_at":timestamp,"event_count":rows.len(),"events_digest":digest}));
         for mut row in rows {
             row["commit_id"] = json!(id);
             records.push(row);

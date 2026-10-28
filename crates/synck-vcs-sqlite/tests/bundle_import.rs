@@ -4,7 +4,7 @@ use std::sync::Arc;
 use rusqlite::params;
 use serde_json::{Value, json};
 use synck_vcs::bundle::{
-    BUNDLE_FORMAT_VERSION_V4, BundleCommitRecord, BundleEventRecord, BundleFederationDomainRecord,
+    BUNDLE_FORMAT_VERSION, BundleCommitRecord, BundleEventRecord, BundleFederationDomainRecord,
     BundleHeaderRecord, BundleItemRecord, BundleRefEventRecord, BundleSchema, ImportFailure,
     SCHEMA_META_SUBSYSTEM_VCS,
 };
@@ -13,8 +13,8 @@ use synck_vcs::repo::Repo;
 use synck_vcs::state::StateIndexStore;
 use synck_vcs::storage::{Storage, StorageBackend};
 use synck_vcs::types::{
-    CommitEventRow, CommitProposal, CreateItem, EventContent, EventProposal, ItemId,
-    REF_IMPORT_COMMIT_FORMAT_VERSION, RefEventProposal, RepoId,
+    COMMIT_FORMAT_VERSION, CommitEventRow, CommitProposal, CreateItem, EventContent, EventProposal,
+    ItemId, RefEventProposal, RepoId,
 };
 use synck_vcs_sqlite::{SqliteStorage, format_timestamp};
 
@@ -98,23 +98,18 @@ async fn fixture() -> (tempfile::TempDir, SqliteStorage, RepoId, Vec<Value>) {
     )
     .await
     .unwrap();
-    core.sequence_repo_activity(repo_id.clone(), 10)
-        .await
-        .unwrap();
-    // Existing import permits increasing repository sequences with gaps.
+    // Publication permits strictly increasing positions with gaps.
     let connection = source.open_writable().unwrap();
     connection
         .execute(
-            "UPDATE vcs_commits SET repo_seq=7 WHERE repo_id=?1 AND repo_seq=2",
+            "UPDATE vcs_repo_activity_heads SET next_repo_seq=7 WHERE repo_id=?1",
             [repo_id.as_str()],
         )
         .unwrap();
-    connection
-        .execute(
-            "UPDATE vcs_repo_activity_heads SET next_repo_seq=8 WHERE repo_id=?1",
-            [repo_id.as_str()],
-        )
+    core.sequence_repo_activity(repo_id.clone(), 10)
+        .await
         .unwrap();
+    source.verify_checkpoints(&repo_id).unwrap();
     connection.execute("INSERT INTO vcs_federation_domains VALUES (?1,'preserved-domain',37,'2026-01-01T00:00:00Z','2026-01-02T00:00:00Z')",[repo_id.as_str()]).unwrap();
     let records = export_records(&source, &repo_id).await;
     (directory, source, repo_id, records)
@@ -124,15 +119,25 @@ async fn fixture() -> (tempfile::TempDir, SqliteStorage, RepoId, Vec<Value>) {
 async fn export_records(source: &SqliteStorage, repo_id: &RepoId) -> Vec<Value> {
     let mut records = vec![json!(BundleHeaderRecord {
         r#type: "synck_vcs_bundle_header".into(),
-        bundle_format_version: BUNDLE_FORMAT_VERSION_V4,
+        bundle_format_version: BUNDLE_FORMAT_VERSION,
         repo_id: repo_id.to_string(),
+        history_generation: source
+            .open_readonly()
+            .unwrap()
+            .query_row(
+                "SELECT generation FROM vcs_history_generations WHERE repo_id=?1",
+                [repo_id.as_str()],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
         exported_at: "2026-01-02T00:00:00Z".into(),
         schema: BundleSchema {
             subsystem: SCHEMA_META_SUBSYSTEM_VCS.into(),
             schema_id: "source-pg-physical-schema-provenance".into()
         },
-        commit_format_version: REF_IMPORT_COMMIT_FORMAT_VERSION,
+        commit_format_version: COMMIT_FORMAT_VERSION,
     })];
+    let mut previous = synck_vcs::checkpoint::GENESIS;
     for commit in source
         .list_commits_by_repo_seq_readonly(repo_id, 1, None, 100)
         .await
@@ -148,13 +153,20 @@ async fn export_records(source: &SqliteStorage, repo_id: &RepoId) -> Vec<Value> 
                 |row| row.get(0),
             )
             .unwrap();
+        previous = synck_vcs::checkpoint::digest(
+            &previous,
+            sequence as u64,
+            &commit.commit_id,
+            commit.created_at,
+        )
+        .unwrap();
         records.push(json!(BundleCommitRecord {
             r#type: "commit".into(),
             commit_id: commit.commit_id.to_string(),
-            parent_commit_id: None,
+            checkpoint: synck_vcs::types::sha256_digest_from_digest_bytes(&previous).unwrap(),
             repo_seq: sequence,
-            operation_id: Some(operation_id),
-            import_job_id: Some(commit.import_job_id),
+            operation_id,
+            import_job_id: commit.import_job_id,
             format_version: commit.format_version,
             author_id: commit.author_id,
             committer_id: commit.committer_id,
@@ -263,6 +275,7 @@ async fn mixed_history_import_preserves_ids_ref_heads_gaps_and_next_append() {
         report.source_schema.schema_id,
         "source-pg-physical-schema-provenance"
     );
+    target.verify_checkpoints(&repo_id).unwrap();
     let original = export_records(&source, &repo_id).await;
     let imported = export_records(&target, &repo_id).await;
     assert_eq!(original, imported);
@@ -370,6 +383,18 @@ async fn mixed_history_import_preserves_ids_ref_heads_gaps_and_next_append() {
 async fn invalid_or_incomplete_bundle_rolls_back_and_allows_clean_retry() {
     let (directory, _source, repo_id, records) = fixture().await;
     let mut cases = Vec::new();
+    for field in ["checkpoint", "created_at", "committer_id", "occurred_at"] {
+        let mut changed = records.clone();
+        changed
+            .iter_mut()
+            .find(|record| record["type"] == "commit")
+            .unwrap()[field] = match field {
+            "checkpoint" => json!(format!("sha256:{}", "0".repeat(64))),
+            "committer_id" => json!("tampered-recorder"),
+            _ => json!("2026-10-28T00:00:00Z"),
+        };
+        cases.push(changed);
+    }
     let mut corrupt = records.clone();
     corrupt
         .iter_mut()
@@ -402,6 +427,8 @@ async fn invalid_or_incomplete_bundle_rolls_back_and_allows_clean_retry() {
         let connection = target.open_readonly().unwrap();
         for table in [
             "vcs_commits",
+            "vcs_checkpoints",
+            "vcs_history_generations",
             "vcs_events",
             "vcs_ref_events",
             "vcs_items",

@@ -65,7 +65,6 @@ CREATE TABLE vcs_commits (
     repo_id TEXT NOT NULL,
     commit_pk TEXT NOT NULL,
     commit_id BLOB,
-    parent_commit_id BLOB,
     repo_seq INTEGER,
     operation_id TEXT,
     format_version INTEGER NOT NULL CHECK (format_version >= 1),
@@ -79,7 +78,6 @@ CREATE TABLE vcs_commits (
     PRIMARY KEY (repo_id, commit_pk),
     UNIQUE (repo_id, commit_id),
     CHECK (repo_seq IS NULL OR repo_seq >= 1),
-    CHECK (parent_commit_id IS NULL),
     CHECK (operation_id IS NULL OR trim(operation_id) <> ''),
     CHECK (commit_id IS NULL OR length(commit_id) = 32),
     CHECK (events_digest IS NULL OR length(events_digest) = 32),
@@ -327,8 +325,7 @@ impl SqliteStorage {
                     |row| Ok((row.get(0)?, row.get(1)?)),
                 )
                 .map_err(map_sqlite_error)?;
-            let same_header = existing.parent_commit_id == commit.parent_commit_id
-                && existing_commit_pk == commit.commit_pk.as_str()
+            let same_header = existing_commit_pk == commit.commit_pk.as_str()
                 && existing.repo_seq == commit.repo_seq
                 && existing_operation_id == commit.operation_id
                 && existing.format_version == commit.format_version
@@ -873,28 +870,23 @@ fn item_from_row(row: &Row<'_>) -> rusqlite::Result<ItemRow> {
 }
 
 fn commit_from_row(row: &Row<'_>) -> rusqlite::Result<CommitRow> {
-    let parent = row
-        .get::<_, Option<Vec<u8>>>(2)?
-        .map(|value| parse_commit(value, 2))
-        .transpose()?;
     let occurred_at = row
-        .get::<_, Option<String>>(9)?
-        .map(|value| parse_time_row(value, 9))
+        .get::<_, Option<String>>(8)?
+        .map(|value| parse_time_row(value, 8))
         .transpose()?;
     Ok(CommitRow {
         repo_id: parse_repo(row.get(0)?, 0)?,
         commit_id: parse_commit(row.get(1)?, 1)?,
-        parent_commit_id: parent,
-        repo_seq: row.get(3)?,
-        format_version: row.get(4)?,
-        import_job_id: row.get(5)?,
-        author_id: row.get(6)?,
-        committer_id: row.get(7)?,
-        message: row.get(8)?,
+        repo_seq: row.get(2)?,
+        format_version: row.get(3)?,
+        import_job_id: row.get(4)?,
+        author_id: row.get(5)?,
+        committer_id: row.get(6)?,
+        message: row.get(7)?,
         occurred_at,
-        created_at: parse_time_row(row.get(10)?, 10)?,
-        event_count: row.get(11)?,
-        events_digest: parse_digest(row.get(12)?, 12)?,
+        created_at: parse_time_row(row.get(9)?, 9)?,
+        event_count: row.get(10)?,
+        events_digest: parse_digest(row.get(11)?, 11)?,
     })
 }
 
@@ -985,7 +977,7 @@ fn commit_event_from_row(row: &Row<'_>) -> rusqlite::Result<CommitEventRow> {
 }
 
 const ITEM_COLUMNS: &str = "repo_id, item_id, item_type, parent_folder_id, name, name_key, head_seq, ref_head_seq, lifecycle_state, created_at, created_by, sequencing_mode, federation_stream_id";
-const COMMIT_COLUMNS: &str = "repo_id, commit_id, parent_commit_id, repo_seq, format_version, import_job_id, author_id, committer_id, message, occurred_at, created_at, event_count, events_digest";
+const COMMIT_COLUMNS: &str = "repo_id, commit_id, repo_seq, format_version, import_job_id, author_id, committer_id, message, occurred_at, created_at, event_count, events_digest";
 const EVENT_COLUMNS: &str = "e.repo_id, e.item_id, e.item_seq, e.event_type, c.commit_id, e.commit_event_idx, c.repo_seq, e.payload, e.event_payload_digest, e.created_at, e.parent_folder_id, e.parent_folder_id_before";
 const REF_EVENT_COLUMNS: &str = "r.repo_id, r.owner_item_id, r.ref_seq, r.event_type, c.commit_id, r.commit_event_idx, c.repo_seq, r.payload, r.event_payload_digest, r.created_at";
 
@@ -1877,7 +1869,6 @@ impl StorageTxn for SqliteTxn {
         repo_id: &RepoId,
         commit_pk: &CommitPk,
         repo_seq: Option<i64>,
-        parent_commit_id: Option<&CommitId>,
         operation_id: Option<&str>,
         format_version: i32,
         import_job_id: Option<&str>,
@@ -1889,11 +1880,10 @@ impl StorageTxn for SqliteTxn {
     ) -> Result<(), StorageError> {
         self.conn()?
             .execute(
-                "INSERT INTO vcs_commits (repo_id, commit_pk, commit_id, parent_commit_id, repo_seq, operation_id, format_version, import_job_id, author_id, committer_id, message, occurred_at, created_at, event_count, events_digest) VALUES (?1, ?2, NULL, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, NULL, NULL)",
+                "INSERT INTO vcs_commits (repo_id, commit_pk, commit_id, repo_seq, operation_id, format_version, import_job_id, author_id, committer_id, message, occurred_at, created_at, event_count, events_digest) VALUES (?1, ?2, NULL, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, NULL, NULL)",
                 params![
                     repo_id.as_str(),
                     commit_pk.as_str(),
-                    parent_commit_id.map(|id| commit_id_to_digest_bytes(id).to_vec()),
                     repo_seq,
                     operation_id,
                     format_version,

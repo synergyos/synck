@@ -1562,10 +1562,11 @@ impl PortableRepository {
                 let findings = verifier.verify_commit_events(
                     &VerifyCommit {
                         commit_id: Some(commit.commit_id.clone()),
-                        parent_commit_id: commit.parent_commit_id,
                         repo_seq: commit.repo_seq,
                         format_version: commit.format_version,
                         import_job_id: commit.import_job_id,
+                        committer_id: commit.committer_id,
+                        occurred_at: commit.occurred_at,
                         author_id: commit.author_id,
                         message: commit.message,
                         event_count: Some(commit.event_count),
