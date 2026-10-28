@@ -3029,7 +3029,8 @@ fn fsck_reports_schema_drift_as_integrity_failure() {
 #[test]
 fn fsck_rebuild_state_index_replaces_corrupt_derived_nodes() {
     let temporary = committed_repository();
-    let database = temporary.path().join(".synck/repository.sqlite3");
+    assert!(synck(temporary.path(), &["fsck", "--rebuild-state-index"]).status.success());
+    let database = temporary.path().join(".synck/repository.state.sqlite3");
     let connection = rusqlite::Connection::open(&database).unwrap();
     let state_root: Vec<u8> = connection
         .query_row(
@@ -3047,12 +3048,7 @@ fn fsck_rebuild_state_index_replaces_corrupt_derived_nodes() {
     drop(connection);
 
     let broken = synck(temporary.path(), &["fsck"]);
-    assert_eq!(broken.status.code(), Some(2));
-    assert!(
-        String::from_utf8_lossy(&broken.stderr).contains("state"),
-        "{}",
-        String::from_utf8_lossy(&broken.stderr)
-    );
+    assert!(broken.status.success(), "a cache cannot invalidate canonical history: {}", String::from_utf8_lossy(&broken.stderr));
 
     let rebuilt = synck(temporary.path(), &["fsck", "--rebuild-state-index"]);
     assert!(
@@ -3068,10 +3064,11 @@ fn fsck_rebuild_state_index_replaces_corrupt_derived_nodes() {
 }
 
 #[test]
-fn fsck_reports_unreachable_state_nodes_without_reading_them() {
+fn fsck_ignores_unreachable_state_nodes() {
     let temporary = committed_repository();
+    assert!(synck(temporary.path(), &["fsck", "--rebuild-state-index"]).status.success());
     let baseline = json_stdout(temporary.path(), &["fsck"]);
-    let database = temporary.path().join(".synck/repository.sqlite3");
+    let database = temporary.path().join(".synck/repository.state.sqlite3");
     let connection = rusqlite::Connection::open(&database).unwrap();
     let repo_id: String = connection
         .query_row(
@@ -3102,7 +3099,8 @@ fn fsck_reports_unreachable_state_nodes_without_reading_them() {
 #[test]
 fn missing_state_head_discards_residual_rows_and_reprojects() {
     let temporary = committed_repository();
-    let database = temporary.path().join(".synck/repository.sqlite3");
+    assert!(synck(temporary.path(), &["fsck", "--rebuild-state-index"]).status.success());
+    let database = temporary.path().join(".synck/repository.state.sqlite3");
     let connection = rusqlite::Connection::open(&database).unwrap();
     connection
         .execute("DELETE FROM vcs_state_projection_heads", [])

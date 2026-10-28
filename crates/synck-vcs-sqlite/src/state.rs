@@ -44,50 +44,43 @@ pub struct SqliteStateStore {
 }
 
 impl SqliteStateStore {
-    /// Borrow the authority connection while the owning server's database gate is held.
+    /// Borrow the cache connection while holding its repository lock.
     pub fn authority_connection(&self) -> &Connection {
         &self.connection
     }
 
-    /// Mutably borrow the authority connection while the owning server's database gate is held.
+    /// Mutably borrow the cache connection while holding its repository lock.
     pub fn authority_connection_mut(&mut self) -> &mut Connection {
         &mut self.connection
     }
 }
 
 impl SqliteStorage {
-    /// Read historical state without opening the authoritative database writable.
-    /// Temporary verifier tables belong only to this connection.
-    pub fn readonly_state_index_store(
-        &self,
-        repo_id: RepoId,
-    ) -> Result<SqliteStateStore, StateError> {
-        let connection = self
-            .open_readonly()
-            .map_err(|error| StateError::Storage(error.to_string()))?;
-        connection
-            .execute_batch(PROJECTOR_TEMP_SCHEMA)
-            .map_err(sql_error)?;
-        Ok(SqliteStateStore {
-            connection,
-            repo_id,
-            batch_active: false,
-            projection_active: false,
-            projection_transaction_active: false,
-        })
+    /// The historical index is disposable and never stored in canonical history.
+    pub fn state_index_path(&self) -> std::path::PathBuf {
+        self.path().with_extension("state.sqlite3")
     }
 
-    /// Open a repository-scoped state store.
-    ///
-    /// The caller must hold the local repository lock for the store's complete
-    /// lifetime. That lock is the local state-index authority.
+    /// Open the cache under the caller's repository lock, creating it if absent.
     pub fn state_index_store(&self, repo_id: RepoId) -> Result<SqliteStateStore, StateError> {
-        let connection = self
-            .open_writable()
+        let cache = SqliteStorage::new(self.state_index_path());
+        let connection = cache
+            .open_writable_unchecked(true)
             .map_err(|error| StateError::Storage(error.to_string()))?;
-        connection
-            .execute_batch(PROJECTOR_TEMP_SCHEMA)
-            .map_err(sql_error)?;
+        let empty: bool = connection.query_row(
+            "SELECT NOT EXISTS(SELECT 1 FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%')",
+            [], |row| row.get(0),
+        ).map_err(sql_error)?;
+        if empty {
+            connection.execute_batch(STATE_SCHEMA).map_err(sql_error)?;
+        }
+        let expected = Connection::open_in_memory().map_err(sql_error)?;
+        expected.execute_batch(STATE_SCHEMA).map_err(sql_error)?;
+        if crate::schema::inspect(&connection, "").map_err(sql_error)?
+            != crate::schema::inspect(&expected, "").map_err(sql_error)? {
+            return Err(StateError::Storage("invalid historical-state cache schema; remove the cache and rebuild it".into()));
+        }
+        connection.execute_batch(PROJECTOR_TEMP_SCHEMA).map_err(sql_error)?;
         Ok(SqliteStateStore {
             connection,
             repo_id,
@@ -100,8 +93,7 @@ impl SqliteStorage {
     /// Create a disposable, disk-backed state store for independent fsck replay.
     ///
     /// The database path must be dedicated to this verifier. Canonical commit
-    /// rows deliberately do not exist here, so foreign-key enforcement is off;
-    /// fsck compares every generated root and node with the authoritative store.
+    /// rows deliberately do not exist here.
     pub fn verification_state_store(
         &self,
         repo_id: RepoId,

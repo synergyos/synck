@@ -863,7 +863,7 @@ impl PortableRepository {
         Ok(NamespacePage { items, next_cursor })
     }
 
-    /// Stable historical namespace page from the existing immutable state index.
+    /// Stable historical namespace page, rebuilding the disposable cache as needed.
     pub async fn list_historical_items(
         &self,
         through: i64,
@@ -884,22 +884,11 @@ impl PortableRepository {
                 "historical cursor belongs to another checkpoint or parent",
             ));
         }
-        let connection = self.storage.open_readonly().map_err(corrupt)?;
-        let bytes: Vec<u8> = connection.query_row(
-            "SELECT state_root FROM vcs_state_roots WHERE repo_id=?1 AND repo_seq=?2",
-            params![self.repo_id().as_str(), through],
-            |row| row.get(0),
-        )?;
-        let root_id =
-            synck_vcs::state::StateRootId::from_node_id(synck_vcs::state::StateNodeId::from_bytes(
-                bytes
-                    .try_into()
-                    .map_err(|_| corrupt("invalid root length"))?,
-            ));
-        let mut store = self
-            .storage
-            .readonly_state_index_store(self.repo_id().clone())
-            .map_err(corrupt)?;
+        let mut store = self.storage.state_index_store(self.repo_id().clone()).map_err(corrupt)?;
+        synck_vcs::state::catch_up_state_index(&self.core(), self.repo_id(), &mut store, Some(through))
+            .await.map_err(corrupt)?;
+        let root_id = store.root_at(through).await.map_err(corrupt)?
+            .ok_or_else(|| corrupt("historical checkpoint is missing after replay"))?.state_root;
         let mut tree = StateTree::new(&mut store);
         let root = tree.read_root(root_id).await.map_err(corrupt)?;
         if root.repo_id != *self.repo_id() || root.repo_seq != through {
@@ -1481,9 +1470,6 @@ impl PortableRepository {
             "vcs_items",
             "vcs_federation_domains",
             "vcs_repo_activity_heads",
-            "vcs_state_nodes",
-            "vcs_state_roots",
-            "vcs_state_projection_heads",
         ] {
             let foreign: bool = connection.query_row(
                 &format!("SELECT EXISTS(SELECT 1 FROM {table} WHERE repo_id<>?1)"),
@@ -1636,45 +1622,6 @@ impl PortableRepository {
                 "repository allocator does not follow canonical history",
             ));
         }
-        let mut state = self
-            .storage
-            .readonly_state_index_store(self.repo_id().clone())
-            .map_err(corrupt)?;
-        let head = state
-            .projection_head()
-            .await
-            .map_err(corrupt)?
-            .ok_or_else(|| corrupt("missing historical-state head"))?;
-        if head.applied_repo_seq != terminal {
-            return Err(corrupt("historical-state index is incomplete"));
-        }
-        let mut roots = vec![head.state_root];
-        let mut root_rows = connection
-            .prepare("SELECT state_root FROM vcs_state_roots WHERE repo_id=?1 ORDER BY repo_seq")?;
-        let encoded = root_rows
-            .query_map([self.repo_id().as_str()], |row| row.get::<_, Vec<u8>>(0))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        for bytes in encoded {
-            roots.push(synck_vcs::state::StateRootId::from_node_id(
-                synck_vcs::state::StateNodeId::from_bytes(
-                    bytes
-                        .try_into()
-                        .map_err(|_| corrupt("invalid state root length"))?,
-                ),
-            ));
-        }
-        state.begin_state_verification().await.map_err(corrupt)?;
-        loop {
-            let report = state.verify_root_closures(&roots).await.map_err(corrupt)?;
-            if let Some(finding) = report.findings.first() {
-                return Err(corrupt(finding));
-            }
-            if report.complete {
-                break;
-            }
-        }
-        state.finish_state_verification().await.map_err(corrupt)?;
-        self.verify_index().await?;
         let (blobs, bodies) = self.references().await?;
         let verified = if self.storage_mode() == StorageMode::Chunked {
             Some(self.object_store().verify_all()?)
@@ -1707,58 +1654,6 @@ impl PortableRepository {
             blobs: blobs.len(),
             bodies: bodies.len(),
         })
-    }
-
-    async fn verify_index(&self) -> Result<()> {
-        let scratch = std::env::temp_dir().join(format!("synck-verify-{}", Uuid::new_v4()));
-        private_directory(&scratch)?;
-        let result = async {
-            let backend = SqliteStorage::new(scratch.join("state.sqlite3"));
-            let mut expected = backend
-                .verification_state_store(self.repo_id().clone())
-                .map_err(corrupt)?;
-            synck_vcs::state::catch_up_state_index(
-                &self.core(),
-                self.repo_id(),
-                &mut expected,
-                None,
-            )
-            .await
-            .map_err(corrupt)?;
-            let mut actual = self
-                .storage
-                .readonly_state_index_store(self.repo_id().clone())
-                .map_err(corrupt)?;
-            if actual.projection_head().await.map_err(corrupt)?
-                != expected.projection_head().await.map_err(corrupt)?
-            {
-                return Err(corrupt(
-                    "historical head differs from independent canonical replay",
-                ));
-            }
-            let mut after = 0;
-            loop {
-                let left = actual.list_roots(after, PAGE).await.map_err(corrupt)?;
-                let right = expected.list_roots(after, PAGE).await.map_err(corrupt)?;
-                if left != right {
-                    return Err(corrupt(
-                        "historical checkpoints differ from independent canonical replay",
-                    ));
-                }
-                let Some(last) = left.last() else {
-                    break;
-                };
-                after = last.repo_seq;
-                if left.len() < PAGE {
-                    break;
-                }
-            }
-            Ok(())
-        }
-        .await;
-        let cleanup = remove_tree_nofollow(&scratch);
-        result?;
-        cleanup
     }
 
     /// Resume explicitly accepted local mutations after a sequencing/indexing

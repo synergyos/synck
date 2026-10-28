@@ -264,7 +264,7 @@ The bundled SQLite library must include the WAL-reset corruption fix (SQLite
 the regression checks the linked library rather than only the Cargo manifest.
 This dependency update changes no repository schema, identity or wire format.
 
-`repository.sqlite3` uses the SQLite VCS backend and contains these nine logical
+`repository.sqlite3` uses the SQLite VCS backend and contains these logical
 Core relations:
 
 - `vcs_items`;
@@ -273,9 +273,8 @@ Core relations:
 - `vcs_ref_events`;
 - `vcs_repo_activity_heads`;
 - `vcs_federation_domains`;
-- `vcs_state_nodes`;
-- `vcs_state_roots`;
-- `vcs_state_projection_heads`.
+- `vcs_checkpoints`;
+- `vcs_history_generations`.
 
 Its local relations are:
 
@@ -832,7 +831,8 @@ authoritative.
 `local_projection_state`, `local_file_heads`, and
 `local_worktree_identities` are disposable.
 `vcs_state_nodes`, `vcs_state_roots`, and `vcs_state_projection_heads` are a
-separate disposable Core historical-state projection. Unlike the local FILE
+separate disposable Core historical-state projection in `repository.state.sqlite3`.
+Verification ignores this cache; historical listings rebuild it when absent. Unlike the local FILE
 head cache, their canonical bytes are shared by SQLite and PostgreSQL and are
 defined by the [Core historical-state module](../crates/synck-vcs/src/state/mod.rs).
 `local_file_heads.item_seq` identifies the latest content event and may be less
@@ -1530,7 +1530,7 @@ by path. On success print the verification report as one JSON object:
 
 Verification covers SQLite physical integrity and the exact schema; Core
 semantics, the local event profile and projection fidelity for every commit and
-item family; the historical-state index; and the complete retained-history
+item family; the checkpoint chain; and the complete retained-history
 object closure in the recorded storage mode. `WHOLE_FILE` verifies every
 referenced object file's size and SHA-256. `CHUNKED` verifies the exact
 object-database format and identity, every stored chunk, and every complete

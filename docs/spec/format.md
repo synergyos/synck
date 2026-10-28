@@ -149,3 +149,14 @@ are not format identity. `INT` and `INTEGER` are equivalent declared types.
 Owned views and triggers are rejected. Uniqueness expressions and defaults are
 compared as SQL tokens with string literals preserved exactly. Record validators
 remain responsible for semantic bounds; CHECK-clause spelling is not compared.
+
+## Historical-state cache
+
+The checkpoint chain proves ordered history. The historical-state tree does not
+belong to canonical history and does not contribute to any commit or checkpoint
+hash. SQLite stores its `vcs_state_nodes`, `vcs_state_roots`, and
+`vcs_state_projection_heads` tables in a separate `repository.state.sqlite3`
+file. These are implementation details, not portable format requirements.
+Verification neither requires nor trusts this cache. Historical listings create
+and replay a missing cache under the repository lock; explicit index rebuilding
+repairs damaged cache contents without modifying canonical history.

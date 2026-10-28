@@ -506,9 +506,6 @@ fn expected_schema() -> SchemaShape {
     expected
         .execute_batch(SCHEMA)
         .expect("install expected SQLite schema");
-    expected
-        .execute_batch(STATE_SCHEMA)
-        .expect("install expected state cache");
     schema_objects(&expected).expect("read expected SQLite schema")
 }
 
@@ -762,7 +759,6 @@ fn initialize_schema(conn: &Connection) -> Result<(), StorageError> {
                 });
             }
             conn.execute_batch(SCHEMA).map_err(map_sqlite_error)?;
-            conn.execute_batch(STATE_SCHEMA).map_err(map_sqlite_error)?;
             validate_schema_version(conn, SCHEMA_VERSION)?;
             conn.pragma_update(None, "application_id", APPLICATION_ID)
                 .map_err(map_sqlite_error)?;

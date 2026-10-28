@@ -12,8 +12,6 @@ CREATE TABLE vcs_state_roots (
     state_root BLOB NOT NULL CHECK (length(state_root) = 32),
     PRIMARY KEY (repo_id, repo_seq),
     UNIQUE (repo_id, commit_id),
-    FOREIGN KEY (repo_id, commit_id)
-        REFERENCES vcs_commits (repo_id, commit_id) ON DELETE RESTRICT,
     FOREIGN KEY (repo_id, state_root)
         REFERENCES vcs_state_nodes (repo_id, node_hash) ON DELETE RESTRICT
 ) STRICT;

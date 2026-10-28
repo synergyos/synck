@@ -270,9 +270,6 @@ async fn install(
         "vcs_items",
         "vcs_federation_domains",
         "vcs_repo_activity_heads",
-        "vcs_state_nodes",
-        "vcs_state_roots",
-        "vcs_state_projection_heads",
     ] {
         let occupied: bool = txn
             .conn()

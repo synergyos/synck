@@ -948,7 +948,8 @@ async fn state_store_publishes_complete_roots_and_enforces_foreign_keys() {
     // child. Decoding that child here would make every small mutation walk the
     // complete historical tree.
     let empty_item_bytes = encode_node(&StateNode::ItemLeaf(Vec::new())).unwrap();
-    let connection = storage.open_writable().unwrap();
+    let connection = rusqlite::Connection::open(storage.state_index_path()).unwrap();
+    connection.pragma_update(None, "foreign_keys", "ON").unwrap();
     connection
         .execute(
             "UPDATE vcs_state_nodes SET payload = x'00'
@@ -969,7 +970,8 @@ async fn state_store_publishes_complete_roots_and_enforces_foreign_keys() {
         .await
         .unwrap();
     store.finish_batch(&[staged_root.node_id()]).await.unwrap();
-    let connection = storage.open_writable().unwrap();
+    let connection = rusqlite::Connection::open(storage.state_index_path()).unwrap();
+    connection.pragma_update(None, "foreign_keys", "ON").unwrap();
     connection
         .execute(
             "DELETE FROM vcs_state_nodes WHERE repo_id = ?1 AND node_hash = ?2",
@@ -1023,7 +1025,8 @@ async fn state_store_publishes_complete_roots_and_enforces_foreign_keys() {
     assert_eq!(store.state_row_counts().await.unwrap(), (4, 1, 1));
     drop(store);
 
-    let connection = storage.open_writable().unwrap();
+    let connection = rusqlite::Connection::open(storage.state_index_path()).unwrap();
+    connection.pragma_update(None, "foreign_keys", "ON").unwrap();
     assert!(
         connection
             .execute(
@@ -1032,6 +1035,7 @@ async fn state_store_publishes_complete_roots_and_enforces_foreign_keys() {
             )
             .is_err()
     );
+    let connection = storage.open_writable().unwrap();
     assert!(
         connection
             .execute(
@@ -1228,7 +1232,8 @@ async fn projector_rejects_a_head_that_does_not_name_its_published_root() {
         .unwrap();
     drop(store);
 
-    let connection = storage.open_writable().unwrap();
+    let connection = rusqlite::Connection::open(storage.state_index_path()).unwrap();
+    connection.pragma_update(None, "foreign_keys", "ON").unwrap();
     let wrong_root: Vec<u8> = connection
         .query_row(
              "SELECT node_hash FROM vcs_state_nodes

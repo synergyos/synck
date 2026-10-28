@@ -434,7 +434,6 @@ async fn invalid_or_incomplete_bundle_rolls_back_and_allows_clean_retry() {
             "vcs_items",
             "vcs_federation_domains",
             "vcs_repo_activity_heads",
-            "vcs_state_projection_heads",
         ] {
             let count: i64 = connection
                 .query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {

@@ -168,11 +168,24 @@ async fn complete_mixed_repository_reads_offline_and_keeps_exact_history_and_bod
         .await
         .unwrap();
     assert_eq!(folder.items[0].item_id, fixture.file);
+    let canonical = destination.join(".synck/repository.sqlite3");
+    let cache = canonical.with_extension("state.sqlite3");
+    let canonical_bytes = fs::read(&canonical).unwrap();
+    repository.list_historical_items(1, None, None, 1).await.unwrap();
+    fs::remove_file(&cache).unwrap();
+    repository.verify().await.unwrap();
+    assert!(!cache.exists(), "verification must not require a state cache");
     let historical = repository
         .list_historical_items(1, Some(&fixture.folder), None, 1)
         .await
         .unwrap();
     assert_eq!(historical.items[0].head_seq, 1);
+    assert!(cache.exists());
+    assert_eq!(fs::read(&canonical).unwrap(), canonical_bytes);
+    let connection = rusqlite::Connection::open(&canonical).unwrap();
+    let count: i64 = connection.query_row("SELECT count(*) FROM sqlite_schema WHERE name LIKE 'vcs_state_%'", [], |row| row.get(0)).unwrap();
+    assert_eq!(count, 0);
+
     let mut after = None;
     let mut names = Vec::new();
     loop {

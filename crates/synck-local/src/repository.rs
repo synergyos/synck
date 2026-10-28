@@ -560,9 +560,6 @@ impl Repository {
             }
         }
         self.catch_up_projection().await?;
-        if self.checkout_paths().is_some() {
-            self.catch_up_state_index().await?;
-        }
         Ok(())
     }
 
