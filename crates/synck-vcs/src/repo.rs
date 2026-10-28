@@ -560,6 +560,31 @@ impl Repo {
         .map(|applied| applied.accepted)
     }
 
+    /// Append item/ref events with explicit unrelated-head guards in one
+    /// caller-owned transaction. Acquire embedder authority locks first; commit
+    /// this transaction before publishing a receipt. Roll back on any error.
+    pub async fn append_guarded_with_refs_in_transaction(
+        &self,
+        txn: &mut dyn StorageTxn,
+        repo_id: RepoId,
+        proposal: CommitProposal,
+        ref_events: Vec<RefEventProposal>,
+        guards: &[(ItemId, i64)],
+    ) -> Result<AcceptedCommit, CoreError> {
+        self.append_one_locked_txn(
+            txn,
+            repo_id,
+            proposal,
+            ref_events,
+            AppendBaseSeqMode::RequirePresent,
+            guards,
+            AppendProfile::Generic,
+            OperationKind::Append,
+        )
+        .await
+        .map(|applied| applied.accepted)
+    }
+
     /// Apply a content-only append with server-materialized baselines in a
     /// caller-owned transaction. Structural modifiers remain forbidden.
     /// Acquire embedder authority locks first. Commit before publishing the

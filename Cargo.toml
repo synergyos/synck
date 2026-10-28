@@ -5,6 +5,7 @@ members = [
   "crates/synck-file-folder",
   "crates/synck-local",
   "crates/synck-items",
+  "crates/synck-sync",
 ]
 resolver = "2"
 

@@ -1,0 +1,35 @@
+{
+  "protocol_version": 1,
+  "request": {
+    "repository": {
+      "repo_id": "019a2900-0000-7000-8000-000000000001",
+      "generation": "019a2900-0000-7000-8000-000000000002"
+    },
+    "proposal": {
+      "author_id": "owner",
+      "committer_id": "device",
+      "message": null,
+      "occurred_at": null,
+      "operation_id": "op:1",
+      "events": [
+        {
+          "item_id": "019a2900-0000-7000-8000-000000000003",
+          "event_type": "FILE_CREATE",
+          "create_item": {
+            "item_type": "FILE",
+            "name": "hello.txt"
+          },
+          "set_content": {
+            "bytes": "sha256:abababababababababababababababababababababababababababababababab"
+          }
+        }
+      ]
+    },
+    "ref_events": [],
+    "head_guards": []
+  },
+  "canonical_event_utf8": "{\"create_item\":{\"item_type\":\"FILE\",\"name\":\"hello.txt\"},\"event_type\":\"FILE_CREATE\",\"item_id\":\"019a2900-0000-7000-8000-000000000003\",\"set_content\":{\"bytes\":\"sha256:abababababababababababababababababababababababababababababababab\"}}",
+  "events_digest": "sha256:6dd239933df3c248cca540488bdeb3b304b94c3868dab642e838690dbec0d521",
+  "commit_id": "sha256:668e8d2d276878e3f500a40cbcdfd96983154182f0bb94e2fc3a021678e1ca6c",
+  "request_digest": "sha256:2aeebbd9791c66ef55fc6ac2e30a9f938d0712a76f76c1263cac822a1315eadb"
+}

@@ -39,8 +39,9 @@ committer identities, permissions, object durability, business rules and user
 interface. An author string in a hash does not authenticate the author.
 
 `ingest` handles the existing federated-item/domain authority contract. It is
-not a cross-machine synchronization client. That protocol is separate work;
-0.2 does not ship the old replica or remote-protocol crates.
+not a cross-machine synchronization client. The [central synchronization
+protocol](spec/protocol.md) and `synck-sync` crate define shared wire values and
+verification. 0.2 does not ship the old replica or remote-protocol crates.
 
 Optional operation IDs identify retries. Retrying an accepted operation must
 resolve the original outcome, not create a second operation with a new ID.

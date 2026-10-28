@@ -26,7 +26,9 @@ is specified here without constraining other engine adapters.
 The [standalone format-7 specification](spec/format.md), its SQL schemas and
 language-neutral vectors are the authoritative persisted-format contract.
 Typed readers cover FILE/FOLDER, CHAT and EMAIL; unsupported families remain
-structurally verifiable. The current release includes no remote/replica protocol.
+structurally verifiable. The [central synchronization protocol](spec/protocol.md)
+and `synck-sync` library define shared requests, receipts and verified history
+paging. A generic server executable and CLI clone/pull/push are not yet included.
 
 - [Portable repositories](portable-repository.md): verified copies, thin-history
   verification, editable/sparse checkouts and source-retirement activation.
