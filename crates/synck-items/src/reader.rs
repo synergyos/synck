@@ -655,7 +655,7 @@ impl ItemReader {
             let (blob, size) = source.expect("CREATE resolved source");
             row.blob_id = Some(blob);
             row.size = size;
-            row.body = subitems::file_version_comment_from_meta(meta);
+            row.body = subitems::file_version_description_from_meta(meta);
             if subitems::file_version_order_key_from_meta(meta).is_none() {
                 return Err(invalid("named-version order_key missing"));
             }
@@ -674,7 +674,7 @@ impl ItemReader {
             }
             match event.event_type.as_str() {
                 versions::VERSION_SET_DESCRIPTION_EVENT => {
-                    row.body = subitems::file_version_comment_from_meta(meta)
+                    row.body = subitems::file_version_description_from_meta(meta)
                 }
                 versions::VERSION_SET_KIND_EVENT => {
                     row.metadata["kind"] =
@@ -699,8 +699,8 @@ impl ItemReader {
                     let (blob, size) = source.expect("replacement resolved source");
                     row.blob_id = Some(blob);
                     row.size = size;
-                    if meta.get("description").is_some() || meta.get("comment").is_some() {
-                        row.body = subitems::file_version_comment_from_meta(meta);
+                    if meta.get("description").is_some() {
+                        row.body = subitems::file_version_description_from_meta(meta);
                     }
                     for field in [
                         "source_item_seq",
@@ -709,6 +709,11 @@ impl ItemReader {
                     ] {
                         if let Some(value) = meta.get(field).filter(|value| !value.is_null()) {
                             row.metadata[field] = value.clone();
+                        } else {
+                            row.metadata
+                                .as_object_mut()
+                                .expect("version metadata object")
+                                .remove(field);
                         }
                     }
                 }

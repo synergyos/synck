@@ -426,13 +426,26 @@ fn owner_refs_keep_uuid_identity_and_independent_positions() {
     reader.apply_ref(&update, RefReadContext {
         ref_seq: 2, created_at: now(), author: "editor", committer: "committer",
     }).unwrap();
+    apply(&mut reader, &event(&owner, "FILE::SET_CONTENT", json!({"content":{"size":9}}), Some(EventContent::bytes(synck_vcs::types::ObjectId::parse(B).unwrap()))), "alice");
+    let retarget = synck_vcs::types::RefEventProposal::from_fields(json!({
+        "owner_item_id":owner,"event_type":"FILE_VERSION::SET_REVISION","base_ref_seq":2,
+        "set_metadata":{"file_item_id":owner,"version_id":version_id,"source_item_seq":3}
+    })).unwrap();
+    reader.apply_ref(&retarget, RefReadContext {
+        ref_seq: 3, created_at: now(), author: "editor", committer: "committer",
+    }).unwrap();
     let snapshot = reader.snapshot().unwrap();
-    assert_eq!(snapshot.projection.latest_item_seq, 2);
-    assert_eq!(snapshot.latest_ref_seq, 2);
+    assert_eq!(snapshot.projection.latest_item_seq, 3);
+    assert_eq!(snapshot.latest_ref_seq, 3);
     assert_eq!(snapshot.subitems.len(), 1);
     let version = &snapshot.subitems[0];
     assert_eq!(version.identity, SubitemIdentity::Uuid(version_id));
     assert_eq!(version.created_position.seq, 1);
-    assert_eq!(version.latest_position.seq, 2);
+    assert_eq!(version.latest_position.seq, 3);
     assert_eq!(version.body.as_deref(), Some("Reviewed"));
+    assert_eq!(version.blob_id.as_deref(), Some(B));
+    assert_eq!(version.size, Some(9));
+    assert_eq!(version.metadata["source_item_seq"], json!(3));
+    assert!(version.metadata.get("source_commit_event_idx").is_none());
+    assert!(version.metadata.get("source_commit_id").is_none());
 }

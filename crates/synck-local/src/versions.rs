@@ -673,7 +673,7 @@ fn apply_ref_version_event(
             let source_commit_event_idx =
                 optional_nonnegative_i32(metadata, "source_commit_event_idx")?;
             let description_patch =
-                if metadata.contains_key("description") || metadata.contains_key("comment") {
+                if metadata.contains_key("description") {
                     Some(required_description(metadata)?)
                 } else {
                     None
@@ -1024,7 +1024,7 @@ fn normalize_description(value: Option<&str>) -> Option<String> {
 }
 
 fn optional_description(metadata: &Map<String, Value>) -> Result<Option<String>> {
-    if metadata.contains_key("description") || metadata.contains_key("comment") {
+    if metadata.contains_key("description") {
         required_description(metadata)
     } else {
         Ok(None)
@@ -1032,10 +1032,7 @@ fn optional_description(metadata: &Map<String, Value>) -> Result<Option<String>>
 }
 
 fn required_description(metadata: &Map<String, Value>) -> Result<Option<String>> {
-    match metadata
-        .get("description")
-        .or_else(|| metadata.get("comment"))
-    {
+    match metadata.get("description") {
         Some(Value::Null) => Ok(None),
         Some(Value::String(value)) => Ok(normalize_description(Some(value))),
         Some(_) => Err(LocalError::Integrity(

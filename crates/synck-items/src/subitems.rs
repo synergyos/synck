@@ -1031,33 +1031,10 @@ pub fn file_version_order_key_from_meta(meta: &serde_json::Value) -> Option<i64>
     meta.get("order_key").and_then(|v| v.as_i64())
 }
 
-pub fn file_version_comment_from_meta(meta: &serde_json::Value) -> Option<String> {
+pub fn file_version_description_from_meta(meta: &serde_json::Value) -> Option<String> {
     meta.get("description")
-        .or_else(|| meta.get("comment"))
         .and_then(|v| v.as_str())
         .map(|s| s.to_owned())
-}
-
-pub fn file_version_source_item_seq_from_meta(meta: &serde_json::Value) -> Option<i64> {
-    meta.get("source_item_seq")
-        .and_then(|v| v.as_i64())
-        .filter(|seq| *seq > 0)
-}
-
-pub fn file_version_source_commit_id_from_meta(meta: &serde_json::Value) -> Option<String> {
-    meta.get("source_commit_id")
-        .and_then(|v| v.as_str())
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_owned())
-}
-
-pub fn file_version_source_commit_event_idx_from_meta(meta: &serde_json::Value) -> Option<i32> {
-    let idx = meta.get("source_commit_event_idx")?.as_i64()?;
-    if idx < 0 {
-        return None;
-    }
-    i32::try_from(idx).ok()
 }
 
 pub fn file_version_ref_required_string(
@@ -1154,7 +1131,7 @@ pub fn validate_file_version_ref_description(
     event_type: &str,
     required: bool,
 ) -> Result<(), SubitemError> {
-    let value = meta.get("description").or_else(|| meta.get("comment"));
+    let value = meta.get("description");
     match value {
         None if required => Err(SubitemError::Schema(format!(
             "{event_type} requires description"
