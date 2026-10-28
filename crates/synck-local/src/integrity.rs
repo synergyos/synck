@@ -81,10 +81,6 @@ impl Repository {
     }
 }
 
-pub(crate) fn physical_findings(storage: &SqliteStorage, repo_id: &RepoId) -> Result<Findings> {
-    physical_findings_inner(storage, repo_id, true)
-}
-
 pub(crate) fn physical_core_findings(
     storage: &SqliteStorage,
     repo_id: &RepoId,

@@ -4,7 +4,7 @@ fn event() -> EventProposal {
     serde_json::from_value(serde_json::json!({
         "item_id": "01890c6c-1111-7777-8888-aaaaaaaaaaaa",
         "event_type": "CHAT::MESSAGE::CREATE",
-        "set_content": {"json": {"body": "a\u{0}🦀"}},
+        "set_content": {"body": ObjectId::from_digest([1;32])},
         "base_seq": 1
     }))
     .unwrap()
@@ -16,7 +16,7 @@ fn returns_exact_canonical_payloads_in_item_then_ref_order() {
     let reference: RefEventProposal = serde_json::from_value(serde_json::json!({
         "owner_item_id": event.item_id,
         "event_type": "FILE_VERSION::CREATE",
-        "set_content": {"content_id": ObjectId::from_digest([42; 32])},
+        "set_content": {"body": ObjectId::from_digest([42; 32])},
         "base_ref_seq": 0
     }))
     .unwrap();
@@ -52,9 +52,7 @@ fn returns_exact_canonical_payloads_in_item_then_ref_order() {
 #[test]
 fn defaults_bound_escaped_bytes_not_plaintext_length() {
     let mut event = event();
-    event.set_content = Some(EventContent::Json {
-        json: serde_json::json!({"body": "\u{0}".repeat(200_000)}),
-    });
+    event.set_name = Some("\u{0}".repeat(200_000));
     assert!(
         validate_payload_limits(&CoreConfig::default(), &[event.clone()], &[])
             .unwrap_err()

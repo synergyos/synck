@@ -92,8 +92,8 @@ async fn fixture() -> Fixture {
         body.payload(),
     )
     .unwrap();
-    let file_event:EventProposal=EventProposal::from_fields(json!({"item_id":file,"event_type":"FILE::SET_CONTENT","base_seq":1,"set_metadata":{"content":{"size":primary.len()}},"set_content":EventContent::Blob {blob_id:primary_blob.clone()}})).unwrap();
-    let message:EventProposal=EventProposal::from_fields(json!({"item_id":chat,"event_type":"CHAT::MESSAGE::CREATE","base_seq":1,"set_content":EventContent::Content {content_id:body.id()}})).unwrap();
+    let file_event:EventProposal=EventProposal::from_fields(json!({"item_id":file,"event_type":"FILE::SET_CONTENT","base_seq":1,"set_metadata":{"content":{"size":primary.len()}},"set_content":EventContent::bytes(synck_vcs::types::ObjectId::parse(primary_blob.clone()).unwrap())})).unwrap();
+    let message:EventProposal=EventProposal::from_fields(json!({"item_id":chat,"event_type":"CHAT::MESSAGE::CREATE","base_seq":1,"set_content":EventContent::body(body.id())})).unwrap();
     core.append(repo_id.clone(), proposal(vec![file_event, message]))
         .await
         .unwrap();
@@ -135,8 +135,8 @@ async fn complete_mixed_repository_reads_offline_and_keeps_exact_history_and_bod
     assert_eq!(repository.authority(), Authority::Follower);
     let report = repository.verify().await.unwrap();
     assert_eq!(
-        (report.commits, report.items, report.blobs, report.bodies),
-        (2, 3, 1, 1)
+        (report.commits, report.items, report.objects, report.metadata),
+        (2, 3, 2, 1)
     );
     assert_eq!(
         repository.read_body(fixture.body.id()).unwrap().payload(),
@@ -318,7 +318,7 @@ async fn follower_activation_continuation_and_explicit_finalize_preserve_old_byt
         Storage::new(Arc::new(storage.clone())),
         CoreConfig::default(),
     );
-    core.append(fixture.repo_id.clone(),proposal(vec![EventProposal::from_fields(json!({"item_id":fixture.chat,"event_type":"CHAT::MESSAGE::CREATE","base_seq":3,"set_content":EventContent::Json {json:json!({"body":"accepted before crash"})}})).unwrap()])).await.unwrap();
+    core.append(fixture.repo_id.clone(),proposal(vec![EventProposal::from_fields(json!({"item_id":fixture.chat,"event_type":"CHAT::MESSAGE::CREATE","base_seq":3,"set_content":EventContent::body(fixture.body.id())})).unwrap()])).await.unwrap();
     let mut repository = PortableRepository::open(&destination).unwrap();
     assert!(repository.verify().await.is_err());
     repository.finalize().await.unwrap();
@@ -612,7 +612,7 @@ async fn repository_copy_includes_committed_wal_without_checkpointing_source() {
                 "item_id":fixture.chat,
                 "event_type":"CHAT::MESSAGE::CREATE",
                 "base_seq":2,
-                "set_content":EventContent::Content {content_id:fixture.body.id()}
+                "set_content":EventContent::body(fixture.body.id())
             }))
             .unwrap(),
         ]),
@@ -1152,27 +1152,14 @@ async fn local_email_import_preserves_source_and_materializes_one_atomic_email()
     assert_eq!(item.item.projection.name, "source");
     let metadata = &item.item.projection.metadata_json["mailcal"];
     assert_eq!(metadata["source"]["filename"], "source.EML");
-    assert_eq!(
-        metadata["source"]["blob_id"],
-        format!("sha256:{}", hex::encode(Sha256::digest(bytes)))
-    );
-    assert_eq!(
-        metadata["raw_rfc822_blob_id"],
-        metadata["source"]["blob_id"]
-    );
-    assert_eq!(metadata["raw_rfc822_provenance"], "original");
+    let rendered = repository.render_email(&id, None).await.unwrap();
+    assert!(!rendered.body_markdown.is_empty());
+    assert!(metadata["source"].get("blob_id").is_none());
+    assert!(metadata.get("raw_rfc822_blob_id").is_none());
+    assert!(metadata.get("body").is_none());
     assert_eq!(fs::read(&source).unwrap(), bytes);
-    let source_blob = metadata["source"]["blob_id"].as_str().unwrap();
-    assert_eq!(
-        fs::read(
-            fixture
-                .source
-                .join(".synck/objects")
-                .join(&source_blob[7..])
-        )
-        .unwrap(),
-        bytes
-    );
+    let source_blob = &item.item.projection.content_roles["source"];
+    assert_eq!(fs::read(fixture.source.join(".synck/objects").join(&source_blob.as_str()[7..])).unwrap(), bytes);
     assert!(
         item.item.subitems.len() >= 2,
         "all MIME attachments must remain durable"
@@ -1211,8 +1198,8 @@ async fn local_email_import_rejects_malformed_sources_without_creating_file_fall
     assert!(error.to_string().contains("EMAIL_IMPORT_"));
     let after = repository.verify().await.unwrap();
     assert_eq!(
-        (before.commits, before.items, before.blobs),
-        (after.commits, after.items, after.blobs)
+        (before.commits, before.items, before.objects),
+        (after.commits, after.items, after.objects)
     );
     assert_eq!(fs::read(source).unwrap(), bytes);
 }
@@ -2096,8 +2083,8 @@ async fn storage_modes_preserve_canonical_history_ids_and_exact_closure() {
     );
     let report = copy.verify().await.unwrap();
     assert_eq!(
-        (report.blobs, report.bodies),
-        (original.blobs, original.bodies)
+        (report.objects, report.metadata),
+        (original.objects, original.metadata)
     );
     for id in [&fixture.primary_blob, &fixture.body_blob] {
         let id = synck_vcs::types::ObjectId::parse(id).unwrap();
@@ -2360,4 +2347,21 @@ async fn whole_export_cli_import_verify_and_optimize() {
             .storage_mode(),
         synck_local::StorageMode::WholeFile
     );
+}
+
+#[tokio::test]
+async fn history_verifies_with_absent_content_and_metadata_but_complete_export_refuses() {
+    let fixture = fixture().await;
+    let repository = PortableRepository::open(&fixture.source).unwrap();
+    let before = repository.verify().await.unwrap();
+    fs::remove_file(fixture.source.join(".synck/objects").join(&fixture.primary_blob[7..])).unwrap();
+    let storage = SqliteStorage::new(fixture.source.join(".synck/repository.sqlite3"));
+    storage.open_writable().unwrap().execute("DELETE FROM vcs_metadata_objects", []).unwrap();
+    let after = repository.verify().await.unwrap();
+    assert_eq!(before.commits, after.commits);
+    assert_eq!(after.missing_objects, vec![synck_vcs::types::ObjectId::parse(&fixture.primary_blob).unwrap()]);
+    assert_eq!(after.missing_metadata.len(), before.metadata);
+    assert!(!after.missing_metadata.is_empty());
+    let export = fixture.root.join("incomplete-export");
+    assert!(repository.archive(&export).await.unwrap_err().to_string().contains("complete export requires"));
 }

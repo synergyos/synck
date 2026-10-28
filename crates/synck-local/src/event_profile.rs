@@ -8,7 +8,7 @@ use synck_file_folder::project_commit;
 use synck_file_folder::{ImmutableItemKind, validate_projected_proposal, project_commit_events};
 use synck_vcs::naming::compute_name_key;
 use synck_vcs::types::{
-    ObjectId, CommitEventRow, CommitRow, EventContent, EventProposal, EventRow, ItemId,
+    ObjectId, CommitEventRow, CommitRow, EventProposal, EventRow, ItemId,
 };
 
 pub(crate) enum LocalEvent {
@@ -305,7 +305,7 @@ fn classify_version_event(event: &EventProposal) -> std::result::Result<LocalEve
                 == synck_file_folder::file_version_set::VERSION_CREATE_EVENT
                 || other == synck_file_folder::file_version_set::VERSION_REPLACE_CONTENT_EVENT
             {
-                matches!(event.set_content, Some(EventContent::Blob { .. }))
+                event.set_content.as_ref().is_some_and(|content| content.only("bytes").is_some())
             } else {
                 !has_content
             };
@@ -335,9 +335,9 @@ pub(crate) fn is_reserved_root_name(name: &str) -> bool {
 }
 
 pub(crate) fn parse_content(event: &EventProposal) -> std::result::Result<(ObjectId, i64), String> {
-    let blob_id = match event.set_content.as_ref() {
-        Some(EventContent::Blob { blob_id }) => {
-            ObjectId::parse(blob_id).map_err(|error| error.to_string())?
+    let blob_id = match event.set_content.as_ref().and_then(|content| content.only("bytes")) {
+        Some(blob_id) => {
+            ObjectId::parse(blob_id.as_str()).map_err(|error| error.to_string())?
         }
         _ => return Err("file content event has no blob".to_string()),
     };
@@ -359,9 +359,9 @@ pub(crate) fn parse_content(event: &EventProposal) -> std::result::Result<(Objec
 pub(crate) fn parse_version_content(
     event: &EventProposal,
 ) -> std::result::Result<(ObjectId, Option<i64>), String> {
-    let blob_id = match event.set_content.as_ref() {
-        Some(EventContent::Blob { blob_id }) => {
-            ObjectId::parse(blob_id).map_err(|error| error.to_string())?
+    let blob_id = match event.set_content.as_ref().and_then(|content| content.only("bytes")) {
+        Some(blob_id) => {
+            ObjectId::parse(blob_id.as_str()).map_err(|error| error.to_string())?
         }
         _ => return Err("version content event has no blob".to_string()),
     };

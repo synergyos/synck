@@ -44,19 +44,12 @@ pub fn file_blob_reference(
     if event.event_type != "FILE::SET_CONTENT" {
         return Ok(None);
     }
-    let synck_vcs::types::EventContent::Blob { blob_id } =
-        event.set_content.as_ref().ok_or_else(|| {
+    let blob_id = event.set_content.as_ref().and_then(|content| content.only("bytes")).ok_or_else(|| {
             SemanticError::new(
                 SemanticErrorCode::MalformedProfileEvent,
                 "FILE content event lacks a blob",
             )
-        })?
-    else {
-        return Err(SemanticError::new(
-            SemanticErrorCode::MalformedProfileEvent,
-            "FILE content event does not contain a blob",
-        ));
-    };
+        })?;
     let size = event
         .set_metadata
         .as_ref()
@@ -76,7 +69,7 @@ pub fn file_blob_reference(
         ));
     }
     Ok(Some(BlobRef {
-        blob_id: synck_vcs::types::ObjectId::parse(blob_id).map_err(|_| {
+        blob_id: synck_vcs::types::ObjectId::parse(blob_id.as_str()).map_err(|_| {
             SemanticError::new(
                 SemanticErrorCode::MalformedProfileEvent,
                 "FILE content event has an invalid blob ID",
@@ -160,7 +153,7 @@ mod tests {
             "item_id": "01900000-0000-7000-8000-000000000001",
             "event_type": "FILE::SET_CONTENT",
             "set_metadata": {"content": {"size": 7}},
-            "set_content": {"blob_id": format!("sha256:{}", "a".repeat(64))},
+            "set_content": {"bytes": format!("sha256:{}", "a".repeat(64))},
             "base_seq": 1
         }))
         .unwrap();

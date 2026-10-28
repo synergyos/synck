@@ -379,24 +379,7 @@ impl<'de> Deserialize<'de> for ObjectId {
     }
 }
 
-/// Structured content body for an event.
-///
-/// Canonical rule: a `set_content` value is *exactly one* of:
-///
-/// - `{ "text": "..." }`
-/// - `{ "json": { ... } }`
-/// - `{ "blob_id": "sha256:<hex64>" }`
-/// - `{ "content_id": "sha256:<lowercase hex64>" }`
-///
-/// If an event has no content, `set_content` is `null`.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(untagged, deny_unknown_fields)]
-pub enum EventContent {
-    Text { text: String },
-    Json { json: serde_json::Value },
-    Blob { blob_id: String },
-    Content { content_id: ObjectId },
-}
+pub use crate::content::EventContent;
 
 /// Logical representation of an `events` table row.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -601,7 +584,7 @@ pub struct EventProposal {
     /// Non‑structural metadata associated with this event (tags, labels, etc.).
     #[serde(default, rename = "metadata_id", skip_serializing_if = "Option::is_none")]
     pub set_metadata: Option<MetadataRef>,
-    /// Structured content for this event (text/JSON/blob ids).
+    /// Complete snapshot of content roles and their object IDs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub set_content: Option<EventContent>,
     /// Create a new item.
@@ -1325,9 +1308,9 @@ mod tests {
     #[test]
     fn content_reference_is_a_strict_union_and_canonical_roundtrip() {
         let id = ObjectId::from_digest([0xab; 32]);
-        let content = serde_json::json!({"content_id": id});
+        let content = serde_json::json!({"body": id});
         let decoded: EventContent = serde_json::from_value(content.clone()).unwrap();
-        assert!(matches!(&decoded, EventContent::Content { content_id } if content_id == &id));
+        assert_eq!(decoded.only("body"), Some(&id));
         assert_eq!(serde_json::to_value(decoded).unwrap(), content);
         for extra in ["text", "json", "blob_id", "extra"] {
             let mut ambiguous = content.clone();

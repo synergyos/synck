@@ -164,7 +164,7 @@ pub fn automatic_initial_events(
         file_item_id,
         version_id,
         metadata,
-        Some(EventContent::Blob { blob_id }),
+        Some(EventContent::bytes(synck_vcs::types::ObjectId::parse(&blob_id).map_err(|error| error.to_string())?)),
     )?);
     Ok(events)
 }
@@ -201,7 +201,7 @@ pub fn automatic_initial_ref_event(
         owner_item_id: file_item_id.clone(),
         event_type: "FILE_VERSION::CREATE".to_string(),
         set_metadata: Some(synck_vcs::metadata::MetadataRef::new(serde_json::Value::Object(metadata)).map_err(|e| e.to_string())?),
-        set_content: Some(EventContent::Blob { blob_id }),
+        set_content: Some(EventContent::bytes(synck_vcs::types::ObjectId::parse(&blob_id).map_err(|error| error.to_string())?)),
         base_ref_seq,
     })
 }

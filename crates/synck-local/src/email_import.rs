@@ -68,13 +68,6 @@ pub(crate) fn prepare(
     };
     let source_size = bytes.len();
     let source_blob = store(bytes);
-    let body_blob = store(parsed.body_markdown);
-    let html_blob = parsed.body_html.map(&mut store);
-    let raw_blob = if parsed.raw_rfc822_generated {
-        store(parsed.raw_rfc822)
-    } else {
-        source_blob.clone()
-    };
     let mut attachments = Vec::new();
     for attachment in parsed.attachments {
         let size = attachment.bytes.len();
@@ -87,26 +80,24 @@ pub(crate) fn prepare(
         }
         attachments.push(synck_vcs::types::EventProposal::from_fields(
             json!({"item_id":id,"event_type":"EMAIL::ATTACHMENT::CREATE",
-            "set_metadata":{"meta":meta},"set_content":{"blob_id":blob}}),
+            "set_metadata":{"meta":meta},"set_content":{"source":blob}}),
         )?);
     }
     let metadata = json!({"mailcal": {
         "v":2,"parser_version":IMPORTED_EMAIL_PARSER_VERSION,"parser_limits":limits,
         "origin":{"kind":"local_import"},
         "source":{"format":format.as_str(),"filename":filename,"mime_type":format.source_mime_type(),
-            "size_bytes":source_size,"blob_id":source_blob},
+            "size_bytes":source_size},
         "provider":null,"account_id":null,"provider_message_id":null,"provider_thread_id":null,
         "internet_message_id":parsed.internet_message_id,"subject":parsed.subject,
         "from":parsed.from,"sender":parsed.sender,"to":parsed.to,"cc":parsed.cc,"bcc":parsed.bcc,
         "reply_to":parsed.reply_to,"sent_at":parsed.sent_at,"received_at":parsed.received_at,
-        "has_attachments":!attachments.is_empty(),"body":{"kind":"MARKDOWN","blob_id":body_blob},
-        "body_html_blob_id":html_blob,"raw_rfc822_blob_id":raw_blob,
-        "raw_rfc822_provenance":if parsed.raw_rfc822_generated {"generated"} else {"original"},
-        "provider_raw_json_blob_id":null,"imported_at":chrono::Utc::now().to_rfc3339()
+        "has_attachments":!attachments.is_empty(),"attachment_count":attachments.len(),
+        "imported_at":chrono::Utc::now().to_rfc3339()
     }});
     let mut events = vec![synck_vcs::types::EventProposal::from_fields(
         json!({"item_id":id,"event_type":"EMAIL::CREATE",
-        "create_item":{"item_type":"EMAIL","parent_folder_id":parent,"name":name},"set_metadata":metadata}),
+        "create_item":{"item_type":"EMAIL","parent_folder_id":parent,"name":name},"set_metadata":metadata,"set_content":{"source":source_blob}}),
     )?];
     events.extend(attachments);
     Ok(PreparedEmail { events, objects })

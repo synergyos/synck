@@ -158,20 +158,7 @@ fn gen_json_value(rng: &mut XorShift64, depth: u8) -> Value {
 }
 
 fn gen_event_content(rng: &mut XorShift64) -> EventContent {
-    match rng.gen_usize(4) {
-        0 => EventContent::Text {
-            text: gen_string(rng, 256),
-        },
-        1 => EventContent::Json {
-            json: gen_json_value(rng, 4),
-        },
-        2 => EventContent::Blob {
-            blob_id: gen_sha256_id(rng),
-        },
-        _ => EventContent::Content {
-            content_id: synck_vcs::types::ObjectId::parse(gen_sha256_id(rng)).unwrap(),
-        },
-    }
+    EventContent::bytes(synck_vcs::types::ObjectId::parse(gen_sha256_id(rng)).unwrap())
 }
 
 fn gen_event_proposal(rng: &mut XorShift64) -> EventProposal {

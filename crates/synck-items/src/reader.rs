@@ -422,8 +422,10 @@ impl ItemReader {
                 .ok_or_else(|| invalid("first event must create the item"))?,
         }
         .to_string();
-        if let Some(EventContent::Content { content_id }) = &event.set_content {
-            return Err(ReadError::NeedsContent(content_id.clone()));
+        if let Some(content) = &event.set_content {
+            if let Some(id) = content.get("body") {
+                if content.object("body").is_none() { return Err(ReadError::NeedsContent(id.clone())); }
+            }
         }
         let mut projection = replica_projection::apply_replica_item_event(
             self.projection.clone(),

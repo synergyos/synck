@@ -23,7 +23,7 @@ use synck_vcs::state::{
 };
 use synck_vcs::types::{
     ObjectId, COMMIT_EVENT_FAMILY_ITEM, COMMIT_EVENT_FAMILY_REF, CommitEventRow, CommitId,
-    CommitProposal, CommitRow, EventContent, EventProposal, EventRow, ItemId, LifecycleState,
+    CommitProposal, CommitRow, EventProposal, EventRow, ItemId, LifecycleState,
     RefEventProposal, RepoEventCursor, RepoId, Sha256Digest, SubtreeClosureGuard,
     canonical_commit_bytes_for_hash, canonical_event_proposal_bytes,
     canonical_ref_event_proposal_bytes, compute_commit_id, compute_sha256_digest_bytes,
@@ -511,11 +511,8 @@ impl Repository {
                 &self.root_path().join(display_to_path(&change.path)),
             )?;
             self.reject_recorded_email_name(&change.path, &email.events[0])?;
-            let source_blob = email.events[0]
-                .set_metadata.as_ref().and_then(synck_vcs::metadata::MetadataRef::value)
-                .expect("EMAIL metadata")["mailcal"]["source"]["blob_id"]
-                .as_str()
-                .expect("EMAIL source blob");
+            let source_blob = email.events[0].set_content.as_ref()
+                .and_then(|content| content.get("source")).expect("EMAIL source object").as_str();
             if source_blob != prepared.objects[&change.path].as_str() {
                 return Err(LocalError::Invalid(format!(
                     "email source changed while parsing: {}",
@@ -7416,8 +7413,8 @@ fn validate_historical_item_event(event: &EventRow, item_id: &ItemId) -> Result<
 }
 
 fn content_from_event(event: &EventProposal) -> Result<(ObjectId, i64)> {
-    let blob_id = match event.set_content.as_ref() {
-        Some(EventContent::Blob { blob_id }) => ObjectId::parse(blob_id).map_err(|error| {
+    let blob_id = match event.set_content.as_ref().and_then(|content| content.only("bytes")) {
+        Some(blob_id) => ObjectId::parse(blob_id.as_str()).map_err(|error| {
             LocalError::Integrity(format!("invalid blob identifier in event: {error}"))
         })?,
         _ => {

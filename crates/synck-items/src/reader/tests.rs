@@ -8,11 +8,11 @@ fn now() -> DateTime<Utc> {
     "2026-10-25T12:00:00Z".parse().unwrap()
 }
 fn event(id: &ItemId, ty: &str, metadata: Value, content: Option<EventContent>) -> EventProposal {
-    EventProposal::from_fields(
-        json!({"item_id":id,"event_type":ty,"set_metadata":metadata,"set_content":content}),
-    )
-    .unwrap()
+    let mut event = EventProposal::from_fields(json!({"item_id":id,"event_type":ty,"set_metadata":metadata})).unwrap();
+    event.set_content = content;
+    event
 }
+
 fn apply(reader: &mut ItemReader, event: &EventProposal, author: &str) {
     reader
         .apply(
@@ -40,10 +40,12 @@ fn create(kind: &str) -> (ItemReader, ItemId) {
     (reader, id)
 }
 fn json_body(body: &str) -> Option<EventContent> {
-    Some(EventContent::Json {
-        json: json!({"body":body}),
-    })
+    let object = synck_vcs::object::Object::new(synck_vcs::object::Codec::Utf8, body.as_bytes()).unwrap();
+    let mut roles = EventContent::body(object.id());
+    roles.resolve(object).unwrap();
+    Some(roles)
 }
+
 fn row<'a>(snapshot: &'a ReadableItem, family: &str, seq: i64) -> &'a ReadableSubitem {
     snapshot
         .subitems
@@ -125,10 +127,8 @@ fn reactions_keep_reactor_and_attachment_kind_survives_nonobject_metadata_replac
         &event(
             &id,
             "CHAT::MESSAGE.REACTION::CREATE",
-            json!({"parent_item_seq":2}),
-            Some(EventContent::Json {
-                json: json!({"emoji":" 👍 "}),
-            }),
+            json!({"parent_item_seq":2,"content":{"emoji":" 👍 "}}),
+            None,
         ),
         "bob",
     );
@@ -137,10 +137,8 @@ fn reactions_keep_reactor_and_attachment_kind_survives_nonobject_metadata_replac
         &event(
             &id,
             "CHAT::MESSAGE.REACTION::SET_CONTENT",
-            json!({"item_seq":3}),
-            Some(EventContent::Json {
-                json: json!({"emoji":" ✅ "}),
-            }),
+            json!({"item_seq":3,"content":{"emoji":" ✅ "}}),
+            None,
         ),
         "editor",
     );
@@ -150,7 +148,7 @@ fn reactions_keep_reactor_and_attachment_kind_survives_nonobject_metadata_replac
             &id,
             "CHAT::MESSAGE.ATTACHMENT::CREATE",
             json!({"parent_item_seq":2,"meta":{"kind":"EMBEDDED","snapshot_name":"photo.png"},"content":{"size":12}}),
-            Some(EventContent::Blob { blob_id: A.into() }),
+            Some(EventContent::bytes(synck_vcs::types::ObjectId::parse(A).unwrap())),
         ),
         "alice",
     );
@@ -170,7 +168,7 @@ fn reactions_keep_reactor_and_attachment_kind_survives_nonobject_metadata_replac
             &id,
             "CHAT::MESSAGE.ATTACHMENT::SET_CONTENT",
             json!({"item_seq":5}),
-            Some(EventContent::Blob { blob_id: B.into() }),
+            Some(EventContent::bytes(synck_vcs::types::ObjectId::parse(B).unwrap())),
         ),
         "editor",
     );
@@ -216,7 +214,7 @@ fn folder_removal_detaches_attachments_and_rehomes_native_file_names() {
             &id,
             "CHAT::MESSAGE.ATTACHMENT::CREATE",
             json!({"parent_item_seq":10,"meta":{"kind":"EMBEDDED","chat_file_folder_id":folder}}),
-            Some(EventContent::Blob { blob_id: A.into() }),
+            Some(EventContent::bytes(synck_vcs::types::ObjectId::parse(A).unwrap())),
         ),
         "alice",
     );
@@ -247,7 +245,7 @@ fn email_readers_expose_attachments_and_metadata_replacement() {
             &id,
             "EMAIL::ATTACHMENT::CREATE",
             json!({"meta":{"filename":"document.pdf"}}),
-            Some(EventContent::Blob { blob_id: A.into() }),
+            Some(EventContent::bytes(synck_vcs::types::ObjectId::parse(A).unwrap())),
         ),
         "alice",
     );
@@ -340,7 +338,7 @@ fn errors_poison_only_the_typed_reader_and_do_not_modify_source_events() {
     assert!(
         crate::references::event_references(&unknown)
             .unwrap()
-            .blobs
+            .objects
             .is_empty()
     );
 }
@@ -354,7 +352,7 @@ fn supplemental_links_and_workflow_annotations_do_not_hide_primary_content() {
             &id,
             "FILE::SET_CONTENT",
             Value::Null,
-            Some(EventContent::Blob { blob_id: A.into() }),
+            Some(EventContent::bytes(synck_vcs::types::ObjectId::parse(A).unwrap())),
         ),
         "alice",
     );

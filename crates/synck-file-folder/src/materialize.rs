@@ -979,9 +979,7 @@ fn set_name_event(
 
 fn content_event(item_id: &ItemId, base_seq: Option<i64>, content: &BlobRef) -> Result<EventProposal, SemanticError> {
     let mut proposal = base_event(item_id, FileFolderKind::File, "SET_CONTENT", base_seq);
-    proposal.set_content = Some(EventContent::Blob {
-        blob_id: content.blob_id.as_str().to_string(),
-    });
+    proposal.set_content = Some(EventContent::bytes(content.blob_id.clone()));
     proposal.set_metadata = Some(synck_vcs::metadata::MetadataRef::new(json!({"content": {"size": content.size}})).map_err(|e| error(SemanticErrorCode::InvalidContent, e.to_string()))?);
     Ok(proposal)
 }

@@ -604,12 +604,7 @@ mod bundle_tests {
                     None
                 },
                 set_content: if rng.next_bool() {
-                    Some(EventContent::Json {
-                        json: serde_json::json!({
-                            "numbers": [0, -0, 1, 1.0, 1e0, 1e-20],
-                            "s": gen_string(rng, 32),
-                        }),
-                    })
+                    Some(EventContent::bytes(crate::types::ObjectId::from_digest([rng.next_u64() as u8;32])))
                 } else {
                     None
                 },

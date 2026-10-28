@@ -181,9 +181,7 @@ impl Repository {
             "FILE_VERSION::CREATE",
             &version_id,
             metadata,
-            Some(EventContent::Blob {
-                blob_id: revision.blob_id.to_string(),
-            }),
+            Some(EventContent::bytes(revision.blob_id.clone())),
             state.head_seq,
         )?;
         self.append_version_commit(&file_item_id, message, operation_id, event)
@@ -1087,8 +1085,8 @@ fn parse_event(event: &EventRow) -> Result<EventProposal> {
 }
 
 fn event_content(event: &EventProposal) -> Result<(ObjectId, i64)> {
-    let blob_id = match event.set_content.as_ref() {
-        Some(EventContent::Blob { blob_id }) => ObjectId::parse(blob_id)
+    let blob_id = match event.set_content.as_ref().and_then(|content| content.only("bytes")) {
+        Some(blob_id) => ObjectId::parse(blob_id.as_str())
             .map_err(|error| LocalError::Integrity(format!("invalid version blob ID: {error}")))?,
         _ => {
             return Err(LocalError::Integrity(
@@ -1332,9 +1330,7 @@ mod tests {
             "FILE_VERSION::CREATE",
             version_id,
             metadata,
-            Some(EventContent::Blob {
-                blob_id: blob_id.to_string(),
-            }),
+            Some(EventContent::bytes(synck_vcs::types::ObjectId::parse(blob_id.to_string()).unwrap())),
             next_ref_seq - 1,
         ).unwrap()
     }
@@ -1365,9 +1361,7 @@ mod tests {
             "FILE_VERSION::REPLACE_CONTENT",
             version_id,
             metadata,
-            Some(EventContent::Blob {
-                blob_id: source.blob_id.to_string(),
-            }),
+            Some(EventContent::bytes(synck_vcs::types::ObjectId::parse(source.blob_id.to_string()).unwrap())),
             next_ref_seq - 1,
         ).unwrap()
     }
@@ -1627,9 +1621,7 @@ mod tests {
             "FILE_VERSION::REPLACE_CONTENT",
             &version_id,
             metadata,
-            Some(EventContent::Blob {
-                blob_id: revision.blob_id.to_string(),
-            }),
+            Some(EventContent::bytes(revision.blob_id.clone())),
             2,
         ).unwrap();
         append(&repository, "patch version content", vec![replacement]).await;

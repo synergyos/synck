@@ -132,6 +132,45 @@ reported as absent; typed interpretation requiring those fields cannot proceed.
 `vectors/events.json` defines canonical envelopes, event digests, tagged event
 sequences and commit hashes, including envelopes with metadata references.
 
+## Content roles and closure
+
+`set_content`, when present, is a complete map from role names to canonical
+object ID strings. It contains at most 32 distinct roles. Each role matches
+`[a-z][a-z0-9_]{0,31}`; duplicate names, invalid IDs, null values and nested values
+are rejected. An omitted field leaves the previous content snapshot unchanged.
+An empty map clears it. Inline text and JSON are not event content.
+
+FILE content uses exactly `bytes`; CHAT message content uses `body` with a UTF8
+object. EMAIL uses `source` and optionally `provider`; EMAIL attachments use
+`source`. Their metadata contains descriptors, never object references. Unknown
+families use the same structural map without requiring a typed reader.
+
+Closure scans all retained item and attached-ref events, including deleted
+items and superseded revisions. It collects each `metadata_id` and every value
+in `set_content`. Neither current heads nor fields inside metadata establish
+closure. Resolving content into a read view cannot change the serialized event.
+
+Verification checks canonical history independently of the disposable checkout
+cache. It reports `objects`, `metadata`, `missing_objects`, and
+`missing_metadata`; missing references are valid. Present invalid payloads are
+corruption. A complete archive requires both missing-reference lists to be empty
+and copies exact stored bytes. Reader operations needing absent payloads fail
+explicitly rather than substituting empty content.
+
+### EMAIL originals and rendering
+
+Local EML/MSG imports preserve the original in `source`. The metadata payload
+contains `mailcal` header fields, parser version, source format/name/media type/
+size, attachment count and import time. MIME attachments are subitems with their
+own `source` role. Generated Markdown, HTML and RFC 822 are not persisted. The
+local `render_email` reader recomputes presentation with the current parser
+without changing history. Content-ID header strings in attachment metadata are
+MIME identifiers, not Synck object references.
+
+Implementation status: RAW object framing and named-version revision pointers
+are the remaining coordinated changes; the role map does not provide a legacy
+inline-content reader.
+
 ## Commit size
 
 The format imposes no fixed per-commit event-count or aggregate byte cap.

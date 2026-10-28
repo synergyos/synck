@@ -1311,9 +1311,7 @@ fn existing_item_can_move_into_a_folder_created_by_the_same_proposal() {
 fn projector_preserves_metadata_identity_and_rejects_unknown_keys() {
     let file_id = item(1);
     let mut content = event(file_id.clone(), "FILE::SET_CONTENT", Some(4));
-    content.set_content = Some(EventContent::Blob {
-        blob_id: digest('a'),
-    });
+    content.set_content = Some(EventContent::bytes(synck_vcs::types::ObjectId::parse(digest('a')).unwrap()));
     content.set_metadata = Some(synck_vcs::metadata::MetadataRef::new(json!({
         "content": {"size": 7},
         "upload_intent_id": "intent",
@@ -1382,18 +1380,14 @@ fn projector_accepts_only_the_deployed_product_omission_shapes() {
 
     let mut version_create = event(file_id.clone(), "FILE::VERSION::CREATE", Some(3));
     version_create.set_metadata = Some(synck_vcs::metadata::MetadataRef::new(json!({"content": {"size": 1}})).unwrap());
-    version_create.set_content = Some(EventContent::Blob {
-        blob_id: digest('d'),
-    });
+    version_create.set_content = Some(EventContent::bytes(synck_vcs::types::ObjectId::parse(digest('d')).unwrap()));
     validate_projected_proposal(None, &[version_create], &file_kind).unwrap();
 
     for with_content in [false, true] {
         let mut version_metadata = event(file_id.clone(), "FILE::VERSION::SET_METADATA", Some(3));
         version_metadata.set_metadata = Some(synck_vcs::metadata::MetadataRef::new(json!({"item_seq": 1})).unwrap());
         if with_content {
-            version_metadata.set_content = Some(EventContent::Blob {
-                blob_id: digest('e'),
-            });
+            version_metadata.set_content = Some(EventContent::bytes(synck_vcs::types::ObjectId::parse(digest('e')).unwrap()));
         }
         validate_projected_proposal(None, &[version_metadata], &file_kind).unwrap();
     }

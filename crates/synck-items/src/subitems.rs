@@ -329,12 +329,15 @@ pub fn reconstruct_subitem_content(
 ) -> serde_json::Value {
     let mut content = match set_content {
         None => serde_json::Value::Null,
-        Some(EventContent::Text { text }) => serde_json::Value::String(text.clone()),
-        Some(EventContent::Blob { blob_id }) => serde_json::json!({ "blob_id": blob_id }),
-        Some(EventContent::Content { content_id }) => {
-            serde_json::json!({ "content_id": content_id })
+        Some(roles) => {
+            if let Some(body) = roles.object("body").and_then(|object| object.utf8().ok()) {
+                serde_json::json!({"body":body})
+            } else if let Some(id) = roles.only("bytes").or_else(|| roles.only("source")) {
+                serde_json::json!({"blob_id":id})
+            } else {
+                serde_json::to_value(roles).expect("content roles are JSON strings")
+            }
         }
-        Some(EventContent::Json { json }) => json.clone(),
     };
 
     // For VERSION edits, the platform stores content meta (size/...) in

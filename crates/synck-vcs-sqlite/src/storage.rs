@@ -1854,9 +1854,7 @@ mod checked_append_work_tests {
         let (event_type, set_content, set_parent, set_name) = match case {
             Case::Content => (
                 "FILE::SET_CONTENT",
-                Some(EventContent::Text {
-                    text: "changed".to_string(),
-                }),
+                Some(EventContent::bytes(synck_vcs::types::ObjectId::from_digest([42;32]))),
                 None,
                 None,
             ),

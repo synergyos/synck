@@ -15,9 +15,9 @@ use crate::sequencer::Sequencer;
 use crate::storage::{SealedCommitInsert, Storage, StorageTxn};
 use crate::transition::{ItemState, apply_event as apply_item_event};
 use crate::types::{
-    AcceptedCommit, ObjectId, COMMIT_EVENT_FAMILY_ITEM, COMMIT_EVENT_FAMILY_REF,
+    AcceptedCommit, COMMIT_EVENT_FAMILY_ITEM, COMMIT_EVENT_FAMILY_REF,
     COMMIT_FORMAT_VERSION, CommitEventRow, CommitPk, CommitProposal, CommitRow,
-    CreatedItemInfo, EventContent, EventInsertRow, EventProposal, EventRow,
+    CreatedItemInfo, EventInsertRow, EventProposal, EventRow,
     FederatedDomainProposal, FederatedProposal,
     IngestedCommit, IngestedDomainCommit, ItemCursor, ItemId, ItemRow, LifecycleState,
     RefEventInsertRow, RefEventProposal, RepoEventCursor, RepoId, SequencingMode, Sha256Digest,
@@ -181,16 +181,11 @@ struct AppendApplied {
     event_count: i32,
 }
 
-/// Trusted embedding-layer byte adjustments from reference content to its
-/// verified logical representation. Never serialized or accepted from the wire.
-pub type ContentPayloadDeltas = HashMap<(String, ObjectId), isize>;
-
 /// Repository handle backed by a storage implementation.
 pub struct Repo {
     pub(crate) storage: Storage,
     #[allow(dead_code)]
     config: CoreConfig,
-    content_payload_deltas: ContentPayloadDeltas,
 }
 
 impl Repo {
@@ -199,18 +194,6 @@ impl Repo {
         Self {
             storage,
             config,
-            content_payload_deltas: ContentPayloadDeltas::new(),
-        }
-    }
-
-    /// Scope verified logical payload sizes to one append/ingest operation (or
-    /// batch). Core applies them after materializing IDs and sequences under its
-    /// existing locks. The storage/hash representation remains reference-only.
-    pub fn with_content_payload_deltas(&self, deltas: ContentPayloadDeltas) -> Self {
-        Self {
-            storage: Storage::new(self.storage.backend.clone()),
-            config: self.config.clone(),
-            content_payload_deltas: deltas,
         }
     }
 
@@ -219,32 +202,7 @@ impl Repo {
         events: &[EventProposal],
         ref_events: &[RefEventProposal],
     ) -> Result<Vec<Vec<u8>>, CoreError> {
-        let payloads = validate_payload_limits(&self.config, events, ref_events)?;
-        if self.content_payload_deltas.is_empty() {
-            return Ok(payloads);
-        }
-        let mut total = 0;
-        for (index, payload) in payloads.iter().enumerate() {
-            let delta = match events.get(index) {
-                Some(EventProposal {
-                    event_type,
-                    set_content: Some(EventContent::Content { content_id }),
-                    ..
-                }) => *self
-                    .content_payload_deltas
-                    .get(&(event_type.clone(), content_id.clone()))
-                    .ok_or_else(|| {
-                        CoreError::InvalidProposal("missing verified content payload size".into())
-                    })?,
-                _ => 0,
-            };
-            let len = payload
-                .len()
-                .checked_add_signed(delta)
-                .ok_or_else(|| CoreError::InvalidProposal("invalid logical payload size".into()))?;
-            enforce_payload_limits(&self.config, len, &mut total, payloads.len())?;
-        }
-        Ok(payloads)
+        validate_payload_limits(&self.config, events, ref_events)
     }
 
     /// Fetch a single item by id.
@@ -1078,7 +1036,7 @@ impl Repo {
         operation_kind: OperationKind,
     ) -> Result<AppendApplied, CoreError> {
         let mut proposal = proposal;
-        let mut ref_events = ref_events;
+        let ref_events = ref_events;
         let (subtree_guards, check_file_folder_parent_closure, import_job_id) = match profile {
             AppendProfile::Generic => (&[][..], false, None),
             AppendProfile::FileFolder {
@@ -1811,14 +1769,6 @@ impl Repo {
 
         let occurred_at = proposal.occurred_at;
 
-        // Before canonicalization, validate blob ids referenced by content.
-        for ev in &mut proposal.events {
-            validate_blob_ids(&ev.set_content)?;
-        }
-        for ev in &mut ref_events {
-            validate_blob_ids(&ev.set_content)?;
-        }
-
         // Materialize item ids into the stored event payloads: create_item may
         // omit item_id in the input proposal, but persistence must be fully
         // deterministic and replayable from the event log.
@@ -2379,7 +2329,6 @@ impl Repo {
 
             if bootstrap_created {
                 for ev in &mut local_proposal.events {
-                    validate_blob_ids(&ev.set_content)?;
                     ev.item_id = Some(item_id.clone());
                 }
             }
@@ -3082,7 +3031,6 @@ impl Repo {
             }
         }
         for event in &proposal.ref_events {
-            validate_blob_ids(&event.set_content)?;
             if !event.event_type.starts_with("FILE_VERSION::") {
                 return Err(CoreError::InvalidProposal(format!(
                     "unsupported federated ref event type `{}`",
@@ -3233,10 +3181,6 @@ impl Repo {
                 operation_id: Some(operation_id),
                 events: proposal.events.clone(),
             };
-            for ev in &mut local_proposal.events {
-                validate_blob_ids(&ev.set_content)?;
-            }
-
             // Materialize item ids into the stored event payloads.
             for (idx, ev) in local_proposal.events.iter_mut().enumerate() {
                 ev.item_id = Some(event_item_ids[idx].clone());
@@ -3886,15 +3830,6 @@ async fn map_item_unique_violation<T: StorageTxn + ?Sized>(
     }))
 }
 
-fn validate_blob_ids(content: &Option<EventContent>) -> Result<(), CoreError> {
-    if let Some(c) = content
-        && let EventContent::Blob { blob_id } = c
-    {
-        let _ = ObjectId::parse(blob_id)?;
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod commit_metadata_limit_tests {
     use super::*;
@@ -3993,7 +3928,6 @@ fn prepare_existing_federated_ingest_events(
 
     for ev in item_events.iter_mut() {
         ev.base_seq = Some(item_row.head_seq);
-        validate_blob_ids(&ev.set_content)?;
         ev.item_id = Some(item_id.clone());
     }
 

@@ -143,8 +143,10 @@ pub struct VerificationReport {
     pub terminal_repo_seq: i64,
     pub commits: u64,
     pub items: u64,
-    pub blobs: usize,
-    pub bodies: usize,
+    pub objects: usize,
+    pub metadata: usize,
+    pub missing_objects: Vec<ObjectId>,
+    pub missing_metadata: Vec<ObjectId>,
 }
 
 /// The OS lock excludes other opens. Canonical writers require exclusive
@@ -157,6 +159,18 @@ pub struct PortableRepository {
     config: Config,
     storage: SqliteStorage,
     _lock: Arc<RepositoryLock>,
+}
+
+struct BoundedEmailSource<'a> { bytes: &'a mut Vec<u8>, limit: u64 }
+impl Write for BoundedEmailSource<'_> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if bytes.len() as u64 > self.limit.saturating_sub(self.bytes.len() as u64) {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "EMAIL source exceeds parser limit"));
+        }
+        self.bytes.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
 }
 
 fn invalid(error: impl std::fmt::Display) -> LocalError {
@@ -491,8 +505,7 @@ impl PortableRepository {
 
     pub async fn storage_report(&self) -> Result<crate::StorageReport> {
         self.verify().await?;
-        let (mut referenced, bodies) = self.references().await?;
-        referenced.extend(bodies);
+        let (referenced, _) = self.references().await?;
         let stored = self.stored_objects()?;
         let mut report = crate::StorageReport {
             referenced_objects: 0,
@@ -522,8 +535,7 @@ impl PortableRepository {
             ));
         }
         self.verify().await?;
-        let (mut referenced, bodies) = self.references().await?;
-        referenced.extend(bodies);
+        let (referenced, _) = self.references().await?;
         if self.storage_mode() == StorageMode::Chunked {
             self.object_store().recover_incomplete()?;
             // Verify and remove optimization leftovers before collecting their chunks.
@@ -1064,7 +1076,7 @@ impl PortableRepository {
                 )
                 .map_err(corrupt)?;
                 let mut event: EventProposal = row.proposal()?;
-                if let Some(EventContent::Content { content_id }) = &event.set_content {
+                if let Some(content_id) = event.set_content.as_ref().and_then(|content| content.get("body")) {
                     let objects = BTreeMap::from([(content_id.clone(), self.read_body(content_id.clone())?)]);
                     synck_items::body_events::restore(
                         std::slice::from_mut(&mut event),
@@ -1180,6 +1192,26 @@ impl PortableRepository {
     /// Export FILE primary bytes or an imported EMAIL's exact original source.
     /// The destination must be absent. The temporary
     /// output is never published until its content identity and size pass.
+    /// Recompute presentation from the preserved original with the current parser.
+    /// This view is never written back into canonical history.
+    pub async fn render_email(&self, id: &ItemId, through: Option<i64>) -> Result<synck_items::imported_email::ParsedImportedEmail> {
+        let item = self.show_item(id, through).await?.item.projection;
+        if item.item_type != "EMAIL" { return Err(invalid("email rendering requires an EMAIL item")); }
+        let source = item.content_roles.get("source").ok_or_else(|| corrupt("EMAIL has no source role"))?;
+        let format = match item.metadata_json["mailcal"]["source"]["format"].as_str() {
+            Some("eml") => synck_items::imported_email::ImportedEmailFormat::Eml,
+            Some("msg") => synck_items::imported_email::ImportedEmailFormat::Msg,
+            _ => return Err(invalid("unsupported EMAIL source format")),
+        };
+        let mut bytes = Vec::new();
+        // Imported sources have the profile's size bound; refuse a forged size
+        // before allocating an unbounded presentation buffer.
+        let limit = crate::email_import::SOURCE_BYTES;
+        self.copy_blob(source, &mut BoundedEmailSource { bytes: &mut bytes, limit })?;
+        let limits = synck_items::imported_email::ImportedEmailLimits::for_source_limit_and_parser_concurrency(limit, 1);
+        synck_items::imported_email::parse_imported_email_owned(format, bytes, &limits).map_err(invalid)
+    }
+
     pub async fn export_file(
         &self,
         id: &ItemId,
@@ -1199,8 +1231,8 @@ impl PortableRepository {
             ),
             "EMAIL" => {
                 let source = &item.metadata_json["mailcal"]["source"];
-                let blob = source["blob_id"]
-                    .as_str()
+                let blob = item.content_roles.get("source")
+                    .map(|id| id.as_str())
                     .ok_or_else(|| invalid("EMAIL has no exact imported source"))?
                     .to_string();
                 let size = source["size_bytes"]
@@ -1286,7 +1318,7 @@ impl PortableRepository {
 
     async fn references(&self) -> Result<(BTreeSet<String>, BTreeSet<String>)> {
         let mut blobs = BTreeSet::new();
-        let mut bodies = BTreeSet::new();
+        let mut metadata = BTreeSet::new();
         let mut cursor = None;
         loop {
             let page = self
@@ -1302,15 +1334,11 @@ impl PortableRepository {
                 let refs =
                     synck_items::references::commit_event_references(&row).map_err(corrupt)?;
                 blobs.extend(
-                    refs.blobs
+                    refs.objects
                         .into_iter()
                         .map(|id| id.as_str()[7..].to_string()),
                 );
-                bodies.extend(
-                    refs.contents
-                        .into_iter()
-                        .map(|id| hex::encode(id.as_bytes())),
-                );
+                if let Some(id) = refs.metadata { metadata.insert(id.as_str()[7..].to_string()); }
                 cursor = Some(RepoEventCursor {
                     repo_seq: row
                         .repo_seq()
@@ -1322,7 +1350,7 @@ impl PortableRepository {
                 break;
             }
         }
-        Ok((blobs, bodies))
+        Ok((blobs, metadata))
     }
 
     /// Full explicit integrity/closure verification; bare open never runs it.
@@ -1410,11 +1438,7 @@ impl PortableRepository {
         self.storage
             .verify_checkpoints(self.repo_id())
             .map_err(corrupt)?;
-        let findings = if self.config.checkout.is_some() {
-            crate::integrity::physical_findings(&self.storage, self.repo_id())?
-        } else {
-            crate::integrity::physical_core_findings(&self.storage, self.repo_id())?
-        };
+        let findings = crate::integrity::physical_core_findings(&self.storage, self.repo_id())?;
         if !findings.is_empty() {
             return Err(corrupt(findings.summary()));
         }
@@ -1581,37 +1605,35 @@ impl PortableRepository {
                 "repository allocator does not follow canonical history",
             ));
         }
-        let (blobs, bodies) = self.references().await?;
-        let verified = if self.storage_mode() == StorageMode::Chunked {
+        let (objects, metadata) = self.references().await?;
+        let inventory = if self.storage_mode() == StorageMode::Chunked {
             Some(self.object_store().verify_all()?)
-        } else {
-            None
-        };
-        for name in &blobs {
-            if let Some(inventory) = &verified {
-                if !inventory.contains_key(name) {
-                    return Err(corrupt("referenced blob is missing"));
-                }
-                continue;
+        } else { None };
+        let mut missing_objects = Vec::new();
+        for name in &objects {
+            let id = ObjectId::parse(format!("sha256:{name}")).map_err(corrupt)?;
+            let present = match &inventory {
+                Some(inventory) => inventory.contains_key(name),
+                None => match self.metadata.symlink_metadata(format!("objects/{name}")) {
+                    Ok(_) => true,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+                    Err(error) => return Err(corrupt(error)),
+                },
+            };
+            if !present { missing_objects.push(id); continue; }
+            self.copy_blob(&id, &mut std::io::sink())?;
+        }
+        let mut missing_metadata = Vec::new();
+        for name in &metadata {
+            let id = ObjectId::parse(format!("sha256:{name}")).map_err(corrupt)?;
+            if self.storage.get_metadata(self.repo_id(), &id).map_err(corrupt)?.is_none() {
+                missing_metadata.push(id);
             }
-            self.copy_blob(
-                &ObjectId::parse(format!("sha256:{name}")).map_err(corrupt)?,
-                &mut std::io::sink(),
-            )?;
-        }
-        for name in &bodies {
-            self.read_body(ObjectId::parse(&format!("sha256:{name}")).map_err(corrupt)?)?;
-        }
-        if self.config.checkout.is_some() {
-            self.checkout_adapter()?.committed_tree().await?;
         }
         Ok(VerificationReport {
-            repo_id: self.repo_id().clone(),
-            terminal_repo_seq: terminal,
-            commits: count,
-            items: item_count,
-            blobs: blobs.len(),
-            bodies: bodies.len(),
+            repo_id: self.repo_id().clone(), terminal_repo_seq: terminal,
+            commits: count, items: item_count, objects: objects.len(), metadata: metadata.len(),
+            missing_objects, missing_metadata,
         })
     }
 
@@ -2245,7 +2267,7 @@ impl PortableRepository {
         let content_id = object.id();
         self.store_bytes(object.payload())?;
         let event: EventProposal = EventProposal::from_fields(
-            json!({"item_id":chat,"event_type":"CHAT::MESSAGE::CREATE","set_content":EventContent::Content {content_id}}),
+            json!({"item_id":chat,"event_type":"CHAT::MESSAGE::CREATE","set_content":EventContent::body(content_id)}),
         )?;
         synck_items::subitems::extract_chat_message_fields(
             self.config
@@ -2271,7 +2293,7 @@ impl PortableRepository {
             let content = json!({"blob_id":blob.blob_id});
             synck_items::subitems::extract_chat_attachment_fields(&meta, &content)
                 .map_err(invalid)?;
-            events.push(EventProposal::from_fields(json!({"item_id":chat,"event_type":"CHAT::MESSAGE.ATTACHMENT::CREATE","set_metadata":{"parent_item_seq":owner.head_seq + 1,"meta":meta},"set_content":content}))?);
+            events.push(EventProposal::from_fields(json!({"item_id":chat,"event_type":"CHAT::MESSAGE.ATTACHMENT::CREATE","set_metadata":{"parent_item_seq":owner.head_seq + 1,"meta":meta},"set_content":EventContent::source(blob.blob_id)}))?);
         }
         let commit = self
             .core()
@@ -2297,8 +2319,11 @@ impl PortableRepository {
                 ));
             }
         }
-        self.verify().await?;
-        let (blobs, bodies) = self.references().await?;
+        let report = self.verify().await?;
+        if !report.missing_objects.is_empty() || !report.missing_metadata.is_empty() {
+            return Err(invalid("complete export requires all referenced content and metadata objects"));
+        }
+        let (objects_to_copy, _) = self.references().await?;
         let (parent, parent_path, name, staging) = staging(destination)?;
         let result = async {
             let metadata = staging.join(".synck");
@@ -2340,10 +2365,10 @@ impl PortableRepository {
                 self.object_store().backup_to(&target)?;
                 let store = ChunkStore::new(target, self.repo_id());
                 store.recover_incomplete()?;
-                store.prune_to(&blobs.union(&bodies).cloned().collect())?;
+                store.prune_to(&objects_to_copy)?;
                 store.verify_archive_closure()?;
             } else {
-                for (folder, names) in [("objects", blobs), ("objects", bodies)] {
+                for (folder, names) in [("objects", objects_to_copy)] {
                     let source = self.metadata.open_dir_nofollow(folder).map_err(corrupt)?;
                     for name in names {
                         let destination = objects.join(&name);
@@ -2542,11 +2567,6 @@ pub async fn verify_complete_repository(start: &Path) -> Result<Option<Verificat
     }
     let repository = PortableRepository::open(&root)?;
     let report = repository.verify().await?;
-    if repository.config.checkout.is_some() {
-        let checkout = repository.checkout_adapter()?;
-        checkout.verify_named_versions().await?;
-        checkout.status().await?;
-    }
     Ok(Some(report))
 }
 
@@ -2619,8 +2639,7 @@ pub async fn materialize_repository(
             })?,
         )?;
         let repository = PortableRepository::open(&staging)?;
-        let (mut required, bodies) = repository.references().await?;
-        required.extend(bodies);
+        let (required, _) = repository.references().await?;
         if entries(&source_objects)? != required {
             return Err(corrupt(
                 "objects inventory is not the exact retained-history closure",

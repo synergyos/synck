@@ -7,7 +7,7 @@ use sha2::{Digest, Sha256};
 use synck_vcs::naming::compute_name_key;
 use synck_vcs::types::{
     ObjectId, COMMIT_EVENT_FAMILY_ITEM, COMMIT_EVENT_FAMILY_REF, COMMIT_FORMAT_VERSION,
-    CommitEventRow, CommitRow, EventContent, EventProposal, EventRow, ItemId, RefEventProposal,
+    CommitEventRow, CommitRow, EventProposal, EventRow, ItemId, RefEventProposal,
     RefEventRow, canonical_event_proposal_bytes, canonical_ref_event_proposal_bytes,
     canonical_stored_commit_bytes_for_hash, compute_commit_id, compute_sha256_digest_bytes,
     sha256_prefixed_hex_from_digest_bytes,
@@ -712,16 +712,14 @@ fn validate_content_event(proposal: &EventProposal) -> Result<(), SemanticError>
         && proposal.set_in_trash.is_none()
         && proposal.set_is_federated.is_none()
         && proposal.set_federation_stream_id.is_none()
-        && matches!(proposal.set_content, Some(EventContent::Blob { .. }));
+        && proposal.set_content.as_ref().is_some_and(|content| content.only("bytes").is_some());
     require_shape(valid_base, "malformed FILE::SET_CONTENT event")?;
-    let EventContent::Blob { blob_id } = proposal
+    let blob_id = proposal
         .set_content
         .as_ref()
-        .expect("content shape checked")
-    else {
-        unreachable!("content shape checked")
-    };
-    ObjectId::parse(blob_id).map_err(|failure| {
+        .and_then(|content| content.only("bytes"))
+        .expect("content shape checked");
+    ObjectId::parse(blob_id.as_str()).map_err(|failure| {
         error(
             SemanticErrorCode::MalformedProfileEvent,
             format!("invalid FILE blob id: {failure}"),
@@ -897,7 +895,7 @@ fn require_omission_shape(proposal: &EventProposal) -> Result<(), SemanticError>
         }
         "FILE::VERSION::CREATE" => {
             has_metadata(proposal)
-                && matches!(proposal.set_content, Some(EventContent::Blob { .. }))
+                && proposal.set_content.as_ref().is_some_and(|content| content.only("bytes").is_some())
                 && no_federation_modifier(proposal)
         }
         "FILE::VERSION::SET_METADATA" => {
@@ -905,7 +903,7 @@ fn require_omission_shape(proposal: &EventProposal) -> Result<(), SemanticError>
                 && proposal
                     .set_content
                     .as_ref()
-                    .is_none_or(|content| matches!(content, EventContent::Blob { .. }))
+                    .is_none_or(|content| content.only("bytes").is_some())
                 && no_federation_modifier(proposal)
         }
         "FILE::VERSION::TOMBSTONE" => {

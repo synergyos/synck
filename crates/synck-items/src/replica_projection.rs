@@ -2,7 +2,7 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use synck_vcs::types::{ObjectId, CommitId, EventContent, EventProposal, ItemId, LifecycleState};
+use synck_vcs::types::{ObjectId, CommitId, EventProposal, ItemId, LifecycleState};
 
 use crate::metadata::{
     ITEM_SOURCE_MODIFIED_AT_REPAIR_EVENT_TYPE, ITEM_SUBTYPE_STANDARD,
@@ -20,6 +20,7 @@ pub struct ReplicaItemProjection {
     pub metadata_json: serde_json::Value,
     pub color_metadata: Option<String>,
     pub content_blob_id: Option<String>,
+    pub content_roles: std::collections::BTreeMap<String, ObjectId>,
     pub content_item_seq: Option<i64>,
     pub size: Option<i64>,
     pub latest_item_seq: i64,
@@ -72,6 +73,7 @@ pub fn apply_replica_item_event(
             metadata_json: serde_json::json!({}),
             color_metadata: None,
             content_blob_id: None,
+            content_roles: Default::default(),
             content_item_seq: None,
             size: None,
             latest_item_seq: item_seq,
@@ -134,12 +136,19 @@ pub fn apply_replica_item_event(
                 serde_json::Value::Bool(true),
             );
     }
+    if proposal.event_type == format!("{}::CREATE", item.item_type)
+        || proposal.event_type == format!("{}::SET_CONTENT", item.item_type)
+    {
+        if let Some(content) = &proposal.set_content {
+            item.content_roles = content.roles().clone();
+        }
+    }
     // Historical imports may embed the initial FILE blob in CREATE. Current
     // writers still emit a separate SET_CONTENT under the FILE/FOLDER profile.
     if matches!(
         proposal.event_type.as_str(),
         "FILE::CREATE" | "FILE::SET_CONTENT"
-    ) && let Some(EventContent::Blob { blob_id }) = proposal.set_content.as_ref()
+    ) && let Some(blob_id) = proposal.set_content.as_ref().and_then(|content| content.only("bytes"))
     {
         let previous_blob = item.content_blob_id.as_deref();
         let explicit_size = proposal
@@ -153,7 +162,7 @@ pub fn apply_replica_item_event(
         } else if explicit_size.is_some() {
             item.size = explicit_size;
         }
-        item.content_blob_id = Some(blob_id.clone());
+        item.content_blob_id = Some(blob_id.to_string());
         item.content_item_seq = Some(item_seq);
     } else if proposal.event_type == "FILE::VERSION::CREATE"
         && let Some(size) = content_size(proposal.set_metadata.as_ref().and_then(synck_vcs::metadata::MetadataRef::value))
@@ -267,6 +276,7 @@ fn item_subtype(metadata: &serde_json::Value) -> Result<String, ReplicaProjectio
 
 #[cfg(test)]
 mod tests {
+    use synck_vcs::types::EventContent;
     use super::*;
     use synck_vcs::types::CreateItem;
 
@@ -300,9 +310,7 @@ mod tests {
         content.create_item = None;
         content.event_type = "FILE::SET_CONTENT".to_string();
         content.set_metadata = Some(synck_vcs::metadata::MetadataRef::new(serde_json::json!({"content":{"size":42}})).unwrap());
-        content.set_content = Some(EventContent::Blob {
-            blob_id: format!("sha256:{}", "ab".repeat(32)),
-        });
+        content.set_content = Some(EventContent::bytes(ObjectId::from_digest([0xab;32])));
         content.base_seq = Some(1);
         let projected = apply_replica_item_event(Some(created), item_id, 2, &content, now, "actor")
             .expect("project content");
@@ -363,6 +371,7 @@ mod tests {
         let item_id = ItemId::new();
         let now = Utc::now();
         let current = ReplicaItemProjection {
+            content_roles: Default::default(),
             item_id: item_id.clone(),
             item_type: "FILE".to_string(),
             item_subtype: ITEM_SUBTYPE_STANDARD.to_string(),
@@ -384,9 +393,7 @@ mod tests {
             item_id: Some(item_id.clone()),
             event_type: "FILE::VERSION::CREATE".to_string(),
             set_metadata: Some(synck_vcs::metadata::MetadataRef::new(serde_json::json!({"content":{"size":20}})).unwrap()),
-            set_content: Some(EventContent::Blob {
-                blob_id: format!("sha256:{}", "cd".repeat(32)),
-            }),
+            set_content: Some(EventContent::bytes(ObjectId::from_digest([0xcd;32]))),
             create_item: None,
             set_parent: None,
             set_name: None,

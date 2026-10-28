@@ -1,5 +1,31 @@
 [
-  {"item_id":"0198e901-d208-7670-ae29-000000000001","event_type":"FOLDER::CREATE","create_item":{"item_type":"FOLDER","name":"Folder"}},
-  {"item_id":"0198e901-d208-7670-ae29-000000000002","event_type":"FILE::CREATE","create_item":{"item_type":"FILE","parent_folder_id":"0198e901-d208-7670-ae29-000000000001","name":"a.txt"}},
-  {"item_id":"0198e901-d208-7670-ae29-000000000002","event_type":"FILE::SET_CONTENT","set_metadata":{"content":{"size":1}},"set_content":{"blob_id":"sha256:0000000000000000000000000000000000000000000000000000000000000000"}}
+  {
+    "item_id": "0198e901-d208-7670-ae29-000000000001",
+    "event_type": "FOLDER::CREATE",
+    "create_item": {
+      "item_type": "FOLDER",
+      "name": "Folder"
+    }
+  },
+  {
+    "item_id": "0198e901-d208-7670-ae29-000000000002",
+    "event_type": "FILE::CREATE",
+    "create_item": {
+      "item_type": "FILE",
+      "parent_folder_id": "0198e901-d208-7670-ae29-000000000001",
+      "name": "a.txt"
+    }
+  },
+  {
+    "item_id": "0198e901-d208-7670-ae29-000000000002",
+    "event_type": "FILE::SET_CONTENT",
+    "set_metadata": {
+      "content": {
+        "size": 1
+      }
+    },
+    "set_content": {
+      "bytes": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  }
 ]

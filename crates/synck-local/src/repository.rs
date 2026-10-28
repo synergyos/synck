@@ -1082,7 +1082,7 @@ impl Repository {
                 continue;
             }
             let proposal: synck_vcs::types::EventProposal = event.proposal()?;
-            let Some(synck_vcs::types::EventContent::Blob { blob_id }) = proposal.set_content
+            let Some(blob_id) = proposal.set_content.as_ref().and_then(|content| content.only("bytes"))
             else {
                 continue;
             };
