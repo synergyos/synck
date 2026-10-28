@@ -3,10 +3,10 @@ use std::path::Path;
 
 use chrono::{DateTime, Utc};
 use serde_json::{Map, Value};
-use synck_file_folder::file_version_set as version_set;
+use synck_file_folder::file_versions as version_set;
 use synck_vcs::types::{
     ObjectId, CommitId, CommitProposal, EventContent, EventProposal, EventRow, ItemCursor, ItemId,
-    LifecycleState, RefEventProposal, RefEventRow, canonical_event_proposal_bytes,
+    LifecycleState, RefEventProposal, RefEventRow,
     canonical_ref_event_proposal_bytes, compute_sha256_digest_bytes,
     sha256_prefixed_hex_from_digest_bytes,
 };
@@ -14,7 +14,6 @@ use uuid::Uuid;
 
 use crate::commands::normalize_input_path;
 use crate::error::{LocalError, Result};
-use crate::event_profile::parse_version_content;
 use crate::integrity::Findings;
 use crate::repository::Repository;
 use crate::worktree::NodeKind;
@@ -46,8 +45,6 @@ struct StoredVersion {
     order_key: i64,
     description: Option<String>,
     source_item_seq: i64,
-    source_commit_id: Option<CommitId>,
-    source_commit_event_idx: Option<i32>,
     blob_id: ObjectId,
     size: i64,
     created_seq: i64,
@@ -56,7 +53,6 @@ struct StoredVersion {
 }
 
 struct VersionSetState {
-    item_id: ItemId,
     head_seq: i64,
     replay_commit_id: Option<CommitId>,
     replay_commit_base_seq: i64,
@@ -169,10 +165,6 @@ impl Repository {
             version_set::LABEL_SOURCE_INTERNAL.into(),
         );
         metadata.insert("order_key".to_string(), order_key.into());
-        metadata.insert(
-            "content".to_string(),
-            serde_json::json!({ "size": revision.size }),
-        );
         if let Some(description) = normalize_description(description) {
             metadata.insert("description".to_string(), description.into());
         }
@@ -181,7 +173,7 @@ impl Repository {
             "FILE_VERSION::CREATE",
             &version_id,
             metadata,
-            Some(EventContent::bytes(revision.blob_id.clone())),
+            None,
             state.head_seq,
         )?;
         self.append_version_commit(&file_item_id, message, operation_id, event)
@@ -409,39 +401,9 @@ impl Repository {
                 break;
             }
         }
-        let owners = items
-            .iter()
-            .filter(|item| item.item_type == "FILE")
-            .map(|item| (item.item_id.clone(), item.lifecycle_state))
-            .collect::<HashMap<_, _>>();
-        let mut version_owners = items
-            .iter()
+        let version_owners = items.iter()
             .filter(|item| item.item_type == "FILE" && item.ref_head_seq > 0)
-            .map(|item| item.item_id.clone())
-            .collect::<BTreeSet<_>>();
-        for item in items
-            .iter()
-            .filter(|item| item.item_type == version_set::ITEM_TYPE)
-        {
-            if item.lifecycle_state != LifecycleState::Live {
-                findings.push(format!("FILE_VERSION_SET {} is not LIVE", item.item_id));
-            }
-            let file_item_id = match version_set::file_item_id_from_name(&item.name) {
-                Ok(value) => value,
-                Err(error) => {
-                    findings.push(format!("FILE_VERSION_SET {}: {error}", item.item_id));
-                    continue;
-                }
-            };
-            if !owners.contains_key(&file_item_id) {
-                findings.push(format!(
-                    "FILE_VERSION_SET {} has no owning FILE {}",
-                    item.item_id, file_item_id
-                ));
-                continue;
-            }
-            version_owners.insert(file_item_id);
-        }
+            .map(|item| item.item_id.clone()).collect::<BTreeSet<_>>();
         let mut operation_owners = HashMap::new();
         for file_item_id in version_owners {
             let state = match self.load_version_set(&file_item_id).await {
@@ -476,10 +438,7 @@ impl Repository {
             .get_item(self.config().repo_id().clone(), file_item_id.clone())
             .await?
             .ok_or_else(|| LocalError::Integrity(format!("missing FILE {file_item_id}")))?;
-        let item_id = version_set::item_id(self.config().repo_id(), file_item_id)
-            .map_err(LocalError::Integrity)?;
         let mut state = VersionSetState {
-            item_id,
             head_seq: 0,
             replay_commit_id: None,
             replay_commit_base_seq: 0,
@@ -580,71 +539,26 @@ impl Repository {
     }
 }
 
-fn apply_version_event(
-    repo_id: &synck_vcs::types::RepoId,
+fn apply_ref_version_event(
+    _repo_id: &synck_vcs::types::RepoId,
     file_item_id: &ItemId,
     revisions: &HashMap<i64, FileRevision>,
     state: &mut VersionSetState,
-    event: &EventRow,
+    event: &RefEventRow,
 ) -> Result<()> {
-    let proposal = parse_event(event)?;
-    version_set::validate_identities(repo_id, std::slice::from_ref(&proposal))
-        .map_err(LocalError::Integrity)?;
-    if proposal.item_id.as_ref() != Some(&state.item_id) {
-        return Err(LocalError::Integrity(format!(
-            "FILE_VERSION_SET event {} has mismatched item ID",
-            event.item_seq
-        )));
+    let proposal = decode_ref_version_event(file_item_id, event)?;
+    if proposal.set_content.is_some() {
+        return Err(LocalError::Integrity("named-version refs cannot hold content objects".into()));
     }
-    if event.item_seq != state.head_seq + 1 {
-        return Err(LocalError::Integrity(format!(
-            "FILE_VERSION_SET event sequence {} does not follow {}",
-            event.item_seq, state.head_seq
-        )));
+    if event.ref_seq != state.head_seq + 1 {
+        return Err(LocalError::Integrity("noncontiguous FILE ref ledger".into()));
     }
     if state.replay_commit_id.as_ref() != Some(&event.commit_id) {
         state.replay_commit_id = Some(event.commit_id.clone());
         state.replay_commit_base_seq = state.head_seq;
     }
-    if event.event_type == version_set::CREATE_EVENT {
-        if state.head_seq != 0 || event.item_seq != 1 {
-            return Err(LocalError::Integrity(
-                "FILE_VERSION_SET is created more than once".to_string(),
-            ));
-        }
-        let create = proposal.create_item.as_ref().ok_or_else(|| {
-            LocalError::Integrity("FILE_VERSION_SET::CREATE has no item".to_string())
-        })?;
-        if version_set::file_item_id_from_name(&create.name).map_err(LocalError::Integrity)?
-            != *file_item_id
-        {
-            return Err(LocalError::Integrity(
-                "FILE_VERSION_SET::CREATE names the wrong FILE".to_string(),
-            ));
-        }
-        state.head_seq = event.item_seq;
-        return Ok(());
-    }
-    if state.head_seq == 0
-        && !(event.item_seq == 1
-            && event.event_type == version_set::VERSION_CREATE_EVENT
-            && proposal.base_seq.is_none())
-    {
-        return Err(LocalError::Integrity(format!(
-            "{} precedes FILE_VERSION_SET::CREATE",
-            event.event_type
-        )));
-    }
-    let expected_base = if state.replay_commit_base_seq == 0 {
-        None
-    } else {
-        Some(state.replay_commit_base_seq)
-    };
-    if proposal.base_seq != expected_base {
-        return Err(LocalError::Integrity(format!(
-            "{} has invalid base sequence {:?}, expected {:?}",
-            event.event_type, proposal.base_seq, expected_base
-        )));
+    if proposal.base_ref_seq != state.replay_commit_base_seq {
+        return Err(LocalError::Integrity("invalid FILE ref base sequence".into()));
     }
     let metadata = proposal
         .set_metadata.as_ref().and_then(synck_vcs::metadata::MetadataRef::value)
@@ -691,16 +605,12 @@ fn apply_version_event(
             let label_source = required_label_source(metadata)?;
             let order_key = required_i64(metadata, "order_key")?;
             let description = optional_description(metadata)?;
-            let (blob_id, encoded_size) =
-                parse_version_content(&proposal).map_err(LocalError::Integrity)?;
-            let size = validate_source_transition(
+            let (blob_id, size) = validate_source_transition(
                 event,
                 &version_id,
                 source_item_seq,
                 source_commit_id.as_ref(),
                 source_commit_event_idx,
-                &blob_id,
-                encoded_size,
                 revisions,
             )?;
             if let Some(existing) = state.live_sources.get(&source_item_seq) {
@@ -722,12 +632,10 @@ fn apply_version_event(
                     order_key,
                     description,
                     source_item_seq,
-                    source_commit_id,
-                    source_commit_event_idx,
                     blob_id,
                     size,
-                    created_seq: event.item_seq,
-                    current_seq: event.item_seq,
+                    created_seq: event.ref_seq,
+                    current_seq: event.ref_seq,
                     created_at: event.created_at,
                 },
             );
@@ -736,58 +644,46 @@ fn apply_version_event(
             let description = required_description(metadata)?;
             let version = live_version_mut(state, &version_id)?;
             version.description = description;
-            version.current_seq = event.item_seq;
+            version.current_seq = event.ref_seq;
         }
         version_set::VERSION_SET_KIND_EVENT => {
             let kind = required_kind(metadata)?;
             let version = live_version_mut(state, &version_id)?;
             version.kind = kind;
-            version.current_seq = event.item_seq;
+            version.current_seq = event.ref_seq;
         }
         version_set::VERSION_SET_LABEL_SOURCE_EVENT => {
             let label_source = required_label_source(metadata)?;
             let version = live_version_mut(state, &version_id)?;
             version.label_source = label_source;
-            version.current_seq = event.item_seq;
+            version.current_seq = event.ref_seq;
         }
         version_set::VERSION_SET_ORDER_EVENT => {
             let order_key = required_i64(metadata, "order_key")?;
             let version = live_version_mut(state, &version_id)?;
             version.order_key = order_key;
-            version.current_seq = event.item_seq;
+            version.current_seq = event.ref_seq;
         }
-        version_set::VERSION_REPLACE_CONTENT_EVENT => {
-            let (previous_source, previous_commit_id, previous_commit_event_idx) = {
-                let previous = replay_live_version(state, &version_id)?;
-                (
-                    previous.source_item_seq,
-                    previous.source_commit_id.clone(),
-                    previous.source_commit_event_idx,
-                )
-            };
+        version_set::VERSION_SET_REVISION_EVENT => {
+            let previous_source = replay_live_version(state, &version_id)?.source_item_seq;
             let source_item_seq =
-                optional_positive_i64(metadata, "source_item_seq")?.unwrap_or(previous_source);
+                required_positive_i64(metadata, "source_item_seq")?;
             let source_commit_id =
-                optional_commit_id(metadata, "source_commit_id")?.or(previous_commit_id);
+                optional_commit_id(metadata, "source_commit_id")?;
             let source_commit_event_idx =
-                optional_nonnegative_i32(metadata, "source_commit_event_idx")?
-                    .or(previous_commit_event_idx);
+                optional_nonnegative_i32(metadata, "source_commit_event_idx")?;
             let description_patch =
                 if metadata.contains_key("description") || metadata.contains_key("comment") {
                     Some(required_description(metadata)?)
                 } else {
                     None
                 };
-            let (blob_id, encoded_size) =
-                parse_version_content(&proposal).map_err(LocalError::Integrity)?;
-            let size = validate_source_transition(
+            let (blob_id, size) = validate_source_transition(
                 event,
                 &version_id,
                 source_item_seq,
                 source_commit_id.as_ref(),
                 source_commit_event_idx,
-                &blob_id,
-                encoded_size,
                 revisions,
             )?;
             if let Some(existing) = state.live_sources.get(&source_item_seq)
@@ -805,84 +701,28 @@ fn apply_version_event(
             }
             let version = live_version_mut(state, &version_id)?;
             version.source_item_seq = source_item_seq;
-            version.source_commit_id = source_commit_id;
-            version.source_commit_event_idx = source_commit_event_idx;
             version.blob_id = blob_id;
             version.size = size;
             if let Some(description) = description_patch {
                 version.description = description;
             }
-            version.current_seq = event.item_seq;
+            version.current_seq = event.ref_seq;
         }
         version_set::VERSION_TOMBSTONE_EVENT => {
             let source_item_seq = replay_live_version(state, &version_id)?.source_item_seq;
             state.live_sources.remove(&source_item_seq);
             let version = live_version_mut(state, &version_id)?;
             version.live = false;
-            version.current_seq = event.item_seq;
+            version.current_seq = event.ref_seq;
         }
         other => {
             return Err(LocalError::Integrity(format!(
-                "unsupported FILE_VERSION_SET event {other}"
+                "unsupported FILE_VERSION event {other}"
             )));
         }
     }
-    state.head_seq = event.item_seq;
+    state.head_seq = event.ref_seq;
     Ok(())
-}
-
-fn apply_ref_version_event(
-    repo_id: &synck_vcs::types::RepoId,
-    file_item_id: &ItemId,
-    revisions: &HashMap<i64, FileRevision>,
-    state: &mut VersionSetState,
-    event: &RefEventRow,
-) -> Result<()> {
-    let proposal = decode_ref_version_event(file_item_id, event)?;
-    let suffix = event
-        .event_type
-        .strip_prefix("FILE_VERSION::")
-        .ok_or_else(|| {
-            LocalError::Integrity(format!("unsupported ref event {}", event.event_type))
-        })?;
-    let legacy_event_type = format!("FILE_VERSION_SET::VERSION_{suffix}");
-    let synthetic = EventProposal {
-        item_id: Some(state.item_id.clone()),
-        event_type: legacy_event_type.clone(),
-        set_metadata: proposal.set_metadata,
-        set_content: proposal.set_content,
-        create_item: None,
-        set_parent: None,
-        set_name: None,
-        set_tombstoned: None,
-        set_in_trash: None,
-        set_is_federated: None,
-        set_federation_stream_id: None,
-        base_seq: (proposal.base_ref_seq > 0).then_some(proposal.base_ref_seq),
-    };
-    let payload = canonical_event_proposal_bytes(&synthetic)
-        .map_err(|error| LocalError::Integrity(error.to_string()))?;
-    apply_version_event(
-        repo_id,
-        file_item_id,
-        revisions,
-        state,
-        &EventRow {
-            repo_id: event.repo_id.clone(),
-            item_id: state.item_id.clone(),
-            item_seq: event.ref_seq,
-            event_type: legacy_event_type,
-            commit_id: event.commit_id.clone(),
-            commit_event_idx: event.commit_event_idx,
-            repo_seq: event.repo_seq,
-            payload,
-            metadata: event.metadata.clone(),
-            event_payload_digest: event.event_payload_digest.clone(),
-            created_at: event.created_at,
-            parent_folder_id: None,
-            parent_folder_id_before: None,
-        },
-    )
 }
 
 fn decode_ref_version_event(
@@ -924,15 +764,13 @@ fn decode_ref_version_event(
 
 #[allow(clippy::too_many_arguments)]
 fn validate_source_transition(
-    event: &EventRow,
+    event: &RefEventRow,
     version_id: &str,
     source_item_seq: i64,
     source_commit_id: Option<&CommitId>,
     source_commit_event_idx: Option<i32>,
-    blob_id: &ObjectId,
-    encoded_size: Option<i64>,
     revisions: &HashMap<i64, FileRevision>,
-) -> Result<i64> {
+) -> Result<(ObjectId, i64)> {
     let source = revisions.get(&source_item_seq).ok_or_else(|| {
         LocalError::Integrity(format!(
             "named version {version_id} references missing FILE revision {source_item_seq}"
@@ -940,8 +778,6 @@ fn validate_source_transition(
     })?;
     if source_commit_id.is_some_and(|value| value != &source.commit_id)
         || source_commit_event_idx.is_some_and(|value| value != source.commit_event_idx)
-        || blob_id != &source.blob_id
-        || encoded_size.is_some_and(|size| size != source.size)
     {
         return Err(LocalError::Integrity(format!(
             "named version {version_id} disagrees with FILE revision {source_item_seq}"
@@ -950,7 +786,7 @@ fn validate_source_transition(
     let event_repo_seq = event.repo_seq.ok_or_else(|| {
         LocalError::Integrity(format!(
             "named-version event {} has no repository sequence",
-            event.item_seq
+            event.ref_seq
         ))
     })?;
     if source.repo_seq > event_repo_seq
@@ -960,7 +796,7 @@ fn validate_source_transition(
             "named version {version_id} references FILE revision {source_item_seq} before it exists"
         )));
     }
-    Ok(source.size)
+    Ok((source.blob_id.clone(), source.size))
 }
 
 fn replay_live_version<'a>(
@@ -1122,14 +958,14 @@ fn required_string(metadata: &Map<String, Value>, key: &str) -> Result<String> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string)
-        .ok_or_else(|| LocalError::Integrity(format!("FILE_VERSION_SET event requires {key}")))
+        .ok_or_else(|| LocalError::Integrity(format!("FILE_VERSION event requires {key}")))
 }
 
 fn required_i64(metadata: &Map<String, Value>, key: &str) -> Result<i64> {
     metadata
         .get(key)
         .and_then(Value::as_i64)
-        .ok_or_else(|| LocalError::Integrity(format!("FILE_VERSION_SET event requires {key}")))
+        .ok_or_else(|| LocalError::Integrity(format!("FILE_VERSION event requires {key}")))
 }
 
 fn required_positive_i64(metadata: &Map<String, Value>, key: &str) -> Result<i64> {
@@ -1140,16 +976,6 @@ fn required_positive_i64(metadata: &Map<String, Value>, key: &str) -> Result<i64
     })
 }
 
-fn optional_positive_i64(metadata: &Map<String, Value>, key: &str) -> Result<Option<i64>> {
-    match metadata.get(key) {
-        None | Some(Value::Null) => Ok(None),
-        Some(value) => value
-            .as_i64()
-            .filter(|value| *value > 0)
-            .map(Some)
-            .ok_or_else(|| LocalError::Integrity(format!("{key} must be greater than zero"))),
-    }
-}
 
 fn optional_nonnegative_i32(metadata: &Map<String, Value>, key: &str) -> Result<Option<i32>> {
     let value = match metadata.get(key) {
@@ -1298,8 +1124,8 @@ mod tests {
         source_item_seq: i64,
         source_commit_id: Option<&CommitId>,
         source_commit_event_idx: Option<i32>,
-        blob_id: &ObjectId,
-        size: i64,
+        _blob_id: &ObjectId,
+        _size: i64,
         order_key: i64,
         next_ref_seq: i64,
     ) -> RefEventProposal {
@@ -1324,13 +1150,12 @@ mod tests {
             version_set::LABEL_SOURCE_INTERNAL.into(),
         );
         metadata.insert("order_key".to_string(), order_key.into());
-        metadata.insert("content".to_string(), serde_json::json!({ "size": size }));
         named_version_ref_event(
             file_item_id,
             "FILE_VERSION::CREATE",
             version_id,
             metadata,
-            Some(EventContent::bytes(synck_vcs::types::ObjectId::parse(blob_id.to_string()).unwrap())),
+            None,
             next_ref_seq - 1,
         ).unwrap()
     }
@@ -1352,16 +1177,12 @@ mod tests {
             "source_commit_event_idx".to_string(),
             i64::from(source.commit_event_idx).into(),
         );
-        metadata.insert(
-            "content".to_string(),
-            serde_json::json!({ "size": source.size }),
-        );
         named_version_ref_event(
             file_item_id,
-            "FILE_VERSION::REPLACE_CONTENT",
+            "FILE_VERSION::SET_REVISION",
             version_id,
             metadata,
-            Some(EventContent::bytes(synck_vcs::types::ObjectId::parse(source.blob_id.to_string()).unwrap())),
+            None,
             next_ref_seq - 1,
         ).unwrap()
     }
@@ -1432,7 +1253,7 @@ mod tests {
             &Uuid::new_v4().to_string(),
             second.item_seq,
             Some(&second.commit_id),
-            Some(second.commit_event_idx),
+            Some(second.commit_event_idx + 1),
             &first.blob_id,
             second.size,
             version_set::ORDER_KEY_GAP * 2,
@@ -1576,83 +1397,6 @@ mod tests {
                 .any(|finding| finding.contains("both reference live FILE revision")),
             "{findings:?}"
         );
-    }
-
-    #[tokio::test]
-    async fn shared_replacement_patch_inherits_source_and_resolves_nullable_size() {
-        let temporary = tempfile::tempdir().unwrap();
-        let root = temporary.path();
-        let repository = repository_with_file(root).await;
-        fs::write(root.join("file.txt"), b"later").unwrap();
-        repository.commit("later").await.unwrap();
-        let file_item_id = repository.committed_tree().await.unwrap()["file.txt"]
-            .item_id
-            .clone();
-        let revision = repository
-            .file_revisions(&file_item_id)
-            .await
-            .unwrap()
-            .pop()
-            .unwrap();
-        let version_id = Uuid::now_v7().to_string();
-        let mut create = create_event(
-            &repository,
-            &file_item_id,
-            &version_id,
-            &Uuid::new_v4().to_string(),
-            revision.item_seq,
-            Some(&revision.commit_id),
-            Some(revision.commit_event_idx),
-            &revision.blob_id,
-            revision.size,
-            version_set::ORDER_KEY_GAP * 2,
-            2,
-        );
-        let mut changed_metadata = create.set_metadata.as_ref().unwrap().value().unwrap().clone();
-        changed_metadata["content"] = serde_json::json!({"size":null});
-        create.set_metadata = Some(synck_vcs::metadata::MetadataRef::new(changed_metadata).unwrap());
-        append(&repository, "nullable create size", vec![create]).await;
-
-        let mut metadata = Map::new();
-        metadata.insert("description".to_string(), "server-shaped patch".into());
-        metadata.insert("content".to_string(), serde_json::json!({ "size": null }));
-        let replacement = named_version_ref_event(
-            &file_item_id,
-            "FILE_VERSION::REPLACE_CONTENT",
-            &version_id,
-            metadata,
-            Some(EventContent::bytes(revision.blob_id.clone())),
-            2,
-        ).unwrap();
-        append(&repository, "patch version content", vec![replacement]).await;
-
-        let versions = repository
-            .named_versions(root, Path::new("file.txt"), false)
-            .await
-            .unwrap();
-        let version = versions
-            .iter()
-            .find(|version| version.version_id == version_id)
-            .unwrap();
-        assert_eq!(version.source_item_seq, revision.item_seq);
-        assert_eq!(version.blob_id, revision.blob_id.to_string());
-        assert_eq!(version.size, revision.size);
-        assert_eq!(version.description.as_deref(), Some("server-shaped patch"));
-        assert!(repository.fsck().await.unwrap().is_empty());
-        assert_eq!(
-            repository
-                .storage_report()
-                .await
-                .unwrap()
-                .referenced_objects,
-            3
-        );
-
-        let archive_parent = tempfile::tempdir().unwrap();
-        repository
-            .archive(&archive_parent.path().join("archive"))
-            .await
-            .unwrap();
     }
 
     #[tokio::test]

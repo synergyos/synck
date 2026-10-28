@@ -100,44 +100,18 @@ async fn windows_junctions_are_rejected_or_removed_without_traversal() {
 }
 
 #[tokio::test]
-async fn visible_root_names_cannot_use_the_version_sidecar_namespace() {
-    let temporary = tempfile::tempdir().unwrap();
-    init(temporary.path(), "author").await.unwrap();
-    fs::write(
-        temporary
-            .path()
-            .join(".__synck_file_version_set_not-a-sidecar"),
-        b"content",
-    )
-    .unwrap();
-    let repository = Repository::discover(temporary.path()).await.unwrap();
-    let error = repository.status().await.unwrap_err();
-    assert!(error.to_string().contains("reserved internal root name"));
-}
-
-#[tokio::test]
-async fn explicit_move_rejects_a_reserved_root_name_before_filesystem_mutation() {
+async fn former_sidecar_names_are_ordinary_files() {
     let temporary = tempfile::tempdir().unwrap();
     let root = temporary.path();
-    fs::write(root.join("document.txt"), b"content").unwrap();
     init(root, "author").await.unwrap();
-    let repository = Repository::discover(root).await.unwrap();
-    repository.commit("initial").await.unwrap();
-    let reserved = ".__synck_file_version_set_moved-document";
-
-    let error = repository
-        .move_path(
-            root,
-            Path::new("document.txt"),
-            Path::new(reserved),
-            "move document",
-        )
-        .await
-        .unwrap_err();
-    assert!(error.to_string().contains("reserved internal root name"));
-    assert!(root.join("document.txt").is_file());
-    assert!(!root.join(reserved).exists());
-    assert_eq!(repository.log(None).await.unwrap().len(), 2);
+    let name = ".__synck_file_version_set_visible";
+    fs::write(root.join(name), b"content").unwrap();
+    let mut repository = Repository::discover(root).await.unwrap();
+    repository.set_hidden_files_mode(synck_local::HiddenFilesMode::Track).unwrap();
+    repository.commit("capture ordinary file").await.unwrap();
+    assert!(repository.status().await.unwrap().is_empty());
+    repository.move_path(root, Path::new(name), Path::new(".__synck_file_version_set_moved"), "rename").await.unwrap();
+    assert!(repository.status().await.unwrap().is_empty());
 }
 
 #[tokio::test]

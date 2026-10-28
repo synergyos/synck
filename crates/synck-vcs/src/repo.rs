@@ -3592,9 +3592,6 @@ fn item_type_prefix_from_event_type(event_type: &str) -> Option<&str> {
 }
 
 fn event_type_matches_item_type(event_type: &str, item_type: &str) -> bool {
-    if item_type == "FILE_VERSION_SET" {
-        return false;
-    }
     match item_type_prefix_from_event_type(event_type) {
         Some("ITEM") => true,
         Some(prefix) => prefix == item_type,
@@ -3629,24 +3626,6 @@ fn validate_event_types_match_item(
         validate_event_type_matches_item(item_id, item_type, ev.event_type.as_str())?;
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod event_type_match_tests {
-    use super::*;
-
-    #[test]
-    fn global_item_events_cannot_mutate_frozen_file_version_sidecars() {
-        assert!(!event_type_matches_item_type(
-            "ITEM::DATA_LINK::PUT",
-            "FILE_VERSION_SET"
-        ));
-        assert!(!event_type_matches_item_type(
-            "FILE_VERSION_SET::VERSION_CREATE",
-            "FILE_VERSION_SET"
-        ));
-        assert!(event_type_matches_item_type("ITEM::DATA_LINK::PUT", "FILE"));
-    }
 }
 
 fn validate_commit_metadata(

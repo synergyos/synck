@@ -5,7 +5,7 @@
 //! owns no storage, transport, authorization, or filesystem behavior.
 
 mod error;
-pub mod file_version_set;
+pub mod file_versions;
 mod materialize;
 mod model;
 mod operation;

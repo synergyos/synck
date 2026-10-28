@@ -19,9 +19,6 @@ pub fn event_policy(event_type: &str) -> Option<MutationPolicy> {
     }
 
     match event_type {
-        "FILE::VERSION::CREATE" => Some(MutationPolicy::Optimistic),
-        "FILE::VERSION::SET_METADATA" => Some(MutationPolicy::Optimistic),
-        "FILE::VERSION::TOMBSTONE" => Some(MutationPolicy::Append),
         _ => None,
     }
 }

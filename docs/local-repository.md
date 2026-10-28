@@ -30,7 +30,7 @@ The public `synck-local` surface is explicit: `open_historical_view` returns an
 opaque `HistoricalView` pinned to the authenticated root;
 `historical_children` returns one `HistoricalPage` and an opaque continuation
 cursor bound to that root and parent. Its 256-entry limit counts only visible
-files and folders; hidden `FILE_VERSION_SET` items never create empty or
+files and folders; named-version refs never create empty or
 underfilled user pages.
 `materialize_historical_file` returns an owning `HistoricalFile` handle for one
 verified cache publication and holds an
@@ -693,8 +693,8 @@ content events.
 
 The local adapter consumes the shared `conformance.json` corpus. For accepted
 cases it must reproduce the shared canonical profile events both before append
-and after classifying a complete accepted commit; local FILE_VERSION_SET
-sidecars may remain adjacent but disappear from the profile projection. Shared
+and after classifying a complete accepted commit. Attached refs do not change
+the FILE/FOLDER projection. Shared
 semantic failures remain typed `SemanticError` values inside `LocalError`; the
 adapter does not recover a code by parsing display text.
 
@@ -707,26 +707,17 @@ The filesystem event profile is limited to `FOLDER::CREATE`,
 `FILE::CREATE`, `FILE::SET_PARENT`, `FILE::SET_NAME`, `FILE::SET_CONTENT`,
 `FILE::TRASH`, and `FILE::RESTORE`. `FILE::MOVE` and `FOLDER::MOVE` are rejected
 as unknown profile events; there is no reader, translation, migration, or
-fallback for them. The local repository also
-replays the shared `FILE_VERSION_SET::CREATE` and `FILE_VERSION_SET::VERSION_*`
-events only as frozen format-3 history. Sidecars are top-level VCS items with
-deterministic identities, but are never filesystem nodes. New writes use the
-owning FILE's attached ref ledger and never create or mutate a sidecar. In
-format version 3, top-level filesystem names
-beginning with `.__synck_file_version_set_` are reserved for those internal
-items; full and incremental scanning, creating, moving, recovering, or reverting
-a visible FILE or FOLDER into that root interval fails before a commit is
-accepted. Names below ordinary folders are unaffected. The local profile
-requires every named version
-to resolve to a real FILE content revision; it does not admit degraded
-import rows with no `source_item_seq`. A missing or null version-content size is
-resolved from that FILE revision. `VERSION_REPLACE_CONTENT` is a patch: omitted
-source coordinates retain their previous values. RESTORE uses the shared core
-trash transition with `set_in_trash = false`. Rename and parent change are
+fallback for them. Named versions use the owning FILE's ref ledger. Every
+label resolves to a real FILE content revision through `source_item_seq`;
+its content ID and size are derived from that revision. Ref events contain no
+content-role map. `FILE_VERSION::SET_REVISION` explicitly names a new revision.
+RESTORE uses the shared core trash transition with `set_in_trash = false`.
+Rename and parent change are
 separate canonical events in the same atomic Core commit and carry the same
 existing-item `base_seq`. A FILE that is also edited adds `FILE::SET_CONTENT`
 after those structural events with that same baseline.
-`FILE::SET_CONTENT` contains `EventContent::Blob` and exactly this metadata:
+`FILE::SET_CONTENT` contains the `bytes` object role and a salted metadata
+payload with this value:
 
 ```json
 {
@@ -737,10 +728,8 @@ after those structural events with that same baseline.
 ```
 
 `size` is the actual non-negative byte length and is at most
-`9,007,199,254,740,991`. Local FILE/FOLDER commits use the shared 10,000-event
-limit and the shared 16 MiB canonical projected-group admission limit. One Core
-commit is never split. An explicit batch command may append several
-independently atomic Core commits.
+`9,007,199,254,740,991`. One working-tree delta is one atomic commit with no
+format event-count limit. There is no batch commit command.
 
 A clean commit prints `nothing to commit`, succeeds, and writes no empty
 commit.
@@ -1182,8 +1171,8 @@ selected commit may contain only FILE and FOLDER events and the automatic
 changes any other item family, such as a committed email or a chat message, is
 rejected atomically. Every affected path must lie inside the checkout
 selection; widen a partial checkout first.
-`FILE_VERSION_SET` lifecycle events are not inverted. In particular,
-`VERSION_TOMBSTONE` is permanent under the shared contract, and a commit that
+Named-version refs are not inverted. In particular,
+`FILE_VERSION::TOMBSTONE` is permanent under the shared contract, and a commit that
 only changes named-version state has no reversible working-tree change.
 
 Write and sync one strict `.synck/revert.json` intent containing the shared
@@ -1278,8 +1267,7 @@ unchanged; both unchanged parents remain path context only.
 The Rust history model carries `item_type` on every semantic change. Canonical
 event rows retain their raw owning `item_id` and payload, and also carry a
 commit-boundary display subject: visible FILE/FOLDER identity, type, name,
-previous name, and parent names. Frozen FILE_VERSION_SET events remain
-verifiably sidecar events, while new `FILE_VERSION::*` ref events directly name
+previous name, and parent names. `FILE_VERSION::*` ref events directly name
 their owning FILE.
 Library presentation consumers may use `show_event_page` with an exclusive
 `commit_event_idx` cursor. It reads and projects only the requested immutable

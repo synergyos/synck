@@ -569,7 +569,7 @@ impl Repository {
 
     fn verify_quarantined_entry(&self, expected: &WorkingTreeEntry) -> Result<()> {
         let stage = self.open_working_tree_edit_stage()?;
-        let nodes = scan_canonical_without_ignore(&stage, &BTreeMap::new(), false)?;
+        let nodes = scan_canonical_without_ignore(&stage, &BTreeMap::new())?;
         let mut entries = nodes
             .into_iter()
             .map(|(path, node)| {
@@ -898,7 +898,7 @@ impl Repository {
         }
 
         let stage = self.open_working_tree_edit_stage()?;
-        let staged = observed_entry(&stage, WORKING_TREE_EDIT_STAGE_ENTRY, &intent.source, false)?;
+        let staged = observed_entry(&stage, WORKING_TREE_EDIT_STAGE_ENTRY, &intent.source)?;
 
         if let Some(staged) = staged {
             require_expected_entry(Some(&staged), &intent.expected, "staging")?;
@@ -1026,7 +1026,6 @@ impl Repository {
             &parent,
             leaf_name(path),
             authority_path,
-            parent_path(path).is_none() && self.config().reserves_file_version_namespace(),
         )?;
         Ok((parent, entry))
     }
@@ -1406,9 +1405,8 @@ fn observed_entry(
     parent: &Dir,
     name: &str,
     display: &str,
-    reserve_file_version_namespace: bool,
 ) -> Result<Option<WorkingTreeEntry>> {
-    let nodes = scan_entry_without_ignore(parent, name, reserve_file_version_namespace)?;
+    let nodes = scan_entry_without_ignore(parent, name)?;
     if nodes.is_empty() {
         return Ok(None);
     }

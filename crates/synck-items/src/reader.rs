@@ -143,7 +143,7 @@ pub struct ReadableItem {
 
 pub struct ItemReader {
     item_id: ItemId,
-    repo_id: Option<RepoId>,
+    file_revisions: BTreeMap<i64, (String, Option<i64>)>,
     ref_seq: i64,
     data_links: BTreeMap<String, subitems::ItemDataLink>,
     ancillary_events: Vec<AncillaryEvent>,
@@ -174,7 +174,7 @@ impl ItemReader {
     pub fn new(item_id: ItemId) -> Self {
         Self {
             item_id,
-            repo_id: None,
+            file_revisions: BTreeMap::new(),
             ref_seq: 0,
             data_links: BTreeMap::new(),
             ancillary_events: Vec::new(),
@@ -185,11 +185,8 @@ impl ItemReader {
         }
     }
 
-    /// Supply repository identity for deterministic FILE versions.
-    pub fn for_repository(repo_id: RepoId, item_id: ItemId) -> Self {
-        let mut reader = Self::new(item_id);
-        reader.repo_id = Some(repo_id);
-        reader
+    pub fn for_repository(_repo_id: RepoId, item_id: ItemId) -> Self {
+        Self::new(item_id)
     }
 
     pub fn latest_item_seq(&self) -> i64 {
@@ -258,16 +255,6 @@ impl ItemReader {
             return Err(invalid("noncontiguous ref sequence"));
         }
         if let Some(verb) = event.event_type.strip_prefix("FILE_VERSION::") {
-            let sidecar_event = match verb {
-                "CREATE" => "FILE_VERSION_SET::VERSION_CREATE",
-                "SET_DESCRIPTION" => "FILE_VERSION_SET::VERSION_SET_DESCRIPTION",
-                "SET_KIND" => "FILE_VERSION_SET::VERSION_SET_KIND",
-                "SET_LABEL_SOURCE" => "FILE_VERSION_SET::VERSION_SET_LABEL_SOURCE",
-                "SET_ORDER" => "FILE_VERSION_SET::VERSION_SET_ORDER",
-                "REPLACE_CONTENT" => "FILE_VERSION_SET::VERSION_REPLACE_CONTENT",
-                "TOMBSTONE" => "FILE_VERSION_SET::VERSION_TOMBSTONE",
-                _ => return Err(unsupported("FILE", &event.event_type)),
-            };
             let meta = event
                 .set_metadata.as_ref().and_then(synck_vcs::metadata::MetadataRef::value)
                 .ok_or_else(|| invalid("version ref metadata missing"))?;
@@ -303,61 +290,13 @@ impl ItemReader {
                 }
                 _ => {}
             }
-            if matches!(verb, "CREATE" | "REPLACE_CONTENT") {
-                let content = subitems::reconstruct_subitem_content(
-                    event.set_metadata.as_ref().and_then(synck_vcs::metadata::MetadataRef::value),
-                    event.set_content.as_ref(),
-                );
-                subitems::validate_file_version_ref_content(&content, &event.event_type)?;
-                subitems::file_version_ref_optional_positive_i64(
-                    meta,
-                    "source_item_seq",
-                    &event.event_type,
-                )?;
-                subitems::file_version_ref_optional_nonnegative_i32(
-                    meta,
-                    "source_commit_event_idx",
-                    &event.event_type,
-                )?;
-                subitems::file_version_ref_optional_commit_id(
-                    meta,
-                    "source_commit_id",
-                    &event.event_type,
-                )?;
+            if event.set_content.is_some() {
+                return Err(invalid("named-version refs cannot hold content objects"));
             }
             let key = ("FILE_VERSION".into(), SubitemIdentity::Uuid(id));
-            if verb != "CREATE" && !self.subitems.contains_key(&key) {
-                if let Some((legacy_key, legacy)) = self
-                    .subitems
-                    .iter()
-                    .find(|(_, row)| row.family == "FILE::VERSION" && row.stable_id == Some(id))
-                    .map(|(key, row)| (key.clone(), row.clone()))
-                {
-                    self.subitems.remove(&legacy_key);
-                    let mut row = legacy;
-                    row.family = "FILE_VERSION".into();
-                    row.identity = SubitemIdentity::Uuid(id);
-                    row.file_item_id = Some(Uuid::parse_str(self.item_id.as_str()).unwrap());
-                    self.subitems.insert(key.clone(), row);
-                }
-            }
-            let proposal = EventProposal {
-                item_id: Some(self.item_id.clone()),
-                event_type: sidecar_event.into(),
-                set_metadata: event.set_metadata.clone(),
-                set_content: event.set_content.clone(),
-                create_item: None,
-                set_parent: None,
-                set_name: None,
-                set_tombstoned: None,
-                set_in_trash: None,
-                set_is_federated: None,
-                set_federation_stream_id: None,
-                base_seq: None,
-            };
             self.apply_version_descriptor(
                 "FILE_VERSION",
-                &proposal,
+                event,
                 &ReadContext {
                     item_seq: ctx.ref_seq,
                     created_at: ctx.created_at,
@@ -437,7 +376,6 @@ impl ItemReader {
         )
         .map_err(invalid)?;
         match kind.as_str() {
-            "FILE_VERSION_SET" => self.apply_version_set(event, &context)?,
             "FILE" | "FOLDER" | "CHAT" | "EMAIL" => {
                 if let Some((subkind, verb)) = subitems::classify_subitem_event(&event.event_type) {
                     if subkind.owning_item_type() != kind {
@@ -449,6 +387,10 @@ impl ItemReader {
                 }
             }
             _ => return Err(unsupported(&kind, &event.event_type)),
+        }
+        if kind == "FILE" && matches!(event.event_type.as_str(), "FILE::CREATE" | "FILE::SET_CONTENT") && event.set_content.is_some() {
+            let blob = projection.content_blob_id.clone().ok_or_else(|| invalid("FILE revision has no bytes"))?;
+            self.file_revisions.insert(context.item_seq, (blob, projection.size));
         }
         self.projection = Some(projection);
         Ok(())
@@ -629,17 +571,6 @@ impl ItemReader {
             let mut row = self.blank(family, key.1.clone(), meta, content, ctx);
             row.parent_item_seq = parent;
             initialize_subitem(kind, &mut row, ctx)?;
-            if kind == Kind::FileVersion {
-                row.stable_id = meta_version_id(&row.metadata).or_else(|| {
-                    self.repo_id.as_ref().map(|repo| {
-                        subitems::legacy_file_version_id(
-                            &Uuid::parse_str(repo.as_str()).expect("typed repo ID"),
-                            &Uuid::parse_str(self.item_id.as_str()).expect("typed item ID"),
-                            ctx.item_seq,
-                        )
-                    })
-                });
-            }
             row
         } else {
             let mut row = previous
@@ -656,9 +587,6 @@ impl ItemReader {
         self.subitems.insert(key, row);
         if let Some(folder) = removed_folder {
             self.detach_chat_folder(folder);
-        }
-        if kind == Kind::FileVersion {
-            self.relabel_versions(family)?;
         }
         Ok(())
     }
@@ -699,54 +627,37 @@ impl ItemReader {
         }
     }
 
-    fn apply_version_set(
-        &mut self,
-        event: &EventProposal,
-        ctx: &ReadContext<'_>,
-    ) -> Result<(), ReadError> {
-        self.apply_version_descriptor("FILE_VERSION_SET::VERSION", event, ctx)
-    }
-
     fn apply_version_descriptor(
         &mut self,
         family: &str,
-        event: &EventProposal,
+        event: &RefEventProposal,
         ctx: &ReadContext<'_>,
     ) -> Result<(), ReadError> {
-        use synck_file_folder::file_version_set as versions;
-        if event.event_type == versions::CREATE_EVENT {
-            let create = event
-                .create_item
-                .as_ref()
-                .ok_or_else(|| invalid("sidecar creation missing identity"))?;
-            versions::file_item_id_from_name(&create.name).map_err(invalid)?;
-            return Ok(());
-        }
+        use synck_file_folder::file_versions as versions;
         let meta = event
             .set_metadata.as_ref().and_then(synck_vcs::metadata::MetadataRef::value)
-            .ok_or_else(|| invalid("sidecar metadata missing"))?;
+            .ok_or_else(|| invalid("named-version metadata missing"))?;
         let id = uuid(meta, "version_id")?;
         let owner = uuid(meta, "file_item_id")?;
         let key = (family.into(), SubitemIdentity::Uuid(id));
-        let content = subitems::reconstruct_subitem_content(
-            event.set_metadata.as_ref().and_then(synck_vcs::metadata::MetadataRef::value),
-            event.set_content.as_ref(),
-        );
+        let source = if matches!(event.event_type.as_str(), versions::VERSION_CREATE_EVENT | versions::VERSION_SET_REVISION_EVENT) {
+            let seq = meta.get("source_item_seq").and_then(Value::as_i64).filter(|seq| *seq > 0)
+                .ok_or_else(|| invalid("named version requires source_item_seq"))?;
+            Some(self.file_revisions.get(&seq).cloned().ok_or_else(|| invalid("named version refers to missing FILE revision"))?)
+        } else { None };
         let mut row = if event.event_type == versions::VERSION_CREATE_EVENT {
             if self.subitems.contains_key(&key) {
-                return Ok(());
+                return Err(invalid("duplicate named version"));
             }
-            let mut row = self.blank(family, key.1.clone(), meta.clone(), content.clone(), ctx);
+            let mut row = self.blank(family, key.1.clone(), meta.clone(), Value::Null, ctx);
             row.stable_id = Some(id);
             row.file_item_id = Some(owner);
-            row.blob_id = Some(
-                subitems::file_version_blob_id_from_content(&content)
-                    .ok_or_else(|| invalid("sidecar blob missing"))?,
-            );
-            row.size = subitems::file_version_size_from_content(&content);
+            let (blob, size) = source.expect("CREATE resolved source");
+            row.blob_id = Some(blob);
+            row.size = size;
             row.body = subitems::file_version_comment_from_meta(meta);
             if subitems::file_version_order_key_from_meta(meta).is_none() {
-                return Err(invalid("sidecar order_key missing"));
+                return Err(invalid("named-version order_key missing"));
             }
             row
         } else {
@@ -754,12 +665,12 @@ impl ItemReader {
                 .subitems
                 .get(&key)
                 .cloned()
-                .ok_or_else(|| invalid("sidecar version before creation"))?;
+                .ok_or_else(|| invalid("named-version version before creation"))?;
             if row.file_item_id != Some(owner) {
-                return Err(invalid("sidecar file identity changed"));
+                return Err(invalid("named-version file identity changed"));
             }
             if row.lifecycle != SubitemLifecycle::Live {
-                return Err(invalid("sidecar version must be live"));
+                return Err(invalid("named-version version must be live"));
             }
             match event.event_type.as_str() {
                 versions::VERSION_SET_DESCRIPTION_EVENT => {
@@ -781,16 +692,13 @@ impl ItemReader {
                 versions::VERSION_SET_ORDER_EVENT => {
                     row.metadata["order_key"] = Value::from(
                         subitems::file_version_order_key_from_meta(meta)
-                            .ok_or_else(|| invalid("sidecar order_key missing"))?,
+                            .ok_or_else(|| invalid("named-version order_key missing"))?,
                     )
                 }
-                versions::VERSION_REPLACE_CONTENT_EVENT => {
-                    row.blob_id = Some(
-                        subitems::file_version_blob_id_from_content(&content)
-                            .ok_or_else(|| invalid("sidecar blob missing"))?,
-                    );
-                    row.size = subitems::file_version_size_from_content(&content);
-                    row.content = content;
+                versions::VERSION_SET_REVISION_EVENT => {
+                    let (blob, size) = source.expect("replacement resolved source");
+                    row.blob_id = Some(blob);
+                    row.size = size;
                     if meta.get("description").is_some() || meta.get("comment").is_some() {
                         row.body = subitems::file_version_comment_from_meta(meta);
                     }
@@ -805,7 +713,7 @@ impl ItemReader {
                     }
                 }
                 versions::VERSION_TOMBSTONE_EVENT => row.lifecycle = SubitemLifecycle::Tombstoned,
-                _ => return Err(unsupported("FILE_VERSION_SET", &event.event_type)),
+                _ => return Err(unsupported("FILE", &event.event_type)),
             }
             row
         };
@@ -815,25 +723,13 @@ impl ItemReader {
     }
 
     fn relabel_versions(&mut self, family: &str) -> Result<(), ReadError> {
-        let owner_versions = matches!(family, "FILE::VERSION" | "FILE_VERSION");
-        let mut keys = self
-            .subitems
-            .iter()
-            .filter(|(_, row)| {
-                (row.family == family
-                    || (owner_versions
-                        && matches!(row.family.as_str(), "FILE::VERSION" | "FILE_VERSION")))
-                    && row.lifecycle == SubitemLifecycle::Live
-            })
+        let mut keys = self.subitems.iter()
+            .filter(|(_, row)| row.family == family && row.lifecycle == SubitemLifecycle::Live)
             .map(|(key, row)| {
                 (
                     key.clone(),
                     subitems::file_version_order_key_from_meta(&row.metadata).unwrap_or(0),
-                    if row.family == "FILE::VERSION" {
-                        row.created_position.seq
-                    } else {
-                        row.latest_position.seq
-                    },
+                    row.created_position.seq,
                     row.stable_id,
                 )
             })
@@ -842,7 +738,7 @@ impl ItemReader {
         let (mut major, mut minor) = (0, 0);
         for (key, _, _, _) in keys {
             let row = self.subitems.get_mut(&key).expect("collected key");
-            synck_file_folder::file_version_set::advance_label(
+            synck_file_folder::file_versions::advance_label(
                 &subitems::file_version_kind_from_meta(&row.metadata),
                 &mut major,
                 &mut minor,
@@ -969,17 +865,6 @@ fn initialize_subitem(
             row.metadata = fields.meta;
         }
 
-        Kind::FileVersion => {
-            row.blob_id = Some(
-                subitems::file_version_blob_id_from_content(&row.content)
-                    .ok_or_else(|| invalid("file version blob missing"))?,
-            );
-            row.size = subitems::file_version_size_from_content(&row.content);
-            row.body = subitems::file_version_comment_from_meta(&row.metadata);
-            if subitems::file_version_order_key_from_meta(&row.metadata).is_none() {
-                return Err(invalid("file version order_key missing"));
-            }
-        }
     }
     Ok(())
 }
@@ -994,11 +879,7 @@ fn update_subitem(
     ctx: &ReadContext<'_>,
 ) -> Result<(), ReadError> {
     if matches!(verb, Verb::Trash | Verb::Restore | Verb::Tombstone) {
-        row.lifecycle = if kind == Kind::FileVersion && verb == Verb::Trash {
-            SubitemLifecycle::Tombstoned
-        } else {
-            lifecycle_for_event(&event.event_type)?
-        };
+        row.lifecycle = lifecycle_for_event(&event.event_type)?;
         return Ok(());
     }
     let replacement = subitems::meta_get_json(event.set_metadata.as_ref().and_then(synck_vcs::metadata::MetadataRef::value), "meta");
@@ -1094,48 +975,6 @@ fn update_subitem(
             row.metadata = fields.meta;
         }
 
-        Kind::FileVersion => {
-            if let Some(meta) = replacement {
-                if let Some(next) = meta
-                    .get("kind")
-                    .and_then(Value::as_str)
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                {
-                    row.metadata["kind"] = Value::String(next.into());
-                }
-                if meta.get("label_source").is_some() {
-                    row.metadata["label_source"] = Value::String(
-                        synck_file_folder::file_version_set::normalize_label_source(
-                            meta.get("label_source").and_then(Value::as_str),
-                        )
-                        .map_err(invalid)?
-                        .into(),
-                    );
-                }
-                if let Some(order) = subitems::file_version_order_key_from_meta(&meta) {
-                    row.metadata["order_key"] = Value::from(order);
-                }
-                if meta.get("comment").is_some() {
-                    row.body = subitems::file_version_comment_from_meta(&meta);
-                }
-                for field in [
-                    "source_item_seq",
-                    "source_commit_id",
-                    "source_commit_event_idx",
-                ] {
-                    if let Some(value) = meta.get(field).filter(|value| !value.is_null()) {
-                        row.metadata[field] = value.clone();
-                    }
-                }
-            }
-            if let Some(blob) = subitems::file_version_blob_id_from_content(content) {
-                row.blob_id = Some(blob);
-            }
-            if subitems::file_version_content_has_size(content) {
-                row.size = subitems::file_version_size_from_content(content);
-            }
-        }
     }
     if !content.is_null() && !matches!(kind, Kind::EmailAttachment) {
         if matches!(
@@ -1143,7 +982,6 @@ fn update_subitem(
             Kind::ChatMessage
                 | Kind::ChatMessageReaction
                 | Kind::ChatAttachment
-                | Kind::FileVersion
         ) {
             if let Some(patch) = content.as_object() {
                 if !row.content.is_object() {
@@ -1161,11 +999,7 @@ fn update_subitem(
     Ok(())
 }
 
-fn meta_version_id(meta: &Value) -> Option<Uuid> {
-    meta.get("version_id")
-        .and_then(Value::as_str)
-        .and_then(|id| Uuid::parse_str(id).ok())
-}
+
 
 #[cfg(test)]
 mod tests;

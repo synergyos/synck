@@ -35,7 +35,7 @@ use crate::comparison::compare_trees;
 use crate::error::{IoContext, LocalError, Result};
 use crate::event_profile::{
     LocalEvent, classify_complete_commit, classify_proposal_commit, commit_item_kind_requirements,
-    is_reserved_root_name, proposal_item_kind_requirements,
+    proposal_item_kind_requirements,
 };
 use crate::objects::verify_object_file;
 #[cfg(windows)]
@@ -643,9 +643,6 @@ impl Repository {
             &after,
             &current,
         )?;
-        if self.config().reserves_file_version_namespace() {
-            reject_reserved_revert_items(&intent.items)?;
-        }
         for item in &intent.items {
             if !self.checkout_observes(&item.after.path)
                 || item
@@ -679,10 +676,6 @@ impl Repository {
         objects_validated: bool,
     ) -> Result<String> {
         validate_revert_fixed_fields(intent)?;
-        if self.config().reserves_file_version_namespace() {
-            reject_reserved_revert_items(&intent.items)
-                .map_err(|error| LocalError::Integrity(error.to_string()))?;
-        }
         self.recover().await?;
         let before = self.historical_nodes_before(intent.base_repo_seq).await?;
         let after = self
@@ -1175,9 +1168,6 @@ impl Repository {
         }
         let source = normalize_input_path(self.root_path(), caller, source_input)?;
         let destination = normalize_input_path(self.root_path(), caller, destination_input)?;
-        if self.config().reserves_file_version_namespace() {
-            reject_reserved_root_path(&destination)?;
-        }
         if source == destination {
             return Err(LocalError::Invalid(
                 "move source and destination are the same".to_string(),
@@ -1293,10 +1283,6 @@ impl Repository {
         let Some(intent) = self.read_move_intent()? else {
             return Ok(());
         };
-        if self.config().reserves_file_version_namespace() {
-            reject_reserved_root_path(&intent.destination)
-                .map_err(|error| LocalError::Integrity(error.to_string()))?;
-        }
         self.recover().await?;
         let committed = self.committed_tree().await?;
         validate_move_intent(self.root_path(), &committed, &intent)?;
@@ -1397,10 +1383,6 @@ impl Repository {
     }
 
     async fn complete_move_intent(&self, intent: &MoveIntent) -> Result<String> {
-        if self.config().reserves_file_version_namespace() {
-            reject_reserved_root_path(&intent.destination)
-                .map_err(|error| move_pending_error(intent, error))?;
-        }
         let accepted = self
             .append_move_intent(intent)
             .await
@@ -2430,9 +2412,6 @@ impl Repository {
                     .await
                     .map_err(|error| LocalError::Integrity(error.to_string()))?;
                 for (_, item) in page.entries {
-                    if item.item_type == synck_file_folder::file_version_set::ITEM_TYPE {
-                        continue;
-                    }
                     if self.checkout_paths().is_some()
                         && !matches!(item.item_type.as_str(), "FILE" | "FOLDER")
                     {
@@ -2745,7 +2724,6 @@ impl Repository {
                 if item.lifecycle_state != LifecycleState::Live
                     || self.checkout_paths().is_none()
                         && !matches!(item.item_type.as_str(), "FILE" | "FOLDER")
-                        && item.item_type != synck_file_folder::file_version_set::ITEM_TYPE
                 {
                     return Err(LocalError::Integrity(format!(
                         "historical live item {} has an invalid type or lifecycle",
@@ -2821,9 +2799,8 @@ impl Repository {
 
     fn historical_committed_tree_from_state(
         &self,
-        mut items: BTreeMap<ItemId, ItemValue>,
+        items: BTreeMap<ItemId, ItemValue>,
     ) -> Result<BTreeMap<String, CommittedNode>> {
-        items.retain(|_, item| item.item_type != synck_file_folder::file_version_set::ITEM_TYPE);
         let mut paths = HashMap::new();
         let mut visiting = HashSet::new();
         for (item_id, item) in &items {
@@ -2904,7 +2881,6 @@ impl Repository {
         &self,
         mut items: BTreeMap<ItemId, ItemValue>,
     ) -> Result<HashMap<ItemId, HistoryNode>> {
-        items.retain(|_, item| item.item_type != synck_file_folder::file_version_set::ITEM_TYPE);
         self.retain_checkout_filesystem_view(&mut items);
         let contents = self.historical_file_contents(&items, false)?;
         items
@@ -3453,9 +3429,6 @@ impl Repository {
         }
         let replay = self.replay_history(None).await?;
         let intent = build_recover_intent(&root_item_id, message, &replay.nodes)?;
-        if self.config().reserves_file_version_namespace() {
-            reject_reserved_recover_items(&intent.items)?;
-        }
         if intent
             .items
             .iter()
@@ -3485,10 +3458,6 @@ impl Repository {
         intent: &RecoverIntent,
         objects_validated: bool,
     ) -> Result<String> {
-        if self.config().reserves_file_version_namespace() {
-            reject_reserved_recover_items(&intent.items)
-                .map_err(|error| LocalError::Integrity(error.to_string()))?;
-        }
         self.recover().await?;
         let replay = self.replay_history(None).await?;
         let accepted = validate_recover_intent(self.root_path(), intent, &replay.nodes)?;
@@ -3923,7 +3892,7 @@ impl Repository {
         if let Some(expected) = expected {
             let all = self.complete_file_tree().await?;
             let mut observed =
-                crate::worktree::scan_canonical_without_ignore(self.root(), &all, true)?;
+                crate::worktree::scan_canonical_without_ignore(self.root(), &all)?;
             self.filter_checkout_observation(&mut observed);
             if worktree_restore_manifest(&observed, &HashMap::new())? != expected {
                 return Err(LocalError::Invalid("working tree changed during checkout materialization; preserve the files and retry recovery after resolving the change".into()));
@@ -4994,7 +4963,7 @@ fn reject_ignored_restore_descendants(
                 .is_some_and(|before| before.path == ".synckignore")
     });
     if ignore_changes {
-        let strict = crate::worktree::scan_canonical_without_ignore(root, committed, false)?;
+        let strict = crate::worktree::scan_canonical_without_ignore(root, committed)?;
         if let Some(path) = strict
             .keys()
             .find(|path| !working.contains_key(*path) && !retained_sources.contains(*path))
@@ -5859,43 +5828,6 @@ fn validate_recover_names(nodes: &HashMap<ItemId, HistoryNode>, selected: &[Item
     Ok(())
 }
 
-fn reject_reserved_root_path(path: &str) -> Result<()> {
-    if !path.contains('/') && is_reserved_root_name(path) {
-        return Err(LocalError::Invalid(format!(
-            "reserved internal root name: {path}"
-        )));
-    }
-    Ok(())
-}
-
-fn reject_reserved_recover_items(items: &[RecoverIntentItem]) -> Result<()> {
-    for item in items {
-        if item.parent_id.is_none() && is_reserved_root_name(&item.name) {
-            return Err(LocalError::Invalid(format!(
-                "cannot recover reserved internal root name: {}",
-                item.name
-            )));
-        }
-    }
-    Ok(())
-}
-
-fn reject_reserved_revert_items(items: &[RevertIntentItem]) -> Result<()> {
-    for state in items
-        .iter()
-        .filter_map(|item| item.before.as_ref())
-        .filter(|state| state.live)
-    {
-        if state.parent_id.is_none() && is_reserved_root_name(&state.name) {
-            return Err(LocalError::Invalid(format!(
-                "cannot revert to reserved internal root name: {}",
-                state.name
-            )));
-        }
-    }
-    Ok(())
-}
-
 fn is_descendant_of(
     item_id: &ItemId,
     ancestor_id: &ItemId,
@@ -6247,41 +6179,7 @@ async fn ref_commit_event_presentation<S: StateIndexStore>(
 }
 
 fn commit_event_display_item_id(proposal: &EventProposal) -> Result<ItemId> {
-    if !proposal
-        .event_type
-        .as_str()
-        .starts_with("FILE_VERSION_SET::")
-    {
-        return proposal
-            .item_id
-            .clone()
-            .ok_or_else(|| LocalError::Integrity("commit event has no item ID".to_string()));
-    }
-    if proposal.event_type.as_str() == synck_file_folder::file_version_set::CREATE_EVENT {
-        let name = proposal
-            .create_item
-            .as_ref()
-            .map(|item| item.name.as_str())
-            .ok_or_else(|| {
-                LocalError::Integrity("FILE_VERSION_SET::CREATE has no item".to_string())
-            })?;
-        return synck_file_folder::file_version_set::file_item_id_from_name(name)
-            .map_err(LocalError::Integrity);
-    }
-    let file_item_id = proposal
-        .set_metadata.as_ref().and_then(synck_vcs::metadata::MetadataRef::value)
-        .and_then(serde_json::Value::as_object)
-        .and_then(|metadata| metadata.get("file_item_id"))
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| {
-            LocalError::Integrity(format!("{} has no file_item_id", proposal.event_type))
-        })?;
-    ItemId::parse(file_item_id).map_err(|error| {
-        LocalError::Integrity(format!(
-            "{} has invalid file_item_id: {error}",
-            proposal.event_type
-        ))
-    })
+    proposal.item_id.clone().ok_or_else(|| LocalError::Integrity("commit event has no item ID".into()))
 }
 
 async fn historical_parent_name<S: StateIndexStore>(
@@ -6357,7 +6255,6 @@ fn initial_historical_changes(items: BTreeMap<ItemId, ItemValue>) -> Result<Vec<
     let mut changes = Vec::new();
     for (item_id, item) in &items {
         if item.lifecycle_state != LifecycleState::Live
-            || item.item_type == synck_file_folder::file_version_set::ITEM_TYPE
         {
             continue;
         }
@@ -6581,7 +6478,6 @@ fn apply_history_event(
             node.size = Some(*size);
             node.head_seq = event.item_seq;
         }
-        LocalEvent::VersionSetCreate | LocalEvent::VersionSetMutation => {}
     }
     Ok(())
 }
@@ -7264,21 +7160,15 @@ pub(crate) fn materialize_events(
             let file_id = file_id.expect("materialized content has an item ID");
             let source_commit_event_idx = i32::try_from(events.len() - 1)
                 .map_err(|_| LocalError::Invalid("commit event index overflow".to_string()))?;
-            let content = current_or_created_blob(&events, &file_id)?;
             let version_id = Uuid::now_v7().to_string();
-            let size = i64::try_from(content.size).map_err(|_| {
-                LocalError::Invalid("file is too large for local storage".to_string())
-            })?;
             ref_events.push(
-                synck_file_folder::file_version_set::automatic_initial_ref_event(
+                synck_file_folder::file_versions::automatic_initial_ref_event(
                     repo_id,
                     &file_id,
                     &version_id,
                     0,
                     2,
                     source_commit_event_idx,
-                    content.blob_id.to_string(),
-                    Some(size),
                 )
                 .map_err(LocalError::Invalid)?,
             );
@@ -7314,23 +7204,7 @@ fn blob_ref(blob_id: &ObjectId, size: u64) -> Result<BlobRef> {
     })
 }
 
-fn current_or_created_blob(events: &[EventProposal], file_id: &ItemId) -> Result<BlobRef> {
-    let event = events
-        .iter()
-        .rev()
-        .find(|event| {
-            event.item_id.as_ref() == Some(file_id) && event.event_type == "FILE::SET_CONTENT"
-        })
-        .ok_or_else(|| LocalError::Integrity("materialized FILE has no content".to_string()))?;
-    let (blob_id, size) =
-        crate::event_profile::parse_content(event).map_err(LocalError::Integrity)?;
-    Ok(BlobRef {
-        blob_id,
-        size: u64::try_from(size).map_err(|_| {
-            LocalError::Integrity("materialized FILE has negative size".to_string())
-        })?,
-    })
-}
+
 
 fn parent_id(
     path: &str,
@@ -7540,14 +7414,14 @@ mod tests {
     #[cfg(windows)]
     use super::entry_matches_revert_state;
     use super::{
-        CommitOutcome, RecoverIntentItem, RevertIntentItem, RevertItemState,
+        CommitOutcome,
         WORKTREE_RESTORE_INTENT_NAME, WORKTREE_RESTORE_INTENT_VERSION, WORKTREE_RESTORE_STAGE_NAME,
         WorktreeRestoreIntent, build_recover_intent, build_revert_intent,
         build_worktree_restore_items, materialize_events, proposal_item_kind_requirements,
-        reject_reserved_recover_items, reject_reserved_revert_items, worktree_restore_manifest,
+        worktree_restore_manifest,
     };
     use crate::LocalError;
-    use crate::event_profile::{LocalEvent, classify_commit};
+    use crate::event_profile::classify_commit;
     use crate::init;
     use crate::repository::{Repository, windows_extended_length_path_units};
 
@@ -7706,7 +7580,6 @@ mod tests {
                     let visible = classified
                         .into_iter()
                         .filter_map(|event| match event.profile {
-                            LocalEvent::VersionSetCreate | LocalEvent::VersionSetMutation => None,
                             _ => Some(event.proposal),
                         })
                         .collect::<Vec<_>>();
@@ -7743,47 +7616,6 @@ mod tests {
         let input: Vec<u16> = r"C:\work\file".encode_utf16().collect();
         let expected: Vec<u16> = "\\\\?\\C:\\work\\file\0".encode_utf16().collect();
         assert_eq!(windows_extended_length_path_units(&input), expected);
-    }
-
-    #[test]
-    fn recovery_and_revert_reject_a_reserved_live_root_target() {
-        let item_id = ItemId::new();
-        let name = ".__synck_file_version_set_visible".to_string();
-        let recover = RecoverIntentItem {
-            item_id: item_id.clone(),
-            item_type: "FOLDER".to_string(),
-            parent_id: None,
-            name: name.clone(),
-            path: name.clone(),
-            base_seq: 2,
-            blob_id: None,
-            size: None,
-        };
-        assert!(reject_reserved_recover_items(&[recover]).is_err());
-
-        let live = RevertItemState {
-            plain_digest: None,
-            parent_id: None,
-            name: name.clone(),
-            path: name.clone(),
-            live: true,
-            head_seq: 1,
-            blob_id: None,
-            size: None,
-        };
-        let trashed = RevertItemState {
-            plain_digest: None,
-            live: false,
-            head_seq: 2,
-            ..live.clone()
-        };
-        let revert = RevertIntentItem {
-            item_id,
-            item_type: "FOLDER".to_string(),
-            before: Some(live),
-            after: trashed,
-        };
-        assert!(reject_reserved_revert_items(&[revert]).is_err());
     }
 
     #[cfg(windows)]

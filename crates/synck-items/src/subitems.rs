@@ -3,7 +3,7 @@
 //! Metadata reconstruction preserves replacement values and raw canonical text.
 //! PostgreSQL callers retain their existing projection sanitation separately.
 
-use synck_vcs::types::{ObjectId, EventContent};
+use synck_vcs::types::EventContent;
 use uuid::Uuid;
 
 #[derive(Debug, thiserror::Error)]
@@ -19,7 +19,6 @@ pub enum SubitemError {
 /// Shared discriminator for supported subitem types.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SubitemKind {
-    FileVersion,
     ChatMessage,
     ChatMessageReaction,
     ChatAttachment,
@@ -32,7 +31,6 @@ pub enum SubitemKind {
 impl SubitemKind {
     pub fn parse(subitem_type: &str) -> Option<Self> {
         match subitem_type {
-            "VERSION" => Some(SubitemKind::FileVersion),
             "MESSAGE" => Some(SubitemKind::ChatMessage),
             "MESSAGE.REACTION" => Some(SubitemKind::ChatMessageReaction),
             "MESSAGE.ATTACHMENT" => Some(SubitemKind::ChatAttachment),
@@ -46,7 +44,6 @@ impl SubitemKind {
 
     pub fn owning_item_type(self) -> &'static str {
         match self {
-            SubitemKind::FileVersion => "FILE",
             SubitemKind::ChatMessage
             | SubitemKind::ChatMessageReaction
             | SubitemKind::ChatAttachment
@@ -59,7 +56,6 @@ impl SubitemKind {
 
     pub fn event_type_create(self) -> &'static str {
         match self {
-            SubitemKind::FileVersion => "FILE::VERSION::CREATE",
             SubitemKind::ChatMessage => "CHAT::MESSAGE::CREATE",
             SubitemKind::ChatMessageReaction => "CHAT::MESSAGE.REACTION::CREATE",
             SubitemKind::ChatAttachment => "CHAT::MESSAGE.ATTACHMENT::CREATE",
@@ -72,7 +68,6 @@ impl SubitemKind {
 
     pub fn event_type_edit_meta(self) -> &'static str {
         match self {
-            SubitemKind::FileVersion => "FILE::VERSION::SET_METADATA",
             SubitemKind::ChatMessage => "CHAT::MESSAGE::SET_CONTENT",
             SubitemKind::ChatMessageReaction => "CHAT::MESSAGE.REACTION::SET_CONTENT",
             SubitemKind::ChatAttachment => "CHAT::MESSAGE.ATTACHMENT::SET_METADATA",
@@ -97,7 +92,6 @@ impl SubitemKind {
 
     pub fn event_type_trash(self) -> &'static str {
         match self {
-            SubitemKind::FileVersion => "FILE::VERSION::TRASH",
             SubitemKind::ChatMessage => "CHAT::MESSAGE::TRASH",
             SubitemKind::ChatMessageReaction => "CHAT::MESSAGE.REACTION::TRASH",
             SubitemKind::ChatAttachment => "CHAT::MESSAGE.ATTACHMENT::TRASH",
@@ -110,7 +104,6 @@ impl SubitemKind {
 
     pub fn event_type_restore(self) -> &'static str {
         match self {
-            SubitemKind::FileVersion => "FILE::VERSION::RESTORE",
             SubitemKind::ChatMessage => "CHAT::MESSAGE::RESTORE",
             SubitemKind::ChatMessageReaction => "CHAT::MESSAGE.REACTION::RESTORE",
             SubitemKind::ChatAttachment => "CHAT::MESSAGE.ATTACHMENT::RESTORE",
@@ -123,7 +116,6 @@ impl SubitemKind {
 
     pub fn event_type_tombstone(self) -> &'static str {
         match self {
-            SubitemKind::FileVersion => "FILE::VERSION::TOMBSTONE",
             SubitemKind::ChatMessage => "CHAT::MESSAGE::TOMBSTONE",
             SubitemKind::ChatMessageReaction => "CHAT::MESSAGE.REACTION::TOMBSTONE",
             SubitemKind::ChatAttachment => "CHAT::MESSAGE.ATTACHMENT::TOMBSTONE",
@@ -207,8 +199,7 @@ pub enum SubitemEventVerb {
 }
 
 pub fn match_subitem_event(event_type: &str) -> Option<(SubitemKind, SubitemVerb)> {
-    const KINDS: [SubitemKind; 8] = [
-        SubitemKind::FileVersion,
+    const KINDS: [SubitemKind; 7] = [
         SubitemKind::ChatMessage,
         SubitemKind::ChatMessageReaction,
         SubitemKind::ChatAttachment,
@@ -244,8 +235,7 @@ pub fn match_subitem_event(event_type: &str) -> Option<(SubitemKind, SubitemVerb
 }
 
 pub fn classify_subitem_event(event_type: &str) -> Option<(SubitemKind, SubitemEventVerb)> {
-    const KINDS: [SubitemKind; 8] = [
-        SubitemKind::FileVersion,
+    const KINDS: [SubitemKind; 7] = [
         SubitemKind::ChatMessage,
         SubitemKind::ChatMessageReaction,
         SubitemKind::ChatAttachment,
@@ -1070,32 +1060,6 @@ pub fn file_version_source_commit_event_idx_from_meta(meta: &serde_json::Value) 
     i32::try_from(idx).ok()
 }
 
-pub fn file_version_blob_id_from_content(content: &serde_json::Value) -> Option<String> {
-    content
-        .get("blob_id")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_owned())
-}
-
-pub fn file_version_size_from_content(content: &serde_json::Value) -> Option<i64> {
-    content.get("size").and_then(|v| v.as_i64())
-}
-
-pub fn file_version_content_has_size(content: &serde_json::Value) -> bool {
-    content.get("size").is_some()
-}
-
-const FILE_VERSION_LEGACY_UUID_NAMESPACE: Uuid =
-    Uuid::from_u128(0x33d1c633_9155_42ad_a37f_d26d116a0c32);
-
-pub fn legacy_file_version_id(repo_uuid: &Uuid, item_uuid: &Uuid, legacy_item_seq: i64) -> Uuid {
-    Uuid::new_v5(
-        &FILE_VERSION_LEGACY_UUID_NAMESPACE,
-        format!("synckhub:file-version:legacy:v1:{repo_uuid}:{item_uuid}:{legacy_item_seq}")
-            .as_bytes(),
-    )
-}
-
 pub fn file_version_ref_required_string(
     meta: &serde_json::Value,
     key: &str,
@@ -1114,7 +1078,7 @@ pub fn file_version_ref_required_kind(
     event_type: &str,
 ) -> Result<String, SubitemError> {
     let raw = file_version_ref_required_string(meta, "kind", event_type)?;
-    synck_file_folder::file_version_set::normalize_kind(Some(raw.as_str()))
+    synck_file_folder::file_versions::normalize_kind(Some(raw.as_str()))
         .map(str::to_string)
         .map_err(|error| SubitemError::Schema(format!("{event_type} has invalid kind: {error}")))
 }
@@ -1124,7 +1088,7 @@ pub fn file_version_ref_required_label_source(
     event_type: &str,
 ) -> Result<String, SubitemError> {
     let raw = file_version_ref_required_string(meta, "label_source", event_type)?;
-    synck_file_folder::file_version_set::normalize_label_source(Some(raw.as_str()))
+    synck_file_folder::file_versions::normalize_label_source(Some(raw.as_str()))
         .map(str::to_string)
         .map_err(|error| {
             SubitemError::Schema(format!("{event_type} has invalid label_source: {error}"))
@@ -1202,24 +1166,6 @@ pub fn validate_file_version_ref_description(
     }
 }
 
-pub fn validate_file_version_ref_content(
-    content: &serde_json::Value,
-    event_type: &str,
-) -> Result<(String, Option<i64>), SubitemError> {
-    let blob_id = file_version_blob_id_from_content(content).ok_or_else(|| {
-        SubitemError::Schema(format!("{event_type} content must include blob_id"))
-    })?;
-    ObjectId::parse(blob_id.as_str()).map_err(|error| {
-        SubitemError::Schema(format!("{event_type} has invalid blob_id: {error}"))
-    })?;
-    let size = match content.get("size") {
-        None | Some(serde_json::Value::Null) => None,
-        Some(value) => Some(value.as_i64().filter(|size| *size >= 0).ok_or_else(|| {
-            SubitemError::Schema(format!("{event_type} size must be non-negative"))
-        })?),
-    };
-    Ok((blob_id, size))
-}
 
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct ItemDataLink {

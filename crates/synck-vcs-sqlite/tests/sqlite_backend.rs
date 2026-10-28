@@ -255,42 +255,6 @@ fn ref_event(owner_item_id: ItemId, base_ref_seq: i64, event_type: &str) -> RefE
 }
 
 #[tokio::test]
-async fn append_cannot_create_a_frozen_file_version_sidecar() {
-    let (_directory, storage) = backend();
-    storage.init_schema().await.unwrap();
-    let repo_id = RepoId::new();
-    let repo = Repo::new(Storage::new(Arc::new(storage)), CoreConfig::default());
-    let sidecar_id = ItemId::new();
-    let error = repo
-        .append(
-            repo_id.clone(),
-            commit(vec![EventProposal {
-                item_id: Some(sidecar_id.clone()),
-                event_type: "FILE_VERSION_SET::CREATE".to_string(),
-                set_metadata: None,
-                set_content: None,
-                create_item: Some(CreateItem {
-                    item_type: "FILE_VERSION_SET".to_string(),
-                    parent_folder_id: None,
-                    name: ".__synck_file_version_set_0198f27b-8532-7c61-b531-e7c55b1b14c7"
-                        .to_string(),
-                }),
-                set_parent: None,
-                set_name: None,
-                set_tombstoned: None,
-                set_in_trash: None,
-                set_is_federated: None,
-                set_federation_stream_id: None,
-                base_seq: None,
-            }]),
-        )
-        .await
-        .unwrap_err();
-    assert!(matches!(error, CoreError::InvalidProposal(_)));
-    assert!(repo.get_item(repo_id, sidecar_id).await.unwrap().is_none());
-}
-
-#[tokio::test]
 async fn ref_ledger_has_independent_cas_and_order() {
     let (_directory, storage) = backend();
     storage.init_schema().await.unwrap();

@@ -171,9 +171,36 @@ local `render_email` reader recomputes presentation with the current parser
 without changing history. Content-ID header strings in attachment metadata are
 MIME identifiers, not Synck object references.
 
-Implementation status: named-version revision pointers
-are the remaining coordinated changes; the role map does not provide a legacy
-inline-content reader.
+### FILE revision labels
+
+Named versions are `FILE_VERSION::*` events in a FILE's independent ref ledger.
+There are no version-set items, synthetic item identities or item-ledger version
+subitems. A ref's `set_content` must be absent. Its salted metadata contains
+`file_item_id` (equal to its envelope owner) and a UUIDv7 `version_id`.
+
+`CREATE` adds `operation_id` (a nonempty string unique among version creations),
+`source_item_seq` (the positive sequence of a FILE content revision), `kind`
+(`MAJOR` or `MINOR`), `label_source` (`INTERNAL` or `EXTERNAL`), signed integer
+`order_key`, and optional string/null `description`. Optional `source_commit_id`
+and `source_commit_event_idx` must agree with the referenced revision. The
+revision must precede the ref in accepted order, including within one commit.
+Only one live label may reference any given revision of a FILE.
+
+`SET_DESCRIPTION`, `SET_KIND`, `SET_LABEL_SOURCE` and `SET_ORDER` change their
+named field. `SET_REVISION` requires a new `source_item_seq` and may include
+matching commit coordinates and a description. `TOMBSTONE` permanently removes
+the label from the live set. Mutations require an existing live version.
+All events in one commit use the ref head before that commit as `base_ref_seq`.
+Content ID and size are read from the referenced FILE event, never stored again
+in the label. Erasing that content therefore affects the revision and its label
+without changing either ledger. Erasing label metadata makes the label's
+presentation unavailable; structural history remains verifiable.
+
+The local writer labels each new FILE's initial `SET_CONTENT` (item sequence 2)
+in the same commit. Its first ref is sequence 1, `MINOR`, `INTERNAL`, with order
+key 1024. Live labels sort by `(order_key, creation_ref_seq, version_id)`; starting
+at 0.0, MAJOR increments the major and resets the minor, MINOR increments the
+minor. UUIDs and sequences remain the identities; computed numbers are display.
 
 ## Commit size
 

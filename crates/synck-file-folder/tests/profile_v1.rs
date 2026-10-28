@@ -1368,7 +1368,6 @@ fn projector_accepts_only_the_deployed_product_omission_shapes() {
         "FILE::SET_METADATA",
         "FILE::REVISION_SUPPRESS",
         "FILE::REVISION_UNSUPPRESS",
-        "FILE::VERSION::TOMBSTONE",
         "ITEM::DATA_LINK::PUT",
         "ITEM::DATA_LINK::DELETE",
         "ITEM::SOURCE_MODIFIED_AT::REPAIR",
@@ -1376,20 +1375,6 @@ fn projector_accepts_only_the_deployed_product_omission_shapes() {
         let mut proposal = event(file_id.clone(), event_type, Some(3));
         proposal.set_metadata = Some(synck_vcs::metadata::MetadataRef::new(json!({"contract": "product"})).unwrap());
         validate_projected_proposal(None, &[proposal], &file_kind).unwrap();
-    }
-
-    let mut version_create = event(file_id.clone(), "FILE::VERSION::CREATE", Some(3));
-    version_create.set_metadata = Some(synck_vcs::metadata::MetadataRef::new(json!({"content": {"size": 1}})).unwrap());
-    version_create.set_content = Some(EventContent::bytes(synck_vcs::types::ObjectId::parse(digest('d')).unwrap()));
-    validate_projected_proposal(None, &[version_create], &file_kind).unwrap();
-
-    for with_content in [false, true] {
-        let mut version_metadata = event(file_id.clone(), "FILE::VERSION::SET_METADATA", Some(3));
-        version_metadata.set_metadata = Some(synck_vcs::metadata::MetadataRef::new(json!({"item_seq": 1})).unwrap());
-        if with_content {
-            version_metadata.set_content = Some(EventContent::bytes(synck_vcs::types::ObjectId::parse(digest('e')).unwrap()));
-        }
-        validate_projected_proposal(None, &[version_metadata], &file_kind).unwrap();
     }
 
     for event_type in ["FOLDER::SET_METADATA", "FOLDER::WORKFLOW_RUNTIME"] {

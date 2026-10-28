@@ -409,11 +409,13 @@ fn supplemental_links_and_workflow_annotations_do_not_hide_primary_content() {
 #[test]
 fn owner_refs_keep_uuid_identity_and_independent_positions() {
     let (mut reader, owner) = create("FILE");
+    apply(&mut reader, &event(&owner, "FILE::SET_CONTENT", json!({"content":{"size":7}}), Some(EventContent::bytes(synck_vcs::types::ObjectId::parse(A).unwrap()))), "alice");
     let version_id = Uuid::now_v7();
-    let reference = synck_file_folder::file_version_set::automatic_initial_ref_event(
+    let reference = synck_file_folder::file_versions::automatic_initial_ref_event(
         &synck_vcs::types::RepoId::new(), &owner, &version_id.to_string(),
-        0, 2, 1, A.into(), Some(7),
+        0, 2, 1,
     ).unwrap();
+    assert!(reference.set_content.is_none());
     reader.apply_ref(&reference, RefReadContext {
         ref_seq: 1, created_at: now(), author: "author", committer: "committer",
     }).unwrap();
@@ -425,7 +427,7 @@ fn owner_refs_keep_uuid_identity_and_independent_positions() {
         ref_seq: 2, created_at: now(), author: "editor", committer: "committer",
     }).unwrap();
     let snapshot = reader.snapshot().unwrap();
-    assert_eq!(snapshot.projection.latest_item_seq, 1);
+    assert_eq!(snapshot.projection.latest_item_seq, 2);
     assert_eq!(snapshot.latest_ref_seq, 2);
     assert_eq!(snapshot.subitems.len(), 1);
     let version = &snapshot.subitems[0];

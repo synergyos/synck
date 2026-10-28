@@ -99,7 +99,7 @@ without replacement.
 Unknown typed presentation must not prevent canonical history preservation.
 
 `item show` uses the shared [incremental reader](../crates/synck-items/src/reader.rs)
-for supported FILE/FOLDER history, chats, email and frozen file-version sidecars.
+for supported FILE/FOLDER history, chats, email and FILE revision labels.
 Task, post, table/database,
 calendars/events, calls, timekeeping and organization/mount reducers are absent
 from 0.2. Support depends on the retained event vocabulary; an unknown typed

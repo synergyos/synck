@@ -6,7 +6,6 @@ use std::collections::HashMap;
 #[cfg(test)]
 use synck_file_folder::project_commit;
 use synck_file_folder::{ImmutableItemKind, validate_projected_proposal, project_commit_events};
-use synck_vcs::naming::compute_name_key;
 use synck_vcs::types::{
     ObjectId, CommitEventRow, CommitRow, EventProposal, EventRow, ItemId,
 };
@@ -33,8 +32,6 @@ pub(crate) enum LocalEvent {
         blob_id: ObjectId,
         size: i64,
     },
-    VersionSetCreate,
-    VersionSetMutation,
 }
 
 pub(crate) struct ClassifiedEvent {
@@ -97,19 +94,7 @@ pub(crate) fn classify_commit(
             .or_else(|| created_types.get(&row.item_id).map(String::as_str))
             .or_else(|| item_kinds.get(&row.item_id).map(String::as_str))
             .ok_or_else(|| format!("missing immutable item kind for {}", row.item_id))?;
-        if item_type == synck_file_folder::file_version_set::ITEM_TYPE {
-            output.push(ClassifiedEvent {
-                item_id: row.item_id.clone(),
-                item_seq: row.item_seq,
-                profile: classify_version_event(&original)?,
-                proposal: original,
-            });
-        } else {
-            return Err(format!(
-                "unsupported local event {} targeting {item_type}",
-                original.event_type
-            ));
-        }
+        return Err(format!("unsupported local event {} targeting {item_type}", original.event_type));
     }
     if !visible.is_empty() {
         return Err("projected FILE/FOLDER changes do not match commit events".to_string());
@@ -215,9 +200,6 @@ pub(crate) fn classify_proposal_commit(
                 .ok_or_else(|| format!("missing immutable item kind for {item_id}"))?;
             match item_type {
                 "FILE" | "FOLDER" => classify_projected_event(event),
-                other if other == synck_file_folder::file_version_set::ITEM_TYPE => {
-                    classify_version_event(event)
-                }
                 other => Err(format!("unsupported local item type {other}")),
             }
         })
@@ -272,68 +254,6 @@ fn classify_projected_event(event: &EventProposal) -> std::result::Result<LocalE
     }
 }
 
-fn classify_version_event(event: &EventProposal) -> std::result::Result<LocalEvent, String> {
-    let common_modifiers = event.set_parent.is_some()
-        || event.set_name.is_some()
-        || event.set_tombstoned.is_some()
-        || event.set_is_federated.is_some()
-        || event.set_federation_stream_id.is_some();
-    match event.event_type.as_str() {
-        synck_file_folder::file_version_set::CREATE_EVENT => {
-            let valid = event.item_id.is_some()
-                && event.create_item.as_ref().is_some_and(|create| {
-                    create.item_type == synck_file_folder::file_version_set::ITEM_TYPE
-                        && create.parent_folder_id.is_none()
-                        && synck_file_folder::file_version_set::file_item_id_from_name(&create.name)
-                            .is_ok()
-                })
-                && event.set_metadata.is_none()
-                && event.set_content.is_none()
-                && event.set_in_trash.is_none()
-                && event.base_seq.is_none()
-                && !common_modifiers;
-            valid
-                .then_some(LocalEvent::VersionSetCreate)
-                .ok_or_else(|| "invalid local FILE_VERSION_SET::CREATE event shape".to_string())
-        }
-        other
-            if synck_file_folder::file_version_set::is_event_type(other)
-                && other != synck_file_folder::file_version_set::CREATE_EVENT =>
-        {
-            let has_content = event.set_content.is_some();
-            let valid_content = if other
-                == synck_file_folder::file_version_set::VERSION_CREATE_EVENT
-                || other == synck_file_folder::file_version_set::VERSION_REPLACE_CONTENT_EVENT
-            {
-                event.set_content.as_ref().is_some_and(|content| content.only("bytes").is_some())
-            } else {
-                !has_content
-            };
-            let valid = event.item_id.is_some()
-                && event.create_item.is_none()
-                && event
-                    .set_metadata.as_ref().and_then(synck_vcs::metadata::MetadataRef::value)
-                    .is_some_and(serde_json::Value::is_object)
-                && valid_content
-                && event.set_in_trash.is_none()
-                && event.base_seq.is_none_or(|seq| seq > 0)
-                && !common_modifiers;
-            valid
-                .then_some(LocalEvent::VersionSetMutation)
-                .ok_or_else(|| format!("invalid local {other} event shape"))
-        }
-        other => Err(format!(
-            "unsupported local FILE_VERSION_SET event type {other}"
-        )),
-    }
-}
-
-pub(crate) fn is_reserved_root_name(name: &str) -> bool {
-    compute_name_key(name).is_ok_and(|name_key| {
-        synck_file_folder::file_version_set::is_reserved_namespace_name_key(&name_key)
-    })
-}
-
 pub(crate) fn parse_content(event: &EventProposal) -> std::result::Result<(ObjectId, i64), String> {
     let blob_id = match event.set_content.as_ref().and_then(|content| content.only("bytes")) {
         Some(blob_id) => {
@@ -353,29 +273,5 @@ pub(crate) fn parse_content(event: &EventProposal) -> std::result::Result<(Objec
         .and_then(serde_json::Value::as_i64)
         .filter(|size| *size >= 0)
         .ok_or_else(|| "file content event has invalid size metadata".to_string())?;
-    Ok((blob_id, size))
-}
-
-pub(crate) fn parse_version_content(
-    event: &EventProposal,
-) -> std::result::Result<(ObjectId, Option<i64>), String> {
-    let blob_id = match event.set_content.as_ref().and_then(|content| content.only("bytes")) {
-        Some(blob_id) => {
-            ObjectId::parse(blob_id.as_str()).map_err(|error| error.to_string())?
-        }
-        _ => return Err("version content event has no blob".to_string()),
-    };
-    let size = match event
-        .set_metadata.as_ref().and_then(synck_vcs::metadata::MetadataRef::value)
-        .and_then(|value| value.pointer("/content/size"))
-    {
-        None | Some(serde_json::Value::Null) => None,
-        Some(value) => Some(
-            value
-                .as_i64()
-                .filter(|size| *size >= 0)
-                .ok_or_else(|| "version content event has an invalid size".to_string())?,
-        ),
-    };
     Ok((blob_id, size))
 }

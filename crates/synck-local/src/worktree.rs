@@ -204,7 +204,6 @@ impl Repository {
         let (ignore, _) = load_ignore(self.root())?;
         scan_tree_unvalidated(
             self.root(), &committed, &ignore, self.discovery_hidden_mode(), true,
-            self.config().reserves_file_version_namespace(),
         )
     }
 
@@ -249,7 +248,6 @@ impl Repository {
             }
         }
 
-        items.retain(|item| item.item_type != synck_file_folder::file_version_set::ITEM_TYPE);
         if self.checkout_paths().is_some() {
             items.retain(|item| matches!(item.item_type.as_str(), "FILE" | "FOLDER"));
             // Files attached beneath non-folder application owners have no
@@ -899,7 +897,6 @@ impl Repository {
             native_hidden_mode,
             false,
             true,
-            self.config().reserves_file_version_namespace(),
             &cache.entries,
             &cache_by_identity,
             scan_started_at,
@@ -931,7 +928,6 @@ impl Repository {
                 native_hidden_mode,
                 &cache.entries,
                 &cache_by_identity,
-                self.config().reserves_file_version_namespace(),
                 scan_started_at,
                 &mut working,
             )?;
@@ -944,7 +940,6 @@ impl Repository {
 pub(crate) fn scan_entry_without_ignore(
     root: &Dir,
     path: &str,
-    reserve_file_version_namespace: bool,
 ) -> Result<BTreeMap<String, WorkingNode>> {
     let no_ignore = GitignoreBuilder::new(".")
         .build()
@@ -958,7 +953,6 @@ pub(crate) fn scan_entry_without_ignore(
         NativeHiddenMode::Skip,
         &BTreeMap::new(),
         &HashMap::new(),
-        reserve_file_version_namespace,
         normalized_time(SystemTime::now())?,
         &mut working,
     )?;
@@ -987,16 +981,14 @@ pub(crate) fn scan_materialized_tree(
         &ignore,
         NativeHiddenMode::Observe,
         false,
-        false,
     )
 }
 
 pub(crate) fn scan_canonical_without_ignore(
     root: &Dir,
     committed: &BTreeMap<String, CommittedNode>,
-    reserve_file_version_namespace: bool,
 ) -> Result<BTreeMap<String, WorkingNode>> {
-    scan_without_ignore(root, committed, true, reserve_file_version_namespace)
+    scan_without_ignore(root, committed, true)
 }
 
 // Validate the destination with the ignore rules being initialized, before
@@ -1005,7 +997,7 @@ pub(crate) fn validate_initial_tree(
     root: &Dir, ignore_root: &Dir, fix_names: bool,
 ) -> Result<()> {
     let (ignore, _) = load_ignore(ignore_root)?;
-    let working = scan_tree_unvalidated(root, &BTreeMap::new(), &ignore, NativeHiddenMode::Ignore, true, true)?;
+    let working = scan_tree_unvalidated(root, &BTreeMap::new(), &ignore, NativeHiddenMode::Ignore, true)?;
     if !fix_names {
         crate::name_repairs::validate(root, &working)?;
     }
@@ -1016,7 +1008,6 @@ fn scan_without_ignore(
     root: &Dir,
     committed: &BTreeMap<String, CommittedNode>,
     repository_root: bool,
-    reserve_file_version_namespace: bool,
 ) -> Result<BTreeMap<String, WorkingNode>> {
     let ignore = GitignoreBuilder::new(".")
         .build()
@@ -1027,7 +1018,6 @@ fn scan_without_ignore(
         &ignore,
         NativeHiddenMode::Skip,
         repository_root,
-        reserve_file_version_namespace,
     )
 }
 
@@ -1037,10 +1027,9 @@ fn scan_tree(
     ignore: &Gitignore,
     native_hidden_mode: NativeHiddenMode,
     repository_root: bool,
-    reserve_file_version_namespace: bool,
 ) -> Result<BTreeMap<String, WorkingNode>> {
     let working = scan_tree_unvalidated(
-        root, committed, ignore, native_hidden_mode, repository_root, reserve_file_version_namespace,
+        root, committed, ignore, native_hidden_mode, repository_root,
     )?;
     crate::name_repairs::validate(root, &working)?;
     Ok(working)
@@ -1052,7 +1041,6 @@ fn scan_tree_unvalidated(
     ignore: &Gitignore,
     native_hidden_mode: NativeHiddenMode,
     repository_root: bool,
-    reserve_file_version_namespace: bool,
 ) -> Result<BTreeMap<String, WorkingNode>> {
     let tracked: BTreeSet<String> = committed.keys().cloned().collect();
     let mut working = BTreeMap::new();
@@ -1068,7 +1056,6 @@ fn scan_tree_unvalidated(
         native_hidden_mode,
         false,
         repository_root,
-        reserve_file_version_namespace,
         &cache,
         &cache_by_identity,
         normalized_time(SystemTime::now())?,
@@ -1983,7 +1970,6 @@ fn scan_dir(
     native_hidden_mode: NativeHiddenMode,
     native_hidden_ancestor: bool,
     repository_root: bool,
-    reserve_file_version_namespace: bool,
     cache: &BTreeMap<String, WorkingNode>,
     cache_by_identity: &HashMap<FileIdentity, &WorkingNode>,
     scan_started_at: FileTime,
@@ -2072,10 +2058,6 @@ fn scan_dir(
         if ignored {
             continue;
         }
-        if reserve_file_version_namespace && is_root && repository_root
-            && compute_name_key(name).is_ok_and(|key| synck_file_folder::file_version_set::is_reserved_namespace_name_key(&key)) {
-            return Err(LocalError::Invalid(format!("reserved internal root name: {display}")));
-        }
 
         if file_type.is_dir() && !is_cap_link_or_reparse(&metadata) {
             let opened = directory
@@ -2105,7 +2087,6 @@ fn scan_dir(
                 native_hidden_mode,
                 native_hidden,
                 repository_root,
-                reserve_file_version_namespace,
                 cache,
                 cache_by_identity,
                 scan_started_at,
@@ -2229,7 +2210,6 @@ fn scan_scope(
     native_hidden_mode: NativeHiddenMode,
     cache: &BTreeMap<String, WorkingNode>,
     cache_by_identity: &HashMap<FileIdentity, &WorkingNode>,
-    reserve_file_version_namespace: bool,
     scan_started_at: FileTime,
     output: &mut BTreeMap<String, WorkingNode>,
 ) -> Result<()> {
@@ -2288,10 +2268,6 @@ fn scan_scope(
     {
         return Ok(());
     }
-    if reserve_file_version_namespace && !scope.contains('/')
-        && compute_name_key(name).is_ok_and(|key| synck_file_folder::file_version_set::is_reserved_namespace_name_key(&key)) {
-        return Err(LocalError::Invalid(format!("reserved internal root name: {scope}")));
-    }
     if file_type.is_dir() && !is_cap_link_or_reparse(&metadata) {
         let opened = root
             .open_dir_nofollow(relative)
@@ -2320,7 +2296,6 @@ fn scan_scope(
             native_hidden_mode,
             native_hidden,
             true,
-            reserve_file_version_namespace,
             cache,
             cache_by_identity,
             scan_started_at,
@@ -3126,20 +3101,6 @@ mod tests {
             ]),
             vec!["Folder".to_string(), "root.txt".to_string()]
         );
-    }
-
-    #[test]
-    fn reserved_root_validation_applies_after_ignore_filtering() {
-        let temporary = tempfile::tempdir().unwrap();
-        let name = ".__synck_file_version_set_visible";
-        std::fs::write(temporary.path().join(name), b"content").unwrap();
-        let root = Dir::open_ambient_dir(temporary.path(), ambient_authority()).unwrap();
-        let ignore = GitignoreBuilder::new(".").build().unwrap();
-        let tracked = BTreeMap::new();
-        assert!(scan_tree(&root, &tracked, &ignore, NativeHiddenMode::Ignore, true, true).is_ok());
-        assert!(scan_tree(&root, &tracked, &ignore, NativeHiddenMode::Skip, true, false).is_ok());
-        assert!(scan_tree(&root, &tracked, &ignore, NativeHiddenMode::Skip, true, true)
-            .unwrap_err().to_string().contains("reserved internal root name"));
     }
 
     #[test]

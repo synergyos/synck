@@ -1,8 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value;
-#[cfg(test)]
-use serde_json::json;
 use sha2::{Digest, Sha256};
 use synck_vcs::naming::compute_name_key;
 use synck_vcs::types::{
@@ -22,9 +20,6 @@ const KNOWN_FILE_OMISSIONS: &[&str] = &[
     "FILE::FEDERATE",
     "FILE::REVISION_SUPPRESS",
     "FILE::REVISION_UNSUPPRESS",
-    "FILE::VERSION::CREATE",
-    "FILE::VERSION::SET_METADATA",
-    "FILE::VERSION::TOMBSTONE",
 ];
 const KNOWN_FOLDER_OMISSIONS: &[&str] = &[
     "FOLDER::SET_METADATA",
@@ -893,24 +888,6 @@ fn require_omission_shape(proposal: &EventProposal) -> Result<(), SemanticError>
                     (Some(true), Some(_)) | (Some(false), None)
                 )
         }
-        "FILE::VERSION::CREATE" => {
-            has_metadata(proposal)
-                && proposal.set_content.as_ref().is_some_and(|content| content.only("bytes").is_some())
-                && no_federation_modifier(proposal)
-        }
-        "FILE::VERSION::SET_METADATA" => {
-            has_metadata(proposal)
-                && proposal
-                    .set_content
-                    .as_ref()
-                    .is_none_or(|content| content.only("bytes").is_some())
-                && no_federation_modifier(proposal)
-        }
-        "FILE::VERSION::TOMBSTONE" => {
-            has_metadata(proposal)
-                && proposal.set_content.is_none()
-                && no_federation_modifier(proposal)
-        }
         _ => {
             has_metadata(proposal)
                 && proposal.set_content.is_none()
@@ -972,7 +949,7 @@ fn error(code: SemanticErrorCode, detail: impl Into<String>) -> SemanticError {
 #[cfg(test)]
 mod tests {
     use synck_vcs::types::{
-        COMMIT_FORMAT_VERSION, CommitId, RefEventProposal, RefEventRow, RepoId, Sha256Digest,
+        COMMIT_FORMAT_VERSION, RefEventProposal, RefEventRow, RepoId, Sha256Digest,
         canonical_ref_event_proposal_bytes, canonical_stored_commit_bytes_for_hash, now,
     };
 

@@ -167,9 +167,6 @@ impl Config {
         &self.author
     }
 
-    pub(crate) fn reserves_file_version_namespace(&self) -> bool {
-        true
-    }
 }
 
 pub(crate) struct RepositoryLock {

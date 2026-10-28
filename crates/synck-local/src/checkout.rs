@@ -203,7 +203,7 @@ impl Repository {
         }
         // Inspect every newly selected path before changing persistent selection.
         // Unknown entries, symlinks and modified bytes are never overwritten.
-        let mut source = crate::worktree::scan_canonical_without_ignore(self.root(), &all, true)?;
+        let mut source = crate::worktree::scan_canonical_without_ignore(self.root(), &all)?;
         let mut working = source.clone();
         self.filter_imported_email_sources(&all, &mut working)
             .await?;

@@ -250,9 +250,8 @@ impl Repository {
             }
         }
         let mut entries = Vec::with_capacity(HISTORICAL_PAGE_SIZE);
-        let mut continuation_cursor = None;
+        let continuation_cursor;
         let cursor_key = cursor.map(|cursor| cursor.key.clone());
-        let mut post_sidecar_cursor = cursor_key.clone();
 
         if self.checkout_paths().is_some() {
             // A complete-repository checkout browses the same filesystem view
@@ -267,78 +266,6 @@ impl Repository {
                 |item| !matches!(item.item_type.as_str(), "FILE" | "FOLDER"),
             )
             .await?;
-        } else if parent.is_none() && self.config().reserves_file_version_namespace() {
-            let (sidecar_start, sidecar_end) =
-                synck_file_folder::file_version_set::namespace_name_key_bounds();
-            let sidecar_start = NamespaceKey::new(None, sidecar_start.to_string());
-            let sidecar_end = NamespaceKey::new(None, sidecar_end.to_string());
-            if cursor_key
-                .as_ref()
-                .is_none_or(|cursor| cursor < &sidecar_start)
-            {
-                let page = state
-                    .child_page_before(
-                        view.root.item_map_root,
-                        view.root.namespace_root,
-                        None,
-                        cursor_key.as_ref(),
-                        &sidecar_start,
-                        HISTORICAL_PAGE_SIZE,
-                    )
-                    .await
-                    .map_err(|error| LocalError::Integrity(error.to_string()))?;
-                let last_pre_sidecar_key = page.entries.last().map(|(key, _)| key.clone());
-                append_historical_items(&mut entries, page.entries)?;
-                if let Some(next_cursor) = page.next_cursor {
-                    continuation_cursor = Some(next_cursor);
-                } else {
-                    post_sidecar_cursor = None;
-                    if entries.len() == HISTORICAL_PAGE_SIZE {
-                        let lookahead = state
-                            .child_page_from(
-                                view.root.item_map_root,
-                                view.root.namespace_root,
-                                None,
-                                None,
-                                &sidecar_end,
-                                1,
-                            )
-                            .await
-                            .map_err(|error| LocalError::Integrity(error.to_string()))?;
-                        if !lookahead.entries.is_empty() {
-                            continuation_cursor = last_pre_sidecar_key;
-                        }
-                    }
-                }
-            } else if cursor_key
-                .as_ref()
-                .is_some_and(|cursor| cursor < &sidecar_end)
-            {
-                post_sidecar_cursor = None;
-            }
-
-            if continuation_cursor.is_none() && entries.len() < HISTORICAL_PAGE_SIZE {
-                let remaining = HISTORICAL_PAGE_SIZE - entries.len();
-                let page = state
-                    .child_page_from(
-                        view.root.item_map_root,
-                        view.root.namespace_root,
-                        None,
-                        post_sidecar_cursor.as_ref(),
-                        &sidecar_end,
-                        remaining,
-                    )
-                    .await
-                    .map_err(|error| LocalError::Integrity(error.to_string()))?;
-                append_historical_items(&mut entries, page.entries)?;
-                continuation_cursor = page.next_cursor;
-            }
-        } else if parent.is_none() {
-            continuation_cursor =
-                scan_visible_children(&mut state, view, None, cursor_key, &mut entries, |item| {
-                    item.item_type == synck_file_folder::file_version_set::ITEM_TYPE
-                })
-                .await?;
         } else {
             let page = state
                 .child_page(

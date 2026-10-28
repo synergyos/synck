@@ -164,12 +164,6 @@ pub fn apply_replica_item_event(
         }
         item.content_blob_id = Some(blob_id.to_string());
         item.content_item_seq = Some(item_seq);
-    } else if proposal.event_type == "FILE::VERSION::CREATE"
-        && let Some(size) = content_size(proposal.set_metadata.as_ref().and_then(synck_vcs::metadata::MetadataRef::value))
-    {
-        // Legacy version-create events projected the current size but never moved
-        // the item's content head. Preserve that cloud-projection contract.
-        item.size = Some(size);
     }
     item.latest_item_seq = item_seq;
     item.last_updated_at = projected_updated_at(proposal, updated_at)?;
@@ -200,13 +194,7 @@ pub fn resolve_item_date(
     (last_updated_at, "LAST_UPDATED".to_string())
 }
 
-fn content_size(metadata: Option<&serde_json::Value>) -> Option<i64> {
-    metadata
-        .and_then(|metadata| metadata.get("content"))
-        .and_then(|content| content.get("size"))
-        .and_then(serde_json::Value::as_i64)
-        .filter(|size| *size >= 0)
-}
+
 
 fn projected_updated_at(
     proposal: &EventProposal,
@@ -364,53 +352,6 @@ mod tests {
             projected.metadata_json[ITEM_TREE_HIDDEN_METADATA_KEY],
             serde_json::Value::Bool(true)
         );
-    }
-
-    #[test]
-    fn version_blob_does_not_replace_the_current_content_head() {
-        let item_id = ItemId::new();
-        let now = Utc::now();
-        let current = ReplicaItemProjection {
-            content_roles: Default::default(),
-            item_id: item_id.clone(),
-            item_type: "FILE".to_string(),
-            item_subtype: ITEM_SUBTYPE_STANDARD.to_string(),
-            name: "report.pdf".to_string(),
-            parent_folder_id: None,
-            lifecycle_state: LifecycleState::Live,
-            metadata_json: serde_json::json!({}),
-            color_metadata: None,
-            content_blob_id: Some(format!("sha256:{}", "ab".repeat(32))),
-            content_item_seq: Some(1),
-            size: Some(10),
-            latest_item_seq: 1,
-            last_updated_at: now,
-            last_updated_by: "actor".to_string(),
-            item_date_at: now,
-            item_date_kind: "LAST_UPDATED".to_string(),
-        };
-        let event = EventProposal {
-            item_id: Some(item_id.clone()),
-            event_type: "FILE::VERSION::CREATE".to_string(),
-            set_metadata: Some(synck_vcs::metadata::MetadataRef::new(serde_json::json!({"content":{"size":20}})).unwrap()),
-            set_content: Some(EventContent::bytes(ObjectId::from_digest([0xcd;32]))),
-            create_item: None,
-            set_parent: None,
-            set_name: None,
-            set_tombstoned: None,
-            set_in_trash: None,
-            set_is_federated: None,
-            set_federation_stream_id: None,
-            base_seq: Some(1),
-        };
-        let projected = apply_replica_item_event(Some(current), item_id, 2, &event, now, "actor")
-            .expect("project version event");
-        assert_eq!(
-            projected.content_blob_id.as_deref(),
-            Some(format!("sha256:{}", "ab".repeat(32)).as_str())
-        );
-        assert_eq!(projected.content_item_seq, Some(1));
-        assert_eq!(projected.size, Some(20));
     }
 
     #[test]
