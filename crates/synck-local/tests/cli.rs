@@ -2777,7 +2777,7 @@ fn reused_allocation_identity_is_delete_plus_add() {
     fs::remove_file(root.join("file.txt")).unwrap();
     fs::write(root.join("unrelated.bin"), b"unrelated bytes").unwrap();
     let metadata = fs::metadata(root.join("unrelated.bin")).unwrap();
-    let connection = rusqlite::Connection::open(root.join(".synck/repository.sqlite3")).unwrap();
+    let connection = rusqlite::Connection::open(root.join(".synck/repository.local.sqlite3")).unwrap();
     connection
         .execute(
             "UPDATE local_worktree_identities

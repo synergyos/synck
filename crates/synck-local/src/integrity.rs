@@ -98,9 +98,24 @@ fn physical_findings_inner(
     include_local: bool,
 ) -> Result<Findings> {
     let connection = storage.open_readonly().map_err(verification_open_error)?;
+    let mut findings = Findings::default();
+    check_physical_database(&connection, &mut findings)?;
+    if findings.is_empty() {
+        validate_physical_rows(&connection, repo_id, &mut findings)?;
+    }
+    if include_local && findings.is_empty() {
+        let local = crate::local_database::open_readonly(storage)?;
+        check_physical_database(&local, &mut findings)?;
+        if findings.is_empty() {
+            validate_local_rows(&local, repo_id, &mut findings)?;
+        }
+    }
+    Ok(findings)
+}
+
+fn check_physical_database(connection: &rusqlite::Connection, findings: &mut Findings) -> Result<()> {
     let mut statement = connection.prepare("PRAGMA integrity_check")?;
     let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
-    let mut findings = Findings::default();
     for row in rows {
         let message = row?;
         if message != "ok" {
@@ -108,7 +123,7 @@ fn physical_findings_inner(
         }
     }
     if !findings.is_empty() {
-        return Ok(findings);
+        return Ok(());
     }
     let mut foreign_keys = connection.prepare("PRAGMA foreign_key_check")?;
     let rows = foreign_keys.query_map([], |row| {
@@ -125,12 +140,7 @@ fn physical_findings_inner(
             "SQLite foreign key violation: table={table} rowid={rowid:?} parent={parent} constraint={constraint}"
         ));
     }
-    drop(foreign_keys);
-    if !findings.is_empty() {
-        return Ok(findings);
-    }
-    validate_physical_rows(&connection, repo_id, &mut findings, include_local)?;
-    Ok(findings)
+    Ok(())
 }
 
 fn verification_open_error(error: StorageError) -> LocalError {
@@ -146,7 +156,6 @@ fn validate_physical_rows(
     connection: &rusqlite::Connection,
     repo_id: &RepoId,
     findings: &mut Findings,
-    include_local: bool,
 ) -> Result<()> {
     let mut items = connection.prepare(
         "SELECT item_id, parent_folder_id, created_at
@@ -286,9 +295,14 @@ fn validate_physical_rows(
         }
     }
 
-    if !include_local {
-        return Ok(());
-    }
+    Ok(())
+}
+
+fn validate_local_rows(
+    connection: &rusqlite::Connection,
+    repo_id: &RepoId,
+    findings: &mut Findings,
+) -> Result<()> {
     let mut projection = connection.prepare(
         "SELECT item_id, blob_id FROM local_file_heads
          WHERE repo_id = ?1 ORDER BY item_id",

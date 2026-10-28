@@ -44,7 +44,7 @@ checkout; a bare format-6 repository remains a data-only reader.
 ## Two physical layouts, unchanged logical identities
 
 `storage_mode` in `config.json` is authoritative for format 6, including an enabled
-checkout. The retained `local_object_storage` schema table is not storage authority. Old format-6 configurations without this field mean `WHOLE_FILE`;
+checkout. Old format-6 configurations without this field mean `WHOLE_FILE`;
 opening them does not rewrite configuration. Unknown modes fail explicitly.
 New `repository init` repositories default to `CHUNKED`;
 `--storage-mode WHOLE_FILE` selects an exact-byte whole-file store. Export producers may continue
@@ -247,7 +247,7 @@ principals and complete history are retained in the same canonical SQLite/object
 store; checkout creates no initialization commit and filters no database rows.
 
 Checkout records `INDEPENDENT_LOCAL`, the chosen future author and a `checkout`
-selection in config. Derived `local_*` tables hold content heads, inode identities
+selection in config. The separate `repository.local.sqlite3` holds `local_*` tables for content heads, inode identities
 and disposable scanner observations. Durable filesystem operation journals and
 their staging directories live directly under `.synck/`; `.synck/tmp/` holds
 non-authoritative temporary writes. A bounded pending selection descriptor

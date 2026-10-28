@@ -10,6 +10,7 @@ mod error;
 mod event_profile;
 mod inspection;
 mod integrity;
+mod local_database;
 mod monitor;
 mod objects;
 mod ooxml;

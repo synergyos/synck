@@ -8153,7 +8153,7 @@ mod tests {
         repository.commit("initial").await.unwrap();
         fs::write(root.join("document.bin"), b"after").unwrap();
 
-        let database = root.join(".synck/repository.sqlite3");
+        let database = root.join(".synck/repository.local.sqlite3");
         let connection = rusqlite::Connection::open(&database).unwrap();
         connection
             .execute_batch(

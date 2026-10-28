@@ -1873,10 +1873,10 @@ async fn repository_open_rejects_a_regular_orphan_object_database_sidecar() {
     let temporary = tempfile::tempdir().unwrap();
     let root = temporary.path();
     init(root, "author").await.unwrap();
-    let database = root.join(".synck/repository.sqlite3");
+    let database = root.join(".synck/repository.local.sqlite3");
     let connection = rusqlite::Connection::open(database).unwrap();
     connection
-        .execute("UPDATE local_object_storage SET mode = 'WHOLE_FILE'", [])
+        .execute("UPDATE local_repository_settings SET hidden_files = 'IGNORE'", [])
         .unwrap();
     drop(connection);
     remove_object_database_family(root);
@@ -2347,7 +2347,7 @@ async fn repository_config_rejects_unknown_fields() {
 async fn repository_open_rejects_local_schema_drift() {
     let temporary = tempfile::tempdir().unwrap();
     init(temporary.path(), "author").await.unwrap();
-    let database = temporary.path().join(".synck/repository.sqlite3");
+    let database = temporary.path().join(".synck/repository.local.sqlite3");
     let connection = rusqlite::Connection::open(database).unwrap();
     connection
         .execute_batch(
@@ -2376,7 +2376,7 @@ async fn repository_open_rejects_local_schema_drift() {
 async fn repository_open_rejects_unknown_local_schema_objects() {
     let temporary = tempfile::tempdir().unwrap();
     init(temporary.path(), "author").await.unwrap();
-    let database = temporary.path().join(".synck/repository.sqlite3");
+    let database = temporary.path().join(".synck/repository.local.sqlite3");
     let connection = rusqlite::Connection::open(&database).unwrap();
     connection
         .execute_batch("CREATE VIEW sqliteXforeign AS SELECT 'value' AS value;")
@@ -2400,7 +2400,7 @@ async fn repository_open_rejects_unknown_local_schema_objects() {
     let storage_tables: i64 = connection
         .query_row(
             "SELECT count(*) FROM sqlite_schema
-             WHERE type = 'table' AND name = 'local_object_storage'",
+             WHERE type = 'table' AND name = 'local_repository_settings'",
             [],
             |row| row.get(0),
         )
@@ -2423,7 +2423,7 @@ async fn repository_open_rejects_all_old_local_schema_versions_without_migration
     for version in 1..=10 {
         let temporary = tempfile::tempdir().unwrap();
         init(temporary.path(), "author").await.unwrap();
-        let database = temporary.path().join(".synck/repository.sqlite3");
+        let database = temporary.path().join(".synck/repository.local.sqlite3");
         let connection = rusqlite::Connection::open(&database).unwrap();
         connection
             .execute(
@@ -2460,9 +2460,9 @@ async fn worktree_cache_schema_rejects_incomplete_file_fingerprints() {
     let temporary = tempfile::tempdir().unwrap();
     init(temporary.path(), "author").await.unwrap();
     let connection =
-        rusqlite::Connection::open(temporary.path().join(".synck/repository.sqlite3")).unwrap();
+        rusqlite::Connection::open(temporary.path().join(".synck/repository.local.sqlite3")).unwrap();
     let repo_id: String = connection
-        .query_row("SELECT repo_id FROM local_object_storage", [], |row| {
+        .query_row("SELECT repo_id FROM local_repository_settings", [], |row| {
             row.get(0)
         })
         .unwrap();
@@ -2806,7 +2806,7 @@ async fn missing_projection_rebuilds_from_authoritative_history() {
     repository.commit("initial").await.unwrap();
 
     let connection =
-        rusqlite::Connection::open(temporary.path().join(".synck/repository.sqlite3")).unwrap();
+        rusqlite::Connection::open(temporary.path().join(".synck/repository.local.sqlite3")).unwrap();
     connection
         .execute_batch("DELETE FROM local_projection_state; DELETE FROM local_file_heads;")
         .unwrap();

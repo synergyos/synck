@@ -18,7 +18,7 @@ use synck_vcs::config::CoreConfig;
 use synck_vcs::naming::compute_name_key;
 use synck_vcs::repo::Repo;
 use synck_vcs::state::{StateIndexStore, StateProjectorStore};
-use synck_vcs::storage::{Storage, StorageBackend};
+use synck_vcs::storage::Storage;
 use synck_vcs::types::FILE_FOLDER_MAX_CLOSURE_DESCENDANTS;
 use synck_vcs::types::{BlobId, CommitEventRow, CommitId, ItemId, RepoId};
 use synck_vcs_sqlite::SqliteStorage;
@@ -279,16 +279,12 @@ impl Repository {
 
         let database_path = metadata_path.join("repository.sqlite3");
         let storage = SqliteStorage::new(database_path);
-        storage.init_schema().await.map_err(|error| {
-            LocalError::Integrity(format!("cannot migrate Core VCS schema: {error}"))
+        storage.open_readonly().map_err(|error| {
+            LocalError::Integrity(format!("cannot read Core VCS schema: {error}"))
         })?;
         validate_local_schema_version(&storage)?;
         crate::checkout::validate_config(&config)?;
-        validate_local_schema(
-            &storage
-                .open_readonly()
-                .map_err(|e| LocalError::Integrity(e.to_string()))?,
-        )?;
+        validate_local_schema(&crate::local_database::open_readonly(&storage)?)?;
         let storage_mode = config.storage_mode.unwrap_or_default();
         let hidden_files_mode = read_hidden_files_mode(&storage, &config.repo_id)?;
         let object_store = ChunkStore::new(metadata_path.join(OBJECT_STORE_FILE), &config.repo_id);
@@ -378,6 +374,8 @@ impl Repository {
         lock: Arc<RepositoryLock>,
         config: Config,
     ) -> Result<Self> {
+        validate_local_schema_version(&storage)?;
+        validate_local_schema(&crate::local_database::open_readonly(&storage)?)?;
         let storage_mode = config.storage_mode.unwrap_or_default();
         let hidden_files_mode = read_hidden_files_mode(&storage, &config.repo_id)?;
         let root_path = root_path
@@ -473,7 +471,7 @@ impl Repository {
         if mode == self.hidden_files_mode {
             return Ok(());
         }
-        let connection = self.storage.open_writable().map_err(|error| {
+        let connection = crate::local_database::open_writable(&self.storage).map_err(|error| {
             LocalError::Integrity(format!("cannot update hidden-files setting: {error}"))
         })?;
         connection.execute_batch("BEGIN IMMEDIATE")?;
@@ -632,7 +630,7 @@ impl Repository {
         &self,
         intents: &mut [Intent],
     ) -> Result<BTreeMap<ItemId, CurrentItem>> {
-        let connection = self.storage.open_readonly().map_err(|error| {
+        let connection = crate::local_database::open_readonly(&self.storage).map_err(|error| {
             LocalError::Invalid(format!("cannot read current FILE/FOLDER context: {error}"))
         })?;
         let created = intents
@@ -1010,7 +1008,7 @@ impl Repository {
     }
 
     async fn catch_up_projection(&self) -> Result<()> {
-        let mut connection = self.storage.open_writable().map_err(|error| {
+        let mut connection = crate::local_database::open_writable(&self.storage).map_err(|error| {
             LocalError::Invalid(format!("cannot open repository database: {error}"))
         })?;
         let transaction = connection.transaction()?;
@@ -1431,7 +1429,7 @@ fn validate_optional_object_store_path(path: &Path) -> Result<()> {
 }
 
 fn read_hidden_files_mode(storage: &SqliteStorage, repo_id: &RepoId) -> Result<HiddenFilesMode> {
-    let connection = storage.open_readonly().map_err(|error| {
+    let connection = crate::local_database::open_readonly(storage).map_err(|error| {
         LocalError::Integrity(format!("cannot read hidden-files setting: {error}"))
     })?;
     let row: Option<(String, String)> = connection
@@ -1470,8 +1468,7 @@ fn validate_local_schema(connection: &Connection) -> Result<()> {
          WHERE sql IS NOT NULL
            AND name NOT GLOB 'sqlite_*'
            AND NOT (
-               name GLOB 'vcs_*' OR tbl_name GLOB 'vcs_*'
-               OR name GLOB 'local_*' OR tbl_name GLOB 'local_*'
+               name GLOB 'local_*' OR tbl_name GLOB 'local_*'
            )",
         [],
         |row| row.get(0),
@@ -1485,7 +1482,7 @@ fn validate_local_schema(connection: &Connection) -> Result<()> {
 }
 
 fn validate_local_schema_version(storage: &SqliteStorage) -> Result<()> {
-    let connection = storage.open_readonly().map_err(|error| {
+    let connection = crate::local_database::open_readonly(storage).map_err(|error| {
         LocalError::Integrity(format!("cannot read local repository schema: {error}"))
     })?;
     let version: i64 = connection.query_row(
@@ -2232,7 +2229,7 @@ mod tests {
             .unwrap();
         repository.recover().await.unwrap();
 
-        let connection = repository.storage.open_readonly().unwrap();
+        let connection = crate::local_database::open_readonly(&repository.storage).unwrap();
         let applied: i64 = connection
             .query_row(
                 "SELECT applied_repo_seq FROM local_projection_state WHERE repo_id = ?1",
@@ -2463,11 +2460,9 @@ mod tests {
     }
 }
 
-/// Create only derived filesystem tables; canonical history and domains survive.
+/// Initialize the separate checkout database without modifying canonical history.
 pub(crate) fn initialize_checkout_schema(storage: &SqliteStorage, repo_id: &RepoId) -> Result<()> {
-    let mut connection = storage
-        .open_writable()
-        .map_err(|e| LocalError::Integrity(e.to_string()))?;
+    let mut connection = crate::local_database::create(storage)?;
     let transaction = connection.transaction()?;
     let exists: bool = transaction.query_row(
         "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='local_schema_meta')",
@@ -2477,35 +2472,12 @@ pub(crate) fn initialize_checkout_schema(storage: &SqliteStorage, repo_id: &Repo
     if !exists {
         transaction.execute_batch(LOCAL_SCHEMA)?;
         transaction.execute(
-            "INSERT INTO local_object_storage VALUES(?1,'WHOLE_FILE')",
-            [repo_id.as_str()],
-        )?;
-        transaction.execute(
             "INSERT INTO local_repository_settings VALUES(?1,'IGNORE')",
             [repo_id.as_str()],
         )?;
     }
+    validate_local_schema(&transaction)?;
     transaction.commit()?;
-    validate_local_schema(&connection)?;
-    Ok(())
-}
-
-pub(crate) fn remove_checkout_schema(storage: &SqliteStorage) -> Result<()> {
-    let connection = storage
-        .open_writable()
-        .map_err(|e| LocalError::Integrity(e.to_string()))?;
-    let names = connection
-        .prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name GLOB 'local_*'")?
-        .query_map([], |r| r.get::<_, String>(0))?
-        .collect::<std::result::Result<Vec<_>, _>>()?;
-    connection.execute_batch("PRAGMA foreign_keys=OFF; BEGIN IMMEDIATE")?;
-    for name in names {
-        if !name.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_') {
-            return Err(LocalError::Integrity("invalid local table name".into()));
-        }
-        connection.execute_batch(&format!("DROP TABLE {name}"))?;
-    }
-    connection.execute_batch("COMMIT; PRAGMA foreign_keys=ON")?;
     Ok(())
 }
 

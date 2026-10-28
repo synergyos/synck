@@ -260,7 +260,8 @@ impl SqliteStorage {
     }
 }
 
-fn validate_database_family(path: &Path, allow_missing: bool) -> Result<(), StorageError> {
+/// Reject links, non-regular database files and orphan SQLite sidecars.
+pub fn validate_database_family(path: &Path, allow_missing: bool) -> Result<(), StorageError> {
     let present = match fs::symlink_metadata(path) {
         Ok(metadata) if metadata.file_type().is_file() && !is_link_or_reparse(path, &metadata)? => {
             true
@@ -510,7 +511,7 @@ fn expected_schema() -> SchemaShape {
 }
 
 fn schema_objects(conn: &Connection) -> Result<SchemaShape, StorageError> {
-    crate::schema::inspect(conn, "vcs_").map_err(map_sqlite_error)
+    crate::schema::inspect(conn, "").map_err(map_sqlite_error)
 }
 
 fn map_sqlite_error(error: rusqlite::Error) -> StorageError {

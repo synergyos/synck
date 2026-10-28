@@ -137,8 +137,9 @@ the portable content boundary.
 Core SQLite uses application ID `0x53594E4B` and schema version 6. The adapter
 creates this schema directly and refuses prior schema versions without modifying
 their version stamps or definitions. There are no core or local schema migrations.
-The current local projection schema is 11. The canonical/cache separation is
-still being implemented; these version markers do not make this draft a release.
+The current local projection schema is 11, in `repository.local.sqlite3`.
+The state tree lives in `repository.state.sqlite3`. Neither database is copied
+into a portable repository. These version markers do not make this draft a release.
 
 Schema compatibility compares owned table names, STRICT typing, named columns
 and their declared types, nullability, defaults, primary-key positions, unique
@@ -160,3 +161,17 @@ file. These are implementation details, not portable format requirements.
 Verification neither requires nor trusts this cache. Historical listings create
 and replay a missing cache under the repository lock; explicit index rebuilding
 repairs damaged cache contents without modifying canonical history.
+
+## Checkout database
+
+`repository.sqlite3` contains no `local_*` tables. Local settings, FILE-head
+projections, filesystem observations and imported-email source observations live
+in `repository.local.sqlite3`. Local transactions may read canonical history
+through a read-only SQLite attachment; they cannot write it. Acceptance and local
+projection updates are separate transactions. Existing recovery replays accepted
+history after an interrupted projection update.
+
+A complete portable copy backs up the canonical database and transfers referenced
+objects. It does not copy checkout observations, settings or the state-tree cache.
+Enabling a checkout initializes that machine's local database. Unused workspace,
+batch-import and obsolete storage-mode tables do not exist in the current schema.

@@ -495,7 +495,7 @@ impl Repository {
         deleted: &BTreeSet<ItemId>,
         updated: &BTreeMap<ItemId, IdentityRecord>,
     ) -> Result<()> {
-        let mut connection = self.storage().open_writable().map_err(|error| {
+        let mut connection = crate::local_database::open_writable(self.storage()).map_err(|error| {
             LocalError::Invalid(format!("cannot update committed identities: {error}"))
         })?;
         let transaction = connection.transaction()?;
@@ -1276,7 +1276,7 @@ pub(crate) fn load_identity_records(
     storage: &SqliteStorage,
     repo_id: &str,
 ) -> Result<Vec<IdentityRecord>> {
-    let connection = storage.open_readonly().map_err(|error| {
+    let connection = crate::local_database::open_readonly(storage).map_err(|error| {
         LocalError::Integrity(format!("cannot read worktree identities: {error}"))
     })?;
     let mut statement = connection.prepare(
@@ -1346,8 +1346,7 @@ pub(crate) fn decode_incarnation(
 }
 
 fn load_worktree_cache(storage: &SqliteStorage, repo_id: &str) -> Result<WorktreeCache> {
-    let connection = storage
-        .open_readonly()
+    let connection = crate::local_database::open_readonly(storage)
         .map_err(|error| LocalError::Integrity(format!("cannot read worktree cache: {error}")))?;
     let mut statement = connection.prepare(
         "SELECT path, node_kind, device_id, file_id, birth_seconds, birth_nanos, size_bytes,
@@ -1571,8 +1570,7 @@ fn publish_worktree_observation(
 ) -> Result<()> {
     let working = &scan.working;
     let incremental_scopes = scan.incremental_scopes.as_deref();
-    let mut connection = storage
-        .open_writable()
+    let mut connection = crate::local_database::open_writable(storage)
         .map_err(|error| LocalError::Invalid(format!("cannot update worktree cache: {error}")))?;
     let transaction = connection.transaction()?;
     if let Some(scopes) = incremental_scopes {
@@ -1756,8 +1754,7 @@ fn load_file_heads(
     storage: &SqliteStorage,
     repo_id: &str,
 ) -> Result<HashMap<ItemId, (i64, BlobId, i64)>> {
-    let connection = storage
-        .open_readonly()
+    let connection = crate::local_database::open_readonly(storage)
         .map_err(|error| LocalError::Integrity(format!("cannot read file heads: {error}")))?;
     let mut statement = connection.prepare(
         "SELECT item_id, item_seq, blob_id, size_bytes

@@ -6,7 +6,7 @@ mod state;
 mod storage;
 
 pub use state::SqliteStateStore;
-pub use storage::{SqliteStorage, format_timestamp, parse_timestamp};
+pub use storage::{SqliteStorage, format_timestamp, parse_timestamp, validate_database_family};
 
 #[test]
 fn bundled_sqlite_includes_wal_reset_fix() {

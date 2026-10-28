@@ -869,6 +869,7 @@ async fn complete_checkout_edits_files_without_rewriting_mixed_history() {
     drop(portable);
     let copied = PortableRepository::open(&copy).unwrap();
     assert!(copied.checkout_paths().is_none());
+    assert!(!copy.join(".synck/repository.local.sqlite3").exists());
     assert_eq!(copied.authority(), Authority::Follower);
     assert_eq!(copied.verify().await.unwrap().commits, 3);
     assert_eq!(

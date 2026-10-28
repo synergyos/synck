@@ -57,7 +57,7 @@ struct ForeignKeyPart {
 pub fn inspect(connection: &Connection, prefix: &str) -> rusqlite::Result<SchemaShape> {
     let pattern = format!("{prefix}*");
     let objects = connection.prepare(
-        "SELECT type,name FROM sqlite_schema WHERE sql IS NOT NULL AND (name GLOB ?1 OR tbl_name GLOB ?1) ORDER BY type,name"
+        "SELECT type,name FROM sqlite_schema WHERE sql IS NOT NULL AND name NOT GLOB 'sqlite_*' AND (name GLOB ?1 OR tbl_name GLOB ?1) ORDER BY type,name"
     )?.query_map([&pattern], |row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
     let mut tables = Vec::new();
     let mut other = Vec::new();

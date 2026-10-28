@@ -192,9 +192,7 @@ impl crate::repository::Repository {
     ) -> Result<std::collections::BTreeSet<String>> {
         use crate::worktree::{NodeKind, load_identity_records, reconcile_identities};
         let sources = {
-            let connection = self
-                .storage()
-                .open_readonly()
+            let connection = crate::local_database::open_readonly(self.storage())
                 .map_err(|error| LocalError::Integrity(error.to_string()))?;
             let mut statement = connection.prepare(
                 "SELECT s.path,s.source_blob_id,e.parent_folder_id FROM local_email_import_sources s \
@@ -308,9 +306,7 @@ impl crate::repository::Repository {
         if sources.is_empty() {
             return Ok(());
         }
-        let mut connection = self
-            .storage()
-            .open_writable()
+        let mut connection = crate::local_database::open_writable(self.storage())
             .map_err(|error| LocalError::Integrity(error.to_string()))?;
         let transaction = connection.transaction()?;
         for (path, id, blob) in sources {

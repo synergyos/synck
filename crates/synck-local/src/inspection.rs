@@ -131,7 +131,7 @@ impl Repository {
 
     pub async fn tracked_items(&self) -> Result<Vec<TrackedItem>> {
         self.recover().await?;
-        let connection = self.storage().open_readonly().map_err(|error| {
+        let connection = crate::local_database::open_readonly(self.storage()).map_err(|error| {
             LocalError::Invalid(format!("cannot read repository database: {error}"))
         })?;
         let mut statement = connection.prepare(

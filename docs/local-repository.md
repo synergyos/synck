@@ -276,7 +276,7 @@ Core relations:
 - `vcs_checkpoints`;
 - `vcs_history_generations`.
 
-Its local relations are:
+The separate `repository.local.sqlite3` contains these local relations:
 
 - `local_schema_meta`;
 - `local_projection_state(repo_id, applied_repo_seq)`;
@@ -290,12 +290,7 @@ Its local relations are:
 - `local_worktree_scan_state(repo_id, ignore_blob_id, monitor_instance_id,
   monitor_sequence)`, the ignore-rule and monitor boundary paired with those
   entries;
-- `local_object_storage`, retained in the schema; it is not storage authority,
-  which `config.json` records;
 - `local_repository_settings`, recording hidden-file discovery policy;
-- `local_workspace_sessions`, `local_workspace_entries`, `local_import_jobs`,
-  `local_import_entries` and `local_import_commits`, part of the exact local
-  schema and always empty; the CLI writes no rows to them;
 - `local_email_import_sources`, recording disposable complete-checkout source
   observations rather than canonical EMAIL content.
 
@@ -312,19 +307,7 @@ SQLite `STRICT` tables. Format and schema markers do not excuse missing required
 unique keys or foreign keys. Definitions are checked structurally; see the
 [format specification](spec/format.md#sqlite-schema-version-policy).
 
-The local schema includes `local_email_import_sources` for source-file
-observations and `local_object_storage`:
-
-```sql
-CREATE TABLE local_object_storage (
-    repo_id TEXT PRIMARY KEY,
-    mode TEXT NOT NULL CHECK (mode IN ('WHOLE_FILE', 'CHUNKED'))
-) STRICT;
-```
-
-The row is not storage authority for format 6; `storage_mode` in `config.json`
-is, as described in [Portable repositories](portable-repository.md).
-Version 10 additionally contains exactly one repository-settings row:
+The local schema has exactly one repository-settings row:
 
 ```sql
 CREATE TABLE local_repository_settings (

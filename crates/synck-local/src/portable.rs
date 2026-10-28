@@ -1565,7 +1565,7 @@ impl PortableRepository {
         if self.config.checkout.is_some() {
             let mut findings = crate::integrity::Findings::default();
             crate::integrity::verify_projection(
-                &connection,
+                &crate::local_database::open_readonly(&self.storage)?,
                 self.repo_id().as_str(),
                 &expected_heads,
                 &mut findings,
@@ -2357,8 +2357,6 @@ impl PortableRepository {
                 None,
             )?;
             let storage = SqliteStorage::new(database.clone());
-            // Checkout observations belong to the source filesystem, never to a copy.
-            crate::repository::remove_checkout_schema(&storage)?;
             // Establish the ordinary local WAL profile on the private copy.
             drop(storage.open_writable().map_err(corrupt)?);
             let preserve_chunks =
