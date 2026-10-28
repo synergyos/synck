@@ -1016,19 +1016,18 @@ SubtreeClosureGuard {
 }
 ```
 
-The Core-owned aggregate descendant-work limit is exactly 9,999 per proposal.
-The root is excluded from that count and is protected by its ordinary proposal
-baseline. Guards are sorted by root ID; descendant pairs are sorted by item ID.
+There is no size cap on a prepared lifecycle closure. The root is protected by
+its ordinary proposal baseline. Guards are sorted by root ID; descendant pairs are sorted by item ID.
 Roots and guarded closures must be disjoint. Before allocating the lock set,
-Core rejects an oversized or overlapping prepared guard set.
+Core rejects an overlapping prepared guard set.
 
 Under the ordinary append transaction, Core:
 
 1. locks every touched item, guarded item, and old and new namespace parent in
    deterministic ID order;
 2. rechecks the existing exact head guards;
-3. traverses each guarded root's non-tombstoned descendants with one remaining
-   aggregate budget, requesting at most that remainder plus one;
+3. traverses each guarded root's non-tombstoned descendants, requesting at most
+   that guard's expected descendant count plus one;
 4. returns `SubtreeChanged` if a sentinel appears or exact sorted membership
    differs from the prepared guard;
 5. evaluates the final in-commit FILE/FOLDER graph and requires every LIVE

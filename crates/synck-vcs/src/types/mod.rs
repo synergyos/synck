@@ -568,10 +568,6 @@ pub struct CommitRow {
 
 // --- Commit proposals and results ---
 
-/// Maximum aggregate number of non-tombstoned descendants guarded by one
-/// checked FILE/FOLDER append.
-pub const FILE_FOLDER_MAX_CLOSURE_DESCENDANTS: usize = 9_999;
-
 /// Exact non-tombstoned subtree state prepared by a FILE/FOLDER caller.
 ///
 /// The root's ordinary proposal baseline protects the root itself. Descendant

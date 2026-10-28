@@ -210,13 +210,6 @@ pub enum CoreError {
         commit_id: CommitId,
     },
 
-    /// Prepared FILE/FOLDER lifecycle closure exceeds the Core aggregate bound.
-    #[error("subtree too large: repo={repo_id}, max_descendants={max_descendants}")]
-    SubtreeTooLarge {
-        repo_id: RepoId,
-        max_descendants: usize,
-    },
-
     /// A guarded FILE/FOLDER subtree changed after preparation.
     #[error("subtree changed: repo={repo_id}, root_item={root_item_id}")]
     SubtreeChanged {

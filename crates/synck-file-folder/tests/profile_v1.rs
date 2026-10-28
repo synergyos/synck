@@ -674,7 +674,7 @@ fn lifecycle_guards_include_all_non_tombstoned_heads_and_preserve_provenance() {
 }
 
 #[test]
-fn lifecycle_mismatch_overlap_and_aggregate_overflow_fail_typed() {
+fn lifecycle_rejects_mismatch_and_overlap_without_an_aggregate_size_cap() {
     let root_id = item(1);
     let child_id = item(2);
     let mut rows = BTreeMap::new();
@@ -882,9 +882,8 @@ fn lifecycle_mismatch_overlap_and_aggregate_overflow_fail_typed() {
     };
     assert_eq!(
         validate_and_materialize(&repo_id(), &aggregate, &overflow_rows)
-            .unwrap_err()
-            .code,
-        SemanticErrorCode::SubtreeTooLarge
+            .unwrap().events.len(),
+        10_002
     );
     let overflow_child = item(10_099);
     overflow_rows.insert(
@@ -916,9 +915,8 @@ fn lifecycle_mismatch_overlap_and_aggregate_overflow_fail_typed() {
     };
     assert_eq!(
         validate_and_materialize(&repo_id(), &oversized, &overflow_rows)
-            .unwrap_err()
-            .code,
-        SemanticErrorCode::SubtreeTooLarge
+            .unwrap().events.len(),
+        10_001
     );
 }
 

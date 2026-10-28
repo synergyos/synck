@@ -14,7 +14,7 @@ use synck_vcs::state::{
 use synck_vcs::storage::{Storage, StorageBackend};
 use synck_vcs::types::{
     COMMIT_FORMAT_VERSION, CommitEventRow, CommitProposal, CreateItem, EventProposal,
-    FILE_FOLDER_MAX_CLOSURE_DESCENDANTS, FederatedProposal, ItemCursor, ItemId, ItemRow,
+    FederatedProposal, ItemCursor, ItemId, ItemRow,
     LifecycleState, RefEventProposal, RepoEventCursor, RepoId, SequencingMode, SubtreeClosureGuard,
 };
 use synck_vcs_sqlite::{SqliteStorage, format_timestamp, parse_timestamp};
@@ -2207,7 +2207,7 @@ async fn sqlite_descendant_read_stops_at_the_overflow_sentinel() {
                            'author', 'LOCAL', NULL)",
             )
             .unwrap();
-        for index in 0..=FILE_FOLDER_MAX_CLOSURE_DESCENDANTS {
+        for index in 0..=9_999 {
             let item_id = ItemId::new();
             let name = format!("child-{index:05}");
             statement
@@ -2229,16 +2229,16 @@ async fn sqlite_descendant_read_stops_at_the_overflow_sentinel() {
         .list_non_tombstoned_descendants_bounded(
             &repo_id,
             &root_id,
-            FILE_FOLDER_MAX_CLOSURE_DESCENDANTS,
+            9_999,
         )
         .await
         .unwrap();
-    assert_eq!(rows.len(), FILE_FOLDER_MAX_CLOSURE_DESCENDANTS + 1);
+    assert_eq!(rows.len(), 9_999 + 1);
     txn.rollback().await.unwrap();
 }
 
 #[tokio::test]
-async fn checked_subtree_guards_enforce_aggregate_limit_and_disjointness_before_reads() {
+async fn checked_subtree_guards_have_no_size_cap_and_reject_overlap() {
     let (_dir, storage) = backend();
     storage.init_schema().await.unwrap();
     let repo_id = RepoId::new();
@@ -2286,7 +2286,7 @@ async fn checked_subtree_guards_enforce_aggregate_limit_and_disjointness_before_
             &[SubtreeClosureGuard {
                 root_item_id: first_root_id.clone(),
                 expected_non_tombstoned_descendants: sorted_fake_descendants(
-                    FILE_FOLDER_MAX_CLOSURE_DESCENDANTS + 1,
+                    9_999 + 1,
                 ),
                 require_empty_live_descendants: false,
             }],
@@ -2294,11 +2294,11 @@ async fn checked_subtree_guards_enforce_aggregate_limit_and_disjointness_before_
         .await
         .unwrap_err();
     assert!(
-        matches!(oversized_error, CoreError::SubtreeTooLarge { .. }),
+        matches!(oversized_error, CoreError::ItemNotFound { .. }),
         "unexpected error: {oversized_error:?}"
     );
 
-    let first_count = FILE_FOLDER_MAX_CLOSURE_DESCENDANTS / 2 + 1;
+    let first_count = 9_999 / 2 + 1;
     let aggregate_error = repo
         .append_file_folder_checked(
             repo_id.clone(),
@@ -2313,7 +2313,7 @@ async fn checked_subtree_guards_enforce_aggregate_limit_and_disjointness_before_
                 SubtreeClosureGuard {
                     root_item_id: second_root_id.clone(),
                     expected_non_tombstoned_descendants: sorted_fake_descendants(
-                        FILE_FOLDER_MAX_CLOSURE_DESCENDANTS - first_count + 1,
+                        9_999 - first_count + 1,
                     ),
                     require_empty_live_descendants: false,
                 },
@@ -2321,7 +2321,7 @@ async fn checked_subtree_guards_enforce_aggregate_limit_and_disjointness_before_
         )
         .await
         .unwrap_err();
-    assert!(matches!(aggregate_error, CoreError::SubtreeTooLarge { .. }));
+    assert!(matches!(aggregate_error, CoreError::ItemNotFound { .. }));
 
     let overlap_error = repo
         .append_file_folder_checked(
@@ -2353,7 +2353,7 @@ async fn checked_subtree_guards_enforce_aggregate_limit_and_disjointness_before_
             &[SubtreeClosureGuard {
                 root_item_id: first_root_id,
                 expected_non_tombstoned_descendants: sorted_fake_descendants(
-                    FILE_FOLDER_MAX_CLOSURE_DESCENDANTS,
+                    9_999,
                 ),
                 require_empty_live_descendants: false,
             }],
@@ -2439,4 +2439,37 @@ async fn checkpoint_publication_is_atomic_and_does_not_gate_acceptance() {
         )
         .unwrap();
     assert!(backend.verify_checkpoints(&repo_id).is_err());
+}
+
+#[tokio::test]
+async fn checked_lifecycle_accepts_more_than_9999_descendants_atomically() {
+    let (_directory, storage) = backend();
+    storage.init_schema().await.unwrap();
+    let repo_id = RepoId::new();
+    let repo = Repo::new(Storage::new(Arc::new(storage)), CoreConfig::default());
+    let root = ItemId::new();
+    let children: Vec<_> = (0..10_000).map(|_| ItemId::new()).collect();
+    let mut creates = vec![create_item_event(root.clone(), "FOLDER", None, "root")];
+    creates.extend(children.iter().enumerate().map(|(index, id)| {
+        create_item_event(id.clone(), "FILE", Some(root.clone()), &format!("child-{index}"))
+    }));
+    repo.append(repo_id.clone(), commit(creates)).await.unwrap();
+    let mut descendants: Vec<_> = children.iter().cloned().map(|id| (id, 1)).collect();
+    descendants.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+    let mut changes = vec![lifecycle_event(root.clone(), "FOLDER", 1, true)];
+    changes.extend(children.iter().map(|id| lifecycle_event(id.clone(), "FILE", 1, true)));
+    let accepted = repo.append_file_folder_checked(
+        repo_id.clone(), commit(changes), &[], &[SubtreeClosureGuard {
+            root_item_id: root.clone(),
+            expected_non_tombstoned_descendants: descendants,
+            require_empty_live_descendants: false,
+        }],
+    ).await.unwrap();
+    let stored = repo.get_commit(repo_id.clone(), accepted.commit_id).await.unwrap().unwrap();
+    assert_eq!(stored.event_count, 10_001);
+    for id in [root, children[0].clone(), children[9_999].clone()] {
+        let item = repo.get_item(repo_id.clone(), id).await.unwrap().unwrap();
+        assert_eq!(item.lifecycle_state, synck_vcs::types::LifecycleState::Trash);
+        assert_eq!(item.head_seq, 2);
+    }
 }

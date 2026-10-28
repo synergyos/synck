@@ -18,7 +18,7 @@ use crate::types::{
     AcceptedCommit, BlobId, COMMIT_EVENT_FAMILY_ITEM, COMMIT_EVENT_FAMILY_REF,
     COMMIT_FORMAT_VERSION, CommitEventRow, CommitPk, CommitProposal, CommitRow, ContentId,
     CreatedItemInfo, EventContent, EventInsertRow, EventProposal, EventRow,
-    FILE_FOLDER_MAX_CLOSURE_DESCENDANTS, FederatedDomainProposal, FederatedProposal,
+    FederatedDomainProposal, FederatedProposal,
     IngestedCommit, IngestedDomainCommit, ItemCursor, ItemId, ItemRow, LifecycleState,
     RefEventInsertRow, RefEventProposal, RepoEventCursor, RepoId, SequencingMode, Sha256Digest,
     SubtreeClosureGuard, Timestamp,
@@ -1317,7 +1317,6 @@ impl Repo {
 
         let mut combined_guards: Vec<(ItemId, i64)> = guards.to_vec();
         let mut closure_items: BTreeSet<ItemId> = BTreeSet::new();
-        let mut remaining_closure_work = FILE_FOLDER_MAX_CLOSURE_DESCENDANTS;
         for guard in subtree_guards {
             if !touched_items.contains(&guard.root_item_id) {
                 return Err(CoreError::InvalidProposal(
@@ -1330,13 +1329,6 @@ impl Repo {
                     "empty-live subtree guard cannot list descendants".to_string(),
                 ));
             }
-            if descendant_count > remaining_closure_work {
-                return Err(CoreError::SubtreeTooLarge {
-                    repo_id: repo_id.clone(),
-                    max_descendants: FILE_FOLDER_MAX_CLOSURE_DESCENDANTS,
-                });
-            }
-            remaining_closure_work -= descendant_count;
             if !closure_items.insert(guard.root_item_id.clone()) {
                 return Err(CoreError::InvalidProposal(
                     "subtree closure guards overlap".to_string(),
@@ -1476,7 +1468,6 @@ impl Repo {
             }
         }
 
-        let mut remaining_closure_work = FILE_FOLDER_MAX_CLOSURE_DESCENDANTS;
         for guard in subtree_guards {
             let root = existing_rows_by_id
                 .get(&guard.root_item_id)
@@ -1507,15 +1498,9 @@ impl Repo {
                 .list_non_tombstoned_descendants_bounded(
                     &repo_id,
                     &guard.root_item_id,
-                    remaining_closure_work,
+                    guard.expected_non_tombstoned_descendants.len(),
                 )
                 .await?;
-            if actual.len() > remaining_closure_work {
-                return Err(CoreError::SubtreeChanged {
-                    repo_id: repo_id.clone(),
-                    root_item_id: guard.root_item_id.clone(),
-                });
-            }
             actual.sort_unstable_by(|left, right| left.0.cmp(&right.0));
             let membership_matches = actual.len()
                 == guard.expected_non_tombstoned_descendants.len()
@@ -1529,7 +1514,6 @@ impl Repo {
                     root_item_id: guard.root_item_id.clone(),
                 });
             }
-            remaining_closure_work -= actual.len();
         }
 
         // Load current item state for all touched items and apply basic invariants.

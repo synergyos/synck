@@ -6,7 +6,7 @@ use std::cell::Cell;
 use serde_json::json;
 use synck_vcs::naming::compute_name_key;
 use synck_vcs::types::{
-    CreateItem, EventContent, EventProposal, FILE_FOLDER_MAX_CLOSURE_DESCENDANTS, ItemId, RepoId,
+    CreateItem, EventContent, EventProposal, ItemId, RepoId,
     Sha256Digest, SubtreeClosureGuard, canonical_event_proposal_bytes,
 };
 
@@ -116,7 +116,6 @@ pub fn validate_and_materialize_with_content_revisions(
     let mut lifecycle_items = BTreeSet::new();
     let mut exposed_items = BTreeSet::new();
     let mut relocated_folders = BTreeSet::new();
-    let mut remaining_closure_work = FILE_FOLDER_MAX_CLOSURE_DESCENDANTS;
 
     for intent in &intents {
         match intent {
@@ -211,7 +210,6 @@ pub fn validate_and_materialize_with_content_revisions(
                     kind,
                     &mut lifecycle_items,
                 )?;
-                consume_closure_budget(&closure, &mut remaining_closure_work)?;
                 let expected: Vec<ItemBase> = closure
                     .iter()
                     .filter(|(item, _)| item.lifecycle_state == ProfileLifecycleState::Live)
@@ -272,7 +270,6 @@ pub fn validate_and_materialize_with_content_revisions(
                     kind,
                     &mut lifecycle_items,
                 )?;
-                consume_closure_budget(&closure, &mut remaining_closure_work)?;
                 let expected: Vec<ItemBase> = closure
                     .iter()
                     .filter(|(item, _)| {
@@ -715,20 +712,6 @@ fn lifecycle_closure<'a>(
     }
     closure.sort_by(|left, right| left.0.item_id.cmp(&right.0.item_id));
     Ok(closure)
-}
-
-fn consume_closure_budget(
-    closure: &[(&CurrentItem, usize)],
-    remaining: &mut usize,
-) -> Result<(), SemanticError> {
-    if closure.len() > *remaining {
-        return Err(error(
-            SemanticErrorCode::SubtreeTooLarge,
-            "aggregate lifecycle closure exceeds the Core limit",
-        ));
-    }
-    *remaining -= closure.len();
-    Ok(())
 }
 
 fn require_exact_descendants(

@@ -184,3 +184,11 @@ All ref events for one owner in a commit carry the same pre-commit
 `base_ref_seq`. `initial_ref_seq` is not a field and must be rejected as unknown.
 There is no legacy-baseline migration API. Typed FILE readers do not load frozen
 sidecar history or supplemental legacy-sidecar roots.
+
+## Atomic subtree operations
+
+Lifecycle operations have no aggregate descendant-count cap. They carry the exact
+prepared descendant set and protect its item heads under the ordinary acceptance
+locks. The transaction rereads at most the expected count plus one for each
+root; an extra descendant or changed membership rejects the proposal as stale.
+This query bound detects races; it does not impose a format or commit-size limit.

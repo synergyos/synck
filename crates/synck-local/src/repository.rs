@@ -19,7 +19,6 @@ use synck_vcs::naming::compute_name_key;
 use synck_vcs::repo::Repo;
 use synck_vcs::state::{StateIndexStore, StateProjectorStore};
 use synck_vcs::storage::Storage;
-use synck_vcs::types::FILE_FOLDER_MAX_CLOSURE_DESCENDANTS;
 use synck_vcs::types::{BlobId, CommitEventRow, CommitId, ItemId, RepoId};
 use synck_vcs_sqlite::SqliteStorage;
 use uuid::Uuid;
@@ -687,24 +686,16 @@ impl Repository {
         }
 
         let mut current = self.load_current_file_folder_items(&connection, &required)?;
-        let mut remaining = FILE_FOLDER_MAX_CLOSURE_DESCENDANTS;
         let mut closures = BTreeMap::new();
         for root_id in lifecycle_roots {
             let root = current.get(&root_id).ok_or_else(|| {
                 LocalError::Integrity(format!("missing lifecycle root {root_id}"))
             })?;
             let descendants = if root.item_type == "FOLDER" {
-                self.bounded_descendant_ids(&connection, &root_id, remaining)?
+                self.descendant_ids(&connection, &root_id)?
             } else {
                 Vec::new()
             };
-            if descendants.len() > remaining {
-                return Err(LocalError::Invalid(
-                    "SUBTREE_TOO_LARGE: aggregate lifecycle closure exceeds the Core limit"
-                        .to_string(),
-                ));
-            }
-            remaining -= descendants.len();
             required.extend(descendants.iter().cloned());
             closures.insert(root_id, descendants);
         }
@@ -881,29 +872,26 @@ impl Repository {
         Ok(current)
     }
 
-    fn bounded_descendant_ids(
+    fn descendant_ids(
         &self,
         connection: &Connection,
         root_item_id: &ItemId,
-        remaining: usize,
     ) -> Result<Vec<ItemId>> {
-        let limit =
-            i64::try_from(remaining + 1).expect("FILE/FOLDER closure limit fits SQLite INTEGER");
         let mut statement = connection.prepare(
             "WITH RECURSIVE descendants(item_id) AS (
                  SELECT item_id FROM vcs_items
                  WHERE repo_id = ?1 AND parent_folder_id = ?2
                    AND lifecycle_state <> 'TOMBSTONED'
-                 UNION ALL
+                 UNION
                  SELECT child.item_id FROM vcs_items child
                  JOIN descendants parent
                    ON child.repo_id = ?1 AND child.parent_folder_id = parent.item_id
                  WHERE child.lifecycle_state <> 'TOMBSTONED'
              )
-             SELECT item_id FROM descendants LIMIT ?3",
+             SELECT item_id FROM descendants",
         )?;
         let rows = statement.query_map(
-            params![self.config.repo_id.as_str(), root_item_id.as_str(), limit],
+            params![self.config.repo_id.as_str(), root_item_id.as_str()],
             |row| row.get::<_, String>(0),
         )?;
         rows.map(|row| {
