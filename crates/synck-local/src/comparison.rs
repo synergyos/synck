@@ -360,6 +360,7 @@ mod tests {
 
     fn node(id: &str, kind: NodeKind, blob: Option<&str>) -> CommittedNode {
         CommittedNode {
+            plain_digest: None,
             item_id: ItemId::parse(id).unwrap(),
             kind,
             head_seq: 1,

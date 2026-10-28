@@ -115,4 +115,11 @@ CREATE TABLE local_email_import_sources (
     PRIMARY KEY (repo_id, path, item_id)
 ) STRICT;
 
-INSERT INTO local_schema_meta(singleton, version) VALUES (1, 11);
+CREATE TABLE local_object_digests (
+    repo_id TEXT NOT NULL,
+    object_id TEXT NOT NULL,
+    plain_sha256 TEXT NOT NULL CHECK (length(plain_sha256) = 64),
+    PRIMARY KEY (repo_id, object_id)
+) STRICT;
+
+INSERT INTO local_schema_meta(singleton, version) VALUES (1, 12);

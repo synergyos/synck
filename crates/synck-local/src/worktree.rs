@@ -51,6 +51,7 @@ pub struct CommittedNode {
     pub kind: NodeKind,
     pub head_seq: i64,
     pub blob_id: Option<ObjectId>,
+    pub plain_digest: Option<String>,
     pub size: Option<i64>,
 }
 
@@ -271,6 +272,7 @@ impl Repository {
             }
         }
 
+        let plain_digests = self.cached_plain_digests()?;
         let heads = load_file_heads(self.storage(), self.config().repo_id().as_str())?;
         let by_id: HashMap<ItemId, &ItemRow> = items
             .iter()
@@ -318,6 +320,12 @@ impl Repository {
                 .insert(
                     path.clone(),
                     CommittedNode {
+                        plain_digest: blob_id.as_ref().map(|id| -> Result<String> {
+                            match plain_digests.get(id) {
+                                Some(digest) => Ok(digest.clone()),
+                                None => self.plain_digest(id),
+                            }
+                        }).transpose()?,
                         item_id: item.item_id,
                         kind,
                         head_seq: item.head_seq,
@@ -2668,13 +2676,7 @@ pub(crate) fn diff(
             .expect("working path has a name");
         let name_changed = new_name != old_name;
         let parent_changed = new_parent.as_ref() != Some(&old_parent);
-        let content_changed = old.kind == NodeKind::File
-            && old.blob_id.as_ref().map(ObjectId::as_str)
-                != new
-                    .digest_hex
-                    .as_ref()
-                    .map(|digest| format!("sha256:{digest}"))
-                    .as_deref();
+        let content_changed = old.kind == NodeKind::File && old.plain_digest != new.digest_hex;
         if let Some(kind) = ChangeKind::relocation(parent_changed, name_changed) {
             changes.push(Change {
                 kind,
@@ -2791,6 +2793,7 @@ mod tests {
         let committed = BTreeMap::from([(
             "old".to_string(),
             CommittedNode {
+                plain_digest: None,
                 item_id: item_id.clone(),
                 kind: NodeKind::File,
                 head_seq: 1,
@@ -2848,6 +2851,7 @@ mod tests {
             (
                 "A.txt".to_string(),
                 CommittedNode {
+                    plain_digest: Some("1".repeat(64)),
                     item_id: displaced_id.clone(),
                     kind: NodeKind::File,
                     head_seq: 1,
@@ -2858,6 +2862,7 @@ mod tests {
             (
                 "B.txt".to_string(),
                 CommittedNode {
+                    plain_digest: Some(moved_digest.clone()),
                     item_id: moved_id.clone(),
                     kind: NodeKind::File,
                     head_seq: 2,
@@ -2951,6 +2956,7 @@ mod tests {
         let committed = BTreeMap::from([(
             "old".to_string(),
             CommittedNode {
+                plain_digest: None,
                 item_id: item_id.clone(),
                 kind: NodeKind::File,
                 head_seq: 1,
@@ -2975,6 +2981,7 @@ mod tests {
         let committed = BTreeMap::from([(
             "old".to_string(),
             CommittedNode {
+                plain_digest: None,
                 item_id: item_id.clone(),
                 kind: NodeKind::File,
                 head_seq: 1,
@@ -3004,6 +3011,7 @@ mod tests {
         let committed = BTreeMap::from([(
             "same".to_string(),
             CommittedNode {
+                plain_digest: None,
                 item_id: item_id.clone(),
                 kind: NodeKind::File,
                 head_seq: 1,

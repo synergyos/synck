@@ -404,6 +404,23 @@ impl ChunkStore {
         Ok((full_hasher.finalize().into(), full_size))
     }
 
+    /// Replace a private staging key with the streamed digest. The object stays
+    /// incomplete until the caller has validated its source and byte count.
+    pub(crate) fn address_staged_blob(&self, staging: &[u8;32], digest: &[u8;32], size: u64) -> Result<()> {
+        if staging == digest { return Ok(()); }
+        let mut connection = self.open_writable()?;
+        let transaction = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let changed = transaction.execute(
+            "INSERT INTO blobs(digest,size_bytes,complete) SELECT ?1,size_bytes,0 FROM blobs WHERE digest=?2 AND size_bytes=?3 AND complete=0",
+            params![digest.as_slice(), staging.as_slice(), i64::try_from(size).map_err(|_| LocalError::Invalid("object too large".into()))?],
+        )?;
+        if changed != 1 { return Err(LocalError::Integrity("staged object disappeared".into())); }
+        transaction.execute("UPDATE blob_chunks SET blob_digest=?1 WHERE blob_digest=?2", params![digest.as_slice(),staging.as_slice()])?;
+        transaction.execute("DELETE FROM blobs WHERE digest=?1", [staging.as_slice()])?;
+        transaction.commit()?;
+        Ok(())
+    }
+
     pub(crate) fn complete_blob(&self, digest: &[u8; 32], size: u64) -> Result<()> {
         self.complete_blob_before_batch_checkpoint(digest, size)?;
         self.checkpoint()
@@ -547,16 +564,8 @@ impl ChunkStore {
         Ok(hex::encode(digest))
     }
 
-    // Capture the exact bytes, using the same Office region policy as commits.
-    pub(crate) fn store_file(&self, source: &Path) -> Result<(String, u64)> {
-        self.store_file_inner(source, false)
-    }
-
+    /// Repack exact framed bytes; salts and object IDs never change.
     pub(crate) fn store_object_file(&self, source: &Path) -> Result<(String, u64)> {
-        self.store_file_inner(source, true)
-    }
-
-    fn store_file_inner(&self, source: &Path, detect_office: bool) -> Result<(String, u64)> {
         let mut file = crate::repository::open_regular_file_nofollow(source)?;
         let mut hasher = Sha256::new();
         let mut size = 0u64;
@@ -582,30 +591,25 @@ impl ChunkStore {
         }
         file.rewind()
             .map_err(|e| LocalError::Invalid(e.to_string()))?;
-        use crate::ooxml::{OoxmlKind, chunk_region_lengths};
-        let kinds = if detect_office {
-            vec![OoxmlKind::Docx, OoxmlKind::Xlsx, OoxmlKind::Pptx]
-        } else {
-            OoxmlKind::from_path(source).into_iter().collect()
-        };
+        use crate::ooxml::{OoxmlKind, chunk_region_lengths_at};
+        use synck_vcs::object::{Codec, Header, HEADER_BYTES};
+        let mut header_bytes = [0;HEADER_BYTES];
+        file.read_exact(&mut header_bytes).map_err(|e| LocalError::Integrity(e.to_string()))?;
+        let header = Header::parse(&header_bytes).map_err(|e| LocalError::Integrity(e.to_string()))?;
+        let application_size = size.checked_sub(HEADER_BYTES as u64).ok_or_else(|| LocalError::Integrity("truncated object".into()))?;
         let mut regions = None;
-        for kind in kinds {
-            let source = file
-                .try_clone()
-                .map_err(|e| LocalError::Invalid(e.to_string()))?;
-            regions = chunk_region_lengths(source, size, kind);
-            if regions.is_some() {
-                break;
+        if header.codec() == Codec::Raw {
+            for kind in [OoxmlKind::Docx, OoxmlKind::Xlsx, OoxmlKind::Pptx] {
+                regions = chunk_region_lengths_at(file.try_clone().map_err(|e| LocalError::Invalid(e.to_string()))?, application_size, kind, HEADER_BYTES as u64);
+                if regions.is_some() { break; }
             }
         }
+        let mut boundaries = vec![HEADER_BYTES as u64];
+        if application_size > 0 { boundaries.extend(regions.unwrap_or_else(|| vec![application_size])); }
         // Office inspection may move the shared file offset.
         file.rewind()
             .map_err(|e| LocalError::Invalid(e.to_string()))?;
-        let captured = if let Some(regions) = regions {
-            self.stage_blob_regions(digest, size, file, &regions)?
-        } else {
-            self.stage_blob(digest, size, file)?
-        };
+        let captured = self.stage_blob_regions(digest, size, file, &boundaries)?;
         if captured != (digest, size) {
             return Err(LocalError::Invalid(
                 "file changed while being captured".into(),

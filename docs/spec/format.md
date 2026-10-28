@@ -99,7 +99,11 @@ this framing and does not change object identity. Language-neutral vectors are
 in `vectors/objects.json`.
 
 Implementation status: the identifier type and UTF8-body writer use this
-framing. The RAW file store conversion is still pending.
+framing. FILE and EMAIL source writers also use RAW framing. Working-file
+change detection uses plain SHA-256 digests only in the disposable local cache;
+these digests are never object IDs. Chunked capture isolates the salted header
+from file-data chunks so repeated content can still deduplicate. Exports strip
+the frame; repository copies preserve the exact frame and its ID.
 
 ### Metadata payloads
 
@@ -167,7 +171,7 @@ local `render_email` reader recomputes presentation with the current parser
 without changing history. Content-ID header strings in attachment metadata are
 MIME identifiers, not Synck object references.
 
-Implementation status: RAW object framing and named-version revision pointers
+Implementation status: named-version revision pointers
 are the remaining coordinated changes; the role map does not provide a legacy
 inline-content reader.
 

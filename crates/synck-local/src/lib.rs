@@ -15,6 +15,7 @@ mod monitor;
 mod name_repairs;
 mod name_repair_journal;
 mod objects;
+mod raw_object;
 mod path_warnings;
 mod ooxml;
 pub mod portable;

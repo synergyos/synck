@@ -55,12 +55,7 @@ pub(crate) fn validate_materialized_tree(
             .ok_or_else(|| LocalError::Integrity(format!("materialized tree is missing {path}")))?;
         if old.kind != new.kind
             || (old.kind == NodeKind::File
-                && (old.blob_id.as_ref().map(ObjectId::as_str)
-                    != new
-                        .digest_hex
-                        .as_ref()
-                        .map(|digest| format!("sha256:{digest}"))
-                        .as_deref()
+                && (old.plain_digest != new.digest_hex
                     || old.size.and_then(|size| u64::try_from(size).ok()) != new.size))
         {
             return Err(LocalError::Integrity(format!(

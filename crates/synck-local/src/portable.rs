@@ -43,6 +43,7 @@ use synck_vcs_sqlite::SqliteStorage;
 use uuid::Uuid;
 
 use crate::chunk_store::{ChunkStore, OBJECT_STORE_FILE, StorageMode};
+use crate::ooxml::{OoxmlKind, chunk_region_lengths};
 use crate::error::{IoContext, LocalError, Result};
 use crate::repository::{
     RepositoryLock, is_cap_link_or_reparse, is_link_or_reparse, open_regular_file_nofollow,
@@ -1154,7 +1155,13 @@ impl PortableRepository {
 
     /// Stream exact blob bytes. On error the caller must discard any partial
     /// output; publish extracted files only after this returns success.
-    pub fn copy_blob(&self, id: &ObjectId, mut out: &mut dyn Write) -> Result<u64> {
+    pub fn copy_blob(&self, id: &ObjectId, out: &mut dyn Write) -> Result<u64> {
+        let mut decoder = synck_vcs::object::Decoder::new(id.clone(), out);
+        self.copy_stored_object(id, &mut decoder)?;
+        decoder.finish().map(|(size, _)| size).map_err(corrupt)
+    }
+
+    pub(crate) fn copy_stored_object(&self, id: &ObjectId, mut out: &mut dyn Write) -> Result<u64> {
         if self.storage_mode() == StorageMode::Chunked {
             let size = self.object_store().blob_size(id)?;
             self.object_store().copy_blob(id, size, &mut out)?;
@@ -1719,11 +1726,12 @@ impl PortableRepository {
             )
             .await?
             .iter()
-            .map(|row| serde_json::from_slice::<EventProposal>(&row.payload))
+            .map(|row| row.proposal())
             .collect::<std::result::Result<Vec<_>, _>>()?;
-        let written = events.iter().find_map(|event| {
-            let blob = synck_file_folder::file_blob_reference(event).ok()??;
-            let id = event.item_id.as_ref()?;
+        let mut written = None;
+        for event in &events {
+            let Some(blob) = synck_file_folder::file_blob_reference(event).map_err(corrupt)? else { continue; };
+            let id = event.item_id.as_ref().ok_or_else(|| corrupt("accepted FILE event has no item ID"))?;
             let same_item = match (item, location) {
                 (Some(item), _) => id == item,
                 (None, Some(location)) => events.iter().any(|create| {
@@ -1736,8 +1744,14 @@ impl PortableRepository {
                 }),
                 (None, None) => false,
             };
-            (same_item && blob == *content).then(|| id.clone())
-        });
+            if same_item && blob.size == content.size {
+                let mut previous = crate::objects::PlainDigest::default();
+                let mut proposed = crate::objects::PlainDigest::default();
+                self.copy_blob(&blob.blob_id, &mut previous)?;
+                self.copy_blob(&content.blob_id, &mut proposed)?;
+                if previous.finish() == proposed.finish() { written = Some(id.clone()); break; }
+            }
+        }
         match written {
             Some(id) => Ok(Some((id, commit.commit_id))),
             None => Err(invalid(
@@ -1781,41 +1795,21 @@ impl PortableRepository {
     }
 
     fn store_file(&self, source: &Path) -> Result<BlobRef> {
-        if self.storage_mode() == StorageMode::Chunked {
-            let (digest, size) = self.object_store().store_file(source)?;
-            return Ok(BlobRef {
-                blob_id: ObjectId::parse(format!("sha256:{digest}")).map_err(corrupt)?,
-                size,
-            });
-        }
         let file = open_regular_file_nofollow(source)?;
-        let staging = self
-            .root
-            .join(".synck/objects")
-            .join(format!(".pending-{}", Uuid::new_v4()));
-        copy_new(file, &staging)?;
-        let mut file = open_regular_file_nofollow(&staging)?;
-        let (digest, size) = hash(&mut file)?;
-        drop(file);
-        let destination = self.root.join(".synck/objects").join(&digest);
-        if destination
-            .try_exists()
-            .at("inspect object", &destination)?
-        {
-            let mut existing = open_regular_file_nofollow(&destination)?;
-            if hash(&mut existing)?.0 != digest {
-                return Err(corrupt("existing blob is corrupt"));
-            }
-            fs::remove_file(&staging).at("remove duplicate object staging", &staging)?;
-        } else {
-            crate::repository::rename_noreplace(&staging, &destination)
-                .at("publish object", &destination)?;
+        let before = file.metadata().at("inspect capture source", source)?;
+        let regions = OoxmlKind::from_path(source).and_then(|kind| {
+            chunk_region_lengths(file.try_clone().ok()?, before.len(), kind)
+        });
+        let mut file = file;
+        std::io::Seek::rewind(&mut file).at("rewind capture source", source)?;
+        let store = self.object_store();
+        let captured = crate::raw_object::capture(file, before.len(), regions, &self.root.join(".synck/objects"),
+            (self.storage_mode() == StorageMode::Chunked).then_some(&store), true)?;
+        let after = fs::symlink_metadata(source).at("inspect capture source", source)?;
+        if !after.is_file() || before.len() != after.len() || before.modified().ok() != after.modified().ok() {
+            return Err(invalid("file changed while being captured"));
         }
-        sync_directory(&self.root.join(".synck/objects"))?;
-        Ok(BlobRef {
-            blob_id: ObjectId::parse(format!("sha256:{digest}")).map_err(corrupt)?,
-            size,
-        })
+        Ok(BlobRef { blob_id:captured.id, size:captured.size })
     }
 
     async fn profile_current(&self, seeds: Vec<ItemId>) -> Result<BTreeMap<ItemId, CurrentItem>> {
@@ -1924,7 +1918,7 @@ impl PortableRepository {
         } else {
             let expected = &tree[&path];
             crate::commands::verify_working_file(
-                working.root_path(),
+                &working,
                 &path,
                 expected
                     .blob_id
@@ -1944,7 +1938,7 @@ impl PortableRepository {
             return Err(invalid("injected failure before file acceptance"));
         }
         let outcome = working
-            .commit_selected_with(working.root_path(), &[PathBuf::from(&path)], options)
+            .commit_selected_with(working.root_path(), &[PathBuf::from(&path)], options, Some((&path, content)))
             .await?;
         let commit = match outcome {
             crate::CommitOutcome::Committed(id) => CommitId::parse(id).map_err(corrupt)?,
@@ -1962,7 +1956,7 @@ impl PortableRepository {
         let node = tree
             .get(&path)
             .ok_or_else(|| corrupt("file write was not committed"))?;
-        if node.blob_id.as_ref() != Some(&content.blob_id) {
+        if node.plain_digest.as_deref() != Some(working.plain_digest(&content.blob_id)?.as_str()) {
             return Err(LocalError::AcceptedNeedsRecovery {
                 commit_id: commit.to_string(),
                 detail: "file changed during write; inspect status and history before retrying"
@@ -2378,7 +2372,7 @@ impl PortableRepository {
                         {
                             if self.storage_mode() == StorageMode::Chunked {
                                 let mut file = create_file(&destination)?;
-                                self.copy_blob(
+                                self.copy_stored_object(
                                     &ObjectId::parse(format!("sha256:{name}")).map_err(corrupt)?,
                                     &mut file,
                                 )?;

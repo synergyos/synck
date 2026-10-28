@@ -234,7 +234,7 @@ impl Repository {
             };
             if node.kind != observed.kind
                 || (node.kind == NodeKind::File
-                    && (node.blob_id.as_ref().map(|b| &b.as_str()[7..])
+                    && (node.plain_digest.as_deref()
                         != observed.digest_hex.as_deref()
                         || node.size.and_then(|s| u64::try_from(s).ok()) != observed.size))
             {

@@ -80,10 +80,10 @@ const MOVE_INTENT_VERSION: u32 = 2;
 const MOVE_INTENT_NAME: &str = "move.json";
 const RECOVER_INTENT_VERSION: u32 = 1;
 const RECOVER_INTENT_NAME: &str = "recover.json";
-const REVERT_INTENT_VERSION: u32 = 3;
+const REVERT_INTENT_VERSION: u32 = 4;
 const REVERT_INTENT_NAME: &str = "revert.json";
 const REVERT_STAGE_NAME: &str = "revert-stage";
-const WORKTREE_RESTORE_INTENT_VERSION: u32 = 1;
+const WORKTREE_RESTORE_INTENT_VERSION: u32 = 2;
 const WORKTREE_RESTORE_INTENT_NAME: &str = "worktree-restore.json";
 const WORKTREE_RESTORE_STAGE_NAME: &str = "worktree-restore-stage";
 
@@ -138,6 +138,7 @@ struct RevertIntent {
     publish_base_repo_seq: i64,
     message: String,
     items: Vec<RevertIntentItem>,
+    #[serde(with = "durable_events")]
     events: Vec<EventProposal>,
     subtree_guards: Vec<DurableSubtreeGuard>,
 }
@@ -161,6 +162,7 @@ struct RevertIntentItem {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 struct RevertItemState {
+    plain_digest: Option<String>,
     parent_id: Option<ItemId>,
     name: String,
     path: String,
@@ -186,7 +188,7 @@ pub(crate) struct WorktreeRestoreEntry {
     path: String,
     item_id: Option<ItemId>,
     item_type: String,
-    blob_id: Option<ObjectId>,
+    plain_digest: Option<String>,
     size: Option<i64>,
 }
 
@@ -326,7 +328,6 @@ struct ReplayResult {
 }
 
 struct PreparedWorkingCommit {
-    objects: HashMap<String, ObjectId>,
     created_ids: HashMap<String, ItemId>,
     events: Vec<EventProposal>,
     ref_events: Vec<RefEventProposal>,
@@ -365,7 +366,7 @@ impl Repository {
             message: message.map(str::to_string),
             ..Default::default()
         };
-        self.commit_selected_with(caller, inputs, &options).await
+        self.commit_selected_with(caller, inputs, &options, None).await
     }
 
     /// Selected commit with direct-writer attribution; the configured author
@@ -375,6 +376,7 @@ impl Repository {
         caller: &Path,
         inputs: &[PathBuf],
         options: &crate::portable::WriteOptions,
+        captured_file: Option<(&str, &BlobRef)>,
     ) -> Result<CommitOutcome> {
         let message = options.message.as_deref();
         validate_commit_message(message)?;
@@ -391,14 +393,8 @@ impl Repository {
         if changes.is_empty() {
             return Ok(CommitOutcome::Clean);
         }
-        let prepared =
-            self.prepare_working_commit(&committed, &working, &changes, &working_ids, message)?;
-        let captured = self.capture_changed_files(&working, &changes)?;
-        if captured != prepared.objects {
-            return Err(LocalError::Integrity(
-                "captured FILE objects differ from the validated commit".to_string(),
-            ));
-        }
+        let captured = self.capture_changed_files(&working, &changes, captured_file)?;
+        let prepared = self.prepare_working_commit(&committed, &working, &changes, &working_ids, message, &captured)?;
         self.store_imported_email_objects(&prepared.email_objects)?;
         self.record_imported_email_sources(&prepared.email_sources)?;
         let accepted = self
@@ -456,6 +452,7 @@ impl Repository {
         changes: &[Change],
         working_ids: &HashMap<String, ItemId>,
         message: Option<&str>,
+        objects: &HashMap<String, ObjectId>,
     ) -> Result<PreparedWorkingCommit> {
         for change in changes {
             if change.kind != ChangeKind::Add
@@ -470,14 +467,12 @@ impl Repository {
                 }
             }
         }
-        let objects = expected_file_objects(working, changes)?;
         let built_intents =
             build_intents(committed, working, changes, working_ids, &objects, None)?;
         let mut intents = built_intents.intents;
         let current = self.current_file_folder_context(&mut intents)?;
         let built = materialize_events(self.config().repo_id(), message, intents, &current)?;
         let mut prepared = PreparedWorkingCommit {
-            objects,
             created_ids: built_intents.created_ids,
             events: built.events,
             ref_events: built.ref_events,
@@ -513,7 +508,7 @@ impl Repository {
             self.reject_recorded_email_name(&change.path, &email.events[0])?;
             let source_blob = email.events[0].set_content.as_ref()
                 .and_then(|content| content.get("source")).expect("EMAIL source object").as_str();
-            if source_blob != prepared.objects[&change.path].as_str() {
+            if Some(email.source_plain_digest.as_str()) != working[&change.path].digest_hex.as_deref() {
                 return Err(LocalError::Invalid(format!(
                     "email source changed while parsing: {}",
                     change.path
@@ -1047,7 +1042,7 @@ impl Repository {
 
     fn stage_revert_item(&self, stage: &Path, item: &RevertIntentItem) -> Result<()> {
         let staged = stage.join(item.item_id.as_str());
-        if entry_matches_revert_state(&staged, &item.item_type, &item.after)? {
+        if entry_matches_revert_state(self, &staged, &item.item_type, &item.after)? {
             return Ok(());
         }
         if path_exists_nofollow(&staged)? {
@@ -1058,7 +1053,7 @@ impl Repository {
         }
 
         let source = self.root_path().join(display_to_path(&item.after.path));
-        if entry_matches_revert_state(&source, &item.item_type, &item.after)? {
+        if entry_matches_revert_state(self, &source, &item.item_type, &item.after)? {
             rename_noreplace(&source, &staged).at("stage reverted item", &source)?;
             sync_display_parent(self.root_path(), &item.after.path)?;
             sync_directory(stage)?;
@@ -1069,7 +1064,7 @@ impl Repository {
                 .before
                 .as_ref()
                 .filter(|before| before.live && before.path == item.after.path)
-                && entry_matches_revert_state(&source, &item.item_type, before)?
+                && entry_matches_revert_state(self, &source, &item.item_type, before)?
             {
                 return Ok(());
             }
@@ -1081,7 +1076,7 @@ impl Repository {
 
         if let Some(before) = item.before.as_ref().filter(|state| state.live) {
             let target = self.root_path().join(display_to_path(&before.path));
-            if entry_matches_revert_state(&target, &item.item_type, before)? {
+            if entry_matches_revert_state(self, &target, &item.item_type, before)? {
                 return Ok(());
             }
             return Err(LocalError::Integrity(format!(
@@ -1095,7 +1090,7 @@ impl Repository {
     fn publish_revert_folder(&self, stage: &Path, item: &RevertIntentItem) -> Result<()> {
         let before = item.before.as_ref().expect("filtered revert folder");
         let target = self.root_path().join(display_to_path(&before.path));
-        if entry_matches_revert_state(&target, "FOLDER", before)? {
+        if entry_matches_revert_state(self, &target, "FOLDER", before)? {
             return Ok(());
         }
         if path_exists_nofollow(&target)? {
@@ -1105,7 +1100,7 @@ impl Repository {
             )));
         }
         let staged = stage.join(item.item_id.as_str());
-        if entry_matches_revert_state(&staged, "FOLDER", &item.after)? {
+        if entry_matches_revert_state(self, &staged, "FOLDER", &item.after)? {
             rename_noreplace(&staged, &target).at("publish reverted folder", &target)?;
             sync_directory(stage)?;
             sync_display_parent(self.root_path(), &before.path)
@@ -1117,7 +1112,7 @@ impl Repository {
     fn publish_revert_file(&self, stage: &Path, item: &RevertIntentItem) -> Result<()> {
         let before = item.before.as_ref().expect("filtered revert file");
         let target = self.root_path().join(display_to_path(&before.path));
-        if entry_matches_revert_state(&target, "FILE", before)? {
+        if entry_matches_revert_state(self, &target, "FILE", before)? {
             return Ok(());
         }
         if path_exists_nofollow(&target)? {
@@ -1127,7 +1122,7 @@ impl Repository {
             )));
         }
         let staged = stage.join(item.item_id.as_str());
-        if entry_matches_revert_state(&staged, "FILE", before)? {
+        if entry_matches_revert_state(self, &staged, "FILE", before)? {
             rename_noreplace(&staged, &target).at("publish reverted file", &target)?;
             sync_directory(stage)?;
             sync_display_parent(self.root_path(), &before.path)
@@ -2887,6 +2882,7 @@ impl Repository {
                 .insert(
                     path.clone(),
                     CommittedNode {
+                        plain_digest: blob_id.as_ref().map(|id| self.plain_digest(id)).transpose()?,
                         item_id,
                         kind,
                         head_seq: item.head_seq,
@@ -3469,7 +3465,7 @@ impl Repository {
                 "recovery crosses the checkout selection; widen it first".into(),
             ));
         }
-        validate_recover_destinations(self.root_path(), &intent, false)?;
+        validate_recover_destinations(self, &intent, false)?;
         self.validate_recover_objects(&intent)?;
         self.write_recover_intent(&intent)?;
         self.complete_recover_intent(&intent, true).await
@@ -3502,7 +3498,7 @@ impl Repository {
                     LocalError::Integrity("accepted recover intent has no commit".to_string())
                 })?
         } else {
-            validate_recover_destinations(self.root_path(), intent, false)?;
+            validate_recover_destinations(self, intent, false)?;
             if !objects_validated {
                 self.validate_recover_objects(intent)?;
             }
@@ -3537,7 +3533,7 @@ impl Repository {
         }
         let materialized = async {
             self.materialize_recover_intent(intent)?;
-            validate_recover_destinations(self.root_path(), intent, true)?;
+            validate_recover_destinations(self, intent, true)?;
             self.refresh_worktree_identities().await?;
             self.clear_recover_intent()
         }
@@ -3719,7 +3715,7 @@ impl Repository {
                         "recovery target is not a regular file: {display}"
                     )));
                 }
-                verify_working_file(self.root_path(), display, blob_id, expected_size)
+                verify_working_file(self, display, blob_id, expected_size)
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 self.write_working_file(display, blob_id, expected_size, false)
@@ -4184,6 +4180,7 @@ impl Repository {
         &self,
         working: &BTreeMap<String, WorkingNode>,
         changes: &[Change],
+        captured_file: Option<(&str, &BlobRef)>,
     ) -> Result<HashMap<String, ObjectId>> {
         let mut objects = HashMap::new();
         for change in changes {
@@ -4203,6 +4200,14 @@ impl Repository {
             }
             let digest = node.digest_hex.as_deref().expect("scanned FILE has digest");
             let size = node.size.expect("scanned FILE has size");
+            if let Some((path, content)) = captured_file.filter(|(path, _)| *path == change.path) {
+                if content.size != size || self.plain_digest(&content.blob_id)? != digest {
+                    return Err(LocalError::Invalid("working bytes differ from the supplied file".into()));
+                }
+                verify_working_file(self, path, &content.blob_id, i64::try_from(size).map_err(|_| LocalError::Invalid("file too large".into()))?)?;
+                objects.insert(change.path.clone(), content.blob_id.clone());
+                continue;
+            }
             let relative = display_to_path(&change.path);
             let blob_id =
                 self.install_object_before_commit(&relative, &change.path, digest, size)?;
@@ -4887,6 +4892,7 @@ fn committed_restore_state(
         ),
     };
     Ok(RevertItemState {
+        plain_digest: node.plain_digest.clone(),
         parent_id,
         name: restore_final_name(path).to_string(),
         path: path.to_string(),
@@ -4911,19 +4917,16 @@ fn working_restore_state(
             })
         })
         .transpose()?;
-    let (blob_id, size) = match node.kind {
+    let (plain_digest, size) = match node.kind {
         NodeKind::File => {
             let digest = node.digest_hex.as_ref().ok_or_else(|| {
                 LocalError::Integrity(format!("working restore FILE has no digest: {path}"))
-            })?;
-            let blob_id = ObjectId::parse(format!("sha256:{digest}")).map_err(|error| {
-                LocalError::Integrity(format!("working restore FILE has invalid digest: {error}"))
             })?;
             let size = i64::try_from(node.size.ok_or_else(|| {
                 LocalError::Integrity(format!("working restore FILE has no size: {path}"))
             })?)
             .map_err(|_| LocalError::Invalid(format!("working FILE is too large: {path}")))?;
-            (Some(blob_id), Some(size))
+            (Some(digest.clone()), Some(size))
         }
         NodeKind::Folder => (None, None),
     };
@@ -4933,7 +4936,8 @@ fn working_restore_state(
         path: path.to_string(),
         live: true,
         head_seq,
-        blob_id,
+        blob_id: None,
+        plain_digest,
         size,
     })
 }
@@ -4945,17 +4949,13 @@ pub(crate) fn worktree_restore_manifest(
     working
         .iter()
         .map(|(path, node)| {
-            let (blob_id, size) = match node.kind {
+            let (plain_digest, size) = match node.kind {
                 NodeKind::File => {
                     let digest = node.digest_hex.as_ref().ok_or_else(|| {
                         LocalError::Integrity(format!("working FILE has no digest: {path}"))
                     })?;
                     (
-                        Some(ObjectId::parse(format!("sha256:{digest}")).map_err(|error| {
-                            LocalError::Integrity(format!(
-                                "working FILE has invalid digest: {error}"
-                            ))
-                        })?),
+                        Some(digest.clone()),
                         Some(
                             i64::try_from(node.size.ok_or_else(|| {
                                 LocalError::Integrity(format!("working FILE has no size: {path}"))
@@ -4972,7 +4972,7 @@ pub(crate) fn worktree_restore_manifest(
                 path: path.clone(),
                 item_id: working_ids.get(path).cloned(),
                 item_type: node_kind_name(node.kind).to_string(),
-                blob_id,
+                plain_digest,
                 size,
             })
         })
@@ -5067,8 +5067,8 @@ fn validate_worktree_restore_manifest(entries: &[WorktreeRestoreEntry]) -> Resul
                 .as_ref()
                 .is_some_and(|item_id| !item_ids.insert(item_id.clone()))
             || match kind {
-                NodeKind::File => entry.blob_id.is_none() || entry.size.is_none(),
-                NodeKind::Folder => entry.blob_id.is_some() || entry.size.is_some(),
+                NodeKind::File => entry.plain_digest.is_none() || entry.size.is_none(),
+                NodeKind::Folder => entry.plain_digest.is_some() || entry.size.is_some(),
             }
         {
             return Err(LocalError::Integrity(
@@ -5142,7 +5142,7 @@ fn validate_worktree_restore_target(
             let expected_id = item.before.as_ref().map(|_| &item.item_id);
             if source.item_id.as_ref() != expected_id
                 || source.item_type != item.item_type
-                || source.blob_id != item.after.blob_id
+                || source.plain_digest != item.after.plain_digest
                 || source.size != item.after.size
             {
                 return Err(LocalError::Integrity(format!(
@@ -5349,6 +5349,7 @@ fn revert_item_state(
         _ => {}
     }
     Ok(RevertItemState {
+        plain_digest: None,
         parent_id: node.parent_id.clone(),
         name: node.name.clone(),
         path,
@@ -5363,7 +5364,10 @@ fn same_revert_value(left: &RevertItemState, right: &RevertItemState) -> bool {
     left.parent_id == right.parent_id
         && left.name == right.name
         && left.live == right.live
-        && left.blob_id == right.blob_id
+        && match (&left.plain_digest, &right.plain_digest) {
+            (Some(left), Some(right)) => left == right,
+            _ => left.blob_id == right.blob_id,
+        }
         && left.size == right.size
 }
 
@@ -5409,7 +5413,11 @@ fn same_event_proposals(left: &[EventProposal], right: &[EventProposal]) -> Resu
     left.iter()
         .zip(right)
         .map(|(left, right)| {
-            Ok(canonical_event_proposal_bytes(left)? == canonical_event_proposal_bytes(right)?)
+            if left.set_metadata.as_ref().and_then(synck_vcs::metadata::MetadataRef::value)
+                != right.set_metadata.as_ref().and_then(synck_vcs::metadata::MetadataRef::value) { return Ok(false); }
+            let mut right = right.clone();
+            right.set_metadata = left.set_metadata.clone();
+            Ok(canonical_event_proposal_bytes(left)? == canonical_event_proposal_bytes(&right)?)
         })
         .try_fold(true, |equal, pair| pair.map(|pair| equal && pair))
 }
@@ -5550,6 +5558,7 @@ fn validate_inverse_stage_entries(stage: &Path, items: &[RevertIntentItem]) -> R
 }
 
 fn entry_matches_revert_state(
+    repository: &Repository,
     path: &Path,
     item_type: &str,
     state: &RevertItemState,
@@ -5571,18 +5580,15 @@ fn entry_matches_revert_state(
             if !metadata.file_type().is_file() || is_link_or_reparse(&metadata) {
                 return Ok(false);
             }
-            let blob_id = state.blob_id.as_ref().ok_or_else(|| {
-                LocalError::Integrity("revert FILE state has no blob".to_string())
-            })?;
-            let digest = blob_id
-                .as_str()
-                .strip_prefix("sha256:")
-                .expect("ObjectId has a SHA-256 prefix");
+            let digest = match &state.plain_digest {
+                Some(digest) => digest.clone(),
+                None => repository.plain_digest(state.blob_id.as_ref().ok_or_else(|| LocalError::Integrity("revert FILE has neither content nor plaintext digest".into()))?)?,
+            };
             let size = u64::try_from(state.size.ok_or_else(|| {
                 LocalError::Integrity("revert FILE state has no size".to_string())
             })?)
             .map_err(|_| LocalError::Integrity("revert FILE has negative size".to_string()))?;
-            match verify_object_file(path, digest, size) {
+            match verify_object_file(path, &digest, size) {
                 Ok(()) => Ok(true),
                 Err(LocalError::Integrity(_)) => Ok(false),
                 Err(error) => Err(error),
@@ -5916,10 +5922,11 @@ fn is_descendant_of(
 }
 
 fn validate_recover_destinations(
-    root: &Path,
+    repository: &Repository,
     intent: &RecoverIntent,
     materialized: bool,
 ) -> Result<()> {
+    let root = repository.root_path();
     for item in &intent.items {
         let path = root.join(display_to_path(&item.path));
         match std::fs::symlink_metadata(&path) {
@@ -5939,7 +5946,7 @@ fn validate_recover_destinations(
                     && !is_link_or_reparse(&metadata) =>
             {
                 verify_working_file(
-                    root,
+                    repository,
                     &item.path,
                     item.blob_id
                         .as_ref()
@@ -5973,11 +5980,13 @@ fn validate_recover_destinations(
 }
 
 pub(crate) fn verify_working_file(
-    root: &Path,
+    repository: &Repository,
     display: &str,
     blob_id: &ObjectId,
     expected_size: i64,
 ) -> Result<()> {
+    let root = repository.root_path();
+    let expected_digest = repository.plain_digest(blob_id)?;
     let relative = display_to_path(display);
     let parent = relative
         .parent()
@@ -6016,8 +6025,8 @@ pub(crate) fn verify_working_file(
             LocalError::Integrity(format!("recovered file size overflow for {display}"))
         })?;
     }
-    let actual = format!("sha256:{}", hex::encode(hasher.finalize()));
-    if size != expected_size || actual != blob_id.as_str() {
+    let actual = hex::encode(hasher.finalize());
+    if size != expected_size || actual != expected_digest {
         return Err(LocalError::Invalid(format!(
             "recovery target content differs from committed bytes: {display}"
         )));
@@ -6875,37 +6884,6 @@ pub(crate) fn validate_commit_message(message: Option<&str>) -> Result<()> {
         }));
     }
     Ok(())
-}
-
-fn expected_file_objects(
-    working: &BTreeMap<String, WorkingNode>,
-    changes: &[Change],
-) -> Result<HashMap<String, ObjectId>> {
-    let mut objects = HashMap::new();
-    for change in changes {
-        if !matches!(change.kind, ChangeKind::Add | ChangeKind::Modify)
-            && !change.kind.is_relocation()
-        {
-            continue;
-        }
-        let Some(node) = working.get(&change.path) else {
-            continue;
-        };
-        if node.kind != NodeKind::File || (change.kind.is_relocation() && !change.content_changed) {
-            continue;
-        }
-        let digest = node.digest_hex.as_deref().ok_or_else(|| {
-            LocalError::Integrity(format!("scanned FILE has no digest: {}", change.path))
-        })?;
-        let blob_id = ObjectId::parse(format!("sha256:{digest}")).map_err(|error| {
-            LocalError::Integrity(format!(
-                "scanned FILE has an invalid digest for {}: {error}",
-                change.path
-            ))
-        })?;
-        objects.insert(change.path.clone(), blob_id);
-    }
-    Ok(objects)
 }
 
 pub(crate) fn select_changes(
@@ -7784,6 +7762,7 @@ mod tests {
         assert!(reject_reserved_recover_items(&[recover]).is_err());
 
         let live = RevertItemState {
+            plain_digest: None,
             parent_id: None,
             name: name.clone(),
             path: name.clone(),
@@ -7793,6 +7772,7 @@ mod tests {
             size: None,
         };
         let trashed = RevertItemState {
+            plain_digest: None,
             live: false,
             head_seq: 2,
             ..live.clone()
@@ -7807,8 +7787,8 @@ mod tests {
     }
 
     #[cfg(windows)]
-    #[test]
-    fn inverse_stage_rejects_a_windows_junction() {
+    #[tokio::test]
+    async fn inverse_stage_rejects_a_windows_junction() {
         let temporary = tempfile::tempdir().unwrap();
         let target = temporary.path().join("target");
         let junction = temporary.path().join("junction");
@@ -7826,6 +7806,7 @@ mod tests {
         );
 
         let state = RevertItemState {
+            plain_digest: None,
             parent_id: None,
             name: "folder".to_string(),
             path: "folder".to_string(),
@@ -7834,7 +7815,10 @@ mod tests {
             blob_id: None,
             size: None,
         };
-        assert!(!entry_matches_revert_state(&junction, "FOLDER", &state).unwrap());
+        let repo_root = tempfile::tempdir().unwrap();
+        init(repo_root.path(), "author").await.unwrap();
+        let repository = Repository::discover(repo_root.path()).await.unwrap();
+        assert!(!entry_matches_revert_state(&repository, &junction, "FOLDER", &state).unwrap());
     }
 
     #[tokio::test]
@@ -8206,7 +8190,7 @@ mod tests {
     async fn commit_captured_snapshot_then(repository: &Repository, mutate: impl FnOnce()) {
         let (committed, working, changes, working_ids) = repository.changes().await.unwrap();
         let objects = repository
-            .capture_changed_files(&working, &changes)
+            .capture_changed_files(&working, &changes, None)
             .unwrap();
         let built_intents =
             super::build_intents(&committed, &working, &changes, &working_ids, &objects, None)
@@ -8499,5 +8483,40 @@ mod tests {
                 .map(|event| event.commit_event_idx)
                 .collect::<Vec<_>>()
         );
+    }
+}
+
+// A local crash-recovery record carries payload bytes alongside canonical
+// envelopes. This encoding is never used for stored events or their hashes.
+mod durable_events {
+    use super::EventProposal;
+    use serde::{Deserialize, Serialize};
+    #[derive(Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Record {
+        event: EventProposal,
+        metadata_hex: Option<String>,
+    }
+    pub fn serialize<S: serde::Serializer>(events: &[EventProposal], serializer: S) -> Result<S::Ok, S::Error> {
+        events.iter().map(|event| {
+            let metadata_hex = event.set_metadata.as_ref().map(|reference| reference.payload()
+                .map(|metadata| hex::encode(metadata.payload()))
+                .ok_or_else(|| serde::ser::Error::custom("recovery intent requires metadata bytes"))).transpose()?;
+            Ok(Record { event:event.clone(), metadata_hex })
+        }).collect::<Result<Vec<_>, S::Error>>()?.serialize(serializer)
+    }
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Vec<EventProposal>, D::Error> {
+        Vec::<Record>::deserialize(deserializer)?.into_iter().map(|mut record| {
+            match (&mut record.event.set_metadata, record.metadata_hex) {
+                (Some(reference), Some(bytes)) => {
+                    let bytes = hex::decode(bytes).map_err(serde::de::Error::custom)?;
+                    let metadata = synck_vcs::metadata::Metadata::verify(&reference.id(), bytes).map_err(serde::de::Error::custom)?;
+                    reference.resolve(metadata).map_err(serde::de::Error::custom)?;
+                }
+                (None, None) => {}
+                _ => return Err(serde::de::Error::custom("recovery metadata does not match event")),
+            }
+            Ok(record.event)
+        }).collect()
     }
 }

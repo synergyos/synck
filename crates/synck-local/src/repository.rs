@@ -27,7 +27,7 @@ use crate::chunk_store::{ChunkStore, OBJECT_STORE_FILE, StorageMode};
 use crate::error::{IoContext, LocalError, Result};
 
 const FORMAT_VERSION: u32 = 6;
-const LOCAL_SCHEMA_VERSION: i64 = 11;
+const LOCAL_SCHEMA_VERSION: i64 = 12;
 pub(crate) const MONITOR_LOCK_FILE: &str = "monitor.lock";
 const PAGE_SIZE: usize = 1_024;
 const SQLITE_ITEM_ID_CHUNK_SIZE: usize = 900;

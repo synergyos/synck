@@ -612,6 +612,7 @@ async fn direct_file_writes_carry_attribution_base_checks_and_replay() {
             created
         );
         let id = created.0;
+        let first_id = ObjectId::parse(repo.show_item(&id, None).await.unwrap().item.projection.content_blob_id.unwrap()).unwrap();
 
         fs::write(&source, b"second").unwrap();
         let error = repo
@@ -627,17 +628,17 @@ async fn direct_file_writes_carry_attribution_base_checks_and_replay() {
         else {
             panic!("expected conflict, got {error}");
         };
-        assert_eq!((blob_id.as_str(), *size), (blob(b"first").as_str(), 5));
+        assert_eq!((blob_id.as_str(), *size), (first_id.as_str(), 5));
         assert!(*head_seq >= 2);
 
         let saved = repo
-            .save_file_with(&id, &source, Some(&blob(b"first")), &options(2))
+            .save_file_with(&id, &source, Some(&first_id), &options(2))
             .await
             .unwrap();
         // A retry after acceptance returns the original commit even though its
         // base is no longer current.
         assert_eq!(
-            repo.save_file_with(&id, &source, Some(&blob(b"first")), &options(2))
+            repo.save_file_with(&id, &source, Some(&first_id), &options(2))
                 .await
                 .unwrap(),
             saved

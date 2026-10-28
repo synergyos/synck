@@ -17,6 +17,7 @@ use crate::repository::open_regular_file_nofollow;
 pub(crate) const SOURCE_BYTES: u64 = 64 * 1024 * 1024;
 
 pub(crate) struct PreparedEmail {
+    pub source_plain_digest: String,
     pub events: Vec<EventProposal>,
     pub objects: Vec<(String, Vec<u8>)>,
 }
@@ -61,17 +62,19 @@ pub(crate) fn prepare(
     let parsed = parse_imported_email_owned(format, bytes.clone(), &limits)
         .map_err(|error| LocalError::Invalid(error.to_string()))?;
     let mut objects = Vec::new();
-    let mut store = |bytes: Vec<u8>| {
-        let id = format!("sha256:{}", hex::encode(Sha256::digest(&bytes)));
-        objects.push((id.clone(), bytes));
-        id
+    let mut store = |bytes: Vec<u8>| -> Result<String> {
+        let object = synck_vcs::object::Object::new(synck_vcs::object::Codec::Raw, &bytes).map_err(|error| LocalError::Invalid(error.to_string()))?;
+        let id = object.id().to_string();
+        objects.push((id.clone(), object.payload().to_vec()));
+        Ok(id)
     };
+    let source_plain_digest = hex::encode(Sha256::digest(&bytes));
     let source_size = bytes.len();
-    let source_blob = store(bytes);
+    let source_blob = store(bytes)?;
     let mut attachments = Vec::new();
     for attachment in parsed.attachments {
         let size = attachment.bytes.len();
-        let blob = store(attachment.bytes);
+        let blob = store(attachment.bytes)?;
         let mut meta = json!({"filename":attachment.filename,"mime_type":attachment.mime_type,
             "size_bytes":size,"is_inline":attachment.is_inline,"content_id":attachment.content_id,
             "provider_attachment_id":null});
@@ -100,7 +103,7 @@ pub(crate) fn prepare(
         "create_item":{"item_type":"EMAIL","parent_folder_id":parent,"name":name},"set_metadata":metadata,"set_content":{"source":source_blob}}),
     )?];
     events.extend(attachments);
-    Ok(PreparedEmail { events, objects })
+    Ok(PreparedEmail { events, objects, source_plain_digest })
 }
 
 pub(crate) fn reject_file_email_update(filename: &str) -> Result<()> {
@@ -251,11 +254,12 @@ impl crate::repository::Repository {
             if tracked_paths.contains(&path) {
                 continue;
             }
-            if working.get(&path).is_some_and(|node| {
-                node.kind == NodeKind::File
-                    && node.digest_hex.as_deref() == blob.strip_prefix("sha256:")
-            }) {
-                retained.push(path);
+            if let Some(node) = working.get(&path) {
+                if node.kind == NodeKind::File {
+                    let id = synck_vcs::types::ObjectId::parse(blob).map_err(|e| LocalError::Integrity(e.to_string()))?;
+                    let expected = self.plain_digest(&id)?;
+                    if node.digest_hex.as_deref() == Some(expected.as_str()) { retained.push(path); }
+                }
             }
         }
         let mut directories = std::collections::BTreeSet::new();

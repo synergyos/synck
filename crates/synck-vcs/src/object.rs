@@ -132,3 +132,101 @@ fn validate_bytes(codec: Codec, bytes: &[u8]) -> Result<(), ObjectError> {
     }
     Ok(())
 }
+
+/// Decode a streamed stored object into application bytes. Callers must discard
+/// output unless `finish` succeeds; a digest mismatch is detected at EOF.
+pub struct Decoder<W> {
+    target: W,
+    expected: ObjectId,
+    header: [u8; HEADER_BYTES],
+    header_len: usize,
+    codec: Option<Codec>,
+    digest: Sha256,
+    size: u64,
+    utf8_tail: [u8; 4],
+    utf8_tail_len: usize,
+}
+
+impl<W: std::io::Write> Decoder<W> {
+    pub fn new(expected: ObjectId, target: W) -> Self {
+        Self {
+            target,
+            expected,
+            header: [0; HEADER_BYTES],
+            header_len: 0,
+            codec: None,
+            digest: Sha256::new(),
+            size: 0,
+            utf8_tail: [0; 4],
+            utf8_tail_len: 0,
+        }
+    }
+
+    pub fn finish(self) -> Result<(u64, Codec), ObjectError> {
+        let codec = self.codec.ok_or(ObjectError::Framing)?;
+        if self.utf8_tail_len != 0 {
+            return Err(ObjectError::Utf8);
+        }
+        if ObjectId::from_digest(self.digest.finalize().into()) != self.expected {
+            return Err(ObjectError::Digest);
+        }
+        Ok((self.size, codec))
+    }
+
+    fn validate_utf8(&mut self, mut bytes: &[u8]) -> Result<(), ObjectError> {
+        while self.utf8_tail_len > 0 && !bytes.is_empty() {
+            self.utf8_tail[self.utf8_tail_len] = bytes[0];
+            self.utf8_tail_len += 1;
+            bytes = &bytes[1..];
+            match std::str::from_utf8(&self.utf8_tail[..self.utf8_tail_len]) {
+                Ok(_) => self.utf8_tail_len = 0,
+                Err(error) if error.error_len().is_none() && self.utf8_tail_len < 4 => {}
+                Err(_) => return Err(ObjectError::Utf8),
+            }
+        }
+        if let Err(error) = std::str::from_utf8(bytes) {
+            if error.error_len().is_some() {
+                return Err(ObjectError::Utf8);
+            }
+            let tail = &bytes[error.valid_up_to()..];
+            self.utf8_tail[..tail.len()].copy_from_slice(tail);
+            self.utf8_tail_len = tail.len();
+        }
+        Ok(())
+    }
+}
+
+impl<W: std::io::Write> std::io::Write for Decoder<W> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        use std::io::{Error, ErrorKind};
+        let mut application = bytes;
+        if self.header_len < HEADER_BYTES {
+            let count = application.len().min(HEADER_BYTES - self.header_len);
+            self.header[self.header_len..self.header_len + count]
+                .copy_from_slice(&application[..count]);
+            self.header_len += count;
+            application = &application[count..];
+            if self.header_len == HEADER_BYTES {
+                self.codec = Some(
+                    Header::parse(&self.header)
+                        .map_err(|e| Error::new(ErrorKind::InvalidData, e))?
+                        .codec(),
+                );
+            }
+        }
+        if self.codec == Some(Codec::Utf8) {
+            self.validate_utf8(application)
+                .map_err(|e| Error::new(ErrorKind::InvalidData, e))?;
+        }
+        self.target.write_all(application)?;
+        self.digest.update(bytes);
+        self.size = self
+            .size
+            .checked_add(application.len() as u64)
+            .ok_or_else(|| Error::new(ErrorKind::InvalidData, "object size overflow"))?;
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.target.flush()
+    }
+}

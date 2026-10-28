@@ -81,9 +81,10 @@ async fn fixture() -> Fixture {
     let body = Object::new(Codec::Utf8, "original body\0🦀".as_bytes()).unwrap();
     // Body bytes also exercise exact-object transfer.
     let body_bytes = body.payload();
-    let primary_blob = format!("sha256:{}", hex::encode(Sha256::digest(primary)));
+    let primary_object = Object::new(Codec::Raw, primary).unwrap();
+    let primary_blob = primary_object.id().to_string();
     let body_blob = format!("sha256:{}", hex::encode(Sha256::digest(body_bytes)));
-    fs::write(metadata.join("objects").join(&primary_blob[7..]), primary).unwrap();
+    fs::write(metadata.join("objects").join(&primary_blob[7..]), primary_object.payload()).unwrap();
     fs::write(metadata.join("objects").join(&body_blob[7..]), body_bytes).unwrap();
     fs::write(
         metadata
@@ -1159,7 +1160,8 @@ async fn local_email_import_preserves_source_and_materializes_one_atomic_email()
     assert!(metadata.get("body").is_none());
     assert_eq!(fs::read(&source).unwrap(), bytes);
     let source_blob = &item.item.projection.content_roles["source"];
-    assert_eq!(fs::read(fixture.source.join(".synck/objects").join(&source_blob.as_str()[7..])).unwrap(), bytes);
+    let stored = fs::read(fixture.source.join(".synck/objects").join(&source_blob.as_str()[7..])).unwrap();
+    assert_eq!(Object::verify(source_blob, stored).unwrap().bytes(), bytes);
     assert!(
         item.item.subitems.len() >= 2,
         "all MIME attachments must remain durable"
@@ -1336,8 +1338,13 @@ async fn email_import_regression_msg_rename_roundtrip_preserves_original_and_gen
     let mail = &item.item.projection.metadata_json["mailcal"];
     assert_eq!(mail["source"]["filename"], "original.MSG");
     assert_eq!(mail["source"]["format"], "msg");
-    assert_eq!(mail["raw_rfc822_provenance"], "generated");
-    assert_ne!(mail["source"]["blob_id"], mail["raw_rfc822_blob_id"]);
+    assert!(mail.get("raw_rfc822_provenance").is_none());
+    assert!(mail.get("raw_rfc822_blob_id").is_none());
+    assert!(mail["source"].get("blob_id").is_none());
+    assert!(item.item.projection.content_roles.contains_key("source"));
+    let rendered = repository.render_email(&id, None).await.unwrap();
+    assert!(rendered.raw_rfc822_generated);
+    assert!(!rendered.raw_rfc822.is_empty());
     let copy = fixture.root.join("email-copy");
     repository.archive(&copy).await.unwrap();
     let imported = PortableRepository::open(&copy).unwrap();
@@ -1715,26 +1722,18 @@ async fn email_import_failed_object_write_can_retry_without_corrupt_publication(
         .create_file(None, "Message", &source)
         .await
         .unwrap();
-    assert_eq!(fs::read(objects.join(&digest)).unwrap(), bytes);
+    let source_id = repository.show_item(&id, None).await.unwrap().item.projection.content_roles["source"].clone();
+    let object_path = objects.join(hex::encode(source_id.as_bytes()));
+    let stored = synck_vcs::object::Object::verify(&source_id, fs::read(&object_path).unwrap()).unwrap();
+    assert_eq!(stored.bytes(), bytes);
     let exported = temporary.path().join("original.eml");
     repository.export_file(&id, &exported, None).await.unwrap();
     assert_eq!(fs::read(exported).unwrap(), bytes);
     assert_eq!(repository.verify().await.unwrap().commits, 2);
 
-    let other = b"From: sender@example.test\r\nSubject: Other\r\n\r\nother body";
-    fs::write(&source, other).unwrap();
-    let corrupt_path = objects.join(hex::encode(Sha256::digest(other)));
-    fs::write(&corrupt_path, b"corrupt existing object").unwrap();
-    let error = repository
-        .create_file(None, "Other", &source)
-        .await
-        .unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("existing immutable object is corrupt")
-    );
-    assert_eq!(fs::read(corrupt_path).unwrap(), b"corrupt existing object");
+    fs::write(&object_path, b"corrupt existing object").unwrap();
+    assert!(repository.verify().await.is_err());
+    assert_eq!(fs::read(object_path).unwrap(), b"corrupt existing object");
 }
 
 #[tokio::test]
@@ -1788,7 +1787,7 @@ async fn email_checkout_selection_preserves_sources_and_required_directories() {
         .map(|(path, bytes)| {
             json!({"path":path,"item_id":null,
             "item_type":if bytes.is_some() {"FILE"} else {"FOLDER"},
-            "blob_id":bytes.map(|bytes|format!("sha256:{}",hex::encode(Sha256::digest(bytes)))),
+            "plain_digest":bytes.map(|bytes|hex::encode(Sha256::digest(bytes))),
             "size":bytes.map(|bytes|bytes.len())})
         })
         .collect();
@@ -2180,9 +2179,9 @@ async fn chunked_append_stores_only_the_changed_tail_and_keeps_old_version() {
         disk_growth <= 512 * 1024,
         "object database grew by {disk_growth} bytes"
     );
-    assert!((1..=2).contains(&(after.0 - before.0)));
-    assert!(after.1 - before.1 <= 256 * 1024 + 100);
-    assert!(after.2 - before.2 <= 256 * 1024 + 100);
+    assert!((2..=3).contains(&(after.0 - before.0)));
+    assert!(after.1 - before.1 <= 256 * 1024 + 100 + 49);
+    assert!(after.2 - before.2 <= 256 * 1024 + 100 + 49);
     eprintln!(
         "10 MiB + 100 bytes: added {} chunks, {} raw bytes, {} stored payload bytes; database grew {disk_growth} bytes",
         after.0 - before.0,

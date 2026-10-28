@@ -32,6 +32,14 @@ impl ReaderAt for CursorPreservingFile {
     }
 }
 
+struct OffsetReader<R>(R, u64);
+impl<R: ReaderAt> ReaderAt for OffsetReader<R> {
+    fn read_at(&self, bytes: &mut [u8], offset: u64) -> std::io::Result<usize> {
+        let offset = offset.checked_add(self.1).ok_or_else(|| std::io::Error::other("object offset overflow"))?;
+        self.0.read_at(bytes, offset)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum OoxmlKind {
     Docx,
@@ -76,6 +84,10 @@ pub(crate) fn chunk_region_lengths(
     source_size: u64,
     kind: OoxmlKind,
 ) -> Option<Vec<u64>> {
+    chunk_region_lengths_at(file, source_size, kind, 0)
+}
+
+pub(crate) fn chunk_region_lengths_at(file: File, source_size: u64, kind: OoxmlKind, base: u64) -> Option<Vec<u64>> {
     let mut buffer = vec![0_u8; RECOMMENDED_BUFFER_SIZE];
     #[cfg(not(windows))]
     let reader = FileReader::from(file);
@@ -83,6 +95,7 @@ pub(crate) fn chunk_region_lengths(
     // cursor with the capture handle, so rawzip must restore it after every validation read.
     #[cfg(windows)]
     let reader = CursorPreservingFile(Mutex::new(file));
+    let reader = OffsetReader(reader, base);
     let archive = ZipLocator::new()
         .locate_in_reader(reader, &mut buffer, source_size)
         .ok()?;

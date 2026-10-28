@@ -1,19 +1,17 @@
-use std::fs::{self, File, OpenOptions as StdOpenOptions};
-use std::io::{BufReader, BufWriter, Read, Write};
+use std::fs;
+use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 
 use cap_fs_ext::{FollowSymlinks, MetadataExt, OpenOptionsFollowExt};
 use cap_std::fs::OpenOptions;
 use sha2::{Digest, Sha256};
 use synck_vcs::types::ObjectId;
-use uuid::Uuid;
 
 use crate::chunk_store::StorageMode;
 use crate::error::{IoContext, LocalError, Result};
 use crate::ooxml::{OoxmlKind, chunk_region_lengths};
 use crate::repository::{
     Repository, is_cap_link_or_reparse, is_link_or_reparse, open_regular_file_nofollow,
-    sync_directory, sync_file,
 };
 
 #[derive(Debug, Eq, PartialEq)]
@@ -114,158 +112,34 @@ impl Repository {
         }
         let identity = metadata_identity(&before, display)?;
 
-        if self.storage_mode() == StorageMode::Chunked {
-            let digest_bytes: [u8; 32] = hex::decode(expected_digest)
-                .map_err(|error| LocalError::Invalid(format!("invalid expected digest: {error}")))?
-                .try_into()
-                .map_err(|_| LocalError::Invalid("invalid expected digest length".to_string()))?;
-            let store = self.object_store();
-            let was_complete = store.contains_complete(&digest_bytes, expected_size)?;
-            let (digest, size) = if was_complete {
-                let blob_id = ObjectId::parse(format!("sha256:{expected_digest}"))
-                    .map_err(|error| LocalError::Invalid(error.to_string()))?;
-                store.verify_blob(&blob_id, expected_size)?;
-                hash_reader(source, display)?
-            } else {
-                let regions = if let Some(kind) = OoxmlKind::from_path(relative) {
-                    let validation_source = source.try_clone().at("open", display)?.into_std();
-                    chunk_region_lengths(validation_source, expected_size, kind)
-                } else {
-                    None
-                };
-                if let Some(regions) = regions {
-                    store.stage_blob_regions(digest_bytes, expected_size, source, &regions)?
-                } else {
-                    store.stage_blob(digest_bytes, expected_size, source)?
-                }
-            };
-            let after = root.symlink_metadata(relative).at("inspect", display)?;
-            if !after.file_type().is_file()
-                || is_cap_link_or_reparse(&after)
-                || identity != metadata_identity(&after, display)?
-                || digest != digest_bytes
-                || size != expected_size
-            {
-                return Err(LocalError::Invalid(format!(
-                    "file changed while being captured: {display}"
-                )));
-            }
-            if !was_complete {
-                if checkpoint_chunk_store {
-                    store.complete_blob(&digest_bytes, expected_size)?;
-                } else {
-                    store.complete_blob_before_batch_checkpoint(&digest_bytes, expected_size)?;
-                }
-            }
-            return ObjectId::parse(format!("sha256:{expected_digest}"))
-                .map_err(|error| LocalError::Invalid(error.to_string()));
-        }
-
-        let temporary_path = self
-            .metadata_path()
-            .join("tmp")
-            .join(format!("object-{}", Uuid::new_v4()));
-        let temporary = StdOpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&temporary_path)
-            .at("create", &temporary_path)?;
-        let capture = capture(source, temporary, display);
-        let (digest, size) = match capture {
-            Ok(value) => value,
-            Err(error) => {
-                let _ = fs::remove_file(&temporary_path);
-                return Err(error);
-            }
-        };
+        let regions = if let Some(kind) = OoxmlKind::from_path(relative) {
+            chunk_region_lengths(source.try_clone().at("open", display)?.into_std(), expected_size, kind)
+        } else { None };
+        let mut source = source;
+        std::io::Seek::rewind(&mut source).at("rewind capture source", display)?;
+        let store = self.object_store();
+        let captured = crate::raw_object::capture(source, expected_size, regions,
+            &self.metadata_path().join("objects"),
+            (self.storage_mode() == StorageMode::Chunked).then_some(&store), checkpoint_chunk_store)?;
         let after = root.symlink_metadata(relative).at("inspect", display)?;
-        if !after.file_type().is_file()
-            || is_cap_link_or_reparse(&after)
+        if !after.file_type().is_file() || is_cap_link_or_reparse(&after)
             || identity != metadata_identity(&after, display)?
-            || digest != expected_digest
-            || size != expected_size
+            || captured.plain_digest != expected_digest || captured.size != expected_size
         {
-            let _ = fs::remove_file(&temporary_path);
-            return Err(LocalError::Invalid(format!(
-                "file changed while being captured: {display}"
-            )));
+            return Err(LocalError::Invalid(format!("file changed while being captured: {display}")));
         }
-
-        let blob_id =
-            ObjectId::parse(format!("sha256:{digest}")).expect("a SHA-256 digest is a valid blob ID");
-        let final_path = self.object_path(&blob_id);
-        let prefix_directory = final_path
-            .parent()
-            .expect("object path always has a prefix directory");
-        match fs::create_dir(prefix_directory) {
-            Ok(()) => sync_directory(self.metadata_path().join("objects").as_path())?,
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                let metadata =
-                    fs::symlink_metadata(prefix_directory).at("inspect", prefix_directory)?;
-                if !metadata.file_type().is_dir() || is_link_or_reparse(&metadata) {
-                    let _ = fs::remove_file(&temporary_path);
-                    return Err(LocalError::Integrity(format!(
-                        "object prefix is not a directory: {}",
-                        prefix_directory.display()
-                    )));
-                }
-            }
-            Err(source) => {
-                let _ = fs::remove_file(&temporary_path);
-                return Err(LocalError::Io {
-                    action: "create object directory",
-                    path: prefix_directory.to_path_buf(),
-                    source,
-                });
-            }
-        }
-
-        match fs::hard_link(&temporary_path, &final_path) {
-            Ok(()) => {
-                sync_file(&final_path)?;
-                sync_directory(prefix_directory)?;
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                verify_object_file(&final_path, &digest, size)?;
-            }
-            Err(source) => {
-                let _ = fs::remove_file(&temporary_path);
-                return Err(LocalError::Io {
-                    action: "install object",
-                    path: final_path,
-                    source,
-                });
-            }
-        }
-        fs::remove_file(&temporary_path).at("remove", &temporary_path)?;
-        Ok(blob_id)
+        self.record_plain_digest(&captured.id, &captured.plain_digest)?;
+        Ok(captured.id)
     }
 
     pub(crate) fn verify_blob(&self, blob_id: &ObjectId, size: u64) -> Result<()> {
-        match self.storage_mode() {
-            StorageMode::WholeFile => {
-                let digest = blob_id
-                    .as_str()
-                    .strip_prefix("sha256:")
-                    .expect("ObjectId always has a sha256 prefix");
-                verify_object_file(&self.object_path(blob_id), digest, size)
-            }
-            StorageMode::Chunked => self.object_store().verify_blob(blob_id, size),
-        }
+        self.copy_blob(blob_id, size, &mut std::io::sink())
     }
 
-    pub(crate) fn copy_blob<W: Write>(
-        &self,
-        blob_id: &ObjectId,
-        size: u64,
-        target: &mut W,
-    ) -> Result<()> {
-        match self.storage_mode() {
-            StorageMode::WholeFile => {
-                copy_whole_file_blob(&self.object_path(blob_id), blob_id, size, target)
-            }
-            StorageMode::Chunked => self.object_store().copy_blob(blob_id, size, target),
-        }
+    pub(crate) fn copy_blob<W: Write>(&self, blob_id: &ObjectId, size: u64, target: &mut W) -> Result<()> {
+        let actual = self.portable_view()?.copy_blob(blob_id, target)?;
+        if actual != size { return Err(LocalError::Integrity("decoded object size mismatch".into())); }
+        Ok(())
     }
 
     pub(crate) fn object_path(&self, blob_id: &ObjectId) -> PathBuf {
@@ -275,89 +149,6 @@ impl Repository {
             .expect("ObjectId always has a sha256 prefix");
         self.metadata_path().join("objects").join(digest)
     }
-}
-
-fn capture(source: cap_std::fs::File, target: File, display: &str) -> Result<(String, u64)> {
-    let mut source = BufReader::new(source);
-    let mut target = BufWriter::new(target);
-    let mut hasher = Sha256::new();
-    let mut size = 0_u64;
-    let mut buffer = [0_u8; 128 * 1_024];
-    loop {
-        let count = source.read(&mut buffer).at("read", display)?;
-        if count == 0 {
-            break;
-        }
-        target
-            .write_all(&buffer[..count])
-            .at("write object", display)?;
-        hasher.update(&buffer[..count]);
-        size = size.checked_add(count as u64).ok_or_else(|| {
-            LocalError::Invalid(format!("file size overflow while capturing {display}"))
-        })?;
-    }
-    target.flush().at("flush object", display)?;
-    target.get_ref().sync_all().at("sync object", display)?;
-    Ok((hex::encode(hasher.finalize()), size))
-}
-
-fn hash_reader<R: Read>(mut source: R, display: &str) -> Result<([u8; 32], u64)> {
-    let mut hasher = Sha256::new();
-    let mut size = 0_u64;
-    let mut buffer = [0_u8; 128 * 1_024];
-    loop {
-        let count = source.read(&mut buffer).at("read", display)?;
-        if count == 0 {
-            break;
-        }
-        hasher.update(&buffer[..count]);
-        size = size.checked_add(count as u64).ok_or_else(|| {
-            LocalError::Invalid(format!("file size overflow while capturing {display}"))
-        })?;
-    }
-    Ok((hasher.finalize().into(), size))
-}
-
-fn copy_whole_file_blob<W: Write>(
-    path: &Path,
-    blob_id: &ObjectId,
-    expected_size: u64,
-    target: &mut W,
-) -> Result<()> {
-    let metadata = fs::symlink_metadata(path).at("inspect", path)?;
-    if !metadata.file_type().is_file()
-        || is_link_or_reparse(&metadata)
-        || metadata.len() != expected_size
-    {
-        return Err(LocalError::Integrity(format!(
-            "object is not a regular file of the expected size: {}",
-            path.display()
-        )));
-    }
-    let mut source = BufReader::new(open_regular_file_nofollow(path)?);
-    let mut hasher = Sha256::new();
-    let mut size = 0_u64;
-    let mut buffer = [0_u8; 128 * 1_024];
-    loop {
-        let count = source.read(&mut buffer).at("read", path)?;
-        if count == 0 {
-            break;
-        }
-        target.write_all(&buffer[..count]).at("copy object", path)?;
-        hasher.update(&buffer[..count]);
-        size += count as u64;
-    }
-    let digest = blob_id
-        .as_str()
-        .strip_prefix("sha256:")
-        .expect("ObjectId always has a sha256 prefix");
-    if size != expected_size || hex::encode(hasher.finalize()) != digest {
-        return Err(LocalError::Integrity(format!(
-            "object verification failed: {}",
-            path.display()
-        )));
-    }
-    Ok(())
 }
 
 fn metadata_identity(
@@ -407,6 +198,8 @@ pub(crate) fn verify_object_file(path: &Path, expected_digest: &str, size: u64) 
 
 #[cfg(test)]
 mod tests {
+    use std::fs::File;
+    use uuid::Uuid;
     use super::*;
     use fastcdc::v2020::{FastCDC, Normalization};
     use synck_vcs::types::{
@@ -493,7 +286,7 @@ mod tests {
             let expected = chunk_digests(&bytes, &regions);
             let generic = chunk_digests(&bytes, &[bytes.len() as u64]);
 
-            repository
+            let id = repository
                 .install_object(
                     Path::new(name),
                     name,
@@ -502,11 +295,11 @@ mod tests {
                 )
                 .unwrap();
 
-            assert_eq!(mapping_digests(&repository, &digest), expected, "{name}");
+            assert_eq!(&mapping_digests(&repository, &id.as_bytes())[1..], expected, "{name}");
             differs_from_generic |= expected != generic;
             repository
                 .verify_blob(
-                    &ObjectId::parse(format!("sha256:{}", hex::encode(digest))).unwrap(),
+                    &id,
                     bytes.len() as u64,
                 )
                 .unwrap();
@@ -532,12 +325,13 @@ mod tests {
             drop(portable);
             let mut repository = Repository::discover(&root).await.unwrap();
             repository.optimize_storage().await.unwrap();
+            let tree = repository.committed_tree().await.unwrap();
             for name in ["empty.docx", "empty.xlsx", "empty.pptx"] {
                 let source = Path::new(env!("CARGO_MANIFEST_DIR"))
                     .join("assets/templates")
                     .join(name);
                 let bytes = fs::read(&source).unwrap();
-                let digest: [u8; 32] = Sha256::digest(&bytes).into();
+                let digest = tree[name].blob_id.as_ref().unwrap().as_bytes();
                 let regions = chunk_region_lengths(
                     File::open(&source).unwrap(),
                     bytes.len() as u64,
@@ -545,7 +339,7 @@ mod tests {
                 )
                 .unwrap();
                 assert_eq!(
-                    mapping_digests(&repository, &digest),
+                    &mapping_digests(&repository, &digest)[1..],
                     chunk_digests(&bytes, &regions)
                 );
             }
@@ -615,7 +409,7 @@ mod tests {
         let office = fs::read(fixture).unwrap();
         let office_digest: [u8; 32] = Sha256::digest(&office).into();
         fs::write(root.join("first.zip"), &office).unwrap();
-        repository
+        let first = repository
             .install_object(
                 Path::new("first.zip"),
                 "first.zip",
@@ -623,14 +417,14 @@ mod tests {
                 office.len() as u64,
             )
             .unwrap();
-        let generic_mapping = mapping_digests(&repository, &office_digest);
+        let generic_mapping = mapping_digests(&repository, &first.as_bytes());
         assert_eq!(
-            generic_mapping,
+            &generic_mapping[1..],
             chunk_digests(&office, &[office.len() as u64])
         );
 
         fs::write(root.join("later.docx"), &office).unwrap();
-        repository
+        let second = repository
             .install_object(
                 Path::new("later.docx"),
                 "later.docx",
@@ -638,8 +432,9 @@ mod tests {
                 office.len() as u64,
             )
             .unwrap();
+        assert_ne!(first, second);
         assert_eq!(
-            mapping_digests(&repository, &office_digest),
+            mapping_digests(&repository, &first.as_bytes()),
             generic_mapping
         );
 
@@ -648,7 +443,7 @@ mod tests {
             .collect::<Vec<_>>();
         let invalid_digest: [u8; 32] = Sha256::digest(&invalid).into();
         fs::write(root.join("invalid.docx"), &invalid).unwrap();
-        repository
+        let invalid_id = repository
             .install_object(
                 Path::new("invalid.docx"),
                 "invalid.docx",
@@ -657,7 +452,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(
-            mapping_digests(&repository, &invalid_digest),
+            &mapping_digests(&repository, &invalid_id.as_bytes())[1..],
             chunk_digests(&invalid, &[invalid.len() as u64])
         );
     }
@@ -698,14 +493,14 @@ mod tests {
                 referenced_objects: baseline.referenced_objects,
                 referenced_bytes: baseline.referenced_bytes,
                 unreachable_objects: 1,
-                unreachable_bytes: 11,
+                unreachable_bytes: 60,
             }
         );
         assert_eq!(
             repository.gc().await.unwrap(),
             GcReport {
                 removed_objects: 1,
-                removed_bytes: 11,
+                removed_bytes: 60,
             }
         );
         assert_eq!(
@@ -879,5 +674,48 @@ mod tests {
         repository
             .verify_blob(&ObjectId::parse(format!("sha256:{digest}")).unwrap(), 10)
             .unwrap();
+    }
+}
+
+pub(crate) struct PlainDigest(pub(crate) Sha256);
+impl Default for PlainDigest { fn default() -> Self { Self(Sha256::new()) } }
+impl Write for PlainDigest {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> { self.0.update(bytes); Ok(bytes.len()) }
+    fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+}
+impl PlainDigest { pub(crate) fn finish(self) -> String { hex::encode(self.0.finalize()) } }
+
+impl Repository {
+    pub(crate) fn record_plain_digest(&self, id: &ObjectId, digest: &str) -> Result<()> {
+        let connection = crate::local_database::open_writable(self.storage())?;
+        connection.execute("INSERT INTO local_object_digests(repo_id,object_id,plain_sha256) VALUES(?1,?2,?3) ON CONFLICT(repo_id,object_id) DO UPDATE SET plain_sha256=excluded.plain_sha256",
+            rusqlite::params![self.config().repo_id().as_str(), id.as_str(), digest])?;
+        Ok(())
+    }
+    pub(crate) fn cached_plain_digests(&self) -> Result<std::collections::HashMap<ObjectId, String>> {
+        let connection = crate::local_database::open_readonly(self.storage())?;
+        let mut statement = connection.prepare("SELECT object_id,plain_sha256 FROM local_object_digests WHERE repo_id=?1")?;
+        let rows = statement.query_map([self.config().repo_id().as_str()], |row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?)))?;
+        let mut digests = std::collections::HashMap::new();
+        for row in rows {
+            let (id,digest) = row?;
+            let id = ObjectId::parse(id).map_err(|e| LocalError::Integrity(e.to_string()))?;
+            ObjectId::parse(format!("sha256:{digest}")).map_err(|e| LocalError::Integrity(e.to_string()))?;
+            digests.insert(id,digest);
+        }
+        Ok(digests)
+    }
+    pub(crate) fn plain_digest(&self, id: &ObjectId) -> Result<String> {
+        use rusqlite::OptionalExtension;
+        let connection = crate::local_database::open_readonly(self.storage())?;
+        let cached: Option<String> = connection.query_row("SELECT plain_sha256 FROM local_object_digests WHERE repo_id=?1 AND object_id=?2",
+            rusqlite::params![self.config().repo_id().as_str(),id.as_str()], |row| row.get(0)).optional()?;
+        if let Some(digest) = cached { return Ok(digest); }
+        drop(connection);
+        let mut digest = PlainDigest::default();
+        self.portable_view()?.copy_blob(id,&mut digest)?;
+        let digest = digest.finish();
+        self.record_plain_digest(id,&digest)?;
+        Ok(digest)
     }
 }
