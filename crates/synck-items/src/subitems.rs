@@ -3,7 +3,7 @@
 //! Metadata reconstruction preserves replacement values and raw canonical text.
 //! PostgreSQL callers retain their existing projection sanitation separately.
 
-use synck_vcs::types::{BlobId, EventContent};
+use synck_vcs::types::{ObjectId, EventContent};
 use uuid::Uuid;
 
 #[derive(Debug, thiserror::Error)]
@@ -1206,7 +1206,7 @@ pub fn validate_file_version_ref_content(
     let blob_id = file_version_blob_id_from_content(content).ok_or_else(|| {
         SubitemError::Schema(format!("{event_type} content must include blob_id"))
     })?;
-    BlobId::parse(blob_id.as_str()).map_err(|error| {
+    ObjectId::parse(blob_id.as_str()).map_err(|error| {
         SubitemError::Schema(format!("{event_type} has invalid blob_id: {error}"))
     })?;
     let size = match content.get("size") {

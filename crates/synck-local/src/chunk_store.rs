@@ -8,7 +8,7 @@ use std::time::Duration;
 use fastcdc::v2020::{FastCDC, Normalization};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use sha2::{Digest, Sha256};
-use synck_vcs::types::{BlobId, RepoId};
+use synck_vcs::types::{ObjectId, RepoId};
 
 use crate::error::{LocalError, Result};
 use crate::repository::{is_link_or_reparse, sync_file};
@@ -433,13 +433,13 @@ impl ChunkStore {
         Ok(())
     }
 
-    pub(crate) fn verify_blob(&self, blob_id: &BlobId, expected_size: u64) -> Result<()> {
+    pub(crate) fn verify_blob(&self, blob_id: &ObjectId, expected_size: u64) -> Result<()> {
         self.copy_blob(blob_id, expected_size, &mut std::io::sink())
     }
 
     pub(crate) fn copy_blob<W: Write>(
         &self,
-        blob_id: &BlobId,
+        blob_id: &ObjectId,
         expected_size: u64,
         target: &mut W,
     ) -> Result<()> {
@@ -450,7 +450,7 @@ impl ChunkStore {
     fn copy_blob_from<W: Write>(
         &self,
         connection: &Connection,
-        blob_id: &BlobId,
+        blob_id: &ObjectId,
         expected_size: u64,
         target: &mut W,
     ) -> Result<()> {
@@ -521,7 +521,7 @@ impl ChunkStore {
         Ok(())
     }
 
-    pub(crate) fn blob_size(&self, id: &BlobId) -> Result<u64> {
+    pub(crate) fn blob_size(&self, id: &ObjectId) -> Result<u64> {
         let digest = blob_digest(id)?;
         let size: i64 = self.open_readonly()?.query_row(
             "SELECT size_bytes FROM blobs WHERE digest=?1 AND complete=1",
@@ -536,7 +536,7 @@ impl ChunkStore {
         let size = bytes.len() as u64;
         if self.contains_complete(&digest, size)? {
             self.verify_blob(
-                &BlobId::parse(format!("sha256:{}", hex::encode(digest)))
+                &ObjectId::parse(format!("sha256:{}", hex::encode(digest)))
                     .map_err(|e| LocalError::Integrity(e.to_string()))?,
                 size,
             )?;
@@ -574,7 +574,7 @@ impl ChunkStore {
         let digest: [u8; 32] = hasher.finalize().into();
         if self.contains_complete(&digest, size)? {
             self.verify_blob(
-                &BlobId::parse(format!("sha256:{}", hex::encode(digest)))
+                &ObjectId::parse(format!("sha256:{}", hex::encode(digest)))
                     .map_err(|e| LocalError::Integrity(e.to_string()))?,
                 size,
             )?;
@@ -668,7 +668,7 @@ impl ChunkStore {
         drop(chunks);
         let inventory = Self::inventory_from(connection)?;
         for (digest, size) in &inventory {
-            let blob_id = BlobId::parse(format!("sha256:{digest}"))
+            let blob_id = ObjectId::parse(format!("sha256:{digest}"))
                 .map_err(|error| LocalError::Integrity(error.to_string()))?;
             self.copy_blob_from(connection, &blob_id, *size, &mut std::io::sink())?;
         }
@@ -1089,7 +1089,7 @@ fn batch_must_flush(rows: usize, payload: usize, next_payload: usize) -> bool {
     rows == MAX_BATCH_ROWS || payload.saturating_add(next_payload) > MAX_BATCH_PAYLOAD
 }
 
-pub(crate) fn blob_digest(blob_id: &BlobId) -> Result<[u8; 32]> {
+pub(crate) fn blob_digest(blob_id: &ObjectId) -> Result<[u8; 32]> {
     let digest = blob_id
         .as_str()
         .strip_prefix("sha256:")

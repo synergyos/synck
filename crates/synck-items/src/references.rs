@@ -7,7 +7,7 @@
 
 use serde_json::{Map, Value};
 use synck_vcs::types::{
-    BlobId, CommitEventRow, ContentId, EventContent, EventProposal, RefEventProposal,
+    ObjectId, CommitEventRow, EventContent, EventProposal, RefEventProposal,
 };
 
 use crate::body_events;
@@ -30,8 +30,8 @@ impl From<String> for ReferenceError {
 /// Blob and logical-body objects occupy separate storage namespaces.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct HistoryReferences {
-    pub blobs: Vec<BlobId>,
-    pub contents: Vec<ContentId>,
+    pub blobs: Vec<ObjectId>,
+    pub contents: Vec<ObjectId>,
 }
 
 fn push_optional_blob_id(
@@ -165,19 +165,19 @@ pub fn commit_event_blob_references(row: &CommitEventRow) -> Result<Vec<String>,
         CommitEventRow::Ref(row) => {
             let event = serde_json::from_slice::<RefEventProposal>(&row.payload)
                 .map_err(|error| format!("invalid ref event payload: {error}"))?;
-            Ok(match event.set_content {
-                Some(EventContent::Blob { blob_id }) => vec![blob_id],
+            Ok(match &event.set_content {
+                Some(EventContent::Blob { blob_id }) => vec![blob_id.clone()],
                 _ => Vec::new(),
             })
         }
     }
 }
 
-fn typed_blobs(raw: Vec<String>) -> Result<Vec<BlobId>, ReferenceError> {
+fn typed_blobs(raw: Vec<String>) -> Result<Vec<ObjectId>, ReferenceError> {
     let mut blobs = raw
         .into_iter()
         .map(|id| {
-            BlobId::parse(&id).map_err(|error| {
+            ObjectId::parse(&id).map_err(|error| {
                 ReferenceError::Invalid(format!("invalid blob reference {id}: {error}"))
             })
         })
@@ -195,8 +195,8 @@ pub fn event_references(event: &EventProposal) -> Result<HistoryReferences, Refe
         body_events::inline_body(event)?;
         body_events::reference_ids(std::slice::from_ref(event))?
     } else {
-        match event.set_content {
-            Some(EventContent::Content { content_id }) => vec![content_id],
+        match &event.set_content {
+            Some(EventContent::Content { content_id }) => vec![content_id.clone()],
             _ => Vec::new(),
         }
     };
@@ -210,7 +210,7 @@ pub fn ref_event_references(event: &RefEventProposal) -> Result<HistoryReference
         Some(EventContent::Blob { blob_id }) => {
             references.blobs = typed_blobs(vec![blob_id.clone()])?;
         }
-        Some(EventContent::Content { content_id }) => references.contents.push(*content_id),
+        Some(EventContent::Content { content_id }) => references.contents.push(content_id.clone()),
         _ => {}
     }
     Ok(references)
@@ -357,7 +357,7 @@ mod tests {
             assert_eq!(
                 event_references(&event).unwrap(),
                 HistoryReferences {
-                    blobs: vec![BlobId::parse(A).unwrap()],
+                    blobs: vec![ObjectId::parse(A).unwrap()],
                     contents: vec![],
                 },
                 "{family}"
@@ -367,15 +367,15 @@ mod tests {
 
     #[test]
     fn body_references_are_distinct_and_known_body_shapes_are_validated() {
-        let id = ContentId::parse(A).unwrap();
+        let id = ObjectId::parse(A).unwrap();
         for family in ["CHAT::MESSAGE::CREATE", "CHAT::MESSAGE::SET_CONTENT"] {
             let mut event = event(family, serde_json::json!({"blob_id":B}));
-            event.set_content = Some(EventContent::Content { content_id: id });
+            event.set_content = Some(EventContent::Content { content_id: id.clone() });
             assert_eq!(
                 event_references(&event).unwrap(),
                 HistoryReferences {
                     blobs: vec![],
-                    contents: vec![id],
+                    contents: vec![id.clone()],
                 },
                 "{family}"
             );
@@ -385,8 +385,8 @@ mod tests {
             assert!(event_references(&event).is_err(), "{family}");
         }
         let mut unknown = event("FUTURE::BODY", serde_json::json!({"blob_id":B}));
-        unknown.set_content = Some(EventContent::Content { content_id: id });
-        assert_eq!(event_references(&unknown).unwrap().contents, vec![id]);
+        unknown.set_content = Some(EventContent::Content { content_id: id.clone() });
+        assert_eq!(event_references(&unknown).unwrap().contents, vec![id.clone()]);
         assert!(event_references(&unknown).unwrap().blobs.is_empty());
     }
 
@@ -430,7 +430,7 @@ mod tests {
         deleted.item_id = created.item_id.clone();
         deleted.set_tombstoned = Some(true);
         let historical = commit_event_references(&item_row(&created)).unwrap();
-        assert_eq!(historical.blobs, vec![BlobId::parse(A).unwrap()]);
+        assert_eq!(historical.blobs, vec![ObjectId::parse(A).unwrap()]);
         assert!(
             commit_event_references(&item_row(&deleted))
                 .unwrap()
@@ -449,7 +449,7 @@ mod tests {
         };
         assert_eq!(
             commit_event_references(&ref_row(&version)).unwrap().blobs,
-            vec![BlobId::parse(D).unwrap()]
+            vec![ObjectId::parse(D).unwrap()]
         );
         assert_eq!(
             commit_event_blob_references(&ref_row(&version)).unwrap(),
@@ -465,10 +465,10 @@ mod tests {
         );
         version.event_type = "FUTURE_REF::BODY".into();
         version.set_content = Some(EventContent::Content {
-            content_id: ContentId::parse(E).unwrap(),
+            content_id: ObjectId::parse(E).unwrap(),
         });
         let refs = commit_event_references(&ref_row(&version)).unwrap();
-        assert_eq!(refs.contents, vec![ContentId::parse(E).unwrap()]);
+        assert_eq!(refs.contents, vec![ObjectId::parse(E).unwrap()]);
         assert!(refs.blobs.is_empty());
     }
 

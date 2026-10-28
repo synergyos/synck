@@ -9,7 +9,7 @@ use synck_file_folder::{
     project_proposal_events, validate_and_materialize, validate_projected_proposal,
 };
 use synck_vcs::types::{
-    BlobId, COMMIT_FORMAT_VERSION, CommitId, CommitRow, EventContent, EventProposal, EventRow,
+    ObjectId, COMMIT_FORMAT_VERSION, CommitId, CommitRow, EventContent, EventProposal, EventRow,
     ItemId, RepoId, Sha256Digest, canonical_commit_bytes_for_hash, canonical_event_proposal_bytes,
     compute_commit_id, compute_sha256_digest_bytes, sha256_prefixed_hex_from_digest_bytes,
 };
@@ -49,7 +49,7 @@ fn digest(byte: char) -> String {
 
 fn blob(byte: char, size: u64) -> BlobRef {
     BlobRef {
-        blob_id: BlobId::parse(digest(byte)).unwrap(),
+        blob_id: ObjectId::parse(digest(byte)).unwrap(),
         size,
     }
 }

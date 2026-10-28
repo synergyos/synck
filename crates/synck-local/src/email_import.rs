@@ -131,7 +131,7 @@ impl crate::repository::Repository {
                 }
                 continue;
             }
-            let id = synck_vcs::types::BlobId::parse(blob)
+            let id = synck_vcs::types::ObjectId::parse(blob)
                 .map_err(|error| LocalError::Integrity(error.to_string()))?;
             let destination = self.object_path(&id);
             if destination

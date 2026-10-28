@@ -1133,7 +1133,7 @@ mod tests {
     fn complete_content_forces_equal_primary_revision_only_for_valid_file_updates() {
         let owner = item_id(1);
         let content = BlobRef {
-            blob_id: synck_vcs::types::BlobId::parse(format!("sha256:{}", "ab".repeat(32)))
+            blob_id: synck_vcs::types::ObjectId::parse(format!("sha256:{}", "ab".repeat(32)))
                 .unwrap(),
             size: 0,
         };

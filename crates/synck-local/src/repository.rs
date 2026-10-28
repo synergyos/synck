@@ -19,7 +19,7 @@ use synck_vcs::naming::compute_name_key;
 use synck_vcs::repo::Repo;
 use synck_vcs::state::{StateIndexStore, StateProjectorStore};
 use synck_vcs::storage::Storage;
-use synck_vcs::types::{BlobId, CommitEventRow, CommitId, ItemId, RepoId};
+use synck_vcs::types::{ObjectId, CommitEventRow, CommitId, ItemId, RepoId};
 use synck_vcs_sqlite::SqliteStorage;
 use uuid::Uuid;
 
@@ -1167,7 +1167,7 @@ fn parse_current_item(columns: CurrentItemColumns) -> Result<CurrentItem> {
         .map_err(|error| LocalError::Integrity(format!("invalid trash commit ID: {error}")))?;
     let content = match item_type.as_str() {
         "FILE" => Some(BlobRef {
-            blob_id: BlobId::parse(blob_id.ok_or_else(|| {
+            blob_id: ObjectId::parse(blob_id.ok_or_else(|| {
                 LocalError::Integrity(format!("FILE {item_id} has no projected blob"))
             })?)
             .map_err(|error| {

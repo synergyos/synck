@@ -14,7 +14,7 @@ use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use synck_vcs::naming::compute_name_key;
-use synck_vcs::types::{BlobId, ItemCursor, ItemId, ItemRow, LifecycleState};
+use synck_vcs::types::{ObjectId, ItemCursor, ItemId, ItemRow, LifecycleState};
 use synck_vcs_sqlite::SqliteStorage;
 use uuid::Uuid;
 
@@ -50,7 +50,7 @@ pub struct CommittedNode {
     pub item_id: ItemId,
     pub kind: NodeKind,
     pub head_seq: i64,
-    pub blob_id: Option<BlobId>,
+    pub blob_id: Option<ObjectId>,
     pub size: Option<i64>,
 }
 
@@ -1423,7 +1423,7 @@ fn load_worktree_cache(storage: &SqliteStorage, repo_id: &str) -> Result<Worktre
                 let blob_id = blob_id.ok_or_else(|| {
                     LocalError::Integrity(format!("cached FILE {path} has no blob ID"))
                 })?;
-                let blob = BlobId::parse(blob_id).map_err(|error| {
+                let blob = ObjectId::parse(blob_id).map_err(|error| {
                     LocalError::Integrity(format!(
                         "cached FILE {path} has invalid blob ID: {error}"
                     ))
@@ -1504,7 +1504,7 @@ fn load_worktree_cache(storage: &SqliteStorage, repo_id: &str) -> Result<Worktre
         });
     };
     if let Some(ignore_blob_id) = ignore_blob_id.as_deref() {
-        BlobId::parse(ignore_blob_id).map_err(|error| {
+        ObjectId::parse(ignore_blob_id).map_err(|error| {
             LocalError::Integrity(format!("invalid cached ignore blob ID: {error}"))
         })?;
     }
@@ -1772,7 +1772,7 @@ fn build_item_path(
 fn load_file_heads(
     storage: &SqliteStorage,
     repo_id: &str,
-) -> Result<HashMap<ItemId, (i64, BlobId, i64)>> {
+) -> Result<HashMap<ItemId, (i64, ObjectId, i64)>> {
     let connection = crate::local_database::open_readonly(storage)
         .map_err(|error| LocalError::Integrity(format!("cannot read file heads: {error}")))?;
     let mut statement = connection.prepare(
@@ -1793,7 +1793,7 @@ fn load_file_heads(
         let item_id = ItemId::parse(item_id).map_err(|error| {
             LocalError::Integrity(format!("invalid projected item ID: {error}"))
         })?;
-        let blob_id = BlobId::parse(blob_id).map_err(|error| {
+        let blob_id = ObjectId::parse(blob_id).map_err(|error| {
             LocalError::Integrity(format!("invalid projected blob ID: {error}"))
         })?;
         heads.insert(item_id, (item_seq, blob_id, size));
@@ -2669,7 +2669,7 @@ pub(crate) fn diff(
         let name_changed = new_name != old_name;
         let parent_changed = new_parent.as_ref() != Some(&old_parent);
         let content_changed = old.kind == NodeKind::File
-            && old.blob_id.as_ref().map(BlobId::as_str)
+            && old.blob_id.as_ref().map(ObjectId::as_str)
                 != new
                     .digest_hex
                     .as_ref()
@@ -2851,7 +2851,7 @@ mod tests {
                     item_id: displaced_id.clone(),
                     kind: NodeKind::File,
                     head_seq: 1,
-                    blob_id: Some(BlobId::parse(format!("sha256:{}", "1".repeat(64))).unwrap()),
+                    blob_id: Some(ObjectId::parse(format!("sha256:{}", "1".repeat(64))).unwrap()),
                     size: Some(5),
                 },
             ),
@@ -2861,7 +2861,7 @@ mod tests {
                     item_id: moved_id.clone(),
                     kind: NodeKind::File,
                     head_seq: 2,
-                    blob_id: Some(BlobId::parse(format!("sha256:{moved_digest}")).unwrap()),
+                    blob_id: Some(ObjectId::parse(format!("sha256:{moved_digest}")).unwrap()),
                     size: Some(6),
                 },
             ),

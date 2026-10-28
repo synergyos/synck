@@ -1741,7 +1741,7 @@ async fn run_portable(command: &PortableCommand) -> synck_local::Result<()> {
             let base_content = base_content
                 .as_deref()
                 .map(|value| {
-                    synck_vcs::types::BlobId::parse(value).map_err(|error| {
+                    synck_vcs::types::ObjectId::parse(value).map_err(|error| {
                         LocalError::Invalid(format!("--base-content must be a blob ID: {error}"))
                     })
                 })

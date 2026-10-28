@@ -16,7 +16,7 @@ fn returns_exact_canonical_payloads_in_item_then_ref_order() {
     let reference: RefEventProposal = serde_json::from_value(serde_json::json!({
         "owner_item_id": event.item_id,
         "event_type": "FILE_VERSION::CREATE",
-        "set_content": {"content_id": ContentId::from_digest([42; 32])},
+        "set_content": {"content_id": ObjectId::from_digest([42; 32])},
         "base_ref_seq": 0
     }))
     .unwrap();

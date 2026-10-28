@@ -19,7 +19,7 @@ use sha2::{Digest, Sha256};
 use synck_file_folder::{
     BlobRef, CurrentItem, Intent, IntentProposal, Location, ProfileLifecycleState,
 };
-use synck_items::content::{ContentObject, MAX_PAYLOAD_BYTES, STORAGE_CODEC};
+use synck_vcs::object::{Codec, Object, HEADER_BYTES};
 use synck_items::reader::{ItemReader, ReadContext, ReadableItem, RefReadContext};
 use synck_vcs::bundle::{
     validate_bundle_event_payload_json_and_digest,
@@ -32,7 +32,7 @@ use synck_vcs::repo::Repo;
 use synck_vcs::state::{NamespaceKey, StateIndexStore, StateTree};
 use synck_vcs::storage::{Storage, StorageBackend};
 use synck_vcs::types::{
-    AcceptedCommit, BlobId, CommitEventRow, CommitId, CommitProposal, ContentId, EventContent,
+    AcceptedCommit, ObjectId, CommitEventRow, CommitId, CommitProposal, EventContent,
     EventProposal, ItemCursor, ItemId, ItemRow, LifecycleState, RefEventRow, RepoEventCursor,
     RepoId, SequencingMode, Timestamp,
 };
@@ -51,6 +51,7 @@ use crate::repository::{
 };
 
 pub const FORMAT_VERSION: u32 = 6;
+const MAX_PAYLOAD_BYTES: usize = HEADER_BYTES + synck_items::body_events::MAX_BODY_BYTES;
 const PAGE: usize = 512;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -637,7 +638,7 @@ impl PortableRepository {
             if digest != name {
                 return Err(corrupt("invalid whole-file object"));
             }
-            let id = BlobId::parse(format!("sha256:{name}")).map_err(corrupt)?;
+            let id = ObjectId::parse(format!("sha256:{name}")).map_err(corrupt)?;
             self.object_store().verify_blob(&id, size)?;
             objects.remove_file(&name).map_err(corrupt)?;
         }
@@ -1063,11 +1064,11 @@ impl PortableRepository {
                 )
                 .map_err(corrupt)?;
                 let mut event: EventProposal = serde_json::from_slice(&row.payload)?;
-                if let Some(EventContent::Content { content_id }) = event.set_content {
-                    let object = self.read_body(content_id)?;
+                if let Some(EventContent::Content { content_id }) = &event.set_content {
+                    let objects = BTreeMap::from([(content_id.clone(), self.read_body(content_id.clone())?)]);
                     synck_items::body_events::restore(
                         std::slice::from_mut(&mut event),
-                        &BTreeMap::from([(content_id, object)]),
+                        &objects,
                     )
                     .map_err(corrupt)?;
                 }
@@ -1115,37 +1116,33 @@ impl PortableRepository {
         Ok(reader)
     }
 
-    pub fn read_body(&self, id: ContentId) -> Result<ContentObject> {
-        if self.storage_mode() == StorageMode::Chunked {
-            let blob =
-                BlobId::parse(format!("sha256:{}", hex::encode(id.as_bytes()))).map_err(corrupt)?;
-            let size = self.object_store().blob_size(&blob)?;
+    pub fn read_body(&self, id: ObjectId) -> Result<Object> {
+        let bytes = if self.storage_mode() == StorageMode::Chunked {
+            let size = self.object_store().blob_size(&id)?;
             if size > MAX_PAYLOAD_BYTES as u64 {
                 return Err(corrupt("body exceeds size bound"));
             }
             let mut bytes = Vec::with_capacity(size as usize);
-            self.object_store().copy_blob(&blob, size, &mut bytes)?;
-            return ContentObject::verify(id, STORAGE_CODEC, bytes).map_err(corrupt);
-        }
-        let folder = "objects";
-        let dir = self.metadata.open_dir_nofollow(folder).map_err(corrupt)?;
-        let name = hex::encode(id.as_bytes());
-        ContentObject::verify(
-            id,
-            STORAGE_CODEC,
+            self.object_store().copy_blob(&id, size, &mut bytes)?;
+            bytes
+        } else {
+            let dir = self.metadata.open_dir_nofollow("objects").map_err(corrupt)?;
+            let name = &id.as_str()[7..];
             read_small(
                 &dir,
-                &name,
+                name,
                 MAX_PAYLOAD_BYTES as u64,
-                &self.root.join(".synck").join(folder).join(&name),
-            )?,
-        )
-        .map_err(corrupt)
+                &self.root.join(".synck/objects").join(name),
+            )?
+        };
+        let object = Object::verify(&id, bytes).map_err(corrupt)?;
+        object.utf8().map_err(corrupt)?;
+        Ok(object)
     }
 
     /// Stream exact blob bytes. On error the caller must discard any partial
     /// output; publish extracted files only after this returns success.
-    pub fn copy_blob(&self, id: &BlobId, mut out: &mut dyn Write) -> Result<u64> {
+    pub fn copy_blob(&self, id: &ObjectId, mut out: &mut dyn Write) -> Result<u64> {
         if self.storage_mode() == StorageMode::Chunked {
             let size = self.object_store().blob_size(id)?;
             self.object_store().copy_blob(id, size, &mut out)?;
@@ -1214,7 +1211,7 @@ impl PortableRepository {
             }
             _ => return Err(invalid("item export requires a FILE or imported EMAIL")),
         };
-        let blob = BlobId::parse(blob).map_err(corrupt)?;
+        let blob = ObjectId::parse(blob).map_err(corrupt)?;
         let name = destination
             .file_name()
             .and_then(|name| name.to_str())
@@ -1596,12 +1593,12 @@ impl PortableRepository {
                 continue;
             }
             self.copy_blob(
-                &BlobId::parse(format!("sha256:{name}")).map_err(corrupt)?,
+                &ObjectId::parse(format!("sha256:{name}")).map_err(corrupt)?,
                 &mut std::io::sink(),
             )?;
         }
         for name in &bodies {
-            self.read_body(ContentId::parse(&format!("sha256:{name}")).map_err(corrupt)?)?;
+            self.read_body(ObjectId::parse(&format!("sha256:{name}")).map_err(corrupt)?)?;
         }
         if self.config.checkout.is_some() {
             self.checkout_adapter()?.committed_tree().await?;
@@ -1763,7 +1760,7 @@ impl PortableRepository {
         if self.storage_mode() == StorageMode::Chunked {
             let (digest, size) = self.object_store().store_file(source)?;
             return Ok(BlobRef {
-                blob_id: BlobId::parse(format!("sha256:{digest}")).map_err(corrupt)?,
+                blob_id: ObjectId::parse(format!("sha256:{digest}")).map_err(corrupt)?,
                 size,
             });
         }
@@ -1792,7 +1789,7 @@ impl PortableRepository {
         }
         sync_directory(&self.root.join(".synck/objects"))?;
         Ok(BlobRef {
-            blob_id: BlobId::parse(format!("sha256:{digest}")).map_err(corrupt)?,
+            blob_id: ObjectId::parse(format!("sha256:{digest}")).map_err(corrupt)?,
             size,
         })
     }
@@ -2131,7 +2128,7 @@ impl PortableRepository {
         &mut self,
         id: &ItemId,
         source: &Path,
-        base_content: Option<&BlobId>,
+        base_content: Option<&ObjectId>,
         options: &WriteOptions,
     ) -> Result<CommitId> {
         self.writable()?;
@@ -2154,7 +2151,7 @@ impl PortableRepository {
             readable.item.projection.size,
         ) {
             (Some(blob), Some(size)) => Some(BlobRef {
-                blob_id: BlobId::parse(blob).map_err(corrupt)?,
+                blob_id: ObjectId::parse(blob).map_err(corrupt)?,
                 size: u64::try_from(size).map_err(corrupt)?,
             }),
             _ => None,
@@ -2242,7 +2239,7 @@ impl PortableRepository {
     ) -> Result<CommitId> {
         let owner = self.local_owner(chat, "CHAT").await?;
         synck_items::body_events::validate_body("CHAT::MESSAGE::CREATE", body).map_err(invalid)?;
-        let object = ContentObject::new(body).map_err(invalid)?;
+        let object = Object::new(Codec::Utf8, body.as_bytes()).map_err(invalid)?;
         let content_id = object.id();
         self.store_bytes(object.payload())?;
         let event: EventProposal = serde_json::from_value(
@@ -2355,7 +2352,7 @@ impl PortableRepository {
                             if self.storage_mode() == StorageMode::Chunked {
                                 let mut file = create_file(&destination)?;
                                 self.copy_blob(
-                                    &BlobId::parse(format!("sha256:{name}")).map_err(corrupt)?,
+                                    &ObjectId::parse(format!("sha256:{name}")).map_err(corrupt)?,
                                     &mut file,
                                 )?;
                                 file.sync_all().at("sync copied object", &destination)?;

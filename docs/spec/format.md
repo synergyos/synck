@@ -74,6 +74,33 @@ history and rebuild checkpoints before publishing the replacement atomically.
 Client cursors must bind repository ID, generation, position and checkpoint;
 a generation mismatch cannot be treated as an ordinary forward extension.
 
+## Salted objects
+
+Object IDs have exactly the spelling `sha256:` followed by 64 lowercase
+hexadecimal digits; readers reject uppercase rather than normalize it. All
+object roles use the same identifier type. An object is the concatenation of:
+
+1. The 15 ASCII bytes `SYNCK_OBJECT_V1` followed by a zero byte.
+2. One codec byte: 0 for `RAW`, 1 for `UTF8`. Other values are invalid.
+3. A fresh 32-byte salt from the operating system's cryptographic random source.
+4. The application bytes, extending to the end of the object.
+
+The object ID is SHA-256 over all these bytes, including codec and salt.
+The header is 49 bytes. `RAW` accepts arbitrary bytes; `UTF8` requires valid
+UTF-8 and preserves exact bytes, including NUL, line endings and normalization.
+Empty objects are valid for either codec. The object format has no size cap;
+individual item profiles can bound their payloads. Metadata uses `UTF8` objects
+whose application bytes are canonical RFC 8785 JSON.
+
+The salt is stored only inside the object, not in event envelopes. Removing an
+object prevents its ID alone from confirming a content guess; this says nothing
+about copies in chunks, caches or archives. Storage chunk deduplication is below
+this framing and does not change object identity. Language-neutral vectors are
+in `vectors/objects.json`.
+
+Implementation status: the identifier type and UTF8-body writer use this
+framing. The RAW file store and metadata envelope conversion are still pending.
+
 ## Commit size
 
 The format imposes no fixed per-commit event-count or aggregate byte cap.

@@ -76,7 +76,7 @@ pub fn file_blob_reference(
         ));
     }
     Ok(Some(BlobRef {
-        blob_id: synck_vcs::types::BlobId::parse(blob_id).map_err(|_| {
+        blob_id: synck_vcs::types::ObjectId::parse(blob_id).map_err(|_| {
             SemanticError::new(
                 SemanticErrorCode::MalformedProfileEvent,
                 "FILE content event has an invalid blob ID",

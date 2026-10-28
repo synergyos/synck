@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use cap_fs_ext::{FollowSymlinks, MetadataExt, OpenOptionsFollowExt};
 use cap_std::fs::OpenOptions;
 use sha2::{Digest, Sha256};
-use synck_vcs::types::BlobId;
+use synck_vcs::types::ObjectId;
 use uuid::Uuid;
 
 use crate::chunk_store::StorageMode;
@@ -57,7 +57,7 @@ impl Repository {
         display: &str,
         expected_digest: &str,
         expected_size: u64,
-    ) -> Result<BlobId> {
+    ) -> Result<ObjectId> {
         self.install_object_from_inner(
             self.root(),
             relative,
@@ -74,7 +74,7 @@ impl Repository {
         display: &str,
         expected_digest: &str,
         expected_size: u64,
-    ) -> Result<BlobId> {
+    ) -> Result<ObjectId> {
         self.install_object_from_inner(
             self.root(),
             relative,
@@ -100,7 +100,7 @@ impl Repository {
         expected_digest: &str,
         expected_size: u64,
         checkpoint_chunk_store: bool,
-    ) -> Result<BlobId> {
+    ) -> Result<ObjectId> {
         let mut source_options = OpenOptions::new();
         source_options.read(true).follow(FollowSymlinks::No);
         let source = root
@@ -122,7 +122,7 @@ impl Repository {
             let store = self.object_store();
             let was_complete = store.contains_complete(&digest_bytes, expected_size)?;
             let (digest, size) = if was_complete {
-                let blob_id = BlobId::parse(format!("sha256:{expected_digest}"))
+                let blob_id = ObjectId::parse(format!("sha256:{expected_digest}"))
                     .map_err(|error| LocalError::Invalid(error.to_string()))?;
                 store.verify_blob(&blob_id, expected_size)?;
                 hash_reader(source, display)?
@@ -157,7 +157,7 @@ impl Repository {
                     store.complete_blob_before_batch_checkpoint(&digest_bytes, expected_size)?;
                 }
             }
-            return BlobId::parse(format!("sha256:{expected_digest}"))
+            return ObjectId::parse(format!("sha256:{expected_digest}"))
                 .map_err(|error| LocalError::Invalid(error.to_string()));
         }
 
@@ -192,7 +192,7 @@ impl Repository {
         }
 
         let blob_id =
-            BlobId::parse(format!("sha256:{digest}")).expect("a SHA-256 digest is a valid blob ID");
+            ObjectId::parse(format!("sha256:{digest}")).expect("a SHA-256 digest is a valid blob ID");
         let final_path = self.object_path(&blob_id);
         let prefix_directory = final_path
             .parent()
@@ -241,13 +241,13 @@ impl Repository {
         Ok(blob_id)
     }
 
-    pub(crate) fn verify_blob(&self, blob_id: &BlobId, size: u64) -> Result<()> {
+    pub(crate) fn verify_blob(&self, blob_id: &ObjectId, size: u64) -> Result<()> {
         match self.storage_mode() {
             StorageMode::WholeFile => {
                 let digest = blob_id
                     .as_str()
                     .strip_prefix("sha256:")
-                    .expect("BlobId always has a sha256 prefix");
+                    .expect("ObjectId always has a sha256 prefix");
                 verify_object_file(&self.object_path(blob_id), digest, size)
             }
             StorageMode::Chunked => self.object_store().verify_blob(blob_id, size),
@@ -256,7 +256,7 @@ impl Repository {
 
     pub(crate) fn copy_blob<W: Write>(
         &self,
-        blob_id: &BlobId,
+        blob_id: &ObjectId,
         size: u64,
         target: &mut W,
     ) -> Result<()> {
@@ -268,11 +268,11 @@ impl Repository {
         }
     }
 
-    pub(crate) fn object_path(&self, blob_id: &BlobId) -> PathBuf {
+    pub(crate) fn object_path(&self, blob_id: &ObjectId) -> PathBuf {
         let digest = blob_id
             .as_str()
             .strip_prefix("sha256:")
-            .expect("BlobId always has a sha256 prefix");
+            .expect("ObjectId always has a sha256 prefix");
         self.metadata_path().join("objects").join(digest)
     }
 }
@@ -320,7 +320,7 @@ fn hash_reader<R: Read>(mut source: R, display: &str) -> Result<([u8; 32], u64)>
 
 fn copy_whole_file_blob<W: Write>(
     path: &Path,
-    blob_id: &BlobId,
+    blob_id: &ObjectId,
     expected_size: u64,
     target: &mut W,
 ) -> Result<()> {
@@ -350,7 +350,7 @@ fn copy_whole_file_blob<W: Write>(
     let digest = blob_id
         .as_str()
         .strip_prefix("sha256:")
-        .expect("BlobId always has a sha256 prefix");
+        .expect("ObjectId always has a sha256 prefix");
     if size != expected_size || hex::encode(hasher.finalize()) != digest {
         return Err(LocalError::Integrity(format!(
             "object verification failed: {}",
@@ -506,7 +506,7 @@ mod tests {
             differs_from_generic |= expected != generic;
             repository
                 .verify_blob(
-                    &BlobId::parse(format!("sha256:{}", hex::encode(digest))).unwrap(),
+                    &ObjectId::parse(format!("sha256:{}", hex::encode(digest))).unwrap(),
                     bytes.len() as u64,
                 )
                 .unwrap();
@@ -877,7 +877,7 @@ mod tests {
             }
         );
         repository
-            .verify_blob(&BlobId::parse(format!("sha256:{digest}")).unwrap(), 10)
+            .verify_blob(&ObjectId::parse(format!("sha256:{digest}")).unwrap(), 10)
             .unwrap();
     }
 }

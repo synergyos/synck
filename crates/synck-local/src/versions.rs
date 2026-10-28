@@ -5,7 +5,7 @@ use chrono::{DateTime, Utc};
 use serde_json::{Map, Value};
 use synck_file_folder::file_version_set as version_set;
 use synck_vcs::types::{
-    BlobId, CommitId, CommitProposal, EventContent, EventProposal, EventRow, ItemCursor, ItemId,
+    ObjectId, CommitId, CommitProposal, EventContent, EventProposal, EventRow, ItemCursor, ItemId,
     LifecycleState, RefEventProposal, RefEventRow, canonical_event_proposal_bytes,
     canonical_ref_event_proposal_bytes, compute_sha256_digest_bytes,
     sha256_prefixed_hex_from_digest_bytes,
@@ -48,7 +48,7 @@ struct StoredVersion {
     source_item_seq: i64,
     source_commit_id: Option<CommitId>,
     source_commit_event_idx: Option<i32>,
-    blob_id: BlobId,
+    blob_id: ObjectId,
     size: i64,
     created_seq: i64,
     current_seq: i64,
@@ -69,7 +69,7 @@ struct FileRevision {
     repo_seq: i64,
     commit_id: CommitId,
     commit_event_idx: i32,
-    blob_id: BlobId,
+    blob_id: ObjectId,
     size: i64,
 }
 
@@ -931,7 +931,7 @@ fn validate_source_transition(
     source_item_seq: i64,
     source_commit_id: Option<&CommitId>,
     source_commit_event_idx: Option<i32>,
-    blob_id: &BlobId,
+    blob_id: &ObjectId,
     encoded_size: Option<i64>,
     revisions: &HashMap<i64, FileRevision>,
 ) -> Result<i64> {
@@ -1086,9 +1086,9 @@ fn parse_event(event: &EventRow) -> Result<EventProposal> {
     })
 }
 
-fn event_content(event: &EventProposal) -> Result<(BlobId, i64)> {
+fn event_content(event: &EventProposal) -> Result<(ObjectId, i64)> {
     let blob_id = match event.set_content.as_ref() {
-        Some(EventContent::Blob { blob_id }) => BlobId::parse(blob_id)
+        Some(EventContent::Blob { blob_id }) => ObjectId::parse(blob_id)
             .map_err(|error| LocalError::Integrity(format!("invalid version blob ID: {error}")))?,
         _ => {
             return Err(LocalError::Integrity(
@@ -1300,7 +1300,7 @@ mod tests {
         source_item_seq: i64,
         source_commit_id: Option<&CommitId>,
         source_commit_event_idx: Option<i32>,
-        blob_id: &BlobId,
+        blob_id: &ObjectId,
         size: i64,
         order_key: i64,
         next_ref_seq: i64,

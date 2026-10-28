@@ -10,7 +10,7 @@ use chrono::{DateTime, Utc};
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use synck_vcs::state::{NamespaceKey, RootHeader, StateIndexStore, StateRootId, StateTree};
-use synck_vcs::types::{BlobId, CommitId, ItemId, LifecycleState, RepoId, Sha256Digest};
+use synck_vcs::types::{ObjectId, CommitId, ItemId, LifecycleState, RepoId, Sha256Digest};
 use synck_vcs_sqlite::parse_timestamp;
 use uuid::Uuid;
 
@@ -911,7 +911,7 @@ fn valid_historical_manifest(manifest: &HistoricalFileManifest) -> bool {
         && CommitId::parse(&manifest.commit_id).is_ok()
         && Sha256Digest::parse(&manifest.state_root).is_ok()
         && ItemId::parse(&manifest.item_id).is_ok()
-        && BlobId::parse(&manifest.blob_id).is_ok()
+        && ObjectId::parse(&manifest.blob_id).is_ok()
         && matches!(
             Path::new(&manifest.file_name)
                 .components()

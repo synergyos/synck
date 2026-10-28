@@ -2,7 +2,7 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use synck_vcs::types::{BlobId, CommitId, EventContent, EventProposal, ItemId, LifecycleState};
+use synck_vcs::types::{ObjectId, CommitId, EventContent, EventProposal, ItemId, LifecycleState};
 
 use crate::metadata::{
     ITEM_SOURCE_MODIFIED_AT_REPAIR_EVENT_TYPE, ITEM_SUBTYPE_STANDARD,
@@ -233,7 +233,7 @@ fn projected_updated_at(
     let timestamp = DateTime::parse_from_rfc3339(required("source_modified_at")?)
         .map_err(|error| invalid_repair(&format!("source_modified_at is invalid: {error}")))?
         .with_timezone(&Utc);
-    BlobId::parse(required("manifest_sha256")?)
+    ObjectId::parse(required("manifest_sha256")?)
         .map_err(|error| invalid_repair(&format!("manifest_sha256 is invalid: {error}")))?;
     CommitId::parse(required("expected_prior_commit_id")?).map_err(|error| {
         invalid_repair(&format!("expected_prior_commit_id is invalid: {error}"))

@@ -10,7 +10,7 @@ use rawzip::extra_fields::{ExtraFieldId, ExtraFields};
 use rawzip::{CompressionMethod, ZipArchive};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use synck_vcs::types::{BlobId, RepoId};
+use synck_vcs::types::{ObjectId, RepoId};
 
 use super::{AVG_CHUNK, ChunkStore, MAX_CHUNK, MIN_CHUNK};
 use crate::error::{LocalError, Result};
@@ -728,7 +728,7 @@ fn run_policy(
                 version.path
             )));
         }
-        let blob_id = BlobId::parse(format!("sha256:{}", version.sha256))
+        let blob_id = ObjectId::parse(format!("sha256:{}", version.sha256))
             .map_err(|error| LocalError::Invalid(error.to_string()))?;
         let mut reconstructed = Vec::with_capacity(bytes.len());
         store.copy_blob(&blob_id, bytes.len() as u64, &mut reconstructed)?;
@@ -1484,7 +1484,7 @@ fn production_regions_use_the_existing_verified_store_writer() {
     );
     store.complete_blob(&digest, bytes.len() as u64).unwrap();
     assert_eq!(regions.iter().sum::<u64>(), bytes.len() as u64);
-    let blob_id = BlobId::parse(format!("sha256:{}", hex::encode(digest))).unwrap();
+    let blob_id = ObjectId::parse(format!("sha256:{}", hex::encode(digest))).unwrap();
     let mut reconstructed = Vec::new();
     store
         .copy_blob(&blob_id, bytes.len() as u64, &mut reconstructed)

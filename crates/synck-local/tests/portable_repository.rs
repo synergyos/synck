@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use synck_items::content::ContentObject;
+use synck_vcs::object::{Object, Codec};
 use synck_local::portable::{
     Authority, BundleSnapshot, PortableRepository, import_repository, materialize_repository,
 };
@@ -26,7 +26,7 @@ struct Fixture {
     folder: ItemId,
     file: ItemId,
     chat: ItemId,
-    body: ContentObject,
+    body: Object,
     primary_blob: String,
     body_blob: String,
 }
@@ -78,7 +78,7 @@ async fn fixture() -> Fixture {
         .await
         .unwrap();
     let primary = b"first version\n";
-    let body = ContentObject::new("original body\0🦀").unwrap();
+    let body = Object::new(Codec::Utf8, "original body\0🦀".as_bytes()).unwrap();
     // Body bytes also exercise exact-object transfer.
     let body_bytes = body.payload();
     let primary_blob = format!("sha256:{}", hex::encode(Sha256::digest(primary)));
@@ -158,7 +158,7 @@ async fn complete_mixed_repository_reads_offline_and_keeps_exact_history_and_bod
     let mut bytes = Vec::new();
     repository
         .copy_blob(
-            &synck_vcs::types::BlobId::parse(&fixture.primary_blob).unwrap(),
+            &synck_vcs::types::ObjectId::parse(&fixture.primary_blob).unwrap(),
             &mut bytes,
         )
         .unwrap();
@@ -326,7 +326,7 @@ async fn follower_activation_continuation_and_explicit_finalize_preserve_old_byt
     let mut original = Vec::new();
     repository
         .copy_blob(
-            &synck_vcs::types::BlobId::parse(&fixture.primary_blob).unwrap(),
+            &synck_vcs::types::ObjectId::parse(&fixture.primary_blob).unwrap(),
             &mut original,
         )
         .unwrap();
@@ -2100,7 +2100,7 @@ async fn storage_modes_preserve_canonical_history_ids_and_exact_closure() {
         (original.blobs, original.bodies)
     );
     for id in [&fixture.primary_blob, &fixture.body_blob] {
-        let id = synck_vcs::types::BlobId::parse(id).unwrap();
+        let id = synck_vcs::types::ObjectId::parse(id).unwrap();
         let mut expected = Vec::new();
         let mut actual = Vec::new();
         source.copy_blob(&id, &mut expected).unwrap();

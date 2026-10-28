@@ -22,7 +22,7 @@ use synck_vcs::state::{
     ItemValue, NamespaceKey, RootHeader, StateIndexStore, StateRootId, StateTree,
 };
 use synck_vcs::types::{
-    BlobId, COMMIT_EVENT_FAMILY_ITEM, COMMIT_EVENT_FAMILY_REF, CommitEventRow, CommitId,
+    ObjectId, COMMIT_EVENT_FAMILY_ITEM, COMMIT_EVENT_FAMILY_REF, CommitEventRow, CommitId,
     CommitProposal, CommitRow, EventContent, EventProposal, EventRow, ItemId, LifecycleState,
     RefEventProposal, RepoEventCursor, RepoId, Sha256Digest, SubtreeClosureGuard,
     canonical_commit_bytes_for_hash, canonical_event_proposal_bytes,
@@ -123,7 +123,7 @@ struct RecoverIntentItem {
     name: String,
     path: String,
     base_seq: i64,
-    blob_id: Option<BlobId>,
+    blob_id: Option<ObjectId>,
     size: Option<i64>,
 }
 
@@ -166,7 +166,7 @@ struct RevertItemState {
     path: String,
     live: bool,
     head_seq: i64,
-    blob_id: Option<BlobId>,
+    blob_id: Option<ObjectId>,
     size: Option<i64>,
 }
 
@@ -186,7 +186,7 @@ pub(crate) struct WorktreeRestoreEntry {
     path: String,
     item_id: Option<ItemId>,
     item_type: String,
-    blob_id: Option<BlobId>,
+    blob_id: Option<ObjectId>,
     size: Option<i64>,
 }
 
@@ -310,7 +310,7 @@ struct HistoryNode {
     kind: NodeKind,
     live: bool,
     head_seq: i64,
-    blob_id: Option<BlobId>,
+    blob_id: Option<ObjectId>,
     size: Option<i64>,
     deletion: Option<DeletionInfo>,
 }
@@ -326,7 +326,7 @@ struct ReplayResult {
 }
 
 struct PreparedWorkingCommit {
-    objects: HashMap<String, BlobId>,
+    objects: HashMap<String, ObjectId>,
     created_ids: HashMap<String, ItemId>,
     events: Vec<EventProposal>,
     ref_events: Vec<RefEventProposal>,
@@ -2966,7 +2966,7 @@ impl Repository {
         &self,
         items: &BTreeMap<ItemId, ItemValue>,
         live_only: bool,
-    ) -> Result<HashMap<ItemId, (BlobId, i64)>> {
+    ) -> Result<HashMap<ItemId, (ObjectId, i64)>> {
         const CONTENT_BATCH: usize = 256;
 
         let requested = items
@@ -3704,7 +3704,7 @@ impl Repository {
     fn materialize_recovered_file(
         &self,
         display: &str,
-        blob_id: &BlobId,
+        blob_id: &ObjectId,
         expected_size: i64,
     ) -> Result<()> {
         let relative = display_to_path(display);
@@ -4117,7 +4117,7 @@ impl Repository {
         caller: &Path,
         input: &Path,
         requested_seq: Option<i64>,
-    ) -> Result<(String, BlobId, i64)> {
+    ) -> Result<(String, ObjectId, i64)> {
         self.recover().await?;
         let display = normalize_input_path(self.root_path(), caller, input)?;
         let committed = self.committed_tree().await?;
@@ -4180,7 +4180,7 @@ impl Repository {
         &self,
         working: &BTreeMap<String, WorkingNode>,
         changes: &[Change],
-    ) -> Result<HashMap<String, BlobId>> {
+    ) -> Result<HashMap<String, ObjectId>> {
         let mut objects = HashMap::new();
         for change in changes {
             if !matches!(change.kind, ChangeKind::Add | ChangeKind::Modify)
@@ -4213,7 +4213,7 @@ impl Repository {
     pub(crate) fn write_working_file(
         &self,
         display: &str,
-        blob_id: &BlobId,
+        blob_id: &ObjectId,
         expected_size: i64,
         overwrite: bool,
     ) -> Result<()> {
@@ -4273,7 +4273,7 @@ impl Repository {
         parent_dir: &Dir,
         parent: &Path,
         display: &Path,
-        blob_id: &BlobId,
+        blob_id: &ObjectId,
         expected_size: i64,
     ) -> Result<String> {
         let temporary_name = format!(".synck-tmp-{}", Uuid::new_v4());
@@ -4912,7 +4912,7 @@ fn working_restore_state(
             let digest = node.digest_hex.as_ref().ok_or_else(|| {
                 LocalError::Integrity(format!("working restore FILE has no digest: {path}"))
             })?;
-            let blob_id = BlobId::parse(format!("sha256:{digest}")).map_err(|error| {
+            let blob_id = ObjectId::parse(format!("sha256:{digest}")).map_err(|error| {
                 LocalError::Integrity(format!("working restore FILE has invalid digest: {error}"))
             })?;
             let size = i64::try_from(node.size.ok_or_else(|| {
@@ -4947,7 +4947,7 @@ pub(crate) fn worktree_restore_manifest(
                         LocalError::Integrity(format!("working FILE has no digest: {path}"))
                     })?;
                     (
-                        Some(BlobId::parse(format!("sha256:{digest}")).map_err(|error| {
+                        Some(ObjectId::parse(format!("sha256:{digest}")).map_err(|error| {
                             LocalError::Integrity(format!(
                                 "working FILE has invalid digest: {error}"
                             ))
@@ -5573,7 +5573,7 @@ fn entry_matches_revert_state(
             let digest = blob_id
                 .as_str()
                 .strip_prefix("sha256:")
-                .expect("BlobId has a SHA-256 prefix");
+                .expect("ObjectId has a SHA-256 prefix");
             let size = u64::try_from(state.size.ok_or_else(|| {
                 LocalError::Integrity("revert FILE state has no size".to_string())
             })?)
@@ -5971,7 +5971,7 @@ fn validate_recover_destinations(
 pub(crate) fn verify_working_file(
     root: &Path,
     display: &str,
-    blob_id: &BlobId,
+    blob_id: &ObjectId,
     expected_size: i64,
 ) -> Result<()> {
     let relative = display_to_path(display);
@@ -6877,7 +6877,7 @@ pub(crate) fn validate_commit_message(message: Option<&str>) -> Result<()> {
 fn expected_file_objects(
     working: &BTreeMap<String, WorkingNode>,
     changes: &[Change],
-) -> Result<HashMap<String, BlobId>> {
+) -> Result<HashMap<String, ObjectId>> {
     let mut objects = HashMap::new();
     for change in changes {
         if !matches!(change.kind, ChangeKind::Add | ChangeKind::Modify)
@@ -6894,7 +6894,7 @@ fn expected_file_objects(
         let digest = node.digest_hex.as_deref().ok_or_else(|| {
             LocalError::Integrity(format!("scanned FILE has no digest: {}", change.path))
         })?;
-        let blob_id = BlobId::parse(format!("sha256:{digest}")).map_err(|error| {
+        let blob_id = ObjectId::parse(format!("sha256:{digest}")).map_err(|error| {
             LocalError::Integrity(format!(
                 "scanned FILE has an invalid digest for {}: {error}",
                 change.path
@@ -7097,7 +7097,7 @@ pub(crate) fn build_intents(
     working: &BTreeMap<String, WorkingNode>,
     changes: &[Change],
     working_ids: &HashMap<String, ItemId>,
-    objects: &HashMap<String, BlobId>,
+    objects: &HashMap<String, ObjectId>,
     root_parent_id: Option<ItemId>,
 ) -> Result<BuiltIntents> {
     let trash_paths = changes
@@ -7326,7 +7326,7 @@ fn path_name(path: &str) -> &str {
     path.rsplit('/').next().expect("tracked path is nonempty")
 }
 
-fn blob_ref(blob_id: &BlobId, size: u64) -> Result<BlobRef> {
+fn blob_ref(blob_id: &ObjectId, size: u64) -> Result<BlobRef> {
     Ok(BlobRef {
         blob_id: blob_id.clone(),
         size,
@@ -7409,9 +7409,9 @@ fn validate_historical_item_event(event: &EventRow, item_id: &ItemId) -> Result<
     Ok(proposal)
 }
 
-fn content_from_event(event: &EventProposal) -> Result<(BlobId, i64)> {
+fn content_from_event(event: &EventProposal) -> Result<(ObjectId, i64)> {
     let blob_id = match event.set_content.as_ref() {
-        Some(EventContent::Blob { blob_id }) => BlobId::parse(blob_id).map_err(|error| {
+        Some(EventContent::Blob { blob_id }) => ObjectId::parse(blob_id).map_err(|error| {
             LocalError::Integrity(format!("invalid blob identifier in event: {error}"))
         })?,
         _ => {

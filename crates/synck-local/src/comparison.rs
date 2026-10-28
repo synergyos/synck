@@ -354,7 +354,7 @@ fn final_name(path: &str) -> &str {
 mod tests {
     use super::*;
     use std::fs;
-    use synck_vcs::types::BlobId;
+    use synck_vcs::types::ObjectId;
 
     use crate::init;
 
@@ -363,7 +363,7 @@ mod tests {
             item_id: ItemId::parse(id).unwrap(),
             kind,
             head_seq: 1,
-            blob_id: blob.map(|value| BlobId::parse(value).unwrap()),
+            blob_id: blob.map(|value| ObjectId::parse(value).unwrap()),
             size: blob.map(|_| 1),
         }
     }

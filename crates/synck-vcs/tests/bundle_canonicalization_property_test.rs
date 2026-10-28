@@ -169,7 +169,7 @@ fn gen_event_content(rng: &mut XorShift64) -> EventContent {
             blob_id: gen_sha256_id(rng),
         },
         _ => EventContent::Content {
-            content_id: synck_vcs::types::ContentId::parse(gen_sha256_id(rng)).unwrap(),
+            content_id: synck_vcs::types::ObjectId::parse(gen_sha256_id(rng)).unwrap(),
         },
     }
 }

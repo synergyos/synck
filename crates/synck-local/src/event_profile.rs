@@ -8,7 +8,7 @@ use synck_file_folder::project_commit;
 use synck_file_folder::{ImmutableItemKind, validate_projected_proposal, project_commit_events};
 use synck_vcs::naming::compute_name_key;
 use synck_vcs::types::{
-    BlobId, CommitEventRow, CommitRow, EventContent, EventProposal, EventRow, ItemId,
+    ObjectId, CommitEventRow, CommitRow, EventContent, EventProposal, EventRow, ItemId,
 };
 
 pub(crate) enum LocalEvent {
@@ -30,7 +30,7 @@ pub(crate) enum LocalEvent {
         name: String,
     },
     SetContent {
-        blob_id: BlobId,
+        blob_id: ObjectId,
         size: i64,
     },
     VersionSetCreate,
@@ -335,10 +335,10 @@ pub(crate) fn is_reserved_root_name(name: &str) -> bool {
     })
 }
 
-pub(crate) fn parse_content(event: &EventProposal) -> std::result::Result<(BlobId, i64), String> {
+pub(crate) fn parse_content(event: &EventProposal) -> std::result::Result<(ObjectId, i64), String> {
     let blob_id = match event.set_content.as_ref() {
         Some(EventContent::Blob { blob_id }) => {
-            BlobId::parse(blob_id).map_err(|error| error.to_string())?
+            ObjectId::parse(blob_id).map_err(|error| error.to_string())?
         }
         _ => return Err("file content event has no blob".to_string()),
     };
@@ -360,10 +360,10 @@ pub(crate) fn parse_content(event: &EventProposal) -> std::result::Result<(BlobI
 
 pub(crate) fn parse_version_content(
     event: &EventProposal,
-) -> std::result::Result<(BlobId, Option<i64>), String> {
+) -> std::result::Result<(ObjectId, Option<i64>), String> {
     let blob_id = match event.set_content.as_ref() {
         Some(EventContent::Blob { blob_id }) => {
-            BlobId::parse(blob_id).map_err(|error| error.to_string())?
+            ObjectId::parse(blob_id).map_err(|error| error.to_string())?
         }
         _ => return Err("version content event has no blob".to_string()),
     };

@@ -1,5 +1,5 @@
 use serde::{Deserialize, Deserializer, Serialize};
-use synck_vcs::types::{BlobId, CommitId, EventProposal, ItemId, RepoId, Timestamp};
+use synck_vcs::types::{ObjectId, CommitId, EventProposal, ItemId, RepoId, Timestamp};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "UPPERCASE")]
@@ -51,7 +51,7 @@ where
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BlobRef {
-    pub blob_id: BlobId,
+    pub blob_id: ObjectId,
     pub size: u64,
 }
 

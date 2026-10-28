@@ -15,8 +15,8 @@ use crate::sequencer::Sequencer;
 use crate::storage::{SealedCommitInsert, Storage, StorageTxn};
 use crate::transition::{ItemState, apply_event as apply_item_event};
 use crate::types::{
-    AcceptedCommit, BlobId, COMMIT_EVENT_FAMILY_ITEM, COMMIT_EVENT_FAMILY_REF,
-    COMMIT_FORMAT_VERSION, CommitEventRow, CommitPk, CommitProposal, CommitRow, ContentId,
+    AcceptedCommit, ObjectId, COMMIT_EVENT_FAMILY_ITEM, COMMIT_EVENT_FAMILY_REF,
+    COMMIT_FORMAT_VERSION, CommitEventRow, CommitPk, CommitProposal, CommitRow,
     CreatedItemInfo, EventContent, EventInsertRow, EventProposal, EventRow,
     FederatedDomainProposal, FederatedProposal,
     IngestedCommit, IngestedDomainCommit, ItemCursor, ItemId, ItemRow, LifecycleState,
@@ -183,7 +183,7 @@ struct AppendApplied {
 
 /// Trusted embedding-layer byte adjustments from reference content to its
 /// verified logical representation. Never serialized or accepted from the wire.
-pub type ContentPayloadDeltas = HashMap<(String, ContentId), isize>;
+pub type ContentPayloadDeltas = HashMap<(String, ObjectId), isize>;
 
 /// Repository handle backed by a storage implementation.
 pub struct Repo {
@@ -232,7 +232,7 @@ impl Repo {
                     ..
                 }) => *self
                     .content_payload_deltas
-                    .get(&(event_type.clone(), *content_id))
+                    .get(&(event_type.clone(), content_id.clone()))
                     .ok_or_else(|| {
                         CoreError::InvalidProposal("missing verified content payload size".into())
                     })?,
@@ -3884,7 +3884,7 @@ fn validate_blob_ids(content: &Option<EventContent>) -> Result<(), CoreError> {
     if let Some(c) = content
         && let EventContent::Blob { blob_id } = c
     {
-        let _ = BlobId::parse(blob_id)?;
+        let _ = ObjectId::parse(blob_id)?;
     }
     Ok(())
 }

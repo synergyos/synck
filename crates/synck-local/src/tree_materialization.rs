@@ -5,7 +5,7 @@ use crate::worktree::{CommittedNode, NodeKind, WorkingNode};
 use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};
-use synck_vcs::types::BlobId;
+use synck_vcs::types::ObjectId;
 
 pub(crate) fn materialize_tree(
     repository: &Repository,
@@ -55,7 +55,7 @@ pub(crate) fn validate_materialized_tree(
             .ok_or_else(|| LocalError::Integrity(format!("materialized tree is missing {path}")))?;
         if old.kind != new.kind
             || (old.kind == NodeKind::File
-                && (old.blob_id.as_ref().map(BlobId::as_str)
+                && (old.blob_id.as_ref().map(ObjectId::as_str)
                     != new
                         .digest_hex
                         .as_ref()
@@ -73,7 +73,7 @@ pub(crate) fn validate_materialized_tree(
 
 fn copy_blob_new(
     repository: &Repository,
-    blob_id: &BlobId,
+    blob_id: &ObjectId,
     size: u64,
     destination: &Path,
 ) -> Result<()> {

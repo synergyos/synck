@@ -11,7 +11,6 @@
 
 pub mod body_events;
 pub mod chat;
-pub mod content;
 pub mod email;
 pub mod email_data_images;
 pub mod file;

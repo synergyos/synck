@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use serde_json::Value;
-use synck_vcs::types::{ContentId, EventContent, EventProposal, ItemId, RefEventProposal, RepoId};
+use synck_vcs::types::{ObjectId, EventContent, EventProposal, ItemId, RefEventProposal, RepoId};
 use uuid::Uuid;
 
 use crate::{replica_projection, subitems};
@@ -25,7 +25,7 @@ pub enum ReadError {
         event_type: String,
     },
     #[error("body {0} must be hydrated before reading")]
-    NeedsContent(ContentId),
+    NeedsContent(ObjectId),
 }
 
 impl From<subitems::SubitemError> for ReadError {
@@ -415,8 +415,8 @@ impl ItemReader {
                 .ok_or_else(|| invalid("first event must create the item"))?,
         }
         .to_string();
-        if let Some(EventContent::Content { content_id }) = event.set_content {
-            return Err(ReadError::NeedsContent(content_id));
+        if let Some(EventContent::Content { content_id }) = &event.set_content {
+            return Err(ReadError::NeedsContent(content_id.clone()));
         }
         let mut projection = replica_projection::apply_replica_item_event(
             self.projection.clone(),

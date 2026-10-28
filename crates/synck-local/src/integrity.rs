@@ -3,7 +3,7 @@ use crate::repository::Repository;
 use rusqlite::{OptionalExtension, params};
 use std::collections::HashMap;
 use synck_vcs::errors::StorageError;
-use synck_vcs::types::{BlobId, CommitPk, ItemId, RepoId};
+use synck_vcs::types::{ObjectId, CommitPk, ItemId, RepoId};
 use synck_vcs_sqlite::{SqliteStorage, parse_timestamp};
 
 /// A bounded integrity report with an exact total finding count.
@@ -313,7 +313,7 @@ fn validate_local_rows(
     for row in rows {
         let (item_id, blob_id) = row?;
         validate_item_id(&item_id, "projected item ID", findings);
-        match BlobId::parse(&blob_id) {
+        match ObjectId::parse(&blob_id) {
             Ok(parsed) if parsed.as_str() == blob_id => {}
             Ok(_) => findings.push(format!(
                 "projected item {item_id} has noncanonical blob ID {blob_id:?}"

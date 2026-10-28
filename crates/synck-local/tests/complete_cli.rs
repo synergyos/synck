@@ -568,7 +568,7 @@ async fn direct_file_writes_carry_attribution_base_checks_and_replay() {
     use synck_local::portable::{
         PortableRepository, WriteOptions, import_repository, init_repository,
     };
-    use synck_vcs::types::BlobId;
+    use synck_vcs::types::ObjectId;
 
     let temp = tempfile::tempdir().unwrap();
     let checkout = temp.path().join("checkout");
@@ -590,7 +590,7 @@ async fn direct_file_writes_carry_attribution_base_checks_and_replay() {
     for root in [checkout, bare] {
         let source = temp.path().join("source.txt");
         let blob = |bytes: &[u8]| {
-            BlobId::parse(format!("sha256:{}", hex::encode(Sha256::digest(bytes)))).unwrap()
+            ObjectId::parse(format!("sha256:{}", hex::encode(Sha256::digest(bytes)))).unwrap()
         };
         let options = |operation: u128| WriteOptions {
             message: Some("Saved from the app".into()),

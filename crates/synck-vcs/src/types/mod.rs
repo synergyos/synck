@@ -213,11 +213,6 @@ uuid_v7_id!(
 );
 
 sha256_id!(
-    /// Blob identifier (`sha256:<hex64>` of blob content).
-    BlobId
-);
-
-sha256_id!(
     /// Generic SHA-256 digest encoded as `"sha256:<hex64>"`.
     ///
     /// Used for commit `events_digest` and other digest fields that are not
@@ -325,12 +320,12 @@ pub struct ItemRow {
     pub federation_stream_id: Option<String>,
 }
 
-/// An opaque logical-content commitment, distinct from a file's BlobId.
+/// An opaque commitment to a salted, framed object.
 /// Parsing rejects noncanonical spelling instead of normalizing hash inputs.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct ContentId([u8; 32]);
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ObjectId(String);
 
-impl ContentId {
+impl ObjectId {
     pub fn parse(value: impl AsRef<str>) -> Result<Self, IdParseError> {
         let invalid = || IdParseError {
             kind: IdParseErrorKind::InvalidSha256Id,
@@ -339,27 +334,31 @@ impl ContentId {
         if hex.len() != 64 || !hex.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
             return Err(invalid());
         }
-        let mut digest = [0; 32];
-        hex::decode_to_slice(hex, &mut digest).map_err(|_| invalid())?;
-        Ok(Self(digest))
+        Ok(Self(value.as_ref().to_owned()))
     }
 
     pub fn from_digest(digest: [u8; 32]) -> Self {
-        Self(digest)
+        Self(format!("sha256:{}", hex::encode(digest)))
     }
 
-    pub fn as_bytes(&self) -> &[u8; 32] {
+    pub fn as_str(&self) -> &str {
         &self.0
     }
-}
 
-impl fmt::Display for ContentId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "sha256:{}", hex::encode(self.0))
+    pub fn as_bytes(&self) -> [u8; 32] {
+        let mut digest = [0; 32];
+        hex::decode_to_slice(&self.0[7..], &mut digest).expect("validated identifier");
+        digest
     }
 }
 
-impl FromStr for ContentId {
+impl fmt::Display for ObjectId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl FromStr for ObjectId {
     type Err = IdParseError;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
@@ -367,13 +366,13 @@ impl FromStr for ContentId {
     }
 }
 
-impl Serialize for ContentId {
+impl Serialize for ObjectId {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.collect_str(self)
     }
 }
 
-impl<'de> Deserialize<'de> for ContentId {
+impl<'de> Deserialize<'de> for ObjectId {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         Self::parse(String::deserialize(deserializer)?).map_err(D::Error::custom)
     }
@@ -395,7 +394,7 @@ pub enum EventContent {
     Text { text: String },
     Json { json: serde_json::Value },
     Blob { blob_id: String },
-    Content { content_id: ContentId },
+    Content { content_id: ObjectId },
 }
 
 /// Logical representation of an `events` table row.
@@ -1307,12 +1306,12 @@ mod tests {
     }
 
     #[test]
-    fn content_id_requires_exact_canonical_spelling() {
-        let id = ContentId::from_digest([0xab; 32]);
+    fn object_id_requires_exact_canonical_spelling() {
+        let id = ObjectId::from_digest([0xab; 32]);
         let canonical = format!("sha256:{}", "ab".repeat(32));
         assert_eq!(id.to_string(), canonical);
-        assert_eq!(ContentId::parse(&canonical).unwrap(), id);
-        assert_eq!(id.as_bytes(), &[0xab; 32]);
+        assert_eq!(ObjectId::parse(&canonical).unwrap(), id);
+        assert_eq!(id.as_bytes(), [0xab; 32]);
         for invalid in [
             canonical.to_uppercase(),
             canonical.replace("ab", "AB"),
@@ -1323,17 +1322,17 @@ mod tests {
             format!("{canonical}0"),
             canonical.replace("ab", "gg"),
         ] {
-            assert!(ContentId::parse(&invalid).is_err(), "{invalid:?}");
-            assert!(serde_json::from_value::<ContentId>(serde_json::json!(invalid)).is_err());
+            assert!(ObjectId::parse(&invalid).is_err(), "{invalid:?}");
+            assert!(serde_json::from_value::<ObjectId>(serde_json::json!(invalid)).is_err());
         }
     }
 
     #[test]
     fn content_reference_is_a_strict_union_and_canonical_roundtrip() {
-        let id = ContentId::from_digest([0xab; 32]);
+        let id = ObjectId::from_digest([0xab; 32]);
         let content = serde_json::json!({"content_id": id});
         let decoded: EventContent = serde_json::from_value(content.clone()).unwrap();
-        assert!(matches!(decoded, EventContent::Content { content_id } if content_id == id));
+        assert!(matches!(&decoded, EventContent::Content { content_id } if content_id == &id));
         assert_eq!(serde_json::to_value(decoded).unwrap(), content);
         for extra in ["text", "json", "blob_id", "extra"] {
             let mut ambiguous = content.clone();

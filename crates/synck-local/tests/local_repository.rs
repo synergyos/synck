@@ -548,7 +548,7 @@ fn make_whole_file_repository(root: &Path, _bytes: &[u8], remove_object_database
         let mut file = fs::File::create(root.join(".synck/objects").join(&name)).unwrap();
         repository
             .copy_blob(
-                &synck_vcs::types::BlobId::parse(format!("sha256:{name}")).unwrap(),
+                &synck_vcs::types::ObjectId::parse(format!("sha256:{name}")).unwrap(),
                 &mut file,
             )
             .unwrap();
@@ -1343,7 +1343,7 @@ async fn local_repository_round_trip() {
     let archived = synck_local::portable::PortableRepository::open(&archive).unwrap();
     archived.verify().await.unwrap();
     for bytes in [b"first".as_slice(), b"second".as_slice()] {
-        let id = synck_vcs::types::BlobId::parse(format!(
+        let id = synck_vcs::types::ObjectId::parse(format!(
             "sha256:{}",
             hex::encode(Sha256::digest(bytes))
         ))
@@ -1352,7 +1352,7 @@ async fn local_repository_round_trip() {
         archived.copy_blob(&id, &mut actual).unwrap();
         assert_eq!(actual, bytes);
     }
-    let absent = synck_vcs::types::BlobId::parse(format!("sha256:{uncommitted_digest}")).unwrap();
+    let absent = synck_vcs::types::ObjectId::parse(format!("sha256:{uncommitted_digest}")).unwrap();
     assert!(archived.copy_blob(&absent, &mut Vec::new()).is_err());
 }
 

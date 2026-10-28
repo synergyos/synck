@@ -8,10 +8,15 @@ use std::collections::BTreeMap;
 
 use synck_vcs::{
     errors::CoreError,
-    types::{ContentId, EventContent, EventProposal},
+    types::{ObjectId, EventContent, EventProposal},
 };
 
-use crate::content::{ContentObject, MAX_BATCH_BODY_BYTES, MAX_BODY_BYTES};
+use synck_vcs::object::Object;
+#[cfg(test)]
+use synck_vcs::object::Codec;
+
+pub const MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
+pub const MAX_BATCH_BODY_BYTES: usize = 16 * 1024 * 1024;
 
 /// Invalid event input is distinct from missing or invalid content state.
 #[derive(Debug, thiserror::Error)]
@@ -79,13 +84,13 @@ pub fn inline_body(event: &EventProposal) -> Result<Option<&str>, BodyEventError
     }
 }
 
-pub fn reference_ids(events: &[EventProposal]) -> Result<Vec<ContentId>, BodyEventError> {
+pub fn reference_ids(events: &[EventProposal]) -> Result<Vec<ObjectId>, BodyEventError> {
     events
         .iter()
-        .filter_map(|event| match event.set_content {
+        .filter_map(|event| match &event.set_content {
             Some(EventContent::Content { content_id }) => {
                 Some(if body_key(&event.event_type).is_some() {
-                    Ok(content_id)
+                    Ok(content_id.clone())
                 } else {
                     Err(BodyEventError::InvalidEvent(
                         "content reference is not allowed for this event".into(),
@@ -101,14 +106,14 @@ pub fn reference_ids(events: &[EventProposal]) -> Result<Vec<ContentId>, BodyEve
 /// The delta depends only on the content representation, not those later fields.
 pub fn payload_deltas(
     events: &[EventProposal],
-    objects: &BTreeMap<ContentId, ContentObject>,
+    objects: &BTreeMap<ObjectId, Object>,
 ) -> Result<synck_vcs::repo::ContentPayloadDeltas, BodyEventError> {
     let mut deltas = synck_vcs::repo::ContentPayloadDeltas::new();
     for event in events {
-        let Some(EventContent::Content { content_id }) = event.set_content else {
+        let Some(EventContent::Content { content_id }) = &event.set_content else {
             continue;
         };
-        let key = (event.event_type.clone(), content_id);
+        let key = (event.event_type.clone(), content_id.clone());
         if deltas.contains_key(&key) {
             continue;
         }
@@ -127,8 +132,8 @@ pub fn payload_deltas(
 
 /// Charge occurrences, not distinct IDs, before any body load.
 pub fn charged_bytes(
-    ids: &[ContentId],
-    lengths: &BTreeMap<ContentId, usize>,
+    ids: &[ObjectId],
+    lengths: &BTreeMap<ObjectId, usize>,
 ) -> Result<usize, BodyEventError> {
     let mut total = 0usize;
     for id in ids {
@@ -146,8 +151,8 @@ pub fn charged_bytes(
 
 /// Select complete commits only. Every individually valid first commit fits.
 pub fn commit_prefix(
-    commits: &[Vec<ContentId>],
-    lengths: &BTreeMap<ContentId, usize>,
+    commits: &[Vec<ObjectId>],
+    lengths: &BTreeMap<ObjectId, usize>,
 ) -> Result<usize, BodyEventError> {
     let mut total = 0usize;
     for (index, ids) in commits.iter().enumerate() {
@@ -163,18 +168,18 @@ pub fn commit_prefix(
 /// Restore legacy shapes only in memory. The caller must not hash/store this view.
 pub fn restore(
     events: &mut [EventProposal],
-    objects: &BTreeMap<ContentId, ContentObject>,
+    objects: &BTreeMap<ObjectId, Object>,
 ) -> Result<(), BodyEventError> {
     for event in events {
-        let Some(EventContent::Content { content_id }) = event.set_content else {
+        let Some(EventContent::Content { content_id }) = &event.set_content else {
             continue;
         };
         let key = body_key(&event.event_type)
             .ok_or_else(|| invalid_content("reference on unsupported event"))?;
         let body = objects
-            .get(&content_id)
+            .get(content_id)
             .ok_or_else(|| invalid_content("missing body"))?
-            .body();
+            .utf8().map_err(invalid_content)?;
         validate_body(&event.event_type, body)?;
         event.set_content = Some(EventContent::Json {
             json: serde_json::json!({key: body}),
@@ -203,9 +208,9 @@ mod tests {
         use synck_vcs::types::canonical_event_proposal_bytes;
 
         let body = " \0🦀\r\n";
-        let object = ContentObject::new(body).unwrap();
+        let object = Object::new(Codec::Utf8, body.as_bytes()).unwrap();
         let id = object.id();
-        let objects = BTreeMap::from([(id, object)]);
+        let objects = BTreeMap::from([(id.clone(), object)]);
         for (event_type, key) in [
             ("CHAT::MESSAGE::CREATE", "body"),
             ("CHAT::MESSAGE::SET_CONTENT", "body"),
@@ -220,15 +225,15 @@ mod tests {
             assert_eq!(inline_body(&legacy).unwrap(), Some(body));
             let legacy_bytes = canonical_event_proposal_bytes(&legacy).unwrap();
             let mut reference = legacy.clone();
-            reference.set_content = Some(EventContent::Content { content_id: id });
+            reference.set_content = Some(EventContent::Content { content_id: id.clone() });
             let reference_bytes = canonical_event_proposal_bytes(&reference).unwrap();
             assert_eq!(inline_body(&reference).unwrap(), None);
             let events = [legacy, reference.clone(), reference];
-            assert_eq!(reference_ids(&events).unwrap(), [id, id]);
+            assert_eq!(reference_ids(&events).unwrap(), [id.clone(), id.clone()]);
             let deltas = payload_deltas(&events, &objects).unwrap();
             assert_eq!(deltas.len(), 1);
             assert_eq!(
-                deltas[&(event_type.to_string(), id)],
+                deltas[&(event_type.to_string(), id.clone())],
                 legacy_bytes.len() as isize - reference_bytes.len() as isize,
             );
             let mut restored = events.to_vec();
@@ -246,25 +251,25 @@ mod tests {
 
     #[test]
     fn repeated_ids_are_charged_per_event() {
-        let id = ContentId::from_digest([1; 32]);
-        let metadata = BTreeMap::from([(id, MAX_BODY_BYTES)]);
+        let id = ObjectId::from_digest([1; 32]);
+        let metadata = BTreeMap::from([(id.clone(), MAX_BODY_BYTES)]);
         assert_eq!(
-            charged_bytes(&[id; 8], &metadata).unwrap(),
+            charged_bytes(&vec![id.clone(); 8], &metadata).unwrap(),
             MAX_BATCH_BODY_BYTES
         );
-        assert!(charged_bytes(&[id; 9], &metadata).is_err());
+        assert!(charged_bytes(&vec![id.clone(); 9], &metadata).is_err());
         assert!(charged_bytes(&[id], &BTreeMap::new()).is_err());
     }
 
     #[test]
     fn projection_selects_only_whole_commits_and_resumes() {
-        let id = ContentId::from_digest([1; 32]);
-        let metadata = BTreeMap::from([(id, MAX_BODY_BYTES)]);
-        let commits = vec![vec![id; 3]; 128];
+        let id = ObjectId::from_digest([1; 32]);
+        let metadata = BTreeMap::from([(id.clone(), MAX_BODY_BYTES)]);
+        let commits = vec![vec![id.clone(); 3]; 128];
         assert_eq!(commit_prefix(&commits, &metadata).unwrap(), 2);
         assert_eq!(commit_prefix(&commits[2..], &metadata).unwrap(), 2);
-        assert_eq!(commit_prefix(&[vec![id; 8]], &metadata).unwrap(), 1);
-        assert!(commit_prefix(&[vec![id; 9]], &metadata).is_err());
+        assert_eq!(commit_prefix(&[vec![id.clone(); 8]], &metadata).unwrap(), 1);
+        assert!(commit_prefix(&[vec![id.clone(); 9]], &metadata).is_err());
         assert_eq!(
             commit_prefix(&vec![Vec::new(); 128], &BTreeMap::new()).unwrap(),
             128

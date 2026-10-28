@@ -4,7 +4,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use synck_vcs::naming::compute_name_key;
 use synck_vcs::types::{
-    BlobId, COMMIT_EVENT_FAMILY_ITEM, COMMIT_EVENT_FAMILY_REF, COMMIT_FORMAT_VERSION,
+    ObjectId, COMMIT_EVENT_FAMILY_ITEM, COMMIT_EVENT_FAMILY_REF, COMMIT_FORMAT_VERSION,
     CommitEventRow, CommitRow, EventContent, EventProposal, EventRow, ItemId, RefEventProposal,
     RefEventRow, canonical_event_proposal_bytes, canonical_ref_event_proposal_bytes,
     canonical_stored_commit_bytes_for_hash, compute_commit_id, compute_sha256_digest_bytes,
@@ -722,7 +722,7 @@ fn normalize_content_event(
     else {
         unreachable!("content shape checked")
     };
-    BlobId::parse(blob_id).map_err(|failure| {
+    ObjectId::parse(blob_id).map_err(|failure| {
         error(
             SemanticErrorCode::MalformedProfileEvent,
             format!("invalid FILE blob id: {failure}"),

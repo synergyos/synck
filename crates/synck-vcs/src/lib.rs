@@ -23,6 +23,7 @@ pub mod errors;
 pub mod invariants;
 mod case_folding;
 pub mod naming;
+pub mod object;
 pub mod repo;
 pub mod sequencer;
 pub mod state;
