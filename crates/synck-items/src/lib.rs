@@ -15,7 +15,6 @@ pub mod content;
 pub mod email;
 pub mod email_data_images;
 pub mod file;
-pub mod file_resources;
 pub mod imported_email;
 pub mod metadata;
 pub mod reader;

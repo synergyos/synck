@@ -127,3 +127,7 @@ state. Requesting typed presentation for these families returns an explicit
 unsupported-state error. Core hash verification remains independent of family
 presentation. No calendar recurrence engine, hosted organization reducer or
 call/time-tracking state machine is shipped for these absent local writers.
+
+FILE resource-fork presentation and `FILE_RESOURCE_FORK::*` typed events are
+not part of 0.2. Ordinary FILE bytes and explicitly supported content roles are
+the portable content boundary.

@@ -28,7 +28,7 @@ struct Fixture {
     chat: ItemId,
     body: ContentObject,
     primary_blob: String,
-    fork_blob: String,
+    body_blob: String,
 }
 
 fn proposal(events: Vec<EventProposal>) -> CommitProposal {
@@ -79,12 +79,12 @@ async fn fixture() -> Fixture {
         .unwrap();
     let primary = b"first version\n";
     let body = ContentObject::new("original body\0🦀").unwrap();
-    // The same exact payload is a resource-fork blob and a wrapped body.
-    let fork = body.payload();
+    // Body bytes also exercise exact-object transfer.
+    let body_bytes = body.payload();
     let primary_blob = format!("sha256:{}", hex::encode(Sha256::digest(primary)));
-    let fork_blob = format!("sha256:{}", hex::encode(Sha256::digest(fork)));
+    let body_blob = format!("sha256:{}", hex::encode(Sha256::digest(body_bytes)));
     fs::write(metadata.join("objects").join(&primary_blob[7..]), primary).unwrap();
-    fs::write(metadata.join("objects").join(&fork_blob[7..]), fork).unwrap();
+    fs::write(metadata.join("objects").join(&body_blob[7..]), body_bytes).unwrap();
     fs::write(
         metadata
             .join("objects")
@@ -94,24 +94,9 @@ async fn fixture() -> Fixture {
     .unwrap();
     let file_event:EventProposal=serde_json::from_value(json!({"item_id":file,"event_type":"FILE::SET_CONTENT","base_seq":1,"set_metadata":{"content":{"size":primary.len()}},"set_content":EventContent::Blob {blob_id:primary_blob.clone()}})).unwrap();
     let message:EventProposal=serde_json::from_value(json!({"item_id":chat,"event_type":"CHAT::MESSAGE::CREATE","base_seq":1,"set_content":EventContent::Content {content_id:body.id()}})).unwrap();
-    core.append_with_refs(
-        repo_id.clone(),
-        proposal(vec![file_event, message]),
-        vec![RefEventProposal {
-            owner_item_id: file.clone(),
-            event_type: synck_items::file_resources::SET.into(),
-            set_metadata: Some(
-                json!({"primary_item_seq":2,"primary_commit_event_idx":0,"size":fork.len()}),
-            ),
-            set_content: Some(EventContent::Blob {
-                blob_id: fork_blob.clone(),
-            }),
-            base_ref_seq: 0,
-            initial_ref_seq: None,
-        }],
-    )
-    .await
-    .unwrap();
+    core.append(repo_id.clone(), proposal(vec![file_event, message]))
+        .await
+        .unwrap();
     core.sequence_repo_activity(repo_id.clone(), 100)
         .await
         .unwrap();
@@ -134,7 +119,7 @@ async fn fixture() -> Fixture {
         chat,
         body,
         primary_blob,
-        fork_blob,
+        body_blob,
     }
 }
 
@@ -151,7 +136,7 @@ async fn complete_mixed_repository_reads_offline_and_keeps_exact_history_and_bod
     let report = repository.verify().await.unwrap();
     assert_eq!(
         (report.commits, report.items, report.blobs, report.bodies),
-        (2, 3, 2, 1)
+        (2, 3, 1, 1)
     );
     assert_eq!(
         repository.read_body(fixture.body.id()).unwrap().payload(),
@@ -169,8 +154,7 @@ async fn complete_mixed_repository_reads_offline_and_keeps_exact_history_and_bod
             .is_empty()
     );
     let file = repository.show_item(&fixture.file, None).await.unwrap();
-    assert_eq!(file.refs.len(), 1);
-    assert!(file.item.resource_fork.is_some());
+    assert!(file.refs.is_empty());
     let mut bytes = Vec::new();
     repository
         .copy_blob(
@@ -237,7 +221,7 @@ async fn complete_mixed_repository_reads_offline_and_keeps_exact_history_and_bod
             .count(),
         2
     );
-    for name in [&fixture.primary_blob[7..], &fixture.fork_blob[7..]] {
+    for name in [&fixture.primary_blob[7..], &fixture.body_blob[7..]] {
         assert_eq!(
             fs::read(fixture.transfer.join(".synck/objects").join(name)).unwrap(),
             fs::read(archived.join(".synck/objects").join(name)).unwrap(),
@@ -301,11 +285,7 @@ async fn follower_activation_continuation_and_explicit_finalize_preserve_old_byt
         serde_json::to_value(repository.show_item(&fixture.chat, None).await.unwrap()).unwrap();
     assert_eq!(chat["item"]["subitems"].as_array().unwrap().len(), 2);
     let file = repository.show_item(&fixture.file, None).await.unwrap();
-    assert_eq!(file.refs.len(), 1);
-    assert_eq!(
-        file.item.resource_fork.as_ref().unwrap().primary_item_seq,
-        2
-    );
+    assert!(file.refs.is_empty());
     assert_eq!(file.item.projection.content_item_seq, Some(3));
     assert_eq!(
         repository
@@ -2283,7 +2263,7 @@ async fn storage_modes_preserve_canonical_history_ids_and_exact_closure() {
         (report.blobs, report.bodies),
         (original.blobs, original.bodies)
     );
-    for id in [&fixture.primary_blob, &fixture.fork_blob] {
+    for id in [&fixture.primary_blob, &fixture.body_blob] {
         let id = synck_vcs::types::BlobId::parse(id).unwrap();
         let mut expected = Vec::new();
         let mut actual = Vec::new();

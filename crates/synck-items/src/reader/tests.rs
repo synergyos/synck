@@ -449,58 +449,6 @@ fn version_id(meta: &Value) -> Uuid {
 }
 
 #[test]
-fn data_only_file_edits_carry_previous_resource_activation() {
-    let (mut reader, id) = create("FILE");
-    apply(
-        &mut reader,
-        &event(
-            &id,
-            "FILE::SET_CONTENT",
-            json!({"content":{"size":5}}),
-            Some(EventContent::Blob { blob_id: A.into() }),
-        ),
-        "alice",
-    );
-    let fork = RefEventProposal {
-        owner_item_id: id.clone(),
-        event_type: "FILE_RESOURCE_FORK::SET".into(),
-        set_metadata: Some(json!({"primary_item_seq":2,"primary_commit_event_idx":0,"size":7})),
-        set_content: Some(EventContent::Blob { blob_id: B.into() }),
-        base_ref_seq: 0,
-        initial_ref_seq: None,
-    };
-    reader
-        .apply_ref(
-            &fork,
-            RefReadContext {
-                ref_seq: 1,
-                created_at: now(),
-                author: "alice",
-                committer: "alice",
-            },
-        )
-        .unwrap();
-    apply(
-        &mut reader,
-        &event(
-            &id,
-            "FILE::SET_CONTENT",
-            json!({"content":{"size":8}}),
-            Some(EventContent::Blob { blob_id: B.into() }),
-        ),
-        "alice",
-    );
-    let snapshot = reader.snapshot().unwrap();
-    assert_eq!(snapshot.latest_ref_seq, 1);
-    assert_eq!(snapshot.projection.content_item_seq, Some(3));
-    let fork = snapshot.resource_fork.unwrap();
-    assert_eq!(fork.primary_item_seq, 2);
-    assert!(
-        matches!(fork.fork,crate::file_resources::ResourceFork::Present(ref blob) if blob.blob_id.as_str()==B&&blob.size==7)
-    );
-}
-
-#[test]
 fn supplemental_links_and_workflow_annotations_do_not_hide_primary_content() {
     let (mut reader, id) = create("FILE");
     apply(

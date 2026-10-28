@@ -149,7 +149,6 @@ pub struct ReadableItem {
     pub subitems: Vec<ReadableSubitem>,
     pub latest_ref_seq: i64,
     pub legacy_sidecar_roots: Vec<LegacySidecarRoot>,
-    pub resource_fork: Option<crate::file_resources::Activation>,
     pub data_links: Vec<subitems::ItemDataLink>,
     pub ancillary_events: Vec<AncillaryEvent>,
     pub presentation_warnings: Vec<String>,
@@ -161,8 +160,6 @@ pub struct ItemReader {
     ref_seq: i64,
     required_sidecars: BTreeMap<ItemId, LegacySidecar>,
     loaded_sidecars: BTreeMap<ItemId, i64>,
-    file_content_positions: BTreeSet<i64>,
-    resource_fork: Option<crate::file_resources::Activation>,
     legacy_sidecar_roots: Vec<LegacySidecarRoot>,
     data_links: BTreeMap<String, subitems::ItemDataLink>,
     ancillary_events: Vec<AncillaryEvent>,
@@ -197,8 +194,6 @@ impl ItemReader {
             ref_seq: 0,
             required_sidecars: BTreeMap::new(),
             loaded_sidecars: BTreeMap::new(),
-            file_content_positions: BTreeSet::new(),
-            resource_fork: None,
             legacy_sidecar_roots: Vec::new(),
             data_links: BTreeMap::new(),
             ancillary_events: Vec::new(),
@@ -240,7 +235,6 @@ impl ItemReader {
             subitems: self.subitems.values().cloned().collect(),
             latest_ref_seq: self.ref_seq,
             legacy_sidecar_roots: self.legacy_sidecar_roots.clone(),
-            resource_fork: self.resource_fork.clone(),
             data_links: self.data_links.values().cloned().collect(),
             ancillary_events: self.ancillary_events.clone(),
             presentation_warnings: if self.ancillary_events.is_empty() {
@@ -373,19 +367,6 @@ impl ItemReader {
                     event_digest: digest.into(),
                 },
             );
-        } else if crate::file_resources::is_resource_event(&event.event_type) {
-            let activation = crate::file_resources::decode_activation(event)
-                .map_err(invalid)?
-                .ok_or_else(|| invalid("resource activation missing"))?;
-            if !self
-                .file_content_positions
-                .contains(&activation.primary_item_seq)
-            {
-                return Err(invalid(
-                    "resource activation names missing FILE content position",
-                ));
-            }
-            self.resource_fork = Some(activation);
         } else if event.event_type == "FILE_VERSION::LEGACY_SIDECAR_ROOT" {
             let meta = event
                 .set_metadata
@@ -616,15 +597,6 @@ impl ItemReader {
                 }
             }
             _ => return Err(unsupported(&kind, &event.event_type)),
-        }
-        if kind == "FILE"
-            && matches!(
-                event.event_type.as_str(),
-                "FILE::CREATE" | "FILE::SET_CONTENT"
-            )
-            && matches!(event.set_content, Some(EventContent::Blob { .. }))
-        {
-            self.file_content_positions.insert(context.item_seq);
         }
         self.projection = Some(projection);
         Ok(())
