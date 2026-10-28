@@ -19,8 +19,6 @@ SITE	TEST	7	crates/synck-local/src/repository.rs
 SITE	FILE_VERSION_READ_WRITE	7	crates/synck-local/src/versions.rs
 SITE	TEST	3	crates/synck-local/tests/portable_repository.rs
 SITE	TEST	2	crates/synck-local/tests/portable_workspace_history.rs
-SITE	TEST	2	crates/synck-vcs-replica/src/tests.rs
-SITE	TEST	1	crates/synck-vcs-replica/tests/maximum_page_fixture_test.rs
 SITE	TEST	3	crates/synck-vcs-sqlite/src/storage.rs
 SITE	TEST	3	crates/synck-vcs-sqlite/tests/bundle_import.rs
 SITE	TEST	17	crates/synck-vcs-sqlite/tests/sqlite_backend.rs

@@ -151,10 +151,8 @@ walks through all of this with a downloadable sample.
 | --- | --- |
 | `synck-vcs` | The engine: items, events, commits, canonical encoding, invariants, verification and historical state. Independent of any database |
 | `synck-vcs-sqlite` | SQLite storage adapter |
-| `synck-vcs-replica` | Bounded transfer of sealed history, with optional SQLite installation |
 | `synck-file-folder` | File and folder operations, validation and file-version semantics |
 | `synck-items` | Shared vocabulary, readers and body encoding for stored item types: files, chats, email, tasks, calendars and more |
-| `synck-remote-protocol` | Unstable internal protocol; unpublished |
 | `synck-local` | Local repositories, verified copying and the `synck` CLI |
 
 The [`docs/`](docs/README.md) directory holds the normative contracts for the

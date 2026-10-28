@@ -1632,19 +1632,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "synck-remote-protocol"
-version = "0.1.1"
-dependencies = [
- "chrono",
- "serde",
- "serde_json",
- "serde_json_canonicalizer",
- "synck-file-folder",
- "synck-vcs",
- "thiserror",
-]
-
-[[package]]
 name = "synck-vcs"
 version = "0.1.1"
 dependencies = [
@@ -1661,23 +1648,6 @@ dependencies = [
  "tracing",
  "unicode-normalization",
  "uuid",
-]
-
-[[package]]
-name = "synck-vcs-replica"
-version = "0.1.1"
-dependencies = [
- "base64",
- "chrono",
- "hex",
- "serde",
- "serde_json",
- "sha2",
- "synck-vcs",
- "synck-vcs-sqlite",
- "tempfile",
- "thiserror",
- "tokio",
 ]
 
 [[package]]

@@ -2,9 +2,7 @@
 members = [
   "crates/synck-vcs",
   "crates/synck-vcs-sqlite",
-  "crates/synck-vcs-replica",
   "crates/synck-file-folder",
-  "crates/synck-remote-protocol",
   "crates/synck-local",
   "crates/synck-items",
 ]

@@ -21,8 +21,6 @@ backends.
 | --- | --- | --- |
 | Core item/ref event and commit bytes | `synck-vcs` | `tests/canonical_vectors_test.rs` and canonicalization tests |
 | FILE/FOLDER intents and canonical events | `synck-file-folder` | `tests/profile_v1.rs` and `tests/fixtures/v1/` |
-| Remote v1 messages and validation | `synck-remote-protocol` | `tests/protocol_v1.rs` and `tests/fixtures/v1/` |
-| Sealed-history pages and SQLite installation | `synck-vcs-replica` | Unit tests and `tests/maximum_page_fixture_test.rs` |
 | Local repository, content and archive behavior | `synck-local` | `tests/local_repository.rs`, `tests/inspection.rs` and `tests/cli.rs` |
 | Shared item vocabulary, typed readers and body encoding | `synck-items` | Public module definitions and focused reader tests |
 | Complete format-6 data repositories and verified copying | `synck-local` | `tests/portable_repository.rs` and [data repository contract](portable-repository.md) |
