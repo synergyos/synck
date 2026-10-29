@@ -1,8 +1,7 @@
 name: Public source CI
 
 on:
-  push:
-  pull_request:
+  # Automatic CI is paused; run it manually when needed.
   workflow_dispatch:
 
 permissions:
