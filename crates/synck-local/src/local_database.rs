@@ -62,24 +62,48 @@ fn open(storage: &SqliteStorage, writable: bool, create: bool) -> Result<Connect
     let history = history
         .to_str()
         .ok_or_else(|| LocalError::Invalid("SQLite path is not UTF-8".into()))?;
-    // URI syntax must not interpret characters from an ordinary filesystem path.
     #[cfg(windows)]
-    let history = history.replace('\\', "/");
+    let history = windows_uri_path(history);
+    // URI syntax must not interpret characters from an ordinary filesystem path.
     let history = history
         .replace('%', "%25")
         .replace('?', "%3F")
         .replace('#', "%23");
     connection.execute(
         "ATTACH DATABASE ?1 AS history",
-        [format!("file:{history}?mode=ro")],
+        [format!("file://{history}?mode=ro")],
     )?;
     Ok(connection)
+}
+
+/// Map a canonical Windows path to a SQLite URI path with an empty authority.
+/// `canonicalize` returns verbatim paths (`\\?\C:\...`, `\\?\UNC\host\...`);
+/// SQLite drops the slash before a drive letter and keeps `//host` as UNC.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn windows_uri_path(path: &str) -> String {
+    let path = if let Some(rest) = path.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{rest}")
+    } else {
+        path.strip_prefix(r"\\?\").unwrap_or(path).to_string()
+    };
+    let path = path.replace('\\', "/");
+    if path.starts_with("//") { path } else { format!("/{path}") }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use synck_vcs::storage::StorageBackend;
+
+    #[test]
+    fn windows_paths_become_uri_paths_without_authority() {
+        assert_eq!(windows_uri_path(r"\\?\D:\a\repo\x.sqlite3"), "/D:/a/repo/x.sqlite3");
+        assert_eq!(windows_uri_path(r"C:\repo"), "/C:/repo");
+        assert_eq!(
+            windows_uri_path(r"\\?\UNC\host\share\repo"),
+            "//host/share/repo"
+        );
+    }
 
     #[tokio::test]
     async fn local_transactions_cannot_write_attached_history() {

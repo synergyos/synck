@@ -286,6 +286,7 @@ fn create_file(path: &Path) -> Result<File> {
 }
 
 fn private_directory(path: &Path) -> Result<()> {
+    #[cfg_attr(not(unix), allow(unused_mut))]
     let mut builder = fs::DirBuilder::new();
     #[cfg(unix)]
     {
