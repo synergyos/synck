@@ -356,8 +356,9 @@ impl Repository {
                 .ok_or_else(|| {
                     LocalError::WorkingTree(WorkingTreeEditError::InvalidImportSource)
                 })?;
-            let name_key =
-                compute_name_key(name).map_err(|_| WorkingTreeEditError::InvalidImportSource)?;
+            let name_key = compute_name_key(name).map_err(|error| {
+                LocalError::Invalid(format!("import source name {name:?} is not portable: {error}"))
+            })?;
             if !name_keys.insert(name_key) {
                 return Err(WorkingTreeEditError::DuplicateImportNames.into());
             }

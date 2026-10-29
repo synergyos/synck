@@ -172,18 +172,27 @@ async fn working_tree_import_rejects_canonical_duplicate_names() {
     fs::create_dir(&root).unwrap();
     fs::create_dir(&first).unwrap();
     fs::create_dir(&second).unwrap();
-    let composed = first.join("caf\u{e9}.txt");
+    let upper = first.join("Caf\u{e9}.txt");
+    let lower = second.join("caf\u{e9}.txt");
     let decomposed = second.join("cafe\u{301}.txt");
-    fs::write(&composed, b"first").unwrap();
-    fs::write(&decomposed, b"second").unwrap();
+    fs::write(&upper, b"first").unwrap();
+    fs::write(&lower, b"second").unwrap();
+    fs::write(&decomposed, b"third").unwrap();
     init(&root, "author").await.unwrap();
     let repository = Repository::discover(&root).await.unwrap();
 
     let error = repository
-        .import_working_files(None, &[composed, decomposed])
+        .import_working_files(None, &[upper, lower])
         .await
         .unwrap_err();
     assert_eq!(error.to_string(), "selected files contain duplicate names");
+    // Names must already be NFC; a decomposed spelling is not portable.
+    let error = repository
+        .import_working_files(None, &[decomposed])
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("is not portable"), "{error}");
+    assert!(!root.join("Caf\u{e9}.txt").exists());
     assert!(!root.join("caf\u{e9}.txt").exists());
     assert!(!root.join("cafe\u{301}.txt").exists());
 }
