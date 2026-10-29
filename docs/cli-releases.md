@@ -13,7 +13,7 @@ To retry after a partial draft upload, first inspect the failure and explicitly
 remove that unpublished draft; do not modify a published release in place.
 
 ```sh
-gh workflow run release-cli.yml --repo synergyos/synck --ref main -f tag=v0.1.0
+gh workflow run release-cli.yml --repo synergyos/synck --ref main -f tag=v0.2.0
 ```
 
 Do not run this command until the workflow is on `main` and an authorized

@@ -2159,9 +2159,10 @@ fn checked_publication_counter(conn: &Connection, repo_id: &RepoId) -> Result<i6
         .map_err(map_sqlite_error)?;
     // A new, never-published repository has no counter yet.
     if stored != Some(expected) && !(stored.is_none() && expected == 1) {
+        let stored = stored.map_or_else(|| "none".to_owned(), |seq| seq.to_string());
         return Err(StorageError::Other {
             detail: format!(
-                "integrity error: repository publication counter disagrees with history: expected {expected}, stored {stored:?}; run synck repository finalize"
+                "integrity error: repository publication counter disagrees with history: expected {expected}, stored {stored}; run synck repository finalize"
             ),
         });
     }
