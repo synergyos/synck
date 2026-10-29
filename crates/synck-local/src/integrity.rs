@@ -3,7 +3,7 @@ use crate::repository::Repository;
 use rusqlite::{OptionalExtension, params};
 use std::collections::HashMap;
 use synck_vcs::errors::StorageError;
-use synck_vcs::types::{ObjectId, CommitPk, ItemId, RepoId};
+use synck_vcs::types::{CommitPk, ItemId, RepoId};
 use synck_vcs_sqlite::{SqliteStorage, parse_timestamp};
 
 /// A bounded integrity report with an exact total finding count.
@@ -85,26 +85,11 @@ pub(crate) fn physical_core_findings(
     storage: &SqliteStorage,
     repo_id: &RepoId,
 ) -> Result<Findings> {
-    physical_findings_inner(storage, repo_id, false)
-}
-
-fn physical_findings_inner(
-    storage: &SqliteStorage,
-    repo_id: &RepoId,
-    include_local: bool,
-) -> Result<Findings> {
     let connection = storage.open_readonly().map_err(verification_open_error)?;
     let mut findings = Findings::default();
     check_physical_database(&connection, &mut findings)?;
     if findings.is_empty() {
         validate_physical_rows(&connection, repo_id, &mut findings)?;
-    }
-    if include_local && findings.is_empty() {
-        let local = crate::local_database::open_readonly(storage)?;
-        check_physical_database(&local, &mut findings)?;
-        if findings.is_empty() {
-            validate_local_rows(&local, repo_id, &mut findings)?;
-        }
     }
     Ok(findings)
 }
@@ -291,34 +276,6 @@ fn validate_physical_rows(
         }
     }
 
-    Ok(())
-}
-
-fn validate_local_rows(
-    connection: &rusqlite::Connection,
-    repo_id: &RepoId,
-    findings: &mut Findings,
-) -> Result<()> {
-    let mut projection = connection.prepare(
-        "SELECT item_id, blob_id FROM local_file_heads
-         WHERE repo_id = ?1 ORDER BY item_id",
-    )?;
-    let rows = projection.query_map([repo_id.as_str()], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-    })?;
-    for row in rows {
-        let (item_id, blob_id) = row?;
-        validate_item_id(&item_id, "projected item ID", findings);
-        match ObjectId::parse(&blob_id) {
-            Ok(parsed) if parsed.as_str() == blob_id => {}
-            Ok(_) => findings.push(format!(
-                "projected item {item_id} has noncanonical blob ID {blob_id:?}"
-            )),
-            Err(error) => findings.push(format!(
-                "projected item {item_id} has invalid blob ID {blob_id:?}: {error}"
-            )),
-        }
-    }
     Ok(())
 }
 

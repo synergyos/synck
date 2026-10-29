@@ -201,16 +201,17 @@ async fn emails_chats_and_attachments_round_trip_with_identical_ids() {
 
 #[tokio::test]
 async fn garbage_collection_preserves_history_and_removes_unreachable_storage() {
-    use sha2::{Digest, Sha256};
     use synck_local::{StorageMode, portable::PortableRepository};
+    use synck_vcs::object::{Codec, Object};
     for mode in [StorageMode::WholeFile, StorageMode::Chunked] {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("repo");
         synck_local::portable::init_repository_with_mode(&root, "tester", mode)
             .await
             .unwrap();
-        let bytes = b"unreachable bytes";
-        let digest = Sha256::digest(bytes).to_vec();
+        let object = Object::new(Codec::Raw, b"unreachable bytes").unwrap();
+        let bytes = object.payload();
+        let digest = hex::decode(object.id().as_str().strip_prefix("sha256:").unwrap()).unwrap();
         if mode == StorageMode::WholeFile {
             fs::write(
                 root.join(".synck/objects").join(hex::encode(&digest)),
@@ -223,7 +224,7 @@ async fn garbage_collection_preserves_history_and_removes_unreachable_storage() 
                 .unwrap();
             db.execute(
                 "INSERT INTO chunks(digest,raw_size,codec,payload) VALUES(?1,?2,'RAW',?3)",
-                rusqlite::params![&digest, bytes.len() as i64, bytes.as_slice()],
+                rusqlite::params![&digest, bytes.len() as i64, bytes],
             )
             .unwrap();
             db.execute(
@@ -313,7 +314,7 @@ async fn history_commands_refuse_partial_changes_across_checkout_boundaries() {
 fn verification_aliases_reject_corrupt_checkout_state_without_repairing_it() {
     let temp = tempfile::tempdir().unwrap();
     run(temp.path(), &["init", "--author", "tester"]);
-    let db = rusqlite::Connection::open(temp.path().join(".synck/repository.sqlite3")).unwrap();
+    let db = rusqlite::Connection::open(temp.path().join(".synck/repository.local.sqlite3")).unwrap();
     assert_eq!(
         db.execute("UPDATE local_file_heads SET blob_id='invalid'", [])
             .unwrap(),
@@ -327,7 +328,7 @@ fn verification_aliases_reject_corrupt_checkout_state_without_repairing_it() {
             .unwrap();
         assert_eq!(output.status.code(), Some(2));
         assert!(
-            String::from_utf8_lossy(&output.stderr).contains("invalid blob ID"),
+            String::from_utf8_lossy(&output.stderr).contains("local projection mismatch"),
             "{}",
             String::from_utf8_lossy(&output.stderr)
         );
@@ -463,7 +464,7 @@ fn verification_rejects_valid_but_incorrect_checkout_projection_values() {
     ] {
         let temp = tempfile::tempdir().unwrap();
         run(temp.path(), &["init", "--author", "tester"]);
-        let db = rusqlite::Connection::open(temp.path().join(".synck/repository.sqlite3")).unwrap();
+        let db = rusqlite::Connection::open(temp.path().join(".synck/repository.local.sqlite3")).unwrap();
         db.execute(&format!("UPDATE local_file_heads SET {assignment}"), [])
             .unwrap();
         for command in [vec!["fsck"], vec!["repository", "verify"]] {

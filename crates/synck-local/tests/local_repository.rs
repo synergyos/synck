@@ -1,7 +1,6 @@
 use std::fs;
 use std::path::Path;
 
-use sha2::{Digest, Sha256};
 use synck_local::{ChangeKind, CommitOutcome, HiddenFilesMode, LocalError, Repository, init};
 
 #[cfg(target_os = "macos")]
@@ -413,9 +412,22 @@ async fn historical_folder_export_does_not_read_unselected_file_content() {
     assert!(!output.join("complete").exists());
 }
 
+/// Object IDs are salted, so tests read them from history instead of hashing bytes.
+async fn object_digests(repository: &Repository, root: &Path, path: &str) -> Vec<String> {
+    repository
+        .versions(root, Path::new(path))
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|version| version.blob_id.strip_prefix("sha256:").unwrap().to_string())
+        .collect()
+}
+
 fn install_unreachable_object(root: &Path, bytes: &[u8]) -> String {
-    let digest = hex::encode(Sha256::digest(bytes));
+    let object = synck_vcs::object::Object::new(synck_vcs::object::Codec::Raw, bytes).unwrap();
+    let digest = object.id().as_str().strip_prefix("sha256:").unwrap().to_string();
     let digest_bytes = hex::decode(&digest).unwrap();
+    let bytes = object.payload();
     let connection = rusqlite::Connection::open(root.join(".synck/object-store.sqlite3")).unwrap();
     connection
         .execute_batch("PRAGMA foreign_keys = ON; BEGIN IMMEDIATE")
@@ -508,28 +520,18 @@ fn remove_object_database_family(root: &Path) {
     }
 }
 
-fn make_whole_file_repository(root: &Path, _bytes: &[u8], remove_object_database: bool) {
-    let repository = synck_local::portable::PortableRepository::open(root).unwrap();
-    let connection = rusqlite::Connection::open(root.join(".synck/object-store.sqlite3")).unwrap();
-    let mut statement = connection
-        .prepare("SELECT lower(hex(digest)) FROM blobs WHERE complete=1")
+async fn make_whole_file_repository(root: &Path, remove_object_database: bool) {
+    let staging = tempfile::tempdir().unwrap();
+    let archive = staging.path().join("archive");
+    synck_local::portable::PortableRepository::open(root)
+        .unwrap()
+        .archive_with_mode(&archive, synck_local::StorageMode::WholeFile)
+        .await
         .unwrap();
-    let names = statement
-        .query_map([], |row| row.get::<_, String>(0))
-        .unwrap();
-    for name in names {
-        let name = name.unwrap();
-        let mut file = fs::File::create(root.join(".synck/objects").join(&name)).unwrap();
-        repository
-            .copy_blob(
-                &synck_vcs::types::ObjectId::parse(format!("sha256:{name}")).unwrap(),
-                &mut file,
-            )
-            .unwrap();
+    for entry in fs::read_dir(archive.join(".synck/objects")).unwrap() {
+        let entry = entry.unwrap();
+        fs::copy(entry.path(), root.join(".synck/objects").join(entry.file_name())).unwrap();
     }
-    drop(statement);
-    drop(connection);
-    drop(repository);
     let path = root.join(".synck/config.json");
     let mut config: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     config["storage_mode"] = serde_json::json!("WHOLE_FILE");
@@ -545,7 +547,7 @@ async fn initialize_migration_repository(root: &Path, bytes: &[u8]) {
     let repository = Repository::discover(root).await.unwrap();
     repository.commit("initial").await.unwrap();
     drop(repository);
-    make_whole_file_repository(root, bytes, false);
+    make_whole_file_repository(root, false).await;
 }
 
 #[tokio::test]
@@ -587,7 +589,8 @@ async fn fresh_storage_is_chunked_deduplicated_and_compressed() {
     let chunks: i64 = connection
         .query_row("SELECT count(*) FROM chunks", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(blobs, 2);
+    // .synckignore plus one salted object per file; chunks still deduplicate.
+    assert_eq!(blobs, 3);
     assert!(zstd_chunks > 0);
     assert!(chunks < mappings);
     assert!(repository.fsck().await.unwrap().is_empty());
@@ -610,12 +613,12 @@ async fn chunking_reuses_content_after_an_early_insertion() {
     let repository = Repository::discover(root).await.unwrap();
     repository.commit("initial").await.unwrap();
 
-    let first_digest = Sha256::digest(&original).to_vec();
+    let first_digest = hex::decode(object_digests(&repository, root, "document.bin").await.remove(0)).unwrap();
     let mut edited = original.clone();
     edited.splice(96 * 1024..96 * 1024, [0x5a; 4096]);
     fs::write(root.join("document.bin"), &edited).unwrap();
     repository.commit("insert content").await.unwrap();
-    let second_digest = Sha256::digest(&edited).to_vec();
+    let second_digest = hex::decode(object_digests(&repository, root, "document.bin").await.remove(1)).unwrap();
 
     let connection = rusqlite::Connection::open(root.join(".synck/object-store.sqlite3")).unwrap();
     let chunk_digests = |blob_digest: &[u8]| {
@@ -652,7 +655,7 @@ async fn storage_optimize_migrates_whole_files_and_removes_them_after_switch() {
     let repository = Repository::discover(root).await.unwrap();
     repository.commit("initial").await.unwrap();
     drop(repository);
-    make_whole_file_repository(root, bytes, true);
+    make_whole_file_repository(root, true).await;
 
     let mut repository = Repository::discover(root).await.unwrap();
     assert!(repository.optimize_storage().await.unwrap());
@@ -678,7 +681,7 @@ async fn storage_optimize_never_replaces_an_invalid_final_database() {
     let repository = Repository::discover(root).await.unwrap();
     repository.commit("initial").await.unwrap();
     drop(repository);
-    make_whole_file_repository(root, bytes, true);
+    make_whole_file_repository(root, true).await;
     let object_database = root.join(".synck/object-store.sqlite3");
     fs::write(&object_database, b"not a SQLite database").unwrap();
 
@@ -750,8 +753,7 @@ async fn whole_file_mode_never_uses_office_chunking() {
     let temporary = tempfile::tempdir().unwrap();
     let root = temporary.path();
     init(root, "author").await.unwrap();
-    let ignore = fs::read(root.join(".synckignore")).unwrap();
-    make_whole_file_repository(root, &ignore, true);
+    make_whole_file_repository(root, true).await;
 
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/templates/empty.docx");
     let bytes = fs::read(fixture).unwrap();
@@ -759,7 +761,7 @@ async fn whole_file_mode_never_uses_office_chunking() {
     let repository = Repository::discover(root).await.unwrap();
     repository.commit("Office document").await.unwrap();
 
-    let digest = hex::encode(Sha256::digest(&bytes));
+    let digest = object_digests(&repository, root, "document.docx").await.remove(0);
     assert!(root.join(".synck/objects").join(&digest).is_file());
     assert!(!root.join(".synck/object-store.sqlite3").exists());
     assert!(repository.fsck().await.unwrap().is_empty());
@@ -1310,24 +1312,20 @@ async fn local_repository_round_trip() {
     let findings = repository.fsck().await.unwrap();
     assert!(findings.is_empty(), "{findings:#?}");
 
+    let committed = object_digests(&repository, &root, "folder/file.txt").await;
     fs::write(root.join("folder/file.txt"), b"uncommitted-only").unwrap();
-    let uncommitted_digest = hex::encode(Sha256::digest(b"uncommitted-only"));
+    let uncommitted = synck_vcs::object::Object::new(synck_vcs::object::Codec::Raw, b"uncommitted-only").unwrap();
     let archive = temporary.path().join("archive");
     repository.archive(&archive).await.unwrap();
     let archived = synck_local::portable::PortableRepository::open(&archive).unwrap();
     archived.verify().await.unwrap();
-    for bytes in [b"first".as_slice(), b"second".as_slice()] {
-        let id = synck_vcs::types::ObjectId::parse(format!(
-            "sha256:{}",
-            hex::encode(Sha256::digest(bytes))
-        ))
-        .unwrap();
+    for (digest, bytes) in committed.iter().zip([b"first".as_slice(), b"second".as_slice()]) {
+        let id = synck_vcs::types::ObjectId::parse(format!("sha256:{digest}")).unwrap();
         let mut actual = Vec::new();
         archived.copy_blob(&id, &mut actual).unwrap();
         assert_eq!(actual, bytes);
     }
-    let absent = synck_vcs::types::ObjectId::parse(format!("sha256:{uncommitted_digest}")).unwrap();
-    assert!(archived.copy_blob(&absent, &mut Vec::new()).is_err());
+    assert!(archived.copy_blob(&uncommitted.id(), &mut Vec::new()).is_err());
 }
 
 #[tokio::test]
@@ -1772,8 +1770,8 @@ async fn gc_aborts_before_deletion_when_a_referenced_object_is_corrupt() {
     init(root, "author").await.unwrap();
     let repository = Repository::discover(root).await.unwrap();
     repository.commit("initial").await.unwrap();
-    install_unreachable_object(root, b"unreachable");
-    let digest = hex::encode(Sha256::digest(b"content"));
+    let unreachable = install_unreachable_object(root, b"unreachable");
+    let digest = object_digests(&repository, root, "file").await.remove(0);
     corrupt_blob(root, &digest);
 
     let error = repository.gc().await.unwrap_err();
@@ -1782,7 +1780,7 @@ async fn gc_aborts_before_deletion_when_a_referenced_object_is_corrupt() {
     let present: bool = connection
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM blobs WHERE digest=?1)",
-            [Sha256::digest(b"unreachable").to_vec()],
+            [hex::decode(&unreachable).unwrap()],
             |row| row.get(0),
         )
         .unwrap();
@@ -1899,7 +1897,7 @@ async fn gc_converges_after_a_subset_was_already_deleted() {
 
     let removed = repository.gc().await.unwrap();
     assert_eq!(removed.removed_objects, 1);
-    assert_eq!(removed.removed_bytes, 13);
+    assert_eq!(removed.removed_bytes, (synck_vcs::object::HEADER_BYTES + 13) as u64);
     assert_eq!(
         repository
             .storage_report()
@@ -2944,12 +2942,16 @@ async fn commit_never_reuses_a_corrupt_existing_object() {
     fs::write(&file, b"second").unwrap();
     repository.commit("second").await.unwrap();
 
-    let first_digest = hex::encode(Sha256::digest(b"first"));
+    let first_digest = object_digests(&repository, temporary.path(), "file").await.remove(0);
     corrupt_blob(temporary.path(), &first_digest);
     fs::write(&file, b"first").unwrap();
-    let error = repository.commit("must fail").await.unwrap_err();
-    assert!(matches!(error, LocalError::Integrity(_)), "{error:?}");
-    assert_eq!(repository.log(None).await.unwrap().len(), 3);
+    // Every capture writes a freshly salted object, so equal bytes never
+    // resolve to the corrupt stored object.
+    repository.commit("same bytes again").await.unwrap();
+    let digests = object_digests(&repository, temporary.path(), "file").await;
+    assert_eq!(digests.len(), 3);
+    assert_ne!(digests[2], first_digest);
+    assert_eq!(fs::read(&file).unwrap(), b"first");
 }
 
 #[tokio::test]

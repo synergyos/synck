@@ -755,7 +755,7 @@ async fn schema_init_is_idempotent_and_rejects_unknown_version() {
         )
         .unwrap();
     assert_eq!(strict, 1);
-    conn.pragma_update(None, "user_version", 7).unwrap();
+    conn.pragma_update(None, "user_version", 8).unwrap();
     drop(conn);
 
     let error = storage.init_schema().await.unwrap_err();
@@ -764,7 +764,7 @@ async fn schema_init_is_idempotent_and_rejects_unknown_version() {
 
 #[tokio::test]
 async fn old_schema_versions_are_rejected_without_mutation() {
-    for version in 1..6 {
+    for version in 1..7 {
         let (_directory, storage) = backend();
         storage.init_schema().await.unwrap();
         let connection = storage.open_writable().unwrap();

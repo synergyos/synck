@@ -790,11 +790,9 @@ async fn complete_repository_log_pages_newest_first_with_events() {
     assert!(events.iter().any(|e| e.ledger == "ITEM"
         && e.item_id == fixture.chat
         && e.event_type == "CHAT::MESSAGE::CREATE"));
-    assert!(
-        events
-            .iter()
-            .any(|e| e.ledger == "REF" && e.item_id == fixture.file)
-    );
+    assert!(events.iter().any(|e| e.ledger == "ITEM"
+        && e.item_id == fixture.file
+        && e.event_type == "FILE::SET_CONTENT"));
     let second = repository.log(first.next_before, 1).await.unwrap();
     assert_eq!(second.commits[0].repo_seq, 1);
     assert_eq!(second.next_before, None);
@@ -1094,8 +1092,8 @@ async fn complete_checkout_recovery_refuses_changed_source_and_bare_open_stays_r
     config["checkout"] =
         json!({"paths":[],"pending":{"previous_paths":["documents/original.txt"]}});
     fs::write(metadata.join("checkout-source.json"),serde_json::to_vec(&json!([
-        {"path":"documents","item_id":null,"item_type":"FOLDER","blob_id":null,"size":null},
-        {"path":"documents/original.txt","item_id":null,"item_type":"FILE","blob_id":fixture.primary_blob,"size":14}
+        {"path":"documents","item_id":null,"item_type":"FOLDER","plain_digest":null,"size":null},
+        {"path":"documents/original.txt","item_id":null,"item_type":"FILE","plain_digest":hex::encode(Sha256::digest(b"first version\n")),"size":14}
     ])).unwrap()).unwrap();
     fs::write(&path, serde_json::to_vec(&config).unwrap()).unwrap();
     fs::write(
@@ -1111,14 +1109,12 @@ async fn complete_checkout_recovery_refuses_changed_source_and_bare_open_stays_r
             .is_err()
     );
     drop(portable);
-    assert!(
-        synck_local::Repository::discover(&fixture.transfer)
-            .await
-            .err()
-            .unwrap()
-            .to_string()
-            .contains("changed during checkout")
-    );
+    let error = synck_local::Repository::discover(&fixture.transfer)
+        .await
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(error.contains("changed during checkout"), "{error}");
     assert_eq!(
         fs::read(fixture.transfer.join("documents/original.txt")).unwrap(),
         b"new uncommitted bytes"

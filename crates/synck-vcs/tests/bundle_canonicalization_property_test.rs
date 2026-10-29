@@ -253,7 +253,8 @@ fn canonical_json_value_roundtrip_is_idempotent() {
 fn canonical_commit_bytes_are_canonical_json() {
     let mut rng = XorShift64::new(0x636f_6d6d_6974_2d31);
     for _ in 0..fuzz_iters().min(300) {
-        let author_id = gen_string(&mut rng, 32);
+        // Author IDs are nonempty and at most 256 bytes.
+        let author_id = format!("a{}", gen_string(&mut rng, 32));
         let message = if rng.next_bool() {
             Some(gen_string(&mut rng, 128))
         } else {

@@ -7428,10 +7428,22 @@ mod tests {
         expected_error: Option<String>,
     }
 
-    fn canonical_events(events: &[EventProposal]) -> Vec<Vec<u8>> {
+    // Each materialization salts its metadata, so compare decoded metadata
+    // values instead of metadata IDs.
+    fn canonical_events(events: &[EventProposal]) -> Vec<serde_json::Value> {
         events
             .iter()
-            .map(|event| canonical_event_proposal_bytes(event).unwrap())
+            .map(|event| {
+                let mut value: serde_json::Value =
+                    serde_json::from_slice(&canonical_event_proposal_bytes(event).unwrap())
+                        .unwrap();
+                if let Some(metadata) = event.set_metadata.as_ref().and_then(|m| m.value()) {
+                    let object = value.as_object_mut().unwrap();
+                    object.remove("metadata_id");
+                    object.insert("metadata".to_string(), metadata.clone());
+                }
+                value
+            })
             .collect()
     }
 
@@ -7924,13 +7936,13 @@ mod tests {
         repository.commit("edit one file").await.unwrap();
 
         let work_after = repository.commit_work_counters();
-        // A checkout keeps its history index current: recovery before the
-        // commit and recovery after sequencing each catch up incrementally.
-        assert_eq!(repository.state_index_catch_ups() - historical_before, 2);
+        // The historical-state index is a disposable cache for historical
+        // trees: commits and plain log never touch it.
+        assert_eq!(repository.state_index_catch_ups() - historical_before, 0);
         assert_eq!(work_after.0 - work_before.0, 1);
         assert_eq!(work_after.1 - work_before.1, 1);
         assert_eq!(repository.log(Some(1)).await.unwrap().len(), 1);
-        assert_eq!(repository.state_index_catch_ups() - historical_before, 3);
+        assert_eq!(repository.state_index_catch_ups() - historical_before, 0);
         assert!(repository.status().await.unwrap().is_empty());
     }
 
