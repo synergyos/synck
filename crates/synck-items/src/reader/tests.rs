@@ -518,3 +518,29 @@ fn chat_file_content_head_survives_rename_lifecycle_and_cache() {
     assert_eq!(restored.subitems_in_family("CHAT::MESSAGE").unwrap().count(),0);
     assert_eq!(restored.subitem("CHAT::FILE",2).unwrap().unwrap().content_position.as_ref().unwrap().seq,3);
 }
+
+#[test]
+fn chat_file_restore_applies_destination_metadata() {
+    for (family, key) in [("CHAT::FILE", "file_id"), ("CHAT::FILE_FOLDER", "folder_id")] {
+        let (mut reader, id) = create("CHAT");
+        let item = Uuid::now_v7();
+        let parent = Uuid::now_v7();
+        let mut original = json!({"name":"Original"});
+        original[key] = json!(item);
+        apply(&mut reader, &event(&id, &format!("{family}::CREATE"), json!({"meta":original}), None), "alice");
+        apply(&mut reader, &event(&id, &format!("{family}::TRASH"), json!({"item_seq":2}), None), "alice");
+        let mut replacement = json!({"name":"Restored", "parent_folder_id":parent});
+        replacement[key] = json!(item);
+        apply(&mut reader, &event(&id, &format!("{family}::RESTORE"), json!({"item_seq":2,"meta":replacement}), None), "alice");
+        let row = reader.subitem(family,2).unwrap().unwrap();
+        assert_eq!(row.lifecycle, SubitemLifecycle::Live);
+        assert_eq!(row.name.as_deref(), Some("Restored"));
+        assert_eq!(row.parent_folder_id, Some(parent));
+        assert!(row.content_position.is_none());
+        apply(&mut reader, &event(&id, &format!("{family}::TRASH"), json!({"item_seq":2}), None), "alice");
+        apply(&mut reader, &event(&id, &format!("{family}::RESTORE"), json!({"item_seq":2}), None), "alice");
+        let row = reader.subitem(family,2).unwrap().unwrap();
+        assert_eq!(row.name.as_deref(), Some("Restored"));
+        assert_eq!(row.parent_folder_id, Some(parent));
+    }
+}

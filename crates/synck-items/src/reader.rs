@@ -924,11 +924,18 @@ fn update_subitem(
     content: &Value,
     ctx: &ReadContext<'_>,
 ) -> Result<(), ReadError> {
+    let replacement = subitems::meta_get_json(event.set_metadata.as_ref().and_then(synck_vcs::metadata::MetadataRef::value), "meta");
     if matches!(verb, Verb::Trash | Verb::Restore | Verb::Tombstone) {
         row.lifecycle = lifecycle_for_event(&event.event_type)?;
-        return Ok(());
+        // A file restore can select a new live parent or resolve a name collision.
+        // Lifecycle-only histories retain their existing metadata.
+        if verb != Verb::Restore
+            || !matches!(kind, Kind::ChatFile | Kind::ChatFileFolder)
+            || replacement.is_none()
+        {
+            return Ok(());
+        }
     }
-    let replacement = subitems::meta_get_json(event.set_metadata.as_ref().and_then(synck_vcs::metadata::MetadataRef::value), "meta");
     match kind {
         Kind::ChatMessage => {
             if let Some(body) = content.get("body").and_then(Value::as_str) {
