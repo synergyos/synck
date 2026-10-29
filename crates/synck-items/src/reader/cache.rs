@@ -56,7 +56,7 @@ impl ItemReader {
         };
         let digest = digest(&state)?;
         serde_json::to_vec(&CachedReader {
-            version: 1,
+            version: 2,
             digest,
             state,
         })
@@ -70,7 +70,7 @@ impl ItemReader {
     /// input-size limits, confidentiality, checkpoint verification and authority.
     pub fn from_cache(expected_item_id: ItemId, bytes: &[u8]) -> Result<Self, ReadError> {
         let cache: CachedReader = serde_json::from_slice(bytes).map_err(invalid)?;
-        if cache.version != 1
+        if cache.version != 2
             || cache.state.item_id != expected_item_id
             || cache.digest != digest(&cache.state)?
         {
@@ -114,7 +114,7 @@ impl ItemReader {
             }
         }
         for row in state.subitems {
-            for position in [&row.created_position, &row.latest_position] {
+            for position in [&row.created_position, &row.latest_position].into_iter().chain(row.content_position.as_ref()) {
                 let limit = match position.ledger {
                     HistoryLedger::Item => latest,
                     HistoryLedger::Ref => state.ref_seq,

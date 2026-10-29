@@ -55,6 +55,13 @@ message/attachment/ref events. Unsupported typed families fail explicitly while
 remaining structurally verifiable. Do not add family-specific reachability:
 all metadata references and content-role values are discoverable in envelopes.
 
+Sequence subitem readers retain `content_position` separately from
+`latest_position`: renaming or trashing a chat file does not create a new content
+revision. `subitems_in_family` borrows the matching family without cloning a
+chat transcript. Disposable reader caches use version 2; version-1 caches must
+be rebuilt from verified history. Repository formats and accepted bytes are
+unchanged.
+
 ## Storage and recovery
 
 `synck-vcs` is adapter independent. `synck-vcs-sqlite` supplies the current

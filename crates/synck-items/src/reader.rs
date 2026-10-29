@@ -91,6 +91,8 @@ pub struct ReadableSubitem {
     pub identity: SubitemIdentity,
     pub created_position: ReadablePosition,
     pub latest_position: ReadablePosition,
+    /// Last event carrying content; metadata/lifecycle changes preserve this head.
+    pub content_position: Option<ReadablePosition>,
     pub lifecycle: SubitemLifecycle,
     pub parent_item_seq: Option<i64>,
     pub stable_id: Option<Uuid>,
@@ -213,6 +215,14 @@ impl ItemReader {
     pub fn subitem(&self, family: &str, item_seq: i64) -> Result<Option<&ReadableSubitem>, ReadError> {
         self.ensure_readable()?;
         Ok(self.subitems.get(&(family.to_owned(), SubitemIdentity::Sequence(item_seq))))
+    }
+
+    /// Borrow one sequence-subitem family without cloning the full transcript.
+    pub fn subitems_in_family<'a>(&'a self, family: &'a str) -> Result<impl Iterator<Item = &'a ReadableSubitem>, ReadError> {
+        self.ensure_readable()?;
+        Ok(self.subitems.range((family.to_owned(), SubitemIdentity::Sequence(i64::MIN))..)
+            .take_while(move |((name, _), _)| name == family)
+            .map(|(_, row)| row))
     }
 
     fn ensure_readable(&self) -> Result<(), ReadError> {
@@ -546,6 +556,7 @@ impl ItemReader {
                 ledger: HistoryLedger::Item,
                 seq: ctx.item_seq,
             },
+            content_position: None,
             lifecycle: SubitemLifecycle::Live,
             parent_item_seq: None,
             stable_id: None,
@@ -607,6 +618,9 @@ impl ItemReader {
             row
         };
         row.latest_position.seq = ctx.item_seq;
+        if event.set_content.is_some() && matches!(verb, Verb::Create | Verb::SetContent | Verb::SetMetadata) {
+            row.content_position = Some(row.latest_position.clone());
+        }
         let removed_folder = (kind == Kind::ChatFileFolder
             && matches!(verb, Verb::Trash | Verb::Tombstone))
         .then_some(row.stable_id)

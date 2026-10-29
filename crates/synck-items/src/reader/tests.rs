@@ -477,7 +477,7 @@ fn reader_cache_rejects_damage_wrong_identity_version_and_poison() {
     assert!(ItemReader::from_cache(ItemId::new(),&cache).is_err());
     let mut parsed:Value=serde_json::from_slice(&cache).unwrap();parsed["state"]["ref_seq"]=1.into();
     assert!(ItemReader::from_cache(id.clone(),&serde_json::to_vec(&parsed).unwrap()).is_err());
-    let mut parsed:Value=serde_json::from_slice(&cache).unwrap();parsed["version"]=2.into();
+    let mut parsed:Value=serde_json::from_slice(&cache).unwrap();parsed["version"]=1.into();
     assert!(ItemReader::from_cache(id.clone(),&serde_json::to_vec(&parsed).unwrap()).is_err());
     assert!(ItemReader::from_cache(id.clone(),&cache[..cache.len()/2]).is_err());
     let bad=event(&id,"CHAT::MESSAGE::SET_CONTENT",json!({"item_seq":999}),json_body("missing"));
@@ -499,4 +499,22 @@ fn borrowed_reader_queries_match_snapshot_without_transcript_clones() {
     let bad=event(&id,"CHAT::MESSAGE::SET_CONTENT",json!({"item_seq":999}),json_body("missing"));
     assert!(reader.apply(&bad,ReadContext{item_seq:3,created_at:now(),occurred_at:None,author:"alice",committer:"alice"}).is_err());
     assert!(reader.projection().is_err());assert!(reader.chat_details().is_err());assert!(reader.subitem("CHAT::MESSAGE",2).is_err());
+}
+
+#[test]
+fn chat_file_content_head_survives_rename_lifecycle_and_cache() {
+    let (mut reader, id) = create("CHAT");
+    let file = Uuid::now_v7();
+    apply(&mut reader, &event(&id,"CHAT::FILE::CREATE",json!({"meta":{"file_id":file,"name":"Draft.docx"}}),None),"alice");
+    assert!(reader.subitem("CHAT::FILE",2).unwrap().unwrap().content_position.is_none());
+    apply(&mut reader, &event(&id,"CHAT::FILE::SET_CONTENT",json!({"item_seq":2,"meta":{"file_id":file},"content":{"size":12}}),Some(EventContent::bytes(ObjectId::parse(A).unwrap()))),"alice");
+    apply(&mut reader, &event(&id,"CHAT::FILE::SET_METADATA",json!({"item_seq":2,"meta":{"file_id":file,"name":"Reviewed.docx"}}),None),"alice");
+    apply(&mut reader, &event(&id,"CHAT::FILE::TRASH",json!({"item_seq":2}),None),"alice");
+    let row=reader.subitem("CHAT::FILE",2).unwrap().unwrap();
+    assert_eq!(row.latest_position.seq,5);
+    assert_eq!(row.content_position.as_ref().unwrap().seq,3);
+    let restored=ItemReader::from_cache(id,&reader.export_cache().unwrap()).unwrap();
+    assert_eq!(restored.subitems_in_family("CHAT::FILE").unwrap().count(),1);
+    assert_eq!(restored.subitems_in_family("CHAT::MESSAGE").unwrap().count(),0);
+    assert_eq!(restored.subitem("CHAT::FILE",2).unwrap().unwrap().content_position.as_ref().unwrap().seq,3);
 }
