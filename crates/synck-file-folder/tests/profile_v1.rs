@@ -1249,7 +1249,6 @@ fn projector_accepts_only_the_deployed_product_omission_shapes() {
         "FILE::REVISION_UNSUPPRESS",
         "ITEM::DATA_LINK::PUT",
         "ITEM::DATA_LINK::DELETE",
-        "ITEM::SOURCE_MODIFIED_AT::REPAIR",
     ] {
         let mut proposal = event(file_id.clone(), event_type, Some(3));
         proposal.set_metadata = Some(synck_vcs::metadata::MetadataRef::new(json!({"contract": "product"})).unwrap());

@@ -3,10 +3,10 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use synck_vcs::metadata::MetadataRef;
-use synck_vcs::types::{ObjectId, CommitId, EventProposal, ItemId, ItemRevision, LifecycleState, is_record_type};
+use synck_vcs::types::{ObjectId, EventProposal, ItemId, ItemRevision, LifecycleState, is_record_type};
 
 use crate::metadata::{
-    ITEM_SOURCE_MODIFIED_AT_REPAIR_EVENT_TYPE, ITEM_SUBTYPE_STANDARD,
+    ITEM_SUBTYPE_STANDARD,
     ITEM_TREE_HIDDEN_METADATA_KEY, item_color_metadata_from_json,
 };
 
@@ -178,7 +178,7 @@ pub fn apply_replica_item_event(
         item.content_item_seq = Some(item_seq);
     }
     item.latest_item_seq = item_seq;
-    item.last_updated_at = projected_updated_at(proposal, updated_at)?;
+    item.last_updated_at = updated_at;
     item.last_updated_by = updated_by.to_string();
     (item.item_date_at, item.item_date_kind) =
         resolve_item_date(&item.item_type, &item.metadata_json, item.last_updated_at);
@@ -206,52 +206,6 @@ pub fn resolve_item_date(
     (last_updated_at, "LAST_UPDATED".to_string())
 }
 
-
-
-fn projected_updated_at(
-    proposal: &EventProposal,
-    default: DateTime<Utc>,
-) -> Result<DateTime<Utc>, ReplicaProjectionError> {
-    if proposal.event_type != ITEM_SOURCE_MODIFIED_AT_REPAIR_EVENT_TYPE {
-        return Ok(default);
-    }
-    let metadata = proposal
-        .set_metadata.as_ref().and_then(synck_vcs::metadata::MetadataRef::value)
-        .and_then(serde_json::Value::as_object)
-        .ok_or_else(|| invalid_repair("set_metadata must be an object"))?;
-    const KEYS: [&str; 3] = [
-        "source_modified_at",
-        "manifest_sha256",
-        "expected_prior_commit_id",
-    ];
-    if metadata.len() != KEYS.len() || metadata.keys().any(|key| !KEYS.contains(&key.as_str())) {
-        return Err(invalid_repair(
-            "set_metadata must contain exactly source_modified_at, manifest_sha256, and expected_prior_commit_id",
-        ));
-    }
-    let required = |key: &str| {
-        metadata
-            .get(key)
-            .and_then(serde_json::Value::as_str)
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| invalid_repair(&format!("metadata.{key} must be a non-empty string")))
-    };
-    let timestamp = DateTime::parse_from_rfc3339(required("source_modified_at")?)
-        .map_err(|error| invalid_repair(&format!("source_modified_at is invalid: {error}")))?
-        .with_timezone(&Utc);
-    ObjectId::parse(required("manifest_sha256")?)
-        .map_err(|error| invalid_repair(&format!("manifest_sha256 is invalid: {error}")))?;
-    CommitId::parse(required("expected_prior_commit_id")?).map_err(|error| {
-        invalid_repair(&format!("expected_prior_commit_id is invalid: {error}"))
-    })?;
-    Ok(timestamp)
-}
-
-fn invalid_repair(message: &str) -> ReplicaProjectionError {
-    ReplicaProjectionError::Invalid(format!(
-        "{ITEM_SOURCE_MODIFIED_AT_REPAIR_EVENT_TYPE} {message}"
-    ))
-}
 
 const UNAVAILABLE_TITLE: &str = "(unavailable)";
 

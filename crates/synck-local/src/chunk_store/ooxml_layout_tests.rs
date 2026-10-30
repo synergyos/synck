@@ -1,9 +1,5 @@
 use std::collections::BTreeMap;
 use std::fs;
-use std::mem::size_of;
-use std::path::{Component, Path, PathBuf};
-use std::process::Command;
-use std::time::{Duration, Instant};
 
 use fastcdc::v2020::{FastCDC, Normalization};
 use rawzip::extra_fields::{ExtraFieldId, ExtraFields};
@@ -13,7 +9,6 @@ use sha2::{Digest, Sha256};
 use synck_vcs::types::{ObjectId, RepoId};
 
 use super::{AVG_CHUNK, ChunkStore, MAX_CHUNK, MIN_CHUNK};
-use crate::error::{LocalError, Result};
 
 const MAX_CENTRAL_DIRECTORY: usize = 8 * 1024 * 1024;
 const MAX_MEMBERS: usize = u16::MAX as usize;
@@ -117,7 +112,6 @@ struct OoxmlLayout {
     regions: Vec<ChunkRegion>,
     central_directory_bytes: usize,
     member_count: usize,
-    layout_owned_bytes: usize,
 }
 
 fn ooxml_layout(bytes: &[u8], kind: OoxmlKind) -> Option<OoxmlLayout> {
@@ -275,30 +269,11 @@ fn ooxml_layout(bytes: &[u8], kind: OoxmlKind) -> Option<OoxmlLayout> {
     if !regions_cover_source(&regions, bytes.len()) {
         return None;
     }
-    let layout_owned_bytes = entries
-        .capacity()
-        .checked_mul(size_of::<ArchiveSection>())?
-        .checked_add(
-            entries
-                .iter()
-                .filter_map(|entry| entry.member_name.as_ref())
-                .map(String::capacity)
-                .try_fold(0_usize, usize::checked_add)?,
-        )?
-        .checked_add(regions.capacity().checked_mul(size_of::<ChunkRegion>())?)?
-        .checked_add(
-            regions
-                .iter()
-                .flat_map(|region| &region.member_names)
-                .map(String::capacity)
-                .try_fold(0_usize, usize::checked_add)?,
-        )?;
     Some(OoxmlLayout {
         member_count: entries.len() - 1,
         sections: entries,
         regions,
         central_directory_bytes,
-        layout_owned_bytes,
     })
 }
 
@@ -540,53 +515,12 @@ struct VersionResult {
     chunk_regions: Vec<RegionResult>,
 }
 
-#[derive(Debug, Deserialize)]
-struct CorpusManifest {
-    schema_version: u64,
-    source_os: String,
-    office_version: String,
-    sequences: Vec<SequenceSpec>,
-}
-
-#[derive(Debug, Deserialize)]
-struct SequenceSpec {
-    name: String,
-    format: OoxmlKind,
-    versions: Vec<VersionSpec>,
-}
-
-#[derive(Debug, Deserialize)]
-struct VersionSpec {
-    path: String,
-    scenario: String,
-    size_bytes: u64,
-    sha256: String,
-}
-
 #[derive(Debug, Serialize)]
 struct SequenceResult {
     name: String,
     format: OoxmlKind,
     generic: Vec<VersionResult>,
     candidate: Vec<VersionResult>,
-}
-
-#[derive(Debug, Serialize)]
-struct BenchmarkResult {
-    schema_version: u64,
-    git_commit: String,
-    runtime_os: String,
-    runtime_arch: String,
-    cpu: String,
-    memory: String,
-    filesystem: String,
-    source_os: String,
-    office_version: String,
-    corpus_manifest_sha256: String,
-    repetitions: usize,
-    invocation: String,
-    summaries: Vec<FormatSummary>,
-    sequences: Vec<SequenceResult>,
 }
 
 #[derive(Debug, Serialize)]
@@ -602,255 +536,6 @@ struct FormatSummary {
     median_time_saving_basis_points: i64,
     materially_worse_transitions: usize,
     maximum_candidate_layout_owned_bytes: usize,
-}
-
-#[derive(Clone, Copy)]
-enum Policy {
-    Generic,
-    Candidate(OoxmlKind),
-}
-
-struct MeasuredVersion {
-    result: VersionResult,
-    elapsed: Duration,
-    validator_elapsed: Duration,
-}
-
-fn run_policy(
-    corpus_root: &Path,
-    versions: &[VersionSpec],
-    policy: Policy,
-) -> Result<Vec<MeasuredVersion>> {
-    let temporary = tempfile::tempdir().map_err(|source| LocalError::Io {
-        action: "create OOXML benchmark directory",
-        path: PathBuf::from("<temporary directory>"),
-        source,
-    })?;
-    let store_path = temporary.path().join("objects.sqlite3");
-    let repo_id = RepoId::new();
-    ChunkStore::create(&store_path, &repo_id)?;
-    let store = ChunkStore::new(store_path, &repo_id);
-    let mut results = Vec::with_capacity(versions.len());
-    for version in versions {
-        let path = checked_corpus_path(corpus_root, &version.path)?;
-        let bytes = fs::read(&path).map_err(|source| LocalError::Io {
-            action: "read OOXML benchmark file",
-            path: path.clone(),
-            source,
-        })?;
-        let digest: [u8; 32] = Sha256::digest(&bytes).into();
-        if bytes.len() as u64 != version.size_bytes || hex::encode(digest) != version.sha256 {
-            return Err(LocalError::Invalid(format!(
-                "OOXML benchmark manifest mismatch: {}",
-                version.path
-            )));
-        }
-        let before = store_metrics(&store)?;
-        let started = Instant::now();
-        let validator_started = Instant::now();
-        let production_regions = match policy {
-            Policy::Generic => None,
-            Policy::Candidate(kind) => Some(
-                crate::ooxml::chunk_region_lengths(
-                    fs::File::open(&path).map_err(|source| LocalError::Io {
-                        action: "open OOXML benchmark file",
-                        path: path.clone(),
-                        source,
-                    })?,
-                    bytes.len() as u64,
-                    kind.production(),
-                )
-                .ok_or_else(|| {
-                    LocalError::Invalid(format!(
-                        "OOXML benchmark package is ineligible: {}",
-                        version.path
-                    ))
-                })?,
-            ),
-        };
-        let validator_elapsed = validator_started.elapsed();
-        let complete = store.contains_complete(&digest, bytes.len() as u64)?;
-        match &production_regions {
-            None => {
-                if !complete {
-                    store.stage_blob(digest, bytes.len() as u64, bytes.as_slice())?;
-                }
-            }
-            Some(regions) => {
-                if !complete {
-                    store.stage_blob_regions(
-                        digest,
-                        bytes.len() as u64,
-                        bytes.as_slice(),
-                        regions,
-                    )?;
-                }
-            }
-        }
-        if !complete {
-            store.complete_blob(&digest, bytes.len() as u64)?;
-        }
-        let elapsed = started.elapsed();
-        let layout = match policy {
-            Policy::Generic => None,
-            Policy::Candidate(kind) => Some(ooxml_layout(&bytes, kind).ok_or_else(|| {
-                LocalError::Invalid(format!(
-                    "OOXML diagnostic layout rejected production-eligible package: {}",
-                    version.path
-                ))
-            })?),
-        };
-        if let (Some(regions), Some(layout)) = (&production_regions, &layout) {
-            let diagnostic = layout
-                .regions
-                .iter()
-                .map(|region| (region.end - region.start) as u64)
-                .collect::<Vec<_>>();
-            if *regions != diagnostic {
-                return Err(LocalError::Integrity(format!(
-                    "OOXML production and diagnostic regions differ: {}",
-                    version.path
-                )));
-            }
-        }
-        let (sections, chunk_regions) = layout
-            .as_ref()
-            .map(|layout| {
-                (
-                    section_results(&bytes, &layout.sections),
-                    region_results(&bytes, &layout.regions),
-                )
-            })
-            .unwrap_or_default();
-        if !chunk_regions.is_empty() && !region_results_cover_source(&chunk_regions, bytes.len()) {
-            return Err(LocalError::Integrity(format!(
-                "OOXML benchmark chunk regions do not cover source: {}",
-                version.path
-            )));
-        }
-        let blob_id = ObjectId::parse(format!("sha256:{}", version.sha256))
-            .map_err(|error| LocalError::Invalid(error.to_string()))?;
-        let mut reconstructed = Vec::with_capacity(bytes.len());
-        store.copy_blob(&blob_id, bytes.len() as u64, &mut reconstructed)?;
-        if reconstructed != bytes {
-            return Err(LocalError::Integrity(format!(
-                "OOXML benchmark reconstruction differs: {}",
-                version.path
-            )));
-        }
-        let after = store_metrics(&store)?;
-        let metrics = StoreMetrics {
-            new_raw_chunk_bytes: after
-                .new_raw_chunk_bytes
-                .checked_sub(before.new_raw_chunk_bytes)
-                .ok_or_else(|| LocalError::Integrity("chunk bytes decreased".to_string()))?,
-            new_stored_payload_bytes: after
-                .new_stored_payload_bytes
-                .checked_sub(before.new_stored_payload_bytes)
-                .ok_or_else(|| LocalError::Integrity("payload bytes decreased".to_string()))?,
-            new_distinct_chunks: after
-                .new_distinct_chunks
-                .checked_sub(before.new_distinct_chunks)
-                .ok_or_else(|| LocalError::Integrity("chunk count decreased".to_string()))?,
-            new_mapping_rows: after
-                .new_mapping_rows
-                .checked_sub(before.new_mapping_rows)
-                .ok_or_else(|| LocalError::Integrity("mapping count decreased".to_string()))?,
-            cumulative_stored_payload_bytes: after.cumulative_stored_payload_bytes,
-            cumulative_page_bytes: after.cumulative_page_bytes,
-        };
-        let (central_directory_bytes, member_count, candidate_layout_owned_bytes) = layout
-            .map(|layout| {
-                (
-                    layout.central_directory_bytes,
-                    layout.member_count,
-                    layout.layout_owned_bytes,
-                )
-            })
-            .unwrap_or_default();
-        results.push(MeasuredVersion {
-            result: VersionResult {
-                path: version.path.clone(),
-                scenario: version.scenario.clone(),
-                size_bytes: bytes.len() as u64,
-                sha256: version.sha256.clone(),
-                metrics,
-                median_elapsed_ns: 0,
-                median_validator_ns: 0,
-                central_directory_bytes,
-                member_count,
-                candidate_layout_owned_bytes,
-                sections,
-                chunk_regions,
-            },
-            elapsed,
-            validator_elapsed,
-        });
-    }
-    Ok(results)
-}
-
-fn store_metrics(store: &ChunkStore) -> Result<StoreMetrics> {
-    let connection = store.open_readonly()?;
-    let (chunks, raw, payload): (i64, i64, i64) = connection.query_row(
-        "SELECT count(*), coalesce(sum(raw_size), 0), coalesce(sum(length(payload)), 0)
-         FROM chunks",
-        [],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-    )?;
-    let mappings: i64 =
-        connection.query_row("SELECT count(*) FROM blob_chunks", [], |row| row.get(0))?;
-    let page_count: i64 = connection.pragma_query_value(None, "page_count", |row| row.get(0))?;
-    let page_size: i64 = connection.pragma_query_value(None, "page_size", |row| row.get(0))?;
-    Ok(StoreMetrics {
-        new_raw_chunk_bytes: u64::try_from(raw)
-            .map_err(|_| LocalError::Integrity("negative chunk bytes".to_string()))?,
-        new_stored_payload_bytes: u64::try_from(payload)
-            .map_err(|_| LocalError::Integrity("negative payload bytes".to_string()))?,
-        new_distinct_chunks: u64::try_from(chunks)
-            .map_err(|_| LocalError::Integrity("negative chunk count".to_string()))?,
-        new_mapping_rows: u64::try_from(mappings)
-            .map_err(|_| LocalError::Integrity("negative mapping count".to_string()))?,
-        cumulative_stored_payload_bytes: u64::try_from(payload)
-            .map_err(|_| LocalError::Integrity("negative payload bytes".to_string()))?,
-        cumulative_page_bytes: u64::try_from(
-            page_count
-                .checked_mul(page_size)
-                .ok_or_else(|| LocalError::Integrity("page byte overflow".to_string()))?,
-        )
-        .map_err(|_| LocalError::Integrity("negative page bytes".to_string()))?,
-    })
-}
-
-fn checked_corpus_path(root: &Path, relative: &str) -> Result<PathBuf> {
-    let relative = Path::new(relative);
-    if relative.as_os_str().is_empty()
-        || relative.is_absolute()
-        || relative
-            .components()
-            .any(|part| !matches!(part, Component::Normal(_)))
-    {
-        return Err(LocalError::Invalid(format!(
-            "invalid OOXML benchmark path: {}",
-            relative.display()
-        )));
-    }
-    Ok(root.join(relative))
-}
-
-fn median(values: &mut [u64]) -> u64 {
-    values.sort_unstable();
-    let middle = values.len() / 2;
-    if values.len() % 2 == 1 {
-        values[middle]
-    } else {
-        let sum = u128::from(values[middle - 1]) + u128::from(values[middle]);
-        u64::try_from(sum / 2).expect("median fits in u64")
-    }
-}
-
-fn duration_ns(duration: Duration) -> u64 {
-    u64::try_from(duration.as_nanos()).expect("one benchmark run fits in u64 nanoseconds")
 }
 
 fn median_i64(values: &mut [i64]) -> i64 {
@@ -969,36 +654,6 @@ fn summarize(sequences: &[SequenceResult]) -> Vec<FormatSummary> {
             }
         })
         .collect()
-}
-
-fn command_stdout(program: &str, arguments: &[&str]) -> String {
-    Command::new(program)
-        .args(arguments)
-        .output()
-        .ok()
-        .filter(|output| output.status.success())
-        .and_then(|output| String::from_utf8(output.stdout).ok())
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| "UNCONFIRMED".to_string())
-}
-
-fn clean_git_commit() -> String {
-    let status = Command::new("git")
-        .args(["status", "--porcelain=v1", "--untracked-files=all"])
-        .output()
-        .expect("run git status for OOXML benchmark");
-    assert!(status.status.success(), "git status failed");
-    assert!(
-        status.stdout.is_empty(),
-        "OOXML release evidence requires a clean Git worktree"
-    );
-    let commit = command_stdout("git", &["rev-parse", "HEAD"]);
-    assert_ne!(
-        commit, "UNCONFIRMED",
-        "cannot identify benchmark Git commit"
-    );
-    commit
 }
 
 const MAX_ZIP_COMMENT: usize = u16::MAX as usize;
@@ -1619,141 +1274,4 @@ fn benchmark_summary_reports_fixed_metrics() {
     let smaller = summarize(&[sequence(90_000)]);
     assert_eq!(smaller[0].aggregate_saving_basis_points, 1_000);
     assert_eq!(smaller[0].median_transition_saving_basis_points, 1_000);
-}
-
-#[test]
-fn median_averages_the_two_middle_observations() {
-    assert_eq!(median(&mut [10, 20]), 15);
-    assert_eq!(median_i64(&mut [-100, 200]), 50);
-}
-
-#[test]
-#[ignore = "requires an explicit checksummed Office corpus; run with --ignored --nocapture"]
-fn ooxml_chunk_benchmark() {
-    const REPETITIONS: usize = 7;
-
-    let git_commit = clean_git_commit();
-    let corpus_root = PathBuf::from(
-        std::env::var("SYNCK_OOXML_BENCH_CORPUS").expect("SYNCK_OOXML_BENCH_CORPUS is required"),
-    );
-    let output_path = PathBuf::from(
-        std::env::var("SYNCK_OOXML_BENCH_OUTPUT").expect("SYNCK_OOXML_BENCH_OUTPUT is required"),
-    );
-    let cpu = std::env::var("SYNCK_OOXML_BENCH_CPU").expect("SYNCK_OOXML_BENCH_CPU is required");
-    let memory =
-        std::env::var("SYNCK_OOXML_BENCH_MEMORY").expect("SYNCK_OOXML_BENCH_MEMORY is required");
-    let filesystem = std::env::var("SYNCK_OOXML_BENCH_FILESYSTEM")
-        .expect("SYNCK_OOXML_BENCH_FILESYSTEM is required");
-    let manifest_path = corpus_root.join("manifest.json");
-    let manifest_bytes = fs::read(&manifest_path).expect("read corpus manifest");
-    let manifest: CorpusManifest =
-        serde_json::from_slice(&manifest_bytes).expect("parse corpus manifest");
-    assert_eq!(manifest.schema_version, 1, "unsupported corpus manifest");
-    assert!(!manifest.sequences.is_empty(), "empty corpus");
-
-    let mut sequences = Vec::with_capacity(manifest.sequences.len());
-    for sequence in &manifest.sequences {
-        assert!(!sequence.versions.is_empty(), "empty sequence");
-        let mut generic_runs = Vec::with_capacity(REPETITIONS);
-        let mut candidate_runs = Vec::with_capacity(REPETITIONS);
-        for repetition in 0..REPETITIONS {
-            let (generic, candidate) = if repetition % 2 == 0 {
-                (
-                    run_policy(&corpus_root, &sequence.versions, Policy::Generic).unwrap(),
-                    run_policy(
-                        &corpus_root,
-                        &sequence.versions,
-                        Policy::Candidate(sequence.format),
-                    )
-                    .unwrap(),
-                )
-            } else {
-                let candidate = run_policy(
-                    &corpus_root,
-                    &sequence.versions,
-                    Policy::Candidate(sequence.format),
-                )
-                .unwrap();
-                let generic =
-                    run_policy(&corpus_root, &sequence.versions, Policy::Generic).unwrap();
-                (generic, candidate)
-            };
-            generic_runs.push(generic);
-            candidate_runs.push(candidate);
-        }
-
-        let collapse = |runs: Vec<Vec<MeasuredVersion>>| {
-            let mut results = Vec::with_capacity(sequence.versions.len());
-            for version_index in 0..sequence.versions.len() {
-                let mut elapsed = runs
-                    .iter()
-                    .map(|run| duration_ns(run[version_index].elapsed))
-                    .collect::<Vec<_>>();
-                let mut validator = runs
-                    .iter()
-                    .map(|run| duration_ns(run[version_index].validator_elapsed))
-                    .collect::<Vec<_>>();
-                let mut result = runs[0][version_index].result.clone();
-                for run in &runs[1..] {
-                    assert_eq!(
-                        run[version_index].result.metrics, result.metrics,
-                        "nondeterministic storage metrics"
-                    );
-                }
-                result.median_elapsed_ns = median(&mut elapsed);
-                result.median_validator_ns = median(&mut validator);
-                results.push(result);
-            }
-            results
-        };
-        let generic = collapse(generic_runs);
-        let candidate = collapse(candidate_runs);
-        sequences.push(SequenceResult {
-            name: sequence.name.clone(),
-            format: sequence.format,
-            generic,
-            candidate,
-        });
-    }
-
-    let invocation = format!(
-        "SYNCK_OOXML_BENCH_CORPUS={} SYNCK_OOXML_BENCH_OUTPUT={} \
-SYNCK_OOXML_BENCH_CPU=<recorded> SYNCK_OOXML_BENCH_MEMORY=<recorded> \
-SYNCK_OOXML_BENCH_FILESYSTEM=<recorded> cargo test -p synck-local --release \
-ooxml_chunk_benchmark -- --ignored --nocapture",
-        corpus_root.display(),
-        output_path.display()
-    );
-    let summaries = summarize(&sequences);
-    for summary in &summaries {
-        println!(
-            "{:?}: {} transitions, aggregate {:+.2}%, median {:+.2}%, rows {} -> {}, time {:+.2}%",
-            summary.format,
-            summary.measured_transitions,
-            summary.aggregate_saving_basis_points as f64 / 100.0,
-            summary.median_transition_saving_basis_points as f64 / 100.0,
-            summary.generic_mapping_rows,
-            summary.candidate_mapping_rows,
-            summary.median_time_saving_basis_points as f64 / 100.0,
-        );
-    }
-    let output = BenchmarkResult {
-        schema_version: 4,
-        git_commit,
-        runtime_os: std::env::consts::OS.to_string(),
-        runtime_arch: std::env::consts::ARCH.to_string(),
-        cpu,
-        memory,
-        filesystem,
-        source_os: manifest.source_os,
-        office_version: manifest.office_version,
-        corpus_manifest_sha256: hex::encode(Sha256::digest(&manifest_bytes)),
-        repetitions: REPETITIONS,
-        invocation,
-        summaries,
-        sequences,
-    };
-    let json = serde_json::to_string_pretty(&output).unwrap();
-    fs::write(&output_path, format!("{json}\n")).expect("write benchmark output");
-    println!("{json}");
 }

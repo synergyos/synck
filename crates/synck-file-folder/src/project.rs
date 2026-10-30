@@ -28,7 +28,6 @@ const KNOWN_FOLDER_OMISSIONS: &[&str] = &[
 const KNOWN_ITEM_OMISSIONS: &[&str] = &[
     "ITEM::DATA_LINK::PUT",
     "ITEM::DATA_LINK::DELETE",
-    "ITEM::SOURCE_MODIFIED_AT::REPAIR",
 ];
 
 pub fn project_commit(

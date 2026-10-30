@@ -764,9 +764,6 @@ impl ItemReader {
 }
 
 fn require_generic_owner_event(kind: &str, event: &EventProposal) -> Result<(), ReadError> {
-    if event.event_type == crate::metadata::ITEM_SOURCE_MODIFIED_AT_REPAIR_EVENT_TYPE {
-        return Ok(());
-    }
     let Some((prefix, verb)) = event.event_type.split_once("::") else {
         return Err(unsupported(kind, &event.event_type));
     };

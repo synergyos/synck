@@ -1,7 +1,6 @@
 //! Item metadata interpreted by the shared event projection.
 
 pub const ITEM_SUBTYPE_STANDARD: &str = "STANDARD";
-pub const ITEM_SOURCE_MODIFIED_AT_REPAIR_EVENT_TYPE: &str = "ITEM::SOURCE_MODIFIED_AT::REPAIR";
 /// Item metadata flag excluding a VCS-backed item from generic tree/navigation surfaces.
 ///
 /// The item remains addressable through its typed API. Human direct chats use this because their

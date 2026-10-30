@@ -30,7 +30,7 @@ const MAX_BATCH_PAYLOAD: usize = 8 * 1024 * 1024;
 const MAX_BATCH_ROWS: usize = 1024;
 
 #[cfg(test)]
-mod ooxml_benchmark;
+mod ooxml_layout_tests;
 
 const SCHEMA: &str = include_str!("object-store.sql");
 
