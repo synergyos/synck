@@ -727,8 +727,16 @@ impl PortableRepository {
     /// The existing source may remain live. There is no synchronization or rejoin.
     pub async fn enable_checkout(&mut self, author: &str, paths: &[String]) -> Result<()> {
         author_valid(author)?;
-        if self.config.checkout.is_some() {
-            return Err(invalid("checkout already enabled; use checkout selection"));
+        if let Some(checkout) = &self.config.checkout {
+            if checkout.pending.is_none() {
+                return Err(invalid("checkout already enabled; use checkout selection"));
+            }
+            // An interrupted enable finishes the transition it recorded.
+            let mut working = self.checkout_adapter()?;
+            working.recover_current().await?;
+            working.finish_checkout_transition().await?;
+            self.config.checkout = working.config().checkout.clone();
+            return Ok(());
         }
         let paths = crate::checkout::normalize_paths(paths)?;
         self.verify().await?;
@@ -2054,9 +2062,14 @@ impl PortableRepository {
                 "file is outside checkout selection; widen it first",
             ));
         }
+        let size = i64::try_from(content.size).map_err(invalid)?;
+        // A write killed before acceptance leaves these bytes at the target, and
+        // repeating it finishes the job.
+        let written = crate::commands::verify_working_file(&working, &path, &content.blob_id, size)
+            .is_ok();
         let changes = working.status().await?;
         if changes.iter().any(|change| {
-            change.path == path
+            (change.path == path && !written)
                 || change.source_path.as_deref() == Some(&path)
                 || path.starts_with(&format!("{}/", change.path))
         }) {
@@ -2064,30 +2077,27 @@ impl PortableRepository {
                 "commit or restore changes to the target before writing it",
             ));
         }
-        if item.is_none() {
-            crate::worktree::validate_new_checkout_file(
-                working.root(),
-                &path,
-                working.hidden_files_mode(),
-            )?;
-        } else {
-            let expected = &tree[&path];
-            crate::commands::verify_working_file(
-                &working,
-                &path,
-                expected
-                    .blob_id
-                    .as_ref()
-                    .ok_or_else(|| corrupt("file has no blob"))?,
-                expected.size.ok_or_else(|| corrupt("file has no size"))?,
-            )?;
+        if !written {
+            if item.is_none() {
+                crate::worktree::validate_new_checkout_file(
+                    working.root(),
+                    &path,
+                    working.hidden_files_mode(),
+                )?;
+            } else {
+                let expected = &tree[&path];
+                crate::commands::verify_working_file(
+                    &working,
+                    &path,
+                    expected
+                        .blob_id
+                        .as_ref()
+                        .ok_or_else(|| corrupt("file has no blob"))?,
+                    expected.size.ok_or_else(|| corrupt("file has no size"))?,
+                )?;
+            }
+            working.write_working_file(&path, &content.blob_id, size, item.is_some())?;
         }
-        working.write_working_file(
-            &path,
-            &content.blob_id,
-            i64::try_from(content.size).map_err(invalid)?,
-            item.is_some(),
-        )?;
         #[cfg(test)]
         if review_tests::FAIL_CHECKOUT_FILE_COMMIT.with(|fail| fail.replace(false)) {
             return Err(invalid("injected failure before file acceptance"));

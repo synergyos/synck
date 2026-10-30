@@ -327,10 +327,15 @@ pub(crate) fn verify_projection(
             |row| row.get(0),
         )
         .optional()?;
-    if applied != Some(maximum) {
+    // A projection behind history is an interrupted update, which the next open
+    // replays. Only one at the same position can be compared with it.
+    if applied.is_some_and(|applied| applied > maximum) {
         findings.push(format!(
             "local projection sequence is {applied:?}, expected {maximum}"
         ));
+    }
+    if applied != Some(maximum) {
+        return Ok(());
     }
     let actual_count: i64 = connection.query_row(
         "SELECT count(*) FROM local_file_heads WHERE repo_id = ?1",

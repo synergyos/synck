@@ -364,6 +364,51 @@ fn verification_aliases_reject_corrupt_checkout_state_without_repairing_it() {
 }
 
 #[test]
+fn verification_accepts_a_projection_behind_history() {
+    let temp = tempfile::tempdir().unwrap();
+    run(temp.path(), &["init", "--author", "tester"]);
+    let db = rusqlite::Connection::open(temp.path().join(".synck/repository.local.sqlite3")).unwrap();
+    db.execute(
+        "UPDATE local_projection_state SET applied_repo_seq = applied_repo_seq - 1",
+        [],
+    )
+    .unwrap();
+    run(temp.path(), &["fsck"]);
+}
+
+#[test]
+fn repeating_a_write_finishes_one_killed_before_acceptance() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("repository");
+    std::fs::create_dir(&root).unwrap();
+    run(&root, &["init", "--author", "tester"]);
+    let source = temp.path().join("source.txt");
+    std::fs::write(&source, "saved\n").unwrap();
+    let source = source.to_str().unwrap();
+
+    std::fs::write(root.join("new.txt"), "saved\n").unwrap();
+    run(&root, &["repository", "create-file", "new.txt", source, "-m", "create"]);
+    let listed = json(&root, &["item", "list"]);
+    let items = listed["items"].as_array().unwrap();
+    let item = items.iter().find(|i| i["name"] == "new.txt").unwrap();
+    let item = item["item_id"].as_str().unwrap();
+
+    std::fs::write(temp.path().join("source.txt"), "again\n").unwrap();
+    std::fs::write(root.join("new.txt"), "again\n").unwrap();
+    run(&root, &["repository", "save-file", item, source, "-m", "save"]);
+    assert!(run(&root, &["status"]).contains("working tree clean"));
+
+    std::fs::write(root.join("new.txt"), "other work\n").unwrap();
+    let refused = Command::new(env!("CARGO_BIN_EXE_synck"))
+        .current_dir(&root)
+        .args(["repository", "save-file", item, source, "-m", "save"])
+        .output()
+        .unwrap();
+    assert!(!refused.status.success());
+    assert_eq!(std::fs::read(root.join("new.txt")).unwrap(), b"other work\n");
+}
+
+#[test]
 fn init_rejects_nested_repositories_before_publication() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("repo");
