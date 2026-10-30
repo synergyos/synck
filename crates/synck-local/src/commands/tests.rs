@@ -14,7 +14,7 @@ use synck_vcs::types::{
 };
 
 #[cfg(windows)]
-use super::entry_matches_revert_state;
+use super::{RevertItemState, entry_matches_revert_state};
 use super::{
     CommitOutcome,
     WORKTREE_RESTORE_INTENT_NAME, WORKTREE_RESTORE_INTENT_VERSION, WORKTREE_RESTORE_STAGE_NAME,

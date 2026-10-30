@@ -55,14 +55,16 @@ pub(super) fn replace_file_windows(source: &Path, destination: &Path) -> std::io
     let destination = windows_extended_length_path_units(
         &destination.as_os_str().encode_wide().collect::<Vec<_>>(),
     );
-    if unsafe {
+    // SAFETY: both paths are NUL-terminated by `windows_extended_length_path_units` and
+    // outlive the call.
+    let moved = unsafe {
         MoveFileExW(
             source.as_ptr(),
             destination.as_ptr(),
             MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
         )
-    } == 0
-    {
+    };
+    if moved == 0 {
         return Err(std::io::Error::last_os_error());
     }
     Ok(())

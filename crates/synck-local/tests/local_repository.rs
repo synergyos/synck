@@ -31,8 +31,10 @@ fn add_windows_attribute(path: &Path, attribute: u32) {
         .encode_wide()
         .chain(std::iter::once(0))
         .collect::<Vec<_>>();
+    // SAFETY: `path` is NUL-terminated above and outlives the call.
     let attributes = unsafe { GetFileAttributesW(path.as_ptr()) };
     assert_ne!(attributes, INVALID_FILE_ATTRIBUTES);
+    // SAFETY: `path` is NUL-terminated above and outlives the call.
     let result = unsafe { SetFileAttributesW(path.as_ptr(), attributes | attribute) };
     assert_ne!(
         result,
