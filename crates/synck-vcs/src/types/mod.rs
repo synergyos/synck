@@ -666,6 +666,25 @@ fn application_metadata(value: &mut serde_json::Value) -> Result<Option<Metadata
 }
 
 impl EventProposal {
+    /// Whether the event changes the item's name, place or lifecycle.
+    pub fn modifies_item(&self) -> bool {
+        self.set_parent.is_some()
+            || self.set_name.is_some()
+            || self.set_link.is_some()
+            || self.set_tombstoned.is_some()
+            || self.set_in_trash.is_some()
+    }
+
+    /// Whether the event changes the item's sequencing.
+    pub fn changes_federation(&self) -> bool {
+        self.set_is_federated.is_some() || self.set_federation_stream_id.is_some()
+    }
+
+    /// Whether the event does anything but add content and metadata.
+    pub fn changes_structure(&self) -> bool {
+        self.create_item.is_some() || self.modifies_item() || self.changes_federation()
+    }
+
     /// The revision of another item this event names as its source.
     pub fn source_revision(&self) -> Option<&ItemRevision> {
         self.merged_from.as_ref().or_else(|| {

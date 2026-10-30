@@ -3,6 +3,15 @@
 //! `Repo` is the main entry point for embedding Synck VCS. It wires together
 //! storage, sequencing, and invariants behind a small async API surface.
 
+mod admission;
+
+use admission::{
+    CommitHeader, EventPlacement, MissingCreateId, ResolvedEvents, apply_events, assign_ref_seqs,
+    check_base_seq_shape, check_base_seqs, check_final_state, check_ref_bases, insert_sealed_commit,
+    observe_ref_bases, observed_base_seqs, reject_source_revisions, resolve_events, seed_items,
+    structural_targets,
+};
+
 use crate::config::CoreConfig;
 use crate::errors::{CoreError, StorageError};
 use crate::limits::validate_commit_metadata;
@@ -1062,187 +1071,35 @@ impl Repo {
         )?;
         self.require_message_form(proposal.message.as_deref())?;
 
-        let combined_event_count = proposal
-            .events
-            .len()
-            .checked_add(ref_events.len())
-            .ok_or_else(|| CoreError::InvalidProposal("commit event count overflow".to_string()))?;
-        if combined_event_count == 0 {
+        if proposal.events.is_empty() && ref_events.is_empty() {
             return Err(CoreError::EmptyCommit);
         }
-
-        let mut observed_ref_bases: HashMap<ItemId, i64> = HashMap::new();
-        for event in &ref_events {
-            if event.event_type.trim().is_empty() {
-                return Err(CoreError::InvalidProposal(
-                    "ref event_type must not be empty".to_string(),
-                ));
-            }
-            if event.base_ref_seq < 0 {
-                return Err(CoreError::InvalidProposal(
-                    "base_ref_seq must be non-negative".to_string(),
-                ));
-            }
-            match observed_ref_bases.entry(event.owner_item_id.clone()) {
-                std::collections::hash_map::Entry::Vacant(entry) => {
-                    entry.insert(event.base_ref_seq);
-                }
-                std::collections::hash_map::Entry::Occupied(entry)
-                    if *entry.get() != event.base_ref_seq =>
-                {
-                    return Err(CoreError::InvalidProposal(
-                        "inconsistent base_ref_seq for owner within a single commit".to_string(),
-                    ));
-                }
-                std::collections::hash_map::Entry::Occupied(_) => {}
-            }
-        }
+        let observed_ref_bases = observe_ref_bases(&ref_events)?;
 
         if base_seq_mode == AppendBaseSeqMode::MaterializeUnderItemLocks
-            && proposal.events.iter().any(|ev| {
-                ev.create_item.is_some()
-                    || ev.set_parent.is_some()
-                    || ev.set_name.is_some()
-                    || ev.set_link.is_some()
-                    || ev.set_tombstoned.is_some()
-                    || ev.set_in_trash.is_some()
-                    || ev.set_is_federated.is_some()
-                    || ev.set_federation_stream_id.is_some()
-            })
+            && proposal.events.iter().any(EventProposal::changes_structure)
         {
             return Err(CoreError::InvalidProposal(
                 "server-materialized base_seq is restricted to content-only commits".to_string(),
             ));
         }
 
-        // Pre-resolve target item ids for all events, assigning new ids for
-        // create_item events that omit item_id and validating that non-create
-        // events specify an item_id.
-        let mut event_item_ids: Vec<ItemId> = Vec::with_capacity(proposal.events.len());
-        let mut created_items: Vec<CreatedItemInfo> = Vec::new();
-        let mut create_item_ids: HashSet<ItemId> = HashSet::new();
-        for (idx, ev) in proposal.events.iter().enumerate() {
-            // Validate structural/federation modifier combinations at the event level.
-            if ev.create_item.is_some()
-                && (ev.set_parent.is_some()
-                    || ev.set_name.is_some()
-                    || ev.set_link.is_some()
-                    || ev.set_tombstoned.is_some()
-                    || ev.set_in_trash.is_some()
-                    || ev.set_is_federated.is_some()
-                    || ev.set_federation_stream_id.is_some())
-            {
-                return Err(CoreError::InvalidProposal(
-                    "create_item events must not also use structural or federation modifiers"
-                        .to_string(),
-                ));
-            }
+        let resolved = resolve_events(&proposal.events, MissingCreateId::Assign)?;
+        check_base_seq_shape(&proposal.events, &resolved, base_seq_mode)?;
+        let ResolvedEvents {
+            event_item_ids,
+            created_items,
+            create_item_ids,
+        } = resolved;
 
-            if ev.set_is_federated.is_some() || ev.set_federation_stream_id.is_some() {
-                // Federation transitions in append() may only set is_federated = true
-                // with a non-empty federation_stream_id, and must be structurally pure.
-                match ev.set_is_federated {
-                    Some(true) => {
-                        let Some(fid) = ev.set_federation_stream_id.as_deref() else {
-                            return Err(CoreError::IllegalFederationTransition);
-                        };
-                        if fid.is_empty() {
-                            return Err(CoreError::IllegalFederationTransition);
-                        }
-                    }
-                    Some(false) => {
-                        // Unfederate must be ingested, not appended.
-                        return Err(CoreError::IllegalFederationTransition);
-                    }
-                    None => {
-                        // set_federation_stream_id without an explicit mode toggle is illegal.
-                        return Err(CoreError::IllegalFederationTransition);
-                    }
-                }
-
-                if ev.set_parent.is_some()
-                    || ev.set_name.is_some()
-                    || ev.set_tombstoned.is_some()
-                    || ev.set_in_trash.is_some()
-                {
-                    return Err(CoreError::IllegalFederationTransition);
-                }
-            }
-
-            if ev.create_item.is_some() {
-                let item_id = match &ev.item_id {
-                    Some(id) => id.clone(),
-                    None => ItemId::new(),
-                };
-
-                // Multiple create_item events for the same item_id are illegal.
-                if !create_item_ids.insert(item_id.clone()) {
-                    return Err(CoreError::InvalidProposal(
-                        "duplicate create_item for item_id within a single commit".to_string(),
-                    ));
-                }
-
-                event_item_ids.push(item_id.clone());
-                created_items.push(CreatedItemInfo {
-                    event_idx: idx,
-                    item_id,
-                });
-            } else {
-                let item_id = ev.item_id.clone().ok_or_else(|| {
-                    CoreError::InvalidProposal("event missing item_id".to_string())
-                })?;
-                event_item_ids.push(item_id);
-            }
-        }
-
-        // Enforce base_seq shape rules from the spec:
-        // - For new items created in this commit: base_seq MUST be null for all events.
-        // - For existing items:
-        //   - strict append: base_seq MUST be present (integer) for all events.
-        //   - append-mode (server-materialized): base_seq MUST be null for all events.
-        for (idx, item_id) in event_item_ids.iter().enumerate() {
-            let ev = &proposal.events[idx];
-            if create_item_ids.contains(item_id) {
-                if ev.base_seq.is_some() {
-                    return Err(CoreError::InvalidProposal(
-                        "base_seq must be null for events targeting a newly created item"
-                            .to_string(),
-                    ));
-                }
-            } else {
-                match base_seq_mode {
-                    AppendBaseSeqMode::RequirePresent => {
-                        if ev.base_seq.is_none() {
-                            return Err(CoreError::InvalidProposal(
-                                "base_seq must be present for events targeting an existing item"
-                                    .to_string(),
-                            ));
-                        }
-                    }
-                    AppendBaseSeqMode::MaterializeUnderItemLocks => {
-                        if ev.base_seq.is_some() {
-                            return Err(CoreError::InvalidProposal(
-                                "base_seq must be null for append-mode commits targeting an existing item"
-                                    .to_string(),
-                            ));
-                        }
-                    }
-                }
-            }
-        }
-
-        // If an item is created in this commit and has additional events,
-        // require that the first event for that item is the create_item event.
-        for created in &created_items {
-            let first_idx = event_item_ids
-                .iter()
-                .position(|id| *id == created.item_id)
-                .expect("created item id must be present in event_item_ids");
-            if first_idx != created.event_idx {
-                return Err(CoreError::InvalidProposal(
-                    "create_item event must be the first event for that item within the commit"
-                        .to_string(),
-                ));
+        // Federation transitions in append() may only set is_federated = true with
+        // a non-empty federation_stream_id, and must be structurally pure.
+        // Unfederate must be ingested, not appended.
+        for ev in proposal.events.iter().filter(|ev| ev.changes_federation()) {
+            let bound = ev.set_is_federated == Some(true)
+                && ev.set_federation_stream_id.as_deref().is_some_and(|id| !id.is_empty());
+            if !bound || ev.modifies_item() {
+                return Err(CoreError::IllegalFederationTransition);
             }
         }
 
@@ -1315,17 +1172,7 @@ impl Repo {
         for (item_id, _) in &combined_guards {
             lock_item_ids.insert(item_id.clone());
         }
-        for ev in &proposal.events {
-            if let Some(ci) = ev.create_item.as_ref()
-                && let Some(parent) = ci.parent_folder_id.as_ref()
-            {
-                lock_item_ids.insert(parent.clone());
-            }
-            if let Some(Some(parent)) = ev.set_parent.as_ref() {
-                lock_item_ids.insert(parent.clone());
-            }
-            lock_item_ids.extend(link_target(ev).cloned());
-        }
+        lock_item_ids.extend(proposal.events.iter().flat_map(structural_targets).cloned());
 
         // Read the current namespace parent for every existing rename or
         // relocation before locking. SET_NAME has no parent in its event, and
@@ -1469,70 +1316,22 @@ impl Repo {
         }
 
         // Load current item state for all touched items and apply basic invariants.
-        let mut items: HashMap<ItemId, ItemRow> = HashMap::new();
-        let tombstone = TombstoneFinality;
-        let mode_rule = SequencingModeRule;
         let ctx = InvariantContext {
             repo_id: &repo_id,
             op: operation_kind,
         };
-
         let commit_created_at = txn.acceptance_timestamp(&repo_id).await?;
-
-        for item_id in &state_item_ids {
-            // If this item is created in this commit, synthesize an ItemRow
-            // instead of loading from storage.
-            let is_created = create_item_ids.contains(item_id);
-
-            if is_created {
-                // Prevent accidental overwrite of an existing item. This cannot
-                // happen with core-assigned ids, but becomes possible when
-                // create_item proposals specify an explicit item_id.
-                if existing_rows_by_id.contains_key(item_id) {
-                    return Err(CoreError::ItemAlreadyExists {
-                        repo_id: repo_id.clone(),
-                        item_id: item_id.clone(),
-                    });
-                }
-
-                // Use the first create_item event for this item to seed fields.
-                let (idx, ev) = proposal
-                    .events
-                    .iter()
-                    .enumerate()
-                    .find(|(i, ev)| ev.create_item.is_some() && event_item_ids[*i] == *item_id)
-                    .expect("created item must have a corresponding event");
-
-                let ci = ev.create_item.as_ref().expect("checked above");
-                let state = ItemState::from_create(ci, self.config.default_sequencing_mode, None)
-                    .map_err(|e| map_create_error(&repo_id, item_id, ci, e))?;
-                let row = new_item_row(
-                    &repo_id,
-                    item_id.clone(),
-                    state,
-                    commit_created_at,
-                    proposal.author_id.clone(),
-                );
-
-                tombstone.check(&ctx, item_id, &row, &proposal.events[idx..=idx])?;
-                mode_rule.check(&ctx, item_id, &row, &proposal.events[idx..=idx])?;
-
-                items.insert(item_id.clone(), row);
-            } else {
-                let row =
-                    existing_rows_by_id
-                        .remove(item_id)
-                        .ok_or_else(|| CoreError::ItemNotFound {
-                            repo_id: repo_id.clone(),
-                            item_id: item_id.clone(),
-                        })?;
-
-                tombstone.check(&ctx, item_id, &row, &[])?;
-                mode_rule.check(&ctx, item_id, &row, &[])?;
-
-                items.insert(item_id.clone(), row);
-            }
-        }
+        let mut items = seed_items(
+            &ctx,
+            &state_item_ids,
+            &event_item_ids,
+            &create_item_ids,
+            &proposal.events,
+            &mut existing_rows_by_id,
+            commit_created_at,
+            &proposal.author_id,
+            self.config.default_sequencing_mode,
+        )?;
 
         // Snapshot pre-commit item state before applying in-commit structural modifiers.
         // This is used to avoid spurious uniqueness failures on rename/move swaps.
@@ -1555,82 +1354,13 @@ impl Repo {
             }
         }
 
-        // Enforce per-item base_seq consistency and CAS preconditions:
-        // for existing items, all events in this commit must agree on base_seq
-        // and that value must match the current head_seq under the repo lock.
-        let mut observed_base_seq: HashMap<ItemId, Option<i64>> = HashMap::new();
-        for (idx, item_id) in event_item_ids.iter().enumerate() {
-            let ev = &proposal.events[idx];
-            let current = observed_base_seq
-                .entry(item_id.clone())
-                .or_insert(ev.base_seq);
-            if *current != ev.base_seq {
-                return Err(CoreError::InvalidProposal(
-                    "inconsistent base_seq for item within a single commit".to_string(),
-                ));
-            }
-        }
-        for (item_id, base_seq) in &observed_base_seq {
-            if create_item_ids.contains(item_id) {
-                continue;
-            }
-            let Some(row) = items.get(item_id) else {
-                return Err(CoreError::ItemNotFound {
-                    repo_id: repo_id.clone(),
-                    item_id: item_id.clone(),
-                });
-            };
-            let found = base_seq.expect("existing-item base_seq presence was validated");
-            if found != row.head_seq {
-                return Err(CoreError::BaseSeqMismatch {
-                    repo_id: repo_id.clone(),
-                    item_id: item_id.clone(),
-                    expected: row.head_seq,
-                    found,
-                });
-            }
-        }
+        // For existing items, all events in this commit agree on base_seq and it
+        // matches the current head_seq under the repo lock.
+        let observed_base_seq = observed_base_seqs(&proposal.events, &event_item_ids)?;
+        check_base_seqs(&repo_id, &items, &observed_base_seq, &create_item_ids)?;
+        let ref_head_before = check_ref_bases(&repo_id, &items, &observed_ref_bases)?;
 
-        let mut ref_head_before: HashMap<ItemId, i64> = HashMap::new();
-        for (owner_item_id, base_ref_seq) in &observed_ref_bases {
-            let row = items
-                .get(owner_item_id)
-                .ok_or_else(|| CoreError::ItemNotFound {
-                    repo_id: repo_id.clone(),
-                    item_id: owner_item_id.clone(),
-                })?;
-            if create_item_ids.contains(owner_item_id) && *base_ref_seq != 0 {
-                return Err(CoreError::RefBaseSeqMismatch {
-                    repo_id: repo_id.clone(),
-                    owner_item_id: owner_item_id.clone(),
-                    expected: 0,
-                    found: *base_ref_seq,
-                });
-            }
-            if row.ref_head_seq != *base_ref_seq {
-                return Err(CoreError::RefBaseSeqMismatch {
-                    repo_id: repo_id.clone(),
-                    owner_item_id: owner_item_id.clone(),
-                    expected: row.ref_head_seq,
-                    found: *base_ref_seq,
-                });
-            }
-            ref_head_before.insert(owner_item_id.clone(), row.ref_head_seq);
-        }
-
-        // Apply in-commit structural modifiers (set_parent, set_name,
-        // set_tombstoned, set_in_trash, set_is_federated, set_federation_stream_id)
-        // in event order to derive the final per-item state for this commit.
-        //
-        // While doing so, capture parent_folder_id before/after each event so
-        // we can persist denormalized folder information alongside events.
-        let mut event_parent_after: Vec<Option<ItemId>> = Vec::with_capacity(proposal.events.len());
-        let mut event_parent_before: Vec<Option<ItemId>> =
-            Vec::with_capacity(proposal.events.len());
-
-        // Fast-path: content-only commits (chat messages, file content, etc.) should not pay for
-        // structural tree checks. The pre-commit graph is assumed valid; if we don't change parent
-        // edges, we cannot introduce cycles or missing parents here.
+        // The items whose ancestors must all stay live.
         let file_folder_parent_closure_item_ids: BTreeSet<ItemId> =
             if check_file_folder_parent_closure {
                 proposal
@@ -1647,87 +1377,21 @@ impl Repo {
             } else {
                 BTreeSet::new()
             };
-        let needs_parent_invariants = proposal
-            .events
-            .iter()
-            .any(|ev| ev.create_item.is_some() || ev.set_parent.is_some())
-            || !file_folder_parent_closure_item_ids.is_empty();
-        let needs_name_uniqueness = proposal.events.iter().any(|ev| {
-            ev.create_item.is_some()
-                || ev.set_parent.is_some()
-                || ev.set_name.is_some()
-                || ev.set_tombstoned.is_some()
-                || ev.set_in_trash.is_some()
-        });
+        let transitions =
+            apply_events(&repo_id, &mut items, &proposal.events, &event_item_ids)?;
+        let (ref_event_seqs, ref_head_after) =
+            assign_ref_seqs(&repo_id, &items, &ref_events, &ref_head_before)?;
+        check_final_state(
+            &ctx,
+            txn,
+            &items,
+            &proposal.events,
+            &file_folder_parent_closure_item_ids,
+        )
+        .await?;
 
-        for (idx, ev) in proposal.events.iter().enumerate() {
-            let item_id = &event_item_ids[idx];
-            let row = items.get_mut(item_id).expect("item state should exist");
-
-            // Once an item is tombstoned within a commit, no further events
-            // targeting it are allowed.
-            if matches!(row.lifecycle_state, LifecycleState::Tombstoned) {
-                return Err(CoreError::ItemTombstoned {
-                    repo_id: repo_id.clone(),
-                    item_id: item_id.clone(),
-                });
-            }
-
-            let mut state = ItemState::from(&*row);
-            let transition = apply_item_event(&mut state, ev).map_err(|error| map_transition_error(&repo_id, item_id, ev, error))?;
-            state.write_to(row);
-            event_parent_after.push(transition.parent_folder_id_after);
-            event_parent_before.push(transition.parent_folder_id_before);
-        }
-
-        let mut ref_head_after = ref_head_before.clone();
-        let mut ref_event_seqs = Vec::with_capacity(ref_events.len());
-        for event in &ref_events {
-            let row = items
-                .get(&event.owner_item_id)
-                .expect("validated ref owner must be loaded");
-            if matches!(row.lifecycle_state, LifecycleState::Tombstoned) {
-                return Err(CoreError::ItemTombstoned {
-                    repo_id: repo_id.clone(),
-                    item_id: event.owner_item_id.clone(),
-                });
-            }
-            let head = ref_head_after
-                .get_mut(&event.owner_item_id)
-                .expect("validated ref owner head must be loaded");
-            *head = head.checked_add(1).ok_or_else(|| {
-                CoreError::InvalidProposal("ref sequence overflow".to_string())
-            })?;
-            ref_event_seqs.push(*head);
-        }
-
-        if needs_parent_invariants {
-            // Enforce structural invariants on the final in-commit view.
-            check_parent_existence_and_type(&ctx, txn, &items).await?;
-            let ancestor_items = check_folder_acyclicity(&ctx, txn, &items).await?;
-            if check_file_folder_parent_closure {
-                check_file_folder_live_parent_closure(
-                    &ctx,
-                    &items,
-                    &ancestor_items,
-                    &file_folder_parent_closure_item_ids,
-                )?;
-            }
-        }
-
-        check_final_items(&ctx, txn, &items, needs_name_uniqueness).await?;
-
-        let can_use_head_only_item_updates = created_items.is_empty()
-            && proposal.events.iter().all(|ev| {
-                ev.create_item.is_none()
-                    && ev.set_parent.is_none()
-                    && ev.set_name.is_none()
-                    && ev.set_link.is_none()
-                    && ev.set_tombstoned.is_none()
-                    && ev.set_in_trash.is_none()
-                    && ev.set_is_federated.is_none()
-                    && ev.set_federation_stream_id.is_none()
-            });
+        let can_use_head_only_item_updates =
+            !proposal.events.iter().any(EventProposal::changes_structure);
 
         let occurred_at = proposal.occurred_at;
 
@@ -1740,122 +1404,31 @@ impl Repo {
 
         let event_item_seqs = Sequencer::assign_local_item_seqs(&mut items, &event_item_ids);
 
-        let commit_pk = CommitPk::new();
-        let mut events_digest_hasher = Sha256::new();
-        let mut payloads = self
-            .validate_payload_limits(&proposal.events, &ref_events)?
-            .into_iter();
-        let mut event_rows: Vec<EventInsertRow> = Vec::with_capacity(proposal.events.len());
-        for ((idx, ev), payload) in proposal.events.iter().enumerate().zip(payloads.by_ref()) {
-            let item_id = event_item_ids[idx].clone();
-            let item_seq = event_item_seqs[idx];
-            let item_row = items
-                .get(&item_id)
-                .expect("event item id must exist in items map");
-            validate_event_type_matches_item(
-                &item_id,
-                item_row.item_type.as_str(),
-                ev.event_type.as_str(),
-            )?;
-            let parent_after = event_parent_after[idx].clone();
-            let parent_before = event_parent_before[idx].clone();
-
-            let event_hash = compute_sha256_digest_bytes(&payload);
-            events_digest_hasher.update([COMMIT_EVENT_FAMILY_ITEM]);
-            events_digest_hasher.update(event_hash);
-
-            let event_row = EventInsertRow {
-                repo_id: repo_id.clone(),
-                commit_pk: commit_pk.clone(),
-                commit_event_idx: idx as i32,
-                item_id,
-                item_seq,
-                event_type: ev.event_type.clone(),
-                metadata: ev.set_metadata.as_ref().and_then(|value| value.payload()).cloned(),
-                payload,
-                event_payload_digest: event_hash,
-                created_at: commit_created_at,
-                parent_folder_id: parent_after,
-                parent_folder_id_before: parent_before,
-            };
-
-            event_rows.push(event_row);
-        }
-
-        let mut ref_event_rows: Vec<RefEventInsertRow> = Vec::with_capacity(ref_events.len());
-        let item_event_count = proposal.events.len();
-        for ((idx, event), payload) in ref_events.iter().enumerate().zip(payloads) {
-            let event_hash = compute_sha256_digest_bytes(&payload);
-            events_digest_hasher.update([COMMIT_EVENT_FAMILY_REF]);
-            events_digest_hasher.update(event_hash);
-            ref_event_rows.push(RefEventInsertRow {
-                repo_id: repo_id.clone(),
-                commit_pk: commit_pk.clone(),
-                commit_event_idx: i32::try_from(item_event_count + idx).map_err(|_| {
-                    CoreError::InvalidProposal("commit event index overflow".to_string())
-                })?,
-                owner_item_id: event.owner_item_id.clone(),
-                ref_seq: ref_event_seqs[idx],
-                event_type: event.event_type.clone(),
-                metadata: event.set_metadata.as_ref().and_then(|value| value.payload()).cloned(),
-                payload,
-                event_payload_digest: event_hash,
-                created_at: commit_created_at,
-            });
-        }
-
-        let events_digest_bytes: [u8; 32] = events_digest_hasher.finalize().into();
-        let events_digest =
-            Sha256Digest::parse(sha256_prefixed_hex_from_digest_bytes(events_digest_bytes))
-                .expect("internal sha256 digest construction must be valid");
-
-        let format_version = COMMIT_FORMAT_VERSION;
-        let canonical_commit_bytes = canonical_commit_bytes_for_hash(
-            &proposal.author_id,
-            &proposal.committer_id,
-            proposal.occurred_at,
-            proposal.message.as_deref(),
-            combined_event_count,
-            &events_digest,
-        )?;
-        let commit_id = compute_commit_id(&canonical_commit_bytes);
-
-        if let Err(err) = txn
-            .insert_commit_sealed(
-                &repo_id,
-                &commit_pk,
-                repo_seq,
-                Some(operation_id.as_str()),
-                format_version,
-                &proposal.author_id,
-                &proposal.committer_id,
-                proposal.message.as_deref(),
+        let rows = self.build_commit_rows(
+            &repo_id,
+            &CommitHeader {
+                author_id: &proposal.author_id,
+                committer_id: &proposal.committer_id,
+                message: proposal.message.as_deref(),
                 occurred_at,
-                commit_created_at,
-                &commit_id,
-                &events_digest,
-                i32::try_from(combined_event_count).map_err(|_| {
-                    CoreError::InvalidProposal("commit event count overflow".to_string())
-                })?,
-            )
-            .await
-        {
-            match err {
-                StorageError::UniqueViolation { .. } => {
-                    return Err(map_insert_commit_unique_violation(
-                        txn,
-                        &repo_id,
-                        Some(operation_id.as_str()),
-                        &commit_id,
-                    )
-                    .await?);
-                }
-                other => return Err(CoreError::StorageError(other)),
-            }
-        }
-        txn.record_authored_commit(&repo_id, &commit_pk, commit_created_at)
+                operation_id: Some(operation_id.as_str()),
+                created_at: commit_created_at,
+            },
+            &proposal.events,
+            &EventPlacement {
+                item_ids: &event_item_ids,
+                item_seqs: &event_item_seqs,
+                transitions: &transitions,
+            },
+            &items,
+            &ref_events,
+            &ref_event_seqs,
+        )?;
+        let commit_id = rows.sealed.commit_id.clone();
+        insert_sealed_commit(txn, &repo_id, &rows.sealed).await?;
+        txn.record_authored_commit(&repo_id, &rows.sealed.commit_pk, commit_created_at)
             .await?;
-        txn.append_events(&event_rows).await?;
+        txn.append_events(&rows.event_rows).await?;
         if can_use_head_only_item_updates {
             let mut head_updates: Vec<(ItemId, i64)> = Vec::with_capacity(touched_item_ids.len());
             for item_id in &touched_item_ids {
@@ -1892,7 +1465,7 @@ impl Repo {
         // Ref rows carry an owner foreign key. Persist newly created owners
         // and their head before inserting the rows; the transaction remains
         // the atomic publication boundary.
-        txn.append_ref_events(&ref_event_rows).await?;
+        txn.append_ref_events(&rows.ref_rows).await?;
 
         let accepted = AcceptedCommit {
             commit_id,
@@ -1908,9 +1481,7 @@ impl Repo {
             accepted,
             author_id: proposal.author_id,
             message: proposal.message,
-            event_count: i32::try_from(combined_event_count).map_err(|_| {
-                CoreError::InvalidProposal("commit event count overflow".to_string())
-            })?,
+            event_count: rows.sealed.event_count,
         })
     }
 
@@ -1990,25 +1561,15 @@ impl Repo {
         // Validate federation modifiers on events for this ingest.
         let mut mode_change_count = 0usize;
         let mut bootstrap_rebind_seen = false;
+        reject_source_revisions(&proposal.events)?;
         for (idx, ev) in proposal.events.iter().enumerate() {
-            if ev.source_revision().is_some() {
-                return Err(CoreError::InvalidProposal(
-                    "a federated event has no source revision".to_string(),
-                ));
-            }
             // If present, create_item must be the first event.
             if ev.create_item.is_some() && idx != 0 {
                 return Err(CoreError::InvalidProposal(
                     "create_item must be the first event in a federated proposal".to_string(),
                 ));
             }
-            if ev.create_item.is_some()
-                && (ev.set_parent.is_some()
-                    || ev.set_name.is_some()
-                    || ev.set_link.is_some()
-                    || ev.set_tombstoned.is_some()
-                    || ev.set_in_trash.is_some())
-            {
+            if ev.create_item.is_some() && ev.modifies_item() {
                 return Err(CoreError::InvalidProposal(
                     "create_item events must not also use structural modifiers".to_string(),
                 ));
@@ -2120,19 +1681,11 @@ impl Repo {
             // ingest from racing with local appends on the same item.
             let mut bootstrap_created = false;
             let commit_created_at: Timestamp;
-            let mut item_row = if let Some(item_row) = existing_item {
+            let item_row = if let Some(item_row) = existing_item {
                 let item_id = item_row.item_id.clone();
                 let mut lock_item_ids: BTreeSet<ItemId> = BTreeSet::new();
                 lock_item_ids.insert(item_id.clone());
-                if let Some(first) = proposal.events.first().and_then(|ev| ev.create_item.as_ref())
-                    && let Some(parent) = first.parent_folder_id.as_ref() {
-                        lock_item_ids.insert(parent.clone());
-                    }
-                for ev in &proposal.events {
-                    if let Some(Some(parent)) = ev.set_parent.as_ref() {
-                        lock_item_ids.insert(parent.clone());
-                    }
-                }
+                lock_item_ids.extend(proposal.events.iter().flat_map(structural_targets).cloned());
 
                 let mut lock_keys: Vec<i64> = lock_item_ids
                     .iter()
@@ -2177,15 +1730,7 @@ impl Repo {
 
                 let mut lock_item_ids: BTreeSet<ItemId> = BTreeSet::new();
                 lock_item_ids.insert(item_id.clone());
-                if let Some(parent) = ci.parent_folder_id.as_ref() {
-                    lock_item_ids.insert(parent.clone());
-                }
-                for ev in &proposal.events {
-                    if let Some(Some(parent)) = ev.set_parent.as_ref() {
-                        lock_item_ids.insert(parent.clone());
-                    }
-                    lock_item_ids.extend(link_target(ev).cloned());
-                }
+                lock_item_ids.extend(proposal.events.iter().flat_map(structural_targets).cloned());
 
                 let mut lock_keys: Vec<i64> = lock_item_ids
                     .iter()
@@ -2283,145 +1828,46 @@ impl Repo {
                 }
             }
 
-            // Apply in-commit structural modifiers for this item, capturing parent before/after.
-            let mut event_parent_after: Vec<Option<ItemId>> =
-                Vec::with_capacity(local_proposal.events.len());
-            let mut event_parent_before: Vec<Option<ItemId>> =
-                Vec::with_capacity(local_proposal.events.len());
-
-            let needs_parent_invariants = local_proposal
-                .events
-                .iter()
-                .any(|ev| ev.create_item.is_some() || ev.set_parent.is_some());
-            let needs_name_uniqueness = local_proposal.events.iter().any(|ev| {
-                ev.set_parent.is_some()
-                    || ev.set_name.is_some()
-                    || ev.set_tombstoned.is_some()
-                    || ev.set_in_trash.is_some()
-            });
             let head_only_item_update = !bootstrap_created
-                && local_proposal.events.iter().all(|ev| {
-                    ev.create_item.is_none()
-                        && ev.set_parent.is_none()
-                        && ev.set_name.is_none()
-                        && ev.set_link.is_none()
-                        && ev.set_tombstoned.is_none()
-                        && ev.set_in_trash.is_none()
-                        && ev.set_is_federated.is_none()
-                        && ev.set_federation_stream_id.is_none()
-                });
-
-            for ev in &local_proposal.events {
-                // Once an item is tombstoned within a proposal, no further events
-                // targeting it are allowed.
-                if matches!(item_row.lifecycle_state, LifecycleState::Tombstoned) {
-                    return Err(CoreError::ItemTombstoned {
-                        repo_id: repo_id.clone(),
-                        item_id: item_id.clone(),
-                    });
-                }
-
-                let mut state = ItemState::from(&item_row);
-                let transition = apply_item_event(&mut state, ev).map_err(|error| map_transition_error(&repo_id, &item_id, ev, error))?;
-                state.write_to(&mut item_row);
-                event_parent_before.push(transition.parent_folder_id_before);
-                event_parent_after.push(transition.parent_folder_id_after);
-            }
-
-            let mut items_map = HashMap::new();
-            items_map.insert(item_id.clone(), item_row.clone());
-
-            if needs_parent_invariants {
-                check_parent_existence_and_type(&ctx, txn, &items_map).await?;
-                check_folder_acyclicity(&ctx, txn, &items_map).await?;
-            }
-
-            check_final_items(&ctx, txn, &items_map, needs_name_uniqueness).await?;
+                && !local_proposal.events.iter().any(EventProposal::changes_structure);
+            let event_item_ids = vec![item_id.clone(); local_proposal.events.len()];
+            let mut items = HashMap::from([(item_id.clone(), item_row)]);
+            let transitions =
+                apply_events(&repo_id, &mut items, &local_proposal.events, &event_item_ids)?;
+            check_final_state(&ctx, txn, &items, &local_proposal.events, &BTreeSet::new()).await?;
 
             // Assign item_seq for each event starting from proposal.item_seq.
             let build_rows_start = Instant::now();
-            let commit_pk = CommitPk::new();
-
-            let mut events_digest_hasher = Sha256::new();
-            let payloads = self.validate_payload_limits(&local_proposal.events, &[])?;
-            let mut seq = proposal.item_seq;
-            let mut event_rows: Vec<EventInsertRow> =
-                Vec::with_capacity(local_proposal.events.len());
-            for ((idx, ev), payload) in local_proposal.events.iter().enumerate().zip(payloads) {
-                let ev_item_id = ev.item_id.clone().expect("validated above");
-                validate_event_type_matches_item(
-                    &ev_item_id,
-                    item_row.item_type.as_str(),
-                    ev.event_type.as_str(),
-                )?;
-                let parent_after = event_parent_after[idx].clone();
-                let parent_before = event_parent_before[idx].clone();
-
-                let event_hash = compute_sha256_digest_bytes(&payload);
-                events_digest_hasher.update([COMMIT_EVENT_FAMILY_ITEM]);
-                events_digest_hasher.update(event_hash);
-
-                let event_row = EventInsertRow {
-                    repo_id: repo_id.clone(),
-                    commit_pk: commit_pk.clone(),
-                    commit_event_idx: idx as i32,
-                    item_id: ev_item_id,
-                    item_seq: seq,
-                    event_type: ev.event_type.clone(),
-                    metadata: ev.set_metadata.as_ref().and_then(|value| value.payload()).cloned(),
-                    payload,
-                    event_payload_digest: event_hash,
+            let item_seqs: Vec<i64> =
+                (proposal.item_seq..).take(local_proposal.events.len()).collect();
+            let rows = self.build_commit_rows(
+                &repo_id,
+                &CommitHeader {
+                    author_id: &local_proposal.author_id,
+                    committer_id: &local_proposal.committer_id,
+                    message: local_proposal.message.as_deref(),
+                    occurred_at: local_proposal.occurred_at,
+                    operation_id: None,
                     created_at: commit_created_at,
-                    parent_folder_id: parent_after,
-                    parent_folder_id_before: parent_before,
-                };
-
-                event_rows.push(event_row);
-                seq += 1;
-            }
-
-            let events_digest_bytes: [u8; 32] = events_digest_hasher.finalize().into();
-            let events_digest = Sha256Digest::parse(sha256_prefixed_hex_from_digest_bytes(
-                events_digest_bytes,
-            ))
-            .expect("internal sha256 digest construction must be valid");
-
-            let canonical_commit_bytes = canonical_commit_bytes_for_hash(&local_proposal.author_id, &local_proposal.committer_id, local_proposal.occurred_at, local_proposal.message.as_deref(), local_proposal.events.len(), &events_digest)?;
-            let commit_id = compute_commit_id(&canonical_commit_bytes);
+                },
+                &local_proposal.events,
+                &EventPlacement {
+                    item_ids: &event_item_ids,
+                    item_seqs: &item_seqs,
+                    transitions: &transitions,
+                },
+                &items,
+                &[],
+                &[],
+            )?;
+            let commit_id = rows.sealed.commit_id.clone();
             build_rows_ms = build_rows_start.elapsed().as_millis() as u64;
 
             let insert_commit_start = Instant::now();
-            if let Err(err) = txn
-                .insert_commit_sealed(
-                    &repo_id,
-                    &commit_pk,
-                    repo_seq,
-                    None,
-                    COMMIT_FORMAT_VERSION,
-                    &local_proposal.author_id,
-                    &local_proposal.committer_id,
-                    local_proposal.message.as_deref(),
-                    local_proposal.occurred_at,
-                    commit_created_at,
-                    &commit_id,
-                    &events_digest,
-                    local_proposal.events.len() as i32,
-                )
-                .await
-            {
-                match err {
-                    StorageError::UniqueViolation { .. } => {
-                        return Err(map_insert_commit_unique_violation(
-                            txn, &repo_id, None, &commit_id,
-                        )
-                        .await?);
-                    }
-                    other => return Err(CoreError::StorageError(other)),
-                }
-            }
+            insert_sealed_commit(txn, &repo_id, &rows.sealed).await?;
             insert_commit_ms = insert_commit_start.elapsed().as_millis() as u64;
             let append_events_start = Instant::now();
-            txn.append_events(&event_rows).await?;
+            txn.append_events(&rows.event_rows).await?;
             append_events_ms = append_events_start.elapsed().as_millis() as u64;
 
             let commit_row = CommitRow {
@@ -2434,16 +1880,18 @@ impl Repo {
                 message: proposal.message.clone(),
                 occurred_at: proposal.occurred_at,
                 created_at: commit_created_at,
-                event_count: proposal.events.len() as i32,
-                events_digest: events_digest.clone(),
+                event_count: rows.sealed.event_count,
+                events_digest: rows.sealed.events_digest.clone(),
             };
 
+            let last_item_seq = *item_seqs.last().expect("non-empty events validated above");
             let update_item_start = Instant::now();
             if head_only_item_update {
-                txn.update_item_heads(&repo_id, &[(item_id.clone(), seq - 1)])
+                txn.update_item_heads(&repo_id, &[(item_id.clone(), last_item_seq)])
                     .await?;
             } else {
-                item_row.head_seq = seq - 1;
+                let mut item_row = items.remove(&item_id).expect("item state should exist");
+                item_row.head_seq = last_item_seq;
 
                 let parent_folder_id = item_row.parent_folder_id.clone();
                 let name = item_row.name.clone().unwrap_or_default();
@@ -2685,70 +2133,39 @@ impl Repo {
                 let repo_seq: Option<i64> = None;
                 let item_id = item_row.item_id.clone();
 
-                let commit_pk = CommitPk::new();
-                let mut events_digest_hasher = Sha256::new();
-                let payloads = self.validate_payload_limits(&proposal.events, &[])?;
-                let mut seq = proposal.item_seq;
-                let mut event_rows: Vec<EventInsertRow> = Vec::with_capacity(proposal.events.len());
-                for ((idx, ev), payload) in proposal.events.iter().enumerate().zip(payloads) {
-                    validate_event_type_matches_item(
-                        &item_id,
-                        item_row.item_type.as_str(),
-                        ev.event_type.as_str(),
-                    )?;
-                    let event_hash = compute_sha256_digest_bytes(&payload);
-                    events_digest_hasher.update([COMMIT_EVENT_FAMILY_ITEM]);
-                    events_digest_hasher.update(event_hash);
-                    event_rows.push(EventInsertRow {
-                        repo_id: repo_id.clone(),
-                        commit_pk: commit_pk.clone(),
-                        commit_event_idx: idx as i32,
-                        item_id: item_id.clone(),
-                        item_seq: seq,
-                        event_type: ev.event_type.clone(),
-                        metadata: ev.set_metadata.as_ref().and_then(|value| value.payload()).cloned(),
-                        payload,
-                        event_payload_digest: event_hash,
+                let event_item_ids = vec![item_id.clone(); proposal.events.len()];
+                let mut items = HashMap::from([(item_id, item_row.clone())]);
+                let transitions =
+                    apply_events(&repo_id, &mut items, &proposal.events, &event_item_ids)?;
+                let item_seqs: Vec<i64> =
+                    (proposal.item_seq..).take(proposal.events.len()).collect();
+                let rows = self.build_commit_rows(
+                    &repo_id,
+                    &CommitHeader {
+                        author_id: &proposal.author_id,
+                        committer_id: &proposal.committer_id,
+                        message: proposal.message.as_deref(),
+                        occurred_at: proposal.occurred_at,
+                        operation_id: None,
                         created_at: proposal_created_at,
-                        parent_folder_id: item_row.parent_folder_id.clone(),
-                        parent_folder_id_before: None,
-                    });
-                    seq += 1;
-                }
-
-                let events_digest_bytes: [u8; 32] = events_digest_hasher.finalize().into();
-                let events_digest =
-                    Sha256Digest::parse(sha256_prefixed_hex_from_digest_bytes(events_digest_bytes))
-                        .expect("internal sha256 digest construction must be valid");
-                let canonical_commit_bytes = canonical_commit_bytes_for_hash(
-                    &proposal.author_id,
-                    &proposal.committer_id,
-                    proposal.occurred_at,
-                    proposal.message.as_deref(),
-                    proposal.events.len(),
-                    &events_digest,
+                    },
+                    &proposal.events,
+                    &EventPlacement {
+                        item_ids: &event_item_ids,
+                        item_seqs: &item_seqs,
+                        transitions: &transitions,
+                    },
+                    &items,
+                    &[],
+                    &[],
                 )?;
-                let commit_id = compute_commit_id(&canonical_commit_bytes);
+                let commit_id = rows.sealed.commit_id.clone();
                 build_rows_ms += build_rows_start.elapsed().as_millis() as u64;
 
-                sealed_commits.push(SealedCommitInsert {
-                    commit_pk: commit_pk.clone(),
-                    repo_seq,
-                    operation_id: None,
-                    format_version: COMMIT_FORMAT_VERSION,
-                    author_id: proposal.author_id.clone(),
-                    committer_id: proposal.committer_id.clone(),
-                    message: proposal.message.clone(),
-                    occurred_at: proposal.occurred_at,
-                    created_at: proposal_created_at,
-                    commit_id: commit_id.clone(),
-                    events_digest: events_digest.clone(),
-                    event_count: proposal.events.len() as i32,
-                });
-
-                item_row.head_seq = seq - 1;
+                item_row.head_seq = *item_seqs.last().expect("non-empty events validated above");
                 batch_event_count += proposal.events.len();
-                batch_event_rows.extend(event_rows);
+                batch_event_rows.extend(rows.event_rows);
+                sealed_commits.push(rows.sealed);
                 ingested_commits.push(IngestedCommit {
                     commit_id,
                     repo_seq,
@@ -2764,37 +2181,7 @@ impl Repo {
                 match err {
                     StorageError::UniqueViolation { .. } => {
                         for commit in &sealed_commits {
-                            if let Err(err) = txn
-                                .insert_commit_sealed(
-                                    &repo_id,
-                                    &commit.commit_pk,
-                                    commit.repo_seq,
-                                    commit.operation_id.as_deref(),
-                                    commit.format_version,
-                                    &commit.author_id,
-                                    &commit.committer_id,
-                                    commit.message.as_deref(),
-                                    commit.occurred_at,
-                                    commit.created_at,
-                                    &commit.commit_id,
-                                    &commit.events_digest,
-                                    commit.event_count,
-                                )
-                                .await
-                            {
-                                match err {
-                                    StorageError::UniqueViolation { .. } => {
-                                        return Err(map_insert_commit_unique_violation(
-                                            txn,
-                                            &repo_id,
-                                            None,
-                                            &commit.commit_id,
-                                        )
-                                        .await?);
-                                    }
-                                    other => return Err(CoreError::StorageError(other)),
-                                }
-                            }
+                            insert_sealed_commit(txn, &repo_id, commit).await?;
                         }
                     }
                     other => return Err(CoreError::StorageError(other)),
@@ -2923,12 +2310,6 @@ impl Repo {
         if proposal.events.is_empty() && proposal.ref_events.is_empty() {
             return Err(CoreError::EmptyCommit);
         }
-        let combined_event_count = proposal
-            .events
-            .len()
-            .checked_add(proposal.ref_events.len())
-            .ok_or_else(|| CoreError::InvalidProposal("commit event count overflow".to_string()))?;
-
         // Reject per-item federation transitions in domain ingests. A federated folder
         // replica is itself the boundary; individual items do not independently
         // participate in item-federation.
@@ -2946,73 +2327,13 @@ impl Repo {
             }
         }
 
-        // Pre-resolve target item ids for all events, requiring explicit ids.
-        let mut event_item_ids: Vec<ItemId> = Vec::with_capacity(proposal.events.len());
-        let mut created_items: Vec<CreatedItemInfo> = Vec::new();
-        let mut create_item_ids: HashSet<ItemId> = HashSet::new();
-        for (idx, ev) in proposal.events.iter().enumerate() {
-            if ev.source_revision().is_some() {
-                return Err(CoreError::InvalidProposal(
-                    "a federated event has no source revision".to_string(),
-                ));
-            }
-            if ev.create_item.is_some() {
-                let Some(item_id) = &ev.item_id else {
-                    return Err(CoreError::InvalidProposal(
-                        "create_item requires explicit item_id for federated domains".to_string(),
-                    ));
-                };
-
-                if !create_item_ids.insert(item_id.clone()) {
-                    return Err(CoreError::InvalidProposal(
-                        "duplicate create_item for item_id within a single commit".to_string(),
-                    ));
-                }
-                event_item_ids.push(item_id.clone());
-                created_items.push(CreatedItemInfo {
-                    event_idx: idx,
-                    item_id: item_id.clone(),
-                });
-            } else {
-                let item_id = ev.item_id.clone().ok_or_else(|| {
-                    CoreError::InvalidProposal("event missing item_id".to_string())
-                })?;
-                event_item_ids.push(item_id);
-            }
-        }
-
-        // Enforce base_seq shape rules from the spec:
-        // - For new items created in this commit: base_seq MUST be null for all events.
-        // - For existing items: base_seq MUST be present (integer) for all events.
-        for (idx, item_id) in event_item_ids.iter().enumerate() {
-            let ev = &proposal.events[idx];
-            if create_item_ids.contains(item_id) {
-                if ev.base_seq.is_some() {
-                    return Err(CoreError::InvalidProposal(
-                        "base_seq must be null for events targeting a newly created item"
-                            .to_string(),
-                    ));
-                }
-            } else if ev.base_seq.is_none() {
-                return Err(CoreError::InvalidProposal(
-                    "base_seq must be present for events targeting an existing item".to_string(),
-                ));
-            }
-        }
-
-        // Ensure per-item base_seq consistency within the commit.
-        let mut observed_base_seq: HashMap<ItemId, Option<i64>> = HashMap::new();
-        for (idx, item_id) in event_item_ids.iter().enumerate() {
-            let ev = &proposal.events[idx];
-            let current = observed_base_seq
-                .entry(item_id.clone())
-                .or_insert(ev.base_seq);
-            if *current != ev.base_seq {
-                return Err(CoreError::InvalidProposal(
-                    "inconsistent base_seq for item within a single commit".to_string(),
-                ));
-            }
-        }
+        reject_source_revisions(&proposal.events)?;
+        let resolved = resolve_events(&proposal.events, MissingCreateId::Reject)?;
+        check_base_seq_shape(&proposal.events, &resolved, AppendBaseSeqMode::RequirePresent)?;
+        let event_item_ids = &resolved.event_item_ids;
+        let create_item_ids = &resolved.create_item_ids;
+        let observed_base_seq = observed_base_seqs(&proposal.events, event_item_ids)?;
+        let ref_bases = observe_ref_bases(&proposal.ref_events)?;
 
         let domain_seq_end = proposal.domain_seq;
 
@@ -3027,16 +2348,7 @@ impl Repo {
                     .iter()
                     .map(|event| event.owner_item_id.clone()),
             );
-            for ev in &proposal.events {
-                if let Some(ci) = ev.create_item.as_ref()
-                    && let Some(parent) = ci.parent_folder_id.as_ref()
-                {
-                    lock_item_ids.insert(parent.clone());
-                }
-                if let Some(Some(parent)) = ev.set_parent.as_ref() {
-                    lock_item_ids.insert(parent.clone());
-                }
-            }
+            lock_item_ids.extend(proposal.events.iter().flat_map(structural_targets).cloned());
             let mut lock_keys: Vec<i64> = lock_item_ids
                 .iter()
                 .map(|item_id| advisory_lock_key_for_item(&repo_id, item_id))
@@ -3113,109 +2425,33 @@ impl Repo {
                 .map(|row| (row.item_id.clone(), row))
                 .collect();
 
-            // Load current item state for all touched items and apply basic invariants.
-            let mut items: HashMap<ItemId, ItemRow> = HashMap::new();
-            let tombstone = TombstoneFinality;
-            let mode_rule = SequencingModeRule;
             let ctx = InvariantContext {
                 repo_id: &repo_id,
                 op: OperationKind::Append,
             };
+            let mut items = seed_items(
+                &ctx,
+                &touched_items,
+                event_item_ids,
+                create_item_ids,
+                &local_proposal.events,
+                &mut existing_rows_by_id,
+                commit_created_at,
+                &local_proposal.author_id,
+                SequencingMode::Local,
+            )?;
 
-            for item_id in &touched_items {
-                let is_created = create_item_ids.contains(item_id);
-                if is_created {
-                    if existing_rows_by_id.contains_key(item_id) {
-                        return Err(CoreError::ItemAlreadyExists {
-                            repo_id: repo_id.clone(),
-                            item_id: item_id.clone(),
-                        });
-                    }
-
-                    let (idx, ev) = local_proposal
-                        .events
-                        .iter()
-                        .enumerate()
-                        .find(|(i, ev)| ev.create_item.is_some() && event_item_ids[*i] == *item_id)
-                        .expect("created item must have a corresponding event");
-                    let ci = ev.create_item.as_ref().expect("checked above");
-                    let state = ItemState::from_create(ci, SequencingMode::Local, None)
-                        .map_err(|e| map_create_error(&repo_id, item_id, ci, e))?;
-                    let row = new_item_row(
-                        &repo_id,
-                        item_id.clone(),
-                        state,
-                        commit_created_at,
-                        local_proposal.author_id.clone(),
-                    );
-                    tombstone.check(&ctx, item_id, &row, &local_proposal.events[idx..=idx])?;
-                    mode_rule.check(&ctx, item_id, &row, &local_proposal.events[idx..=idx])?;
-                    items.insert(item_id.clone(), row);
-                } else {
-                    let row = existing_rows_by_id.remove(item_id).ok_or_else(|| {
-                        CoreError::ItemNotFound {
-                            repo_id: repo_id.clone(),
-                            item_id: item_id.clone(),
-                        }
-                    })?;
-                    tombstone.check(&ctx, item_id, &row, &[])?;
-                    mode_rule.check(&ctx, item_id, &row, &[])?;
-                    items.insert(item_id.clone(), row);
-                }
-            }
-
-            for (item_id, base_seq) in &observed_base_seq {
-                if create_item_ids.contains(item_id) {
-                    continue;
-                }
-                let Some(row) = items.get(item_id) else {
-                    return Err(CoreError::ItemNotFound {
-                        repo_id: repo_id.clone(),
-                        item_id: item_id.clone(),
-                    });
-                };
-                let found = base_seq.expect("existing-item base_seq presence was validated");
-                if found != row.head_seq {
-                    return Err(CoreError::BaseSeqMismatch {
-                        repo_id: repo_id.clone(),
-                        item_id: item_id.clone(),
-                        expected: row.head_seq,
-                        found,
-                    });
-                }
-            }
-
-            let mut ref_bases = HashMap::<ItemId, i64>::new();
+            check_base_seqs(&repo_id, &items, &observed_base_seq, create_item_ids)?;
+            let ref_head_before = check_ref_bases(&repo_id, &items, &ref_bases)?;
             for event in &proposal.ref_events {
-                let owner =
-                    items
-                        .get(&event.owner_item_id)
-                        .ok_or_else(|| CoreError::ItemNotFound {
-                            repo_id: repo_id.clone(),
-                            item_id: event.owner_item_id.clone(),
-                        })?;
-                if owner.item_type != "FILE" {
+                if items
+                    .get(&event.owner_item_id)
+                    .is_some_and(|owner| owner.item_type != "FILE")
+                {
                     return Err(CoreError::InvalidProposal(format!(
                         "ref event owner {} is not a FILE",
                         event.owner_item_id
                     )));
-                }
-                if owner.lifecycle_state == LifecycleState::Tombstoned {
-                    return Err(CoreError::ItemTombstoned {
-                        repo_id: repo_id.clone(),
-                        item_id: event.owner_item_id.clone(),
-                    });
-                }
-                let expected = ref_bases
-                    .entry(event.owner_item_id.clone())
-                    .or_insert(owner.ref_head_seq);
-                if event.base_ref_seq != *expected {
-                    return Err(CoreError::RefBaseSeqMismatch {
-                        repo_id: repo_id.clone(),
-                        owner_item_id: event.owner_item_id.clone(),
-                        expected: *expected,
-                        found: event.base_ref_seq,
-                    });
                 }
             }
 
@@ -3223,193 +2459,43 @@ impl Repo {
             // when persisting final rows (Postgres unique indexes are immediate).
             let items_before_modifiers = items.clone();
 
-            let mut event_parent_after: Vec<Option<ItemId>> =
-                Vec::with_capacity(local_proposal.events.len());
-            let mut event_parent_before: Vec<Option<ItemId>> =
-                Vec::with_capacity(local_proposal.events.len());
+            let transitions =
+                apply_events(&repo_id, &mut items, &local_proposal.events, event_item_ids)?;
+            check_final_state(&ctx, txn, &items, &local_proposal.events, &BTreeSet::new()).await?;
 
-            let needs_parent_invariants = local_proposal
-                .events
-                .iter()
-                .any(|ev| ev.create_item.is_some() || ev.set_parent.is_some());
-            let needs_name_uniqueness = local_proposal.events.iter().any(|ev| {
-                ev.create_item.is_some()
-                    || ev.set_parent.is_some()
-                    || ev.set_name.is_some()
-                    || ev.set_link.is_some()
-                    || ev.set_tombstoned.is_some()
-                    || ev.set_in_trash.is_some()
-            });
-
-            for (idx, ev) in local_proposal.events.iter().enumerate() {
-                let item_id = &event_item_ids[idx];
-                let row = items.get_mut(item_id).expect("item state should exist");
-
-                if matches!(row.lifecycle_state, LifecycleState::Tombstoned) {
-                    return Err(CoreError::ItemTombstoned {
-                        repo_id: repo_id.clone(),
-                        item_id: item_id.clone(),
-                    });
-                }
-
-                let mut state = ItemState::from(&*row);
-                let transition = apply_item_event(&mut state, ev).map_err(|error| map_transition_error(&repo_id, item_id, ev, error))?;
-                state.write_to(row);
-                event_parent_before.push(transition.parent_folder_id_before);
-                event_parent_after.push(transition.parent_folder_id_after);
-            }
-
-            if needs_parent_invariants {
-                check_parent_existence_and_type(&ctx, txn, &items).await?;
-                check_folder_acyclicity(&ctx, txn, &items).await?;
-            }
-
-            check_final_items(&ctx, txn, &items, needs_name_uniqueness).await?;
-
-            let item_seqs = Sequencer::assign_local_item_seqs(&mut items, &event_item_ids);
-            let mut next_ref_seqs = ref_bases.clone();
-            let mut ref_seqs = Vec::with_capacity(proposal.ref_events.len());
-            for event in &proposal.ref_events {
-                let head = next_ref_seqs
-                    .get_mut(&event.owner_item_id)
-                    .expect("ref owner base was validated");
-                *head = head.checked_add(1).ok_or_else(|| {
-                    CoreError::InvalidProposal("ref sequence overflow".to_string())
-                })?;
-                ref_seqs.push(*head);
+            let item_seqs = Sequencer::assign_local_item_seqs(&mut items, event_item_ids);
+            let (ref_seqs, ref_head_after) =
+                assign_ref_seqs(&repo_id, &items, &proposal.ref_events, &ref_head_before)?;
+            for (owner_item_id, head) in &ref_head_after {
                 items
-                    .get_mut(&event.owner_item_id)
+                    .get_mut(owner_item_id)
                     .expect("ref owner was loaded")
                     .ref_head_seq = *head;
             }
 
-            let commit_pk = CommitPk::new();
-
-            let mut events_digest_hasher = Sha256::new();
-            let mut payloads = self
-                .validate_payload_limits(&local_proposal.events, &proposal.ref_events)?
-                .into_iter();
-            let mut event_rows: Vec<EventInsertRow> =
-                Vec::with_capacity(local_proposal.events.len());
-            for ((idx, ev), payload) in local_proposal
-                .events
-                .iter()
-                .enumerate()
-                .zip(payloads.by_ref())
-            {
-                let item_id = event_item_ids[idx].clone();
-                let item_seq = item_seqs[idx];
-                let item_row = items
-                    .get(&item_id)
-                    .expect("event item id must exist in items map");
-                validate_event_type_matches_item(
-                    &item_id,
-                    item_row.item_type.as_str(),
-                    ev.event_type.as_str(),
-                )?;
-                let parent_after = event_parent_after[idx].clone();
-                let parent_before = event_parent_before[idx].clone();
-
-                let event_hash = compute_sha256_digest_bytes(&payload);
-                events_digest_hasher.update([COMMIT_EVENT_FAMILY_ITEM]);
-                events_digest_hasher.update(event_hash);
-
-                let event_row = EventInsertRow {
-                    repo_id: repo_id.clone(),
-                    commit_pk: commit_pk.clone(),
-                    commit_event_idx: idx as i32,
-                    item_id,
-                    item_seq,
-                    event_type: ev.event_type.clone(),
-                    metadata: ev.set_metadata.as_ref().and_then(|value| value.payload()).cloned(),
-                    payload,
-                    event_payload_digest: event_hash,
+            let rows = self.build_commit_rows(
+                &repo_id,
+                &CommitHeader {
+                    author_id: &local_proposal.author_id,
+                    committer_id: &local_proposal.committer_id,
+                    message: local_proposal.message.as_deref(),
+                    occurred_at: local_proposal.occurred_at,
+                    operation_id: local_proposal.operation_id.as_deref(),
                     created_at: commit_created_at,
-                    parent_folder_id: parent_after,
-                    parent_folder_id_before: parent_before,
-                };
-
-                event_rows.push(event_row);
-            }
-
-            let mut ref_rows = Vec::with_capacity(proposal.ref_events.len());
-            for ((offset, (event, ref_seq)), payload) in proposal
-                .ref_events
-                .iter()
-                .zip(ref_seqs.iter().copied())
-                .enumerate()
-                .zip(payloads)
-            {
-                let event_hash = compute_sha256_digest_bytes(&payload);
-                events_digest_hasher.update([COMMIT_EVENT_FAMILY_REF]);
-                events_digest_hasher.update(event_hash);
-                ref_rows.push(RefEventInsertRow {
-                    repo_id: repo_id.clone(),
-                    commit_pk: commit_pk.clone(),
-                    commit_event_idx: i32::try_from(local_proposal.events.len() + offset).map_err(
-                        |_| CoreError::InvalidProposal("commit event index overflow".to_string()),
-                    )?,
-                    owner_item_id: event.owner_item_id.clone(),
-                    ref_seq,
-                    event_type: event.event_type.clone(),
-                    metadata: event.set_metadata.as_ref().and_then(|value| value.payload()).cloned(),
-                    payload,
-                    event_payload_digest: event_hash,
-                    created_at: commit_created_at,
-                });
-            }
-
-            let events_digest_bytes: [u8; 32] = events_digest_hasher.finalize().into();
-            let events_digest =
-                Sha256Digest::parse(sha256_prefixed_hex_from_digest_bytes(events_digest_bytes))
-                    .expect("internal sha256 digest construction must be valid");
-
-            let format_version = COMMIT_FORMAT_VERSION;
-            let canonical_commit_bytes = canonical_commit_bytes_for_hash(
-                &local_proposal.author_id,
-                &local_proposal.committer_id,
-                local_proposal.occurred_at,
-                local_proposal.message.as_deref(),
-                combined_event_count,
-                &events_digest,
+                },
+                &local_proposal.events,
+                &EventPlacement {
+                    item_ids: event_item_ids,
+                    item_seqs: &item_seqs,
+                    transitions: &transitions,
+                },
+                &items,
+                &proposal.ref_events,
+                &ref_seqs,
             )?;
-            let commit_id = compute_commit_id(&canonical_commit_bytes);
-
-            if let Err(err) = txn
-                .insert_commit_sealed(
-                    &repo_id,
-                    &commit_pk,
-                    repo_seq,
-                    local_proposal.operation_id.as_deref(),
-                    format_version,
-                    &local_proposal.author_id,
-                    &local_proposal.committer_id,
-                    local_proposal.message.as_deref(),
-                    local_proposal.occurred_at,
-                    commit_created_at,
-                    &commit_id,
-                    &events_digest,
-                    i32::try_from(combined_event_count).map_err(|_| {
-                        CoreError::InvalidProposal("commit event count overflow".to_string())
-                    })?,
-                )
-                .await
-            {
-                match err {
-                    StorageError::UniqueViolation { .. } => {
-                        return Err(map_insert_commit_unique_violation(
-                            txn,
-                            &repo_id,
-                            local_proposal.operation_id.as_deref(),
-                            &commit_id,
-                        )
-                        .await?);
-                    }
-                    other => return Err(CoreError::StorageError(other)),
-                }
-            }
-            txn.append_events(&event_rows).await?;
-            txn.append_ref_events(&ref_rows).await?;
+            let commit_id = rows.sealed.commit_id.clone();
+            insert_sealed_commit(txn, &repo_id, &rows.sealed).await?;
+            txn.append_events(&rows.event_rows).await?;
 
             // Persist updated item rows using the same parking/ordering strategy as append().
             persist_items_with_live_parking(
@@ -3417,9 +2503,11 @@ impl Repo {
                 &repo_id,
                 &items,
                 &items_before_modifiers,
-                &create_item_ids,
+                create_item_ids,
             )
             .await?;
+            // Ref rows carry an owner foreign key, so owners are persisted first.
+            txn.append_ref_events(&rows.ref_rows).await?;
 
             let updated_at = now();
             txn.federation_domain_set_last_seq(
@@ -3915,15 +3003,7 @@ fn prepare_existing_federated_ingest_events(
 }
 
 fn federated_proposal_is_content_only_existing_item(proposal: &FederatedProposal) -> bool {
-    proposal.events.iter().all(|ev| {
-        ev.create_item.is_none()
-            && ev.set_parent.is_none()
-            && ev.set_name.is_none()
-            && ev.set_tombstoned.is_none()
-            && ev.set_in_trash.is_none()
-            && ev.set_is_federated.is_none()
-            && ev.set_federation_stream_id.is_none()
-    })
+    !proposal.events.iter().any(EventProposal::changes_structure)
 }
 
 /// Return canonical item events followed by refs, enforcing fixed format limits.

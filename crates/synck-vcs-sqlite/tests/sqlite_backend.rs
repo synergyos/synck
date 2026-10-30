@@ -14,7 +14,7 @@ use synck_vcs::state::{
 use synck_vcs::storage::{Storage, StorageBackend};
 use synck_vcs::types::{
     COMMIT_FORMAT_VERSION, CommitEventRow, CommitId, CommitProposal, CreateItem, EventProposal,
-    FederatedProposal, ItemCursor, ItemId, ItemRow,
+    FederatedDomainProposal, FederatedProposal, ItemCursor, ItemId, ItemRevision, ItemRow,
     LifecycleState, RefEventProposal, RepoEventCursor, RepoId, SequencingMode, SubtreeClosureGuard,
     commit_id_to_digest_bytes,
 };
@@ -2544,4 +2544,153 @@ async fn sequencer_refuses_a_batch_that_inverts_item_order() {
         published_seq(&repo, &repo_id, &second.commit_id).await,
         None
     );
+}
+
+fn content_event(event_type: &str, content: Option<synck_vcs::content::EventContent>) -> EventProposal {
+    EventProposal { set_link: None, merged_from: None,
+        item_id: None,
+        event_type: event_type.to_string(),
+        set_metadata: None,
+        set_content: content,
+        create_item: None,
+        set_parent: None,
+        set_name: None,
+        set_tombstoned: None,
+        set_in_trash: None,
+        set_is_federated: None,
+        set_federation_stream_id: None,
+        base_seq: None,
+    }
+}
+
+fn federated(stream: &str, item_seq: i64, events: Vec<EventProposal>) -> FederatedProposal {
+    FederatedProposal {
+        federation_stream_id: stream.to_string(),
+        item_seq,
+        author_id: "author".to_string(),
+        committer_id: "author".to_string(),
+        message: None,
+        occurred_at: None,
+        events,
+    }
+}
+
+fn domain(domain_seq: i64, events: Vec<EventProposal>, ref_events: Vec<RefEventProposal>) -> FederatedDomainProposal {
+    FederatedDomainProposal {
+        domain_id: "domain".to_string(),
+        domain_seq,
+        author_id: "author".to_string(),
+        committer_id: "author".to_string(),
+        message: None,
+        occurred_at: None,
+        events,
+        ref_events,
+    }
+}
+
+#[tokio::test]
+async fn content_only_federated_commits_follow_the_item_rules() {
+    let (_dir, storage) = backend();
+    storage.init_schema().await.unwrap();
+    let repo_id = RepoId::new();
+    let repo = Repo::new(Storage::new(Arc::new(storage)), CoreConfig::default());
+    let stream = "content-stream";
+    let mut bind = content_event("FILE::FEDERATE", None);
+    bind.set_is_federated = Some(true);
+    bind.set_federation_stream_id = Some(stream.to_string());
+    repo.ingest(repo_id.clone(), federated(stream, 1, vec![create_event("file.txt"), bind]))
+        .await
+        .unwrap();
+    let bytes = || synck_vcs::content::EventContent::bytes(synck_vcs::types::ObjectId::from_digest([8; 32]));
+
+    let not_bytes = synck_vcs::content::EventContent::body(synck_vcs::types::ObjectId::from_digest([8; 32]));
+    let error = repo
+        .ingest_content_only_existing_item(
+            repo_id.clone(),
+            federated(stream, 3, vec![content_event("FILE::SET_CONTENT", Some(not_bytes))]),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(error, CoreError::InvalidProposal(_)), "{error:?}");
+
+    let mut merged = content_event("FILE::SET_CONTENT", Some(bytes()));
+    merged.merged_from = Some(ItemRevision { item_id: ItemId::new(), item_seq: 1 });
+    let error = repo
+        .ingest_content_only_existing_item(repo_id.clone(), federated(stream, 3, vec![merged]))
+        .await
+        .unwrap_err();
+    assert!(matches!(error, CoreError::InvalidProposal(_)), "{error:?}");
+
+    repo.ingest_content_only_existing_item(
+        repo_id.clone(),
+        federated(stream, 3, vec![content_event("FILE::SET_CONTENT", Some(bytes()))]),
+    )
+    .await
+    .unwrap();
+    let item = repo
+        .get_item_by_federation_stream_id(repo_id, stream.to_string())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(item.head_seq, 3);
+}
+
+#[tokio::test]
+async fn domain_commit_may_ref_an_item_it_creates() {
+    let (_dir, storage) = backend();
+    storage.init_schema().await.unwrap();
+    let repo_id = RepoId::new();
+    let repo = Repo::new(Storage::new(Arc::new(storage)), CoreConfig::default());
+    let owner = ItemId::new();
+    repo.ingest_domain(
+        repo_id.clone(),
+        domain(
+            1,
+            vec![create_item_event(owner.clone(), "FILE", None, "file.txt")],
+            vec![ref_event(owner.clone(), 0, "FILE_VERSION::CREATE")],
+        ),
+    )
+    .await
+    .unwrap();
+    let item = repo.get_item(repo_id, owner).await.unwrap().unwrap();
+    assert_eq!(item.ref_head_seq, 1);
+}
+
+#[tokio::test]
+async fn domain_commits_follow_the_append_shape_rules() {
+    let (_dir, storage) = backend();
+    storage.init_schema().await.unwrap();
+    let repo_id = RepoId::new();
+    let repo = Repo::new(Storage::new(Arc::new(storage)), CoreConfig::default());
+    let item_id = ItemId::new();
+    let invalid = async |proposal| {
+        let error = repo.ingest_domain(repo_id.clone(), proposal).await.unwrap_err();
+        assert!(matches!(error, CoreError::InvalidProposal(_)), "{error:?}");
+    };
+
+    let mut renamed_create = create_item_event(item_id.clone(), "FILE", None, "file.txt");
+    renamed_create.set_name = Some("other.txt".to_string());
+    invalid(domain(1, vec![renamed_create], Vec::new())).await;
+
+    let mut early = content_event("FILE::SET_CONTENT", None);
+    early.item_id = Some(item_id.clone());
+    early.base_seq = Some(0);
+    invalid(domain(
+        1,
+        vec![early, create_item_event(item_id.clone(), "FILE", None, "file.txt")],
+        Vec::new(),
+    ))
+    .await;
+
+    let create = || vec![create_item_event(item_id.clone(), "FILE", None, "file.txt")];
+    invalid(domain(1, create(), vec![ref_event(item_id.clone(), -1, "FILE_VERSION::CREATE")])).await;
+    invalid(domain(
+        1,
+        create(),
+        vec![
+            ref_event(item_id.clone(), 0, "FILE_VERSION::CREATE"),
+            ref_event(item_id.clone(), 1, "FILE_VERSION::CREATE"),
+        ],
+    ))
+    .await;
 }
