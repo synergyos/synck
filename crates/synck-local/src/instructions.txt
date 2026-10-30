@@ -108,12 +108,11 @@ create-file accepts the same message, author, time and operation ID options.
 
 EMAIL AND CHATS
 
-Commit .eml/.msg files to import EMAIL items with exact originals and
-attachments. Malformed email is rejected. A recorded email never changes and
-revert does not remove it. Deleting its source file changes nothing; an edited
-source is refused under the same name, so save it under a new file name to
-record a second email.
-    synck repository create-file <name> <email-or-file-source> --path <directory>
+An .eml or .msg file in a working tree is an ordinary file. import-email records
+it as an EMAIL with its exact original and attachments, and leaves the file alone.
+Malformed email is rejected. A recorded email never changes and revert does not
+remove it.
+    synck repository import-email <source> --path <directory> [--link <folder-id>] [--title <title>]
     synck repository create-chat <title> --path <directory>
     synck repository append-chat <chat-id> <body-file> --path <directory> [--attachment <file>...]
 Chats and email are read with item show; they are not ordinary filesystem folders.

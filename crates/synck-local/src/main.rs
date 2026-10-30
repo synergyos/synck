@@ -401,6 +401,22 @@ enum PortableCommand {
         #[arg(long, default_value = ".")]
         path: PathBuf,
     },
+    /// Import an .eml or .msg file as an EMAIL record; the file itself is left alone.
+    ImportEmail {
+        /// Local .eml or .msg file to read.
+        source: PathBuf,
+        /// Folder item ID to link it to; none by default.
+        #[arg(long)]
+        link: Option<String>,
+        /// Title; the message subject by default.
+        #[arg(long)]
+        title: Option<String>,
+        #[command(flatten)]
+        write: WriteArgs,
+        /// Repository directory.
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
+    },
     /// Record new content for an existing FILE item, keeping its identity.
     SaveFile {
         /// FILE item ID.
@@ -1785,6 +1801,29 @@ async fn run_portable(command: &PortableCommand, tokens: &[String]) -> synck_loc
                     parent.as_deref().map(portable_item_id).transpose()?,
                     name,
                     source,
+                    &options,
+                )
+                .await?;
+            println!(
+                "{}",
+                json!({"schema_version":1,"item_id":outcome.0,"commit_id":outcome.1})
+            );
+            Ok(())
+        }
+        .await,
+        PortableCommand::ImportEmail {
+            path,
+            source,
+            link,
+            title,
+            write,
+        } => async {
+            let options = write.options()?;
+            let outcome = open(path)?
+                .import_email_with(
+                    link.as_deref().map(portable_item_id).transpose()?,
+                    source,
+                    title.as_deref(),
                     &options,
                 )
                 .await?;

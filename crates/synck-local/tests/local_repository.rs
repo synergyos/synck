@@ -2377,14 +2377,14 @@ async fn repository_open_rejects_unknown_local_schema_objects() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(version, 13);
+    assert_eq!(version, 14);
     assert_eq!(storage_tables, 1);
     assert_eq!(foreign_views, 1);
 }
 
 #[tokio::test]
 async fn repository_open_rejects_all_old_local_schema_versions_without_migration() {
-    for version in 1..13 {
+    for version in 1..14 {
         let temporary = tempfile::tempdir().unwrap();
         init(temporary.path(), "author").await.unwrap();
         let database = temporary.path().join(".synck/repository.local.sqlite3");
@@ -3199,17 +3199,16 @@ async fn normalization_only_name_repair_preserves_bytes_and_is_idempotent() {
 }
 
 #[tokio::test]
-async fn deleted_caches_rebuild_without_reimporting_sources_or_losing_preferences() {
+async fn deleted_caches_rebuild_without_losing_edits_or_preferences() {
     let temporary = tempfile::tempdir().unwrap();
     let root = temporary.path();
     init(root, "author").await.unwrap();
     fs::create_dir(root.join("mail")).unwrap();
-    let original = b"From: sender@example.test\r\nSubject: Original\r\n\r\nbody";
-    fs::write(root.join("mail/message.eml"), original).unwrap();
+    fs::write(root.join("mail/message.eml"), b"original").unwrap();
     fs::write(root.join("file.txt"), b"first").unwrap();
     let mut repository = Repository::discover(root).await.unwrap();
     repository.set_hidden_files_mode(HiddenFilesMode::Track).unwrap();
-    repository.commit("import files and mail").await.unwrap();
+    repository.commit("add files").await.unwrap();
     repository.move_path(root, Path::new("mail"), Path::new("renamed"), "move mail folder").await.unwrap();
     let before = repository.log(None).await.unwrap().into_iter().map(|c| c.commit_id).collect::<Vec<_>>();
     drop(repository);
@@ -3224,9 +3223,9 @@ async fn deleted_caches_rebuild_without_reimporting_sources_or_losing_preference
     assert_eq!(changes.len(), 2, "{changes:?}");
     assert!(changes.iter().any(|c| c.path == "file.txt" && c.kind == ChangeKind::Modify));
     assert!(changes.iter().any(|c| c.path == ".hidden-new" && c.kind == ChangeKind::Add));
-    assert_eq!(fs::read(root.join("renamed/message.eml")).unwrap(), original);
+    assert_eq!(fs::read(root.join("renamed/message.eml")).unwrap(), b"original");
     let after = repository.log(None).await.unwrap().into_iter().map(|c| c.commit_id).collect::<Vec<_>>();
     assert_eq!(before, after);
-    fs::write(root.join("renamed/message.eml"), b"changed source").unwrap();
+    fs::write(root.join("renamed/message.eml"), b"changed").unwrap();
     assert!(repository.status().await.unwrap().iter().any(|c| c.path == "renamed/message.eml"));
 }

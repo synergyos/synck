@@ -1,6 +1,6 @@
 use std::fs;
 use std::io::{BufReader, Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use cap_fs_ext::{FollowSymlinks, MetadataExt, OpenOptionsFollowExt};
 use cap_std::fs::OpenOptions;
@@ -140,14 +140,6 @@ impl Repository {
         let actual = self.portable_view()?.copy_blob(blob_id, target)?;
         if actual != size { return Err(LocalError::Integrity("decoded object size mismatch".into())); }
         Ok(())
-    }
-
-    pub(crate) fn object_path(&self, blob_id: &ObjectId) -> PathBuf {
-        let digest = blob_id
-            .as_str()
-            .strip_prefix("sha256:")
-            .expect("ObjectId always has a sha256 prefix");
-        self.metadata_path().join("objects").join(digest)
     }
 }
 

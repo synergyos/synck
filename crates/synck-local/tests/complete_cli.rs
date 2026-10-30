@@ -144,11 +144,10 @@ async fn emails_chats_and_attachments_round_trip_with_identical_ids() {
         synck_local::portable::init_repository_with_mode(&root, "tester", mode)
             .await
             .unwrap();
-        fs::write(root.join("mail.eml"), b"From: a@example.test\r\nSubject: test\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=x\r\n\r\n--x\r\nContent-Type: text/plain\r\n\r\nhello\r\n--x\r\nContent-Type: application/octet-stream\r\nContent-Disposition: attachment; filename=a.txt\r\nContent-Transfer-Encoding: base64\r\n\r\nYXR0YWNobWVudA==\r\n--x--\r\n").unwrap();
-        let working = synck_local::Repository::discover(&root).await.unwrap();
-        working.commit("email with attachment").await.unwrap();
-        drop(working);
+        let mail = temp.path().join("mail.eml");
+        fs::write(&mail, b"From: a@example.test\r\nSubject: test\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=x\r\n\r\n--x\r\nContent-Type: text/plain\r\n\r\nhello\r\n--x\r\nContent-Type: application/octet-stream\r\nContent-Disposition: attachment; filename=a.txt\r\nContent-Transfer-Encoding: base64\r\n\r\nYXR0YWNobWVudA==\r\n--x--\r\n").unwrap();
         let mut repo = PortableRepository::open(&root).unwrap();
+        repo.import_email(None, &mail, None).await.unwrap();
         let (chat, _) = repo.create_chat("Discussion").await.unwrap();
         let source = temp.path().join("attach.bin");
         fs::write(&source, b"exact attachment").unwrap();
@@ -159,9 +158,11 @@ async fn emails_chats_and_attachments_round_trip_with_identical_ids() {
         assert!(shown.to_string().contains("ROOM"));
         assert!(shown.to_string().contains("CHAT::MESSAGE.ATTACHMENT"));
         let original = serde_json::to_value(repo.log(None, 512).await.unwrap()).unwrap();
-        let items = repo.list_items(None, None, 512).await.unwrap();
+        let mut items = repo.list_items(None, None, 512).await.unwrap().items;
+        items.extend(repo.list_records(None, None, 512).await.unwrap());
+        assert!(items.iter().any(|item| item.item_type == "EMAIL"));
         let mut snapshots = Vec::new();
-        for item in items.items {
+        for item in items {
             snapshots.push((
                 item.item_id.clone(),
                 serde_json::to_value(repo.show_item(&item.item_id, None).await.unwrap()).unwrap(),
@@ -267,15 +268,17 @@ async fn history_commands_refuse_partial_changes_across_checkout_boundaries() {
     synck_local::portable::init_repository(&root, "tester")
         .await
         .unwrap();
-    fs::write(
-        root.join("mail.eml"),
-        b"From: a@example.test\r\nSubject: test\r\n\r\nbody",
-    )
-    .unwrap();
+    let mail = temp.path().join("mail.eml");
+    fs::write(&mail, b"From: a@example.test\r\nSubject: test\r\n\r\nbody").unwrap();
     fs::write(root.join("a.txt"), b"a").unwrap();
     fs::write(root.join("b.txt"), b"b").unwrap();
+    let repo = synck_local::Repository::discover(&root).await.unwrap();
+    repo.commit("add files").await.unwrap();
+    drop(repo);
+    let mut portable = synck_local::portable::PortableRepository::open(&root).unwrap();
+    portable.import_email(None, &mail, None).await.unwrap();
+    drop(portable);
     let mut repo = synck_local::Repository::discover(&root).await.unwrap();
-    repo.commit("mixed import").await.unwrap();
     let history_len = repo.log(None).await.unwrap().len();
     assert!(
         repo.revert("HEAD", "reject partial inverse")
@@ -520,45 +523,6 @@ async fn imported_checkout_replays_moved_and_deleted_file_content_heads() {
         .unwrap();
     assert_eq!(fs::read(archive.join("deleted.txt")).unwrap(), b"deleted");
     working.verify_complete().await.unwrap();
-}
-
-#[test]
-fn an_edited_email_source_reports_how_to_keep_both_messages() {
-    let temp = tempfile::tempdir().unwrap();
-    let root = temp.path();
-    run(root, &["init", "--author", "tester"]);
-    let message = "From: a@example.test\r\nSubject: first\r\n\r\nhello\r\n";
-    fs::write(root.join("mail.eml"), message).unwrap();
-    run(root, &["commit", "-m", "record email"]);
-
-    fs::write(root.join("mail.eml"), message.replace("first", "second")).unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_synck"))
-        .current_dir(root)
-        .args(["commit", "-m", "edited email"])
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("an email is already recorded from this file"),
-        "{stderr}"
-    );
-
-    // Saving the changed message under a new name records a second email.
-    fs::rename(root.join("mail.eml"), root.join("mail-v2.eml")).unwrap();
-    run(root, &["commit", "-m", "second email"]);
-    assert_eq!(
-        run(root, &["status"]),
-        "nothing to commit, working tree clean\n"
-    );
-    let items = json(root, &["item", "list", "--records"]);
-    let emails = items["items"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|item| item["item_type"] == "EMAIL")
-        .count();
-    assert_eq!(emails, 2);
 }
 
 #[tokio::test]

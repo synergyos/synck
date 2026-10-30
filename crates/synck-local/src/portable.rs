@@ -2117,8 +2117,7 @@ impl PortableRepository {
             .await
     }
 
-    /// Create a FILE, or import an EML/MSG source as an EMAIL, with caller
-    /// attribution. Email imports do not accept an operation ID.
+    /// Create a FILE with caller attribution.
     pub async fn create_file_with(
         &mut self,
         parent: Option<ItemId>,
@@ -2128,22 +2127,6 @@ impl PortableRepository {
     ) -> Result<(ItemId, CommitId)> {
         self.writable()?;
         options.validate()?;
-        let filename = source.file_name();
-        let original_name = filename.map(|name| name.to_string_lossy());
-        if original_name.as_deref().is_some_and(|name| {
-            synck_items::imported_email::ImportedEmailFormat::from_name(name).is_some()
-        }) || synck_items::imported_email::ImportedEmailFormat::from_name(name).is_some()
-        {
-            let original_name = filename.and_then(|name| name.to_str()).ok_or_else(|| {
-                invalid("EMAIL_IMPORT_INVALID_FORMAT: email source filename must be UTF-8")
-            })?;
-            if options.operation_id.is_some() {
-                return Err(invalid("email imports do not accept an operation ID"));
-            }
-            return self
-                .import_email_with(parent, original_name, name, source, options)
-                .await;
-        }
         let location = Location {
             parent_item_id: parent.clone(),
             name: name.into(),
@@ -2201,52 +2184,36 @@ impl PortableRepository {
     /// Source header identities and dates never replace the local commit author/time.
     pub async fn import_email(
         &mut self,
-        parent: Option<ItemId>,
-        filename: &str,
+        link: Option<ItemId>,
         source: &Path,
+        title: Option<&str>,
     ) -> Result<(ItemId, CommitId)> {
-        self.import_email_named(parent, filename, filename, source)
+        self.import_email_with(link, source, title, &WriteOptions::default())
             .await
     }
 
-    /// Preserve the selected filename independently from the requested item name.
-    pub async fn import_email_named(
+    /// Import an email with caller attribution. Imports do not accept an
+    /// operation ID.
+    pub async fn import_email_with(
         &mut self,
-        parent: Option<ItemId>,
-        source_filename: &str,
-        requested_name: &str,
+        link: Option<ItemId>,
         source: &Path,
-    ) -> Result<(ItemId, CommitId)> {
-        self.import_email_with(
-            parent,
-            source_filename,
-            requested_name,
-            source,
-            &WriteOptions::default(),
-        )
-        .await
-    }
-
-    async fn import_email_with(
-        &mut self,
-        parent: Option<ItemId>,
-        source_filename: &str,
-        requested_name: &str,
-        source: &Path,
+        title: Option<&str>,
         options: &WriteOptions,
     ) -> Result<(ItemId, CommitId)> {
         self.writable()?;
-        if let Some(parent) = parent.as_ref() {
-            self.local_owner(parent, "FOLDER").await?;
+        options.validate()?;
+        if options.operation_id.is_some() {
+            return Err(invalid("email imports do not accept an operation ID"));
+        }
+        let filename = source.file_name().and_then(|name| name.to_str()).ok_or_else(|| {
+            invalid("EMAIL_IMPORT_INVALID_FORMAT: email source filename must be UTF-8")
+        })?;
+        if let Some(link) = link.as_ref() {
+            self.local_owner(link, "FOLDER").await?;
         }
         let id = ItemId::new();
-        let prepared = crate::email_import::prepare(
-            &id,
-            parent.clone(),
-            source_filename,
-            requested_name,
-            source,
-        )?;
+        let prepared = crate::email_import::prepare(&id, link, filename, title, source)?;
         for (_, bytes) in prepared.objects {
             self.store_bytes(&bytes)?;
         }
@@ -2280,9 +2247,6 @@ impl PortableRepository {
     ) -> Result<CommitId> {
         self.writable()?;
         options.validate()?;
-        if let Some(filename) = source.file_name() {
-            crate::email_import::reject_file_email_update(&filename.to_string_lossy())?;
-        }
         let content = self.store_file(source)?;
         if let Some((_, commit)) = self
             .replayed_file_write(options.operation_id, Some(id), None, &content)
@@ -2292,7 +2256,6 @@ impl PortableRepository {
         }
         let item = self.local_owner(id, "FILE").await?;
         let name = item.name.as_deref().ok_or_else(|| corrupt("a FILE has no name"))?;
-        crate::email_import::reject_file_email_update(name)?;
         let readable = self.show_item(id, None).await?;
         let head = match (
             readable.item.projection.content_blob_id,

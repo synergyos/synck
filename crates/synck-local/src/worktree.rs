@@ -372,9 +372,7 @@ impl Repository {
             .push(self.config().repo_id().to_string());
         let committed = self.committed_tree().await?;
         let cache = load_worktree_cache(self.storage(), self.config().repo_id().as_str())?;
-        let mut scan = self.scan_observed(&committed, &cache)?;
-        self.filter_imported_email_sources(&committed, &mut scan.working)
-            .await?;
+        let scan = self.scan_observed(&committed, &cache)?;
         let (changes, working_ids) = self.reconcile_observation(&committed, &scan)?;
         Ok((committed, scan.working, changes, working_ids))
     }
@@ -398,8 +396,6 @@ impl Repository {
         let (mut complete, mut scan) = self.scan_inspection(&committed, &cache)?;
         self.filter_checkout_observation(&mut complete);
         self.filter_checkout_observation(&mut scan.working);
-        self.filter_imported_email_sources(&committed, &mut scan.working)
-            .await?;
         let (changes, working_ids) = self.reconcile_observation(&committed, &scan)?;
         Ok((committed, complete, changes, working_ids))
     }

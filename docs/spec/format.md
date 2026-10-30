@@ -822,8 +822,7 @@ events stay, so the fact that it existed stays, and so does the source's PLAIN I
 which can confirm a guess at the whole message. Generated provider-import commit
 messages use counts and source account, never message subjects or addresses.
 
-The local writer stores `title` only when an import names the email differently from
-its source file.
+The local writer stores `title` only when the import names one.
 
 The local writer implements file import. No provider acquisition client ships
 in 0.2; this profile defines its stored-data boundary without adding an unused

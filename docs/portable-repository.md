@@ -62,7 +62,7 @@ It cannot prove another writer has stopped. Follow the command's required
 acknowledgements and preserve the source until its replacement is verified.
 
 Application integrations can use direct `repository create-file`, `save-file`,
-`create-chat` and `append-chat`; see [integration](integration.md). Recovery of an
+`import-email`, `create-chat` and `append-chat`; see [integration](integration.md). Recovery of an
 accepted but incompletely projected write uses `synck repository finalize PATH`.
 This explicit recovery verifies published checkpoints, repairs a missing or
 incorrect publication counter from the last published position, then publishes

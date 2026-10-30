@@ -100,14 +100,6 @@ CREATE TABLE local_worktree_scan_state (
     )
 ) STRICT;
 
-CREATE TABLE local_email_import_sources (
-    repo_id TEXT NOT NULL,
-    path TEXT NOT NULL CHECK (path <> ''),
-    item_id TEXT NOT NULL,
-    source_blob_id TEXT NOT NULL,
-    PRIMARY KEY (repo_id, path, item_id)
-) STRICT;
-
 CREATE TABLE local_object_digests (
     repo_id TEXT NOT NULL,
     object_id TEXT NOT NULL,
@@ -115,4 +107,4 @@ CREATE TABLE local_object_digests (
     PRIMARY KEY (repo_id, object_id)
 ) STRICT;
 
-INSERT INTO local_schema_meta(singleton, version) VALUES (1, 13);
+INSERT INTO local_schema_meta(singleton, version) VALUES (1, 14);

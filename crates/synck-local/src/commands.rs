@@ -332,7 +332,6 @@ struct PreparedWorkingCommit {
     events: Vec<EventProposal>,
     ref_events: Vec<RefEventProposal>,
     subtree_guards: Vec<SubtreeClosureGuard>,
-    email_objects: Vec<(String, Vec<u8>)>,
 }
 
 impl Repository {
@@ -411,7 +410,6 @@ impl Repository {
         self.guard_agent_paths(&reserved_paths)?;
         let captured = self.capture_changed_files(&working, &changes, captured_file)?;
         let prepared = self.prepare_working_commit(&committed, &working, &changes, &working_ids, message, &captured)?;
-        self.store_imported_email_objects(&prepared.email_objects)?;
         self.guard_agent_paths(&reserved_paths)?;
         let accepted = self
             .core()
@@ -470,105 +468,17 @@ impl Repository {
         message: Option<&str>,
         objects: &HashMap<String, ObjectId>,
     ) -> Result<PreparedWorkingCommit> {
-        for change in changes {
-            if change.kind != ChangeKind::Add
-                && change.kind != ChangeKind::Delete
-                && working[&change.path].kind == NodeKind::File
-            {
-                crate::email_import::reject_file_email_update(path_name(&change.path))?;
-                if change.content_changed {
-                    crate::email_import::reject_file_email_update(path_name(
-                        change.source_path.as_deref().unwrap_or(&change.path),
-                    ))?;
-                }
-            }
-        }
         let built_intents =
             build_intents(committed, working, changes, working_ids, &objects, None)?;
         let mut intents = built_intents.intents;
         let current = self.current_file_folder_context(&mut intents)?;
         let built = materialize_events(self.config().repo_id(), message, intents, &current)?;
-        let mut prepared = PreparedWorkingCommit {
+        Ok(PreparedWorkingCommit {
             created_ids: built_intents.created_ids,
             events: built.events,
             ref_events: built.ref_events,
             subtree_guards: built.subtree_guards,
-            email_objects: Vec::new(),
-        };
-        let mut emails = HashMap::new();
-        for change in changes
-            .iter()
-            .filter(|change| change.kind == ChangeKind::Add)
-        {
-            let filename = path_name(&change.path);
-            if working[&change.path].kind != NodeKind::File
-                || synck_items::imported_email::ImportedEmailFormat::from_name(filename).is_none()
-            {
-                continue;
-            }
-            let id = &prepared.created_ids[&change.path];
-            let create = prepared
-                .events
-                .iter()
-                .find(|event| event.item_id.as_ref() == Some(id) && event.create_item.is_some())
-                .and_then(|event| event.create_item.as_ref())
-                .expect("materialized FILE creation");
-            let email = crate::email_import::prepare(
-                id,
-                create.parent_folder_id.clone(),
-                filename,
-                filename,
-                &self.root_path().join(display_to_path(&change.path)),
-            )?;
-            self.reject_recorded_email_path(&change.path)?;
-            if Some(email.source_plain_digest.as_str()) != working[&change.path].digest_hex.as_deref() {
-                return Err(LocalError::Invalid(format!(
-                    "email source changed while parsing: {}",
-                    change.path
-                )));
-            }
-            prepared.email_objects.extend(email.objects);
-            emails.insert(id.clone(), email.events);
-        }
-        if !emails.is_empty() {
-            let mut events = Vec::new();
-            for event in prepared.events {
-                if let Some(id) = event.item_id.as_ref() {
-                    if let Some(email_events) = emails.get_mut(id) {
-                        if event.create_item.is_some() {
-                            events.append(email_events);
-                        }
-                        continue;
-                    }
-                }
-                events.push(event);
-            }
-            prepared.events = events;
-            prepared
-                .ref_events
-                .retain(|event| !emails.contains_key(&event.owner_item_id));
-        }
-        Ok(prepared)
-    }
-
-    /// A recorded email never changes, so a changed source at its path is a
-    /// mistake, not a second message. Say what to do instead.
-    fn reject_recorded_email_path(&self, path: &str) -> Result<()> {
-        let connection = crate::local_database::open_readonly(self.storage())
-            .map_err(|error| LocalError::Integrity(error.to_string()))?;
-        let recorded: bool = connection.query_row(
-            "SELECT EXISTS(SELECT 1 FROM local_email_import_sources s \
-             JOIN vcs_items i ON i.repo_id = s.repo_id AND i.item_id = s.item_id \
-             WHERE s.repo_id = ?1 AND s.path = ?2 AND i.lifecycle_state = 'LIVE')",
-            params![self.config().repo_id().as_str(), path],
-            |row| row.get(0),
-        )?;
-        if recorded {
-            return Err(LocalError::Invalid(format!(
-                "{path}: an email is already recorded from this file; a recorded email never changes, so save the changed message under a new file name or put the original file back"
-            )));
-        }
-        Ok(())
+        })
     }
 
     pub async fn revert(&self, revision: &str, message: &str) -> Result<String> {
@@ -1211,9 +1121,6 @@ impl Repository {
             }
         }
         let (destination_parent, new_name) = split_display_path(&destination);
-        if node.kind == NodeKind::File {
-            crate::email_import::reject_file_email_update(new_name)?;
-        }
         if node.kind == NodeKind::Folder
             && destination_parent
                 .is_some_and(|parent| parent == source || parent.starts_with(&format!("{source}/")))
@@ -3860,8 +3767,6 @@ impl Repository {
         if changes.is_empty() {
             return Ok(false);
         }
-        let mut retained_directories = BTreeSet::new();
-        let mut retained_sources = BTreeSet::new();
         if let Some(expected) = expected {
             let all = self.complete_file_tree().await?;
             let mut observed =
@@ -3870,30 +3775,10 @@ impl Repository {
             if worktree_restore_manifest(&observed, &HashMap::new())? != expected {
                 return Err(LocalError::Invalid("working tree changed during checkout materialization; preserve the files and retry recovery after resolving the change".into()));
             }
-            let source_paths: BTreeSet<_> = observed.keys().cloned().collect();
-            retained_directories = self
-                .filter_imported_email_sources(&committed, &mut observed)
-                .await?;
-            retained_sources = source_paths
-                .into_iter()
-                .filter(|path| !observed.contains_key(path))
-                .collect();
-            retained_sources.extend(retained_directories.iter().cloned());
         }
         let head = self.log(Some(1)).await?.into_iter().next();
-        let mut items = build_worktree_restore_items(&committed, &working, &working_ids)?;
-        items.retain(|item| {
-            !(item.item_type == "FOLDER"
-                && item.before.is_none()
-                && retained_directories.contains(&item.after.path))
-        });
-        reject_ignored_restore_descendants(
-            self.root(),
-            &committed,
-            &items,
-            &working,
-            &retained_sources,
-        )?;
+        let items = build_worktree_restore_items(&committed, &working, &working_ids)?;
+        reject_ignored_restore_descendants(self.root(), &committed, &items, &working)?;
         self.validate_inverse_objects(&items)?;
         self.validate_inverse_destinations(&items)?;
         let intent = WorktreeRestoreIntent {
@@ -4928,7 +4813,6 @@ fn reject_ignored_restore_descendants(
     committed: &BTreeMap<String, CommittedNode>,
     items: &[RevertIntentItem],
     working: &BTreeMap<String, WorkingNode>,
-    retained_sources: &BTreeSet<String>,
 ) -> Result<()> {
     let ignore_changes = items.iter().any(|item| {
         item.after.path == ".synckignore"
@@ -4939,10 +4823,7 @@ fn reject_ignored_restore_descendants(
     });
     if ignore_changes {
         let strict = crate::worktree::scan_canonical_without_ignore(root, committed)?;
-        if let Some(path) = strict
-            .keys()
-            .find(|path| !working.contains_key(*path) && !retained_sources.contains(*path))
-        {
+        if let Some(path) = strict.keys().find(|path| !working.contains_key(*path)) {
             return Err(LocalError::Invalid(format!(
                 "restore of .synckignore would expose ignored entry: {path}"
             )));

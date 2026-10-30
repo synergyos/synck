@@ -27,7 +27,7 @@ use crate::chunk_store::{ChunkStore, OBJECT_STORE_FILE, StorageMode};
 use crate::error::{IoContext, LocalError, Result};
 
 use crate::portable::FORMAT_VERSION;
-const LOCAL_SCHEMA_VERSION: i64 = 13;
+const LOCAL_SCHEMA_VERSION: i64 = 14;
 pub(crate) const MONITOR_LOCK_FILE: &str = "monitor.lock";
 const PAGE_SIZE: usize = 1_024;
 const SQLITE_ITEM_ID_CHUNK_SIZE: usize = 900;
@@ -1035,9 +1035,6 @@ impl Repository {
             let CommitEventRow::Item(event) = event else {
                 continue;
             };
-            if event.event_type == "EMAIL::CREATE" {
-                crate::email_import::project_source_observation(transaction, event)?;
-            }
             if !synck_file_folder::is_file_content_event(&event.event_type) {
                 continue;
             }

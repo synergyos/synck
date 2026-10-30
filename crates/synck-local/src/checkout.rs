@@ -239,15 +239,12 @@ impl Repository {
         // Inspect every newly selected path before changing persistent selection.
         // Unknown entries, symlinks and modified bytes are never overwritten.
         let mut source = crate::worktree::scan_canonical_without_ignore(self.root(), &all)?;
-        let mut working = source.clone();
-        self.filter_imported_email_sources(&all, &mut working)
-            .await?;
         let previous_tree = all
             .iter()
             .filter(|(p, _)| selected(&previous, p))
             .map(|(p, n)| (p.clone(), n.clone()))
             .collect::<BTreeMap<_, _>>();
-        let previous_working = working
+        let previous_working = source
             .iter()
             .filter(|(p, _)| selected(&previous, p))
             .map(|(p, n)| (p.clone(), n.clone()))
@@ -258,7 +255,7 @@ impl Repository {
             .filter(|(p, _)| selected(&paths, p))
             .map(|(p, n)| (p.clone(), n.clone()))
             .collect::<BTreeMap<_, _>>();
-        for (path, observed) in &working {
+        for (path, observed) in &source {
             if !selected(&paths, path) {
                 continue;
             }

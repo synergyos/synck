@@ -103,8 +103,9 @@ available with `--storage-mode`. File exports and restores return exact source
 bytes.
 
 An `.eml` or `.msg` file in a working tree is an ordinary FILE. Committing never
-converts it. An explicit import creates an EMAIL record linked to a folder, and an
-explicit export writes its original source to disk. An email has no name: its
+converts it. `synck repository import-email` creates an EMAIL record, linked to a
+folder with `--link`, and leaves the file alone. `synck item export` writes its
+original source to disk. An email has no name: its
 title is its subject unless set otherwise, and two emails may share a title.
 Originals and extracted attachments are retained; Markdown/HTML rendering is
 computed when read. EMAIL creation metadata records the parser version.

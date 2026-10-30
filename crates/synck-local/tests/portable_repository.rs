@@ -1126,7 +1126,7 @@ async fn local_email_import_preserves_source_and_materializes_one_atomic_email()
     fs::write(&source, bytes).unwrap();
     let mut repository = PortableRepository::open(&fixture.source).unwrap();
     let (id, commit) = repository
-        .create_file(Some(fixture.folder.clone()), "source.EML", &source)
+        .import_email(Some(fixture.folder.clone()), &source, None)
         .await
         .unwrap();
     let item = repository.show_item(&id, None).await.unwrap();
@@ -1167,18 +1167,23 @@ async fn local_email_import_preserves_source_and_materializes_one_atomic_email()
 }
 
 #[tokio::test]
-async fn local_email_import_rejects_malformed_sources_without_creating_file_fallback() {
+async fn local_email_import_rejects_bad_sources_without_writing() {
     let fixture = fixture().await;
     let source = fixture.root.join("bad.msg");
     let bytes = b"this is not an Outlook message";
     fs::write(&source, bytes).unwrap();
+    let not_mail = fixture.root.join("message.txt");
+    fs::write(&not_mail, b"From: sender@example.test\r\n\r\nbody").unwrap();
     let mut repository = PortableRepository::open(&fixture.source).unwrap();
     let before = repository.verify().await.unwrap();
-    let error = repository
-        .create_file(None, "bad.msg", &source)
-        .await
-        .unwrap_err();
-    assert!(error.to_string().contains("EMAIL_IMPORT_"));
+    for (path, title, expected) in [
+        (&source, None, "EMAIL_IMPORT_"),
+        (&not_mail, None, "EMAIL_IMPORT_INVALID_FORMAT"),
+        (&source, Some(" "), "title must not be empty"),
+    ] {
+        let error = repository.import_email(None, path, title).await.unwrap_err();
+        assert!(error.to_string().contains(expected), "{error}");
+    }
     let after = repository.verify().await.unwrap();
     assert_eq!(
         (before.commits, before.items, before.objects),
@@ -1188,100 +1193,101 @@ async fn local_email_import_rejects_malformed_sources_without_creating_file_fall
 }
 
 #[tokio::test]
-async fn complete_checkout_imports_email_additions_without_file_fallback_or_reimport() {
+async fn email_files_stay_files_through_commit_edit_and_rename() {
     let fixture = fixture().await;
     let mut portable = PortableRepository::open(&fixture.source).unwrap();
+    // A new source may hold an email; it is still the FILE's next bytes.
+    let saved = fixture.root.join("new.eml");
+    fs::write(&saved, b"From: sender@example.test\r\n\r\nsaved").unwrap();
+    portable.save_file(&fixture.file, &saved).await.unwrap();
     portable.enable_checkout("local-editor", &[]).await.unwrap();
     drop(portable);
-    let source = fixture.source.join("documents/new.EML");
-    let bytes =
+    let path = fixture.source.join("documents/new.EML");
+    let original =
         include_bytes!("../../synck-items/tests/fixtures/imported_email/representative.eml");
-    fs::write(&source, bytes).unwrap();
+    fs::write(&path, original).unwrap();
+    fs::write(fixture.source.join("bad.msg"), b"not a message").unwrap();
     let repository = synck_local::Repository::discover(&fixture.source)
         .await
         .unwrap();
-    let committed = repository.commit("Import message").await.unwrap();
-    assert!(matches!(
-        committed,
-        synck_local::CommitOutcome::Committed(_)
-    ));
-    assert!(
-        repository.status().await.unwrap().is_empty(),
-        "unchanged imported source must not be imported twice"
-    );
-    assert_eq!(fs::read(&source).unwrap(), bytes);
+    repository.commit("Add message files").await.unwrap();
+    assert!(repository.status().await.unwrap().is_empty());
+
+    fs::write(&path, b"edited message").unwrap();
+    repository.commit("Edit the message").await.unwrap();
+    fs::rename(&path, fixture.source.join("documents/renamed.txt")).unwrap();
+    repository.commit("Rename it").await.unwrap();
+    fs::rename(
+        fixture.source.join("documents/renamed.txt"),
+        fixture.source.join("documents/renamed.msg"),
+    )
+    .unwrap();
+    repository.commit("Rename it back").await.unwrap();
+    assert!(repository.status().await.unwrap().is_empty());
     drop(repository);
+
     let portable = PortableRepository::open(&fixture.source).unwrap();
     portable.verify().await.unwrap();
-    let records = portable.list_records(Some(&fixture.folder), None, 100).await.unwrap();
-    assert!(records.iter().any(|item| item.item_type == "EMAIL"));
+    assert!(portable.list_records(None, None, 100).await.unwrap().iter()
+        .all(|item| item.item_type != "EMAIL"));
     let page = portable
         .list_items(Some(&fixture.folder), None, 100)
         .await
         .unwrap();
-    assert!(
-        !page
-            .items
-            .iter()
-            .any(|item| item.item_type == "FILE" && item.name == Some("new.EML".to_string()))
-    );
+    assert!(page.items.iter().any(|item| {
+        item.item_type == "FILE" && item.name.as_deref() == Some("renamed.msg")
+    }));
 }
 
 #[tokio::test]
-async fn complete_checkout_rejects_malformed_email_before_any_sibling_commit() {
-    let fixture = fixture().await;
-    let mut portable = PortableRepository::open(&fixture.source).unwrap();
-    portable.enable_checkout("local-editor", &[]).await.unwrap();
-    drop(portable);
-    fs::write(fixture.source.join("new.txt"), b"valid file").unwrap();
-    fs::write(fixture.source.join("bad.eml"), b"not a message").unwrap();
-    let repository = synck_local::Repository::discover(&fixture.source)
-        .await
-        .unwrap();
-    let before = repository.log(None).await.unwrap().len();
-    let error = repository
-        .commit("Reject malformed mail")
-        .await
-        .unwrap_err();
-    assert!(
-        error.to_string().contains("EMAIL_IMPORT_INVALID_FORMAT"),
-        "{error}"
-    );
-    assert_eq!(repository.log(None).await.unwrap().len(), before);
-    assert_eq!(
-        fs::read(fixture.source.join("bad.eml")).unwrap(),
-        b"not a message"
-    );
-}
-
-#[tokio::test]
-async fn email_complete_init_preserves_existing_files_and_supports_default_commit() {
+async fn import_email_records_an_email_and_leaves_the_working_file_alone() {
     let temporary = tempfile::tempdir().unwrap();
-    let root = temporary.path().join("existing");
-    fs::create_dir(&root).unwrap();
-    let bytes =
-        include_bytes!("../../synck-items/tests/fixtures/imported_email/representative.eml");
-    fs::write(root.join("original.eml"), bytes).unwrap();
-    synck_local::portable::init_repository(&root, "local-author")
+    let root = temporary.path().join("cli");
+    let binary = env!("CARGO_BIN_EXE_synck");
+    let run = |arguments: &[&str]| {
+        let output = Command::new(binary)
+            .current_dir(&root)
+            .args(arguments)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    };
+    synck_local::portable::init_repository(&root, "cli-author")
         .await
         .unwrap();
-    assert_eq!(fs::read(root.join("original.eml")).unwrap(), bytes);
-    let repository = synck_local::Repository::discover(&root).await.unwrap();
-    assert_eq!(repository.status().await.unwrap().len(), 1);
-    repository.commit("Import original mail").await.unwrap();
-    assert!(repository.status().await.unwrap().is_empty());
-    drop(repository);
+    let message = b"From: sender@example.test\r\nSubject: Message\r\n\r\nbody";
+    fs::write(root.join("message.eml"), message).unwrap();
+    let imported: serde_json::Value = serde_json::from_str(&run(&[
+        "repository", "import-email", "message.eml", "--title", "Saved", "-m", "Import email",
+    ]))
+    .unwrap();
+    assert!(imported["commit_id"].is_string());
+    assert!(run(&["show", "HEAD", "--events"]).contains("EMAIL::CREATE"));
+    assert!(run(&["log", "--events"]).contains("EMAIL::CREATE"));
+    assert_eq!(fs::read(root.join("message.eml")).unwrap(), message);
+
+    // The file on disk is not the record. Committing it adds a FILE.
+    assert!(run(&["status"]).contains("message.eml"));
+    run(&["commit", "-m", "Keep the file too"]);
+    assert!(run(&["status"]).contains("working tree clean"));
     let portable = PortableRepository::open(&root).unwrap();
     portable.verify().await.unwrap();
+    let records = portable.list_records(None, None, 10).await.unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].item_type, "EMAIL");
     assert_eq!(
-        portable.list_records(None, None, 10).await.unwrap()[0].item_type,
-        "EMAIL"
+        portable.show_item(&records[0].item_id, None).await.unwrap().item.projection.name,
+        "Saved"
     );
-    assert!(
-        synck_local::portable::init_repository(&root, "another-author")
-            .await
-            .is_err()
-    );
+    let items = portable.list_items(None, None, 10).await.unwrap().items;
+    assert!(items.iter().any(|item| {
+        item.item_type == "FILE" && item.name.as_deref() == Some("message.eml")
+    }));
 }
 
 #[tokio::test]
@@ -1300,7 +1306,7 @@ async fn email_import_regression_msg_rename_roundtrip_preserves_original_and_gen
     fs::write(&source, &bytes).unwrap();
     let mut repository = PortableRepository::open(&fixture.source).unwrap();
     let (id, _) = repository
-        .create_file(None, "Renamed message", &source)
+        .import_email(None, &source, Some("Renamed message"))
         .await
         .unwrap();
     let item = repository.show_item(&id, None).await.unwrap();
@@ -1324,320 +1330,6 @@ async fn email_import_regression_msg_rename_roundtrip_preserves_original_and_gen
     imported.verify().await.unwrap();
 }
 
-#[tokio::test]
-async fn email_import_regression_rejected_reimport_keeps_earlier_source_mapping() {
-    let temporary = tempfile::tempdir().unwrap();
-    let root = temporary.path().join("local");
-    synck_local::portable::init_repository(&root, "local-author")
-        .await
-        .unwrap();
-    let original = b"From: sender@example.test\r\nSubject: Original\r\n\r\nbody";
-    fs::write(root.join("message.eml"), original).unwrap();
-    let repository = synck_local::Repository::discover(&root).await.unwrap();
-    repository.commit("Initial imported email").await.unwrap();
-    fs::write(
-        root.join("message.eml"),
-        b"From: sender@example.test\r\nSubject: Changed\r\n\r\nother body",
-    )
-    .unwrap();
-    assert!(
-        repository
-            .commit("Conflicting second import")
-            .await
-            .is_err()
-    );
-    assert_eq!(
-        repository.status().await.unwrap().len(),
-        1,
-        "failed import cannot hide source"
-    );
-    fs::write(root.join("message.eml"), original).unwrap();
-    assert!(
-        repository.status().await.unwrap().is_empty(),
-        "failed later attempt cannot replace accepted source mapping"
-    );
-    drop(repository);
-    let portable = PortableRepository::open(&root).unwrap();
-    let copy = temporary.path().join("copy");
-    portable.archive(&copy).await.unwrap();
-    let copied = SqliteStorage::new(copy.join(".synck/repository.sqlite3"));
-    assert!(
-        !copied
-            .open_readonly()
-            .unwrap()
-            .prepare("SELECT name FROM sqlite_schema WHERE name GLOB 'local_*'")
-            .unwrap()
-            .exists([])
-            .unwrap()
-    );
-}
-
-#[tokio::test]
-async fn email_import_keeps_email_and_file_in_one_atomic_commit() {
-    let temporary = tempfile::tempdir().unwrap();
-    let root = temporary.path().join("local");
-    synck_local::portable::init_repository(&root, "local-author")
-        .await
-        .unwrap();
-    fs::write(
-        root.join("message.eml"),
-        b"From: sender@example.test\r\nSubject: Message\r\n\r\nbody",
-    )
-    .unwrap();
-    fs::write(root.join("file.txt"), b"ordinary file").unwrap();
-    let repository = synck_local::Repository::discover(&root).await.unwrap();
-    let outcome = repository
-        .commit_selected(&root, &[], Some("Mixed import"))
-        .await
-        .unwrap();
-    assert!(matches!(outcome, synck_local::CommitOutcome::Committed(_)));
-    assert!(repository.status().await.unwrap().is_empty());
-    drop(repository);
-    let portable = PortableRepository::open(&root).unwrap();
-    portable.verify().await.unwrap();
-    let items = portable.list_items(None, None, 10).await.unwrap().items;
-    assert!(items.iter().any(|item| item.item_type == "FILE"));
-    let records = portable.list_records(None, None, 10).await.unwrap();
-    assert_eq!(records[0].item_type, "EMAIL");
-}
-
-#[tokio::test]
-async fn email_cli_commit_receipt_and_raw_history_succeed_for_email_owners() {
-    let temporary = tempfile::tempdir().unwrap();
-    let root = temporary.path().join("cli");
-    let init = Command::new(env!("CARGO_BIN_EXE_synck"))
-        .args(["repository", "init"])
-        .arg(&root)
-        .args(["--author", "cli-author"])
-        .output()
-        .unwrap();
-    assert!(
-        init.status.success(),
-        "{}",
-        String::from_utf8_lossy(&init.stderr)
-    );
-    fs::write(
-        root.join("message.eml"),
-        b"From: sender@example.test\r\nSubject: Message\r\n\r\nbody",
-    )
-    .unwrap();
-    let commit = Command::new(env!("CARGO_BIN_EXE_synck"))
-        .current_dir(&root)
-        .args(["commit", "-m", "Import email from CLI"])
-        .output()
-        .unwrap();
-    assert!(
-        commit.status.success(),
-        "{}",
-        String::from_utf8_lossy(&commit.stderr)
-    );
-    assert!(String::from_utf8_lossy(&commit.stdout).contains("committed sha256:"));
-    let status = Command::new(env!("CARGO_BIN_EXE_synck"))
-        .current_dir(&root)
-        .arg("status")
-        .output()
-        .unwrap();
-    assert!(
-        status.status.success(),
-        "{}",
-        String::from_utf8_lossy(&status.stderr)
-    );
-    assert!(String::from_utf8_lossy(&status.stdout).contains("working tree clean"));
-    let show = Command::new(env!("CARGO_BIN_EXE_synck"))
-        .current_dir(&root)
-        .args(["show", "HEAD", "--events"])
-        .output()
-        .unwrap();
-    assert!(
-        show.status.success(),
-        "{}",
-        String::from_utf8_lossy(&show.stderr)
-    );
-    assert!(String::from_utf8_lossy(&show.stdout).contains("EMAIL::CREATE"));
-    let log = Command::new(env!("CARGO_BIN_EXE_synck"))
-        .current_dir(&root)
-        .args(["log", "--events"])
-        .output()
-        .unwrap();
-    assert!(
-        log.status.success(),
-        "{}",
-        String::from_utf8_lossy(&log.stderr)
-    );
-    assert!(String::from_utf8_lossy(&log.stdout).contains("EMAIL::CREATE"));
-}
-
-#[tokio::test]
-async fn email_ingress_requested_extension_preserves_actual_original_filename() {
-    let fixture = fixture().await;
-    let source = fixture.root.join("original.txt");
-    let bytes =
-        include_bytes!("../../synck-items/tests/fixtures/imported_email/representative.eml");
-    fs::write(&source, bytes).unwrap();
-    let mut repository = PortableRepository::open(&fixture.source).unwrap();
-    let (id, _) = repository
-        .create_file(None, "Requested.EML", &source)
-        .await
-        .unwrap();
-    let item = repository.show_item(&id, None).await.unwrap();
-    assert_eq!(item.item.projection.item_type, "EMAIL");
-    assert_eq!(item.item.projection.name, "Requested");
-    assert_eq!(
-        item.item.projection.metadata_json["mailcal"]["source"]["filename"],
-        "original.txt"
-    );
-    assert_eq!(
-        item.item.projection.metadata_json["mailcal"]["source"]["format"],
-        "eml"
-    );
-    repository.verify().await.unwrap();
-    #[cfg(target_os = "linux")]
-    {
-        use std::os::unix::ffi::OsStringExt;
-        let source = fixture
-            .root
-            .join(std::ffi::OsString::from_vec(b"\xff.msg".to_vec()));
-        fs::write(&source, b"hidden extension").unwrap();
-        let error = repository
-            .create_file(None, "Renamed source", &source)
-            .await
-            .unwrap_err();
-        assert!(error.to_string().contains("EMAIL_IMPORT_INVALID_FORMAT"));
-    }
-}
-
-#[tokio::test]
-async fn email_ingress_rejects_file_appends_and_historical_email_file_edits() {
-    let fixture = fixture().await;
-    let source = fixture.root.join("new.eml");
-    fs::write(
-        &source,
-        b"From: sender@example.test\r\nSubject: New\r\n\r\nbody",
-    )
-    .unwrap();
-    let mut portable = PortableRepository::open(&fixture.source).unwrap();
-    let error = portable
-        .save_file(&fixture.file, &source)
-        .await
-        .unwrap_err();
-    assert!(error.to_string().contains("EMAIL_IMPORT_REQUIRES_NEW_ITEM"));
-    drop(portable);
-    // Existing canonical FILE identities remain readable and valid, including
-    // history created before the product import rule.
-    let storage = SqliteStorage::new(fixture.source.join(".synck/repository.sqlite3"));
-    let core = Repo::new(
-        Storage::new(Arc::new(storage.clone())),
-        CoreConfig::default(),
-    );
-    core.append(
-        fixture.repo_id.clone(),
-        proposal(vec![
-            EventProposal::from_fields(json!({
-                "item_id":fixture.file,"event_type":"FILE::SET_NAME","base_seq":2,"set_name":"historical.msg"
-            }))
-            .unwrap(),
-        ]),
-    )
-    .await
-    .unwrap();
-    core.sequence_repo_activity(fixture.repo_id.clone(), 100)
-        .await
-        .unwrap();
-    storage
-        .project_imported_history(&fixture.repo_id)
-        .await
-        .unwrap();
-    drop(core);
-    let mut portable = PortableRepository::open(&fixture.source).unwrap();
-    portable.verify().await.unwrap();
-    portable.enable_checkout("editor", &[]).await.unwrap();
-    drop(portable);
-    fs::write(
-        fixture.source.join("documents/historical.msg"),
-        b"changed historical source",
-    )
-    .unwrap();
-    let repository = synck_local::Repository::discover(&fixture.source)
-        .await
-        .unwrap();
-    let before = repository.log(None).await.unwrap().len();
-    let error = repository
-        .commit("Reject historical FILE edit")
-        .await
-        .unwrap_err();
-    assert!(error.to_string().contains("EMAIL_IMPORT_REQUIRES_NEW_ITEM"));
-    assert_eq!(repository.log(None).await.unwrap().len(), before);
-}
-
-#[tokio::test]
-async fn email_ingress_cli_rejects_file_rename_without_changing_history() {
-    let temporary = tempfile::tempdir().unwrap();
-    let root = temporary.path().join("cli");
-    let binary = env!("CARGO_BIN_EXE_synck");
-    let init = Command::new(binary)
-        .args(["repository", "init"])
-        .arg(&root)
-        .args(["--author", "review"])
-        .output()
-        .unwrap();
-    assert!(
-        init.status.success(),
-        "{}",
-        String::from_utf8_lossy(&init.stderr)
-    );
-    fs::write(
-        root.join("draft.txt"),
-        b"From: sender@example.test\r\nSubject: Rename\r\n\r\nbody",
-    )
-    .unwrap();
-    let commit = Command::new(binary)
-        .current_dir(&root)
-        .args(["commit", "-m", "Initial FILE"])
-        .output()
-        .unwrap();
-    assert!(
-        commit.status.success(),
-        "{}",
-        String::from_utf8_lossy(&commit.stderr)
-    );
-    let before = Command::new(binary)
-        .current_dir(&root)
-        .args(["show", "HEAD", "--events"])
-        .output()
-        .unwrap();
-    let moved = Command::new(binary)
-        .current_dir(&root)
-        .args([
-            "mv",
-            "draft.txt",
-            "draft.msg",
-            "-m",
-            "Reject direct email rename",
-        ])
-        .output()
-        .unwrap();
-    assert!(!moved.status.success());
-    assert!(String::from_utf8_lossy(&moved.stderr).contains("EMAIL_IMPORT_REQUIRES_NEW_ITEM"));
-    assert!(root.join("draft.txt").exists());
-    assert!(!root.join("draft.msg").exists());
-    fs::rename(root.join("draft.txt"), root.join("draft.eml")).unwrap();
-    let rename = Command::new(binary)
-        .current_dir(&root)
-        .args(["commit", "-m", "Reject email rename"])
-        .output()
-        .unwrap();
-    assert!(!rename.status.success());
-    assert!(String::from_utf8_lossy(&rename.stderr).contains("EMAIL_IMPORT_REQUIRES_NEW_ITEM"));
-    let after = Command::new(binary)
-        .current_dir(&root)
-        .args(["show", "HEAD", "--events"])
-        .output()
-        .unwrap();
-    assert!(after.status.success());
-    assert_eq!(before.stdout, after.stdout);
-    assert!(root.join("draft.eml").exists());
-}
-
 #[cfg(unix)]
 #[tokio::test]
 async fn email_import_failed_object_write_can_retry_without_corrupt_publication() {
@@ -1659,9 +1351,9 @@ async fn email_import_failed_object_write_can_retry_without_corrupt_publication(
     let digest = hex::encode(Sha256::digest(&bytes));
     let mut command = Command::new(env!("CARGO_BIN_EXE_synck"));
     command
-        .args(["repository", "create-file", "Message"])
+        .args(["repository", "import-email"])
         .arg(&source)
-        .arg("--path")
+        .args(["--title", "Message", "--path"])
         .arg(&root);
     // Fault only the child: let SQLite open normally, then fail the larger
     // immutable source write partway through with a recoverable write error.
@@ -1690,7 +1382,7 @@ async fn email_import_failed_object_write_can_retry_without_corrupt_publication(
     assert_eq!(fs::read_dir(&objects).unwrap().count(), 1);
     let mut repository = PortableRepository::open(&root).unwrap();
     let (id, _) = repository
-        .create_file(None, "Message", &source)
+        .import_email(None, &source, Some("Message"))
         .await
         .unwrap();
     let source_id = repository.show_item(&id, None).await.unwrap().item.projection.content_roles["source"].clone();
@@ -1704,326 +1396,6 @@ async fn email_import_failed_object_write_can_retry_without_corrupt_publication(
     fs::write(&object_path, b"corrupt existing object").unwrap();
     assert!(repository.verify().await.is_err());
     assert_eq!(fs::read(object_path).unwrap(), b"corrupt existing object");
-}
-
-#[tokio::test]
-async fn email_checkout_selection_preserves_sources_and_required_directories() {
-    let temporary = tempfile::tempdir().unwrap();
-    let root = temporary.path().join("repository");
-    synck_local::portable::init_repository(&root, "local-author")
-        .await
-        .unwrap();
-    fs::create_dir_all(root.join("a/nested")).unwrap();
-    fs::create_dir_all(root.join("a/other")).unwrap();
-    fs::create_dir(root.join("b")).unwrap();
-    let original = b"From: sender@example.test\r\nSubject: Message\r\n\r\noriginal";
-    let source = root.join("a/nested/message.eml");
-    fs::write(&source, original).unwrap();
-    fs::write(root.join("a/nested/sibling.txt"), b"sibling").unwrap();
-    fs::write(root.join("a/other/file.txt"), b"other").unwrap();
-    fs::write(root.join("b/file.txt"), b"selected").unwrap();
-    let mut repository = synck_local::Repository::discover(&root).await.unwrap();
-    repository
-        .commit("Import mail and ordinary files")
-        .await
-        .unwrap();
-    repository.set_checkout_paths(&["b".into()]).await.unwrap();
-    assert_eq!(fs::read(&source).unwrap(), original);
-    assert!(root.join("a/nested").is_dir());
-    assert!(!root.join("a/nested/sibling.txt").exists());
-    assert!(!root.join("a/other").exists());
-    assert!(repository.status().await.unwrap().is_empty());
-    drop(repository);
-
-    // Simulate a crash after materialization completed but before the checkout
-    // transition was cleared. Its source manifest still describes the old view.
-    let metadata = root.join(".synck");
-    let checkout_path = metadata.join("checkout.json");
-    let mut checkout: serde_json::Value =
-        serde_json::from_slice(&fs::read(&checkout_path).unwrap()).unwrap();
-    checkout["pending"] = json!({"previous_paths":[]});
-    let original_tree: [(&str, Option<&[u8]>); 8] = [
-        ("a", None),
-        ("a/nested", None),
-        ("a/nested/message.eml", Some(original)),
-        ("a/nested/sibling.txt", Some(b"sibling")),
-        ("a/other", None),
-        ("a/other/file.txt", Some(b"other")),
-        ("b", None),
-        ("b/file.txt", Some(b"selected")),
-    ];
-    let manifest: Vec<_> = original_tree
-        .into_iter()
-        .map(|(path, bytes)| {
-            json!({"path":path,"item_id":null,
-            "item_type":if bytes.is_some() {"FILE"} else {"FOLDER"},
-            "plain_digest":bytes.map(|bytes|hex::encode(Sha256::digest(bytes))),
-            "size":bytes.map(|bytes|bytes.len())})
-        })
-        .collect();
-    fs::write(
-        metadata.join("checkout-source.json"),
-        serde_json::to_vec(&manifest).unwrap(),
-    )
-    .unwrap();
-    fs::write(&checkout_path, serde_json::to_vec(&checkout).unwrap()).unwrap();
-    let mut repository = synck_local::Repository::discover(&root).await.unwrap();
-    assert!(!metadata.join("checkout-source.json").exists());
-    let changed = b"From: sender@example.test\r\nSubject: Changed\r\n\r\nchanged";
-    fs::write(&source, changed).unwrap();
-    assert!(repository.status().await.unwrap().is_empty());
-    assert!(repository.set_checkout_paths(&[]).await.is_err());
-    assert_eq!(repository.checkout_paths().unwrap(), &["b".to_string()]);
-    assert_eq!(fs::read(&source).unwrap(), changed);
-    assert!(!root.join("a/nested/sibling.txt").exists());
-    fs::write(&source, original).unwrap();
-    repository.set_checkout_paths(&[]).await.unwrap();
-    assert_eq!(fs::read(&source).unwrap(), original);
-    assert_eq!(
-        fs::read(root.join("a/nested/sibling.txt")).unwrap(),
-        b"sibling"
-    );
-    assert_eq!(fs::read(root.join("a/other/file.txt")).unwrap(), b"other");
-    assert!(repository.status().await.unwrap().is_empty());
-    fs::write(&source, changed).unwrap();
-    assert!(repository.set_checkout_paths(&["b".into()]).await.is_err());
-    assert_eq!(fs::read(&source).unwrap(), changed);
-    fs::write(&source, original).unwrap();
-    repository.set_checkout_paths(&["b".into()]).await.unwrap();
-    assert!(repository.status().await.unwrap().is_empty());
-    drop(repository);
-    assert_eq!(
-        PortableRepository::open(&root)
-            .unwrap()
-            .verify()
-            .await
-            .unwrap()
-            .commits,
-        2
-    );
-}
-
-#[tokio::test]
-async fn email_sources_follow_cli_folder_moves_and_accepted_move_recovery() {
-    let temporary = tempfile::tempdir().unwrap();
-    let root = temporary.path().join("repository");
-    synck_local::portable::init_repository(&root, "local-author")
-        .await
-        .unwrap();
-    fs::create_dir_all(root.join("mail/nested")).unwrap();
-    fs::create_dir(root.join("other")).unwrap();
-    let original = b"From: sender@example.test\r\nSubject: Message\r\n\r\noriginal";
-    fs::write(root.join("mail/nested/message.eml"), original).unwrap();
-    let repository = synck_local::Repository::discover(&root).await.unwrap();
-    repository.commit("Import mail").await.unwrap();
-    drop(repository);
-    let connection = rusqlite::Connection::open(root.join(".synck/repository.sqlite3")).unwrap();
-    let (folder, head): (String, i64) = connection
-        .query_row(
-            "SELECT item_id,head_seq FROM vcs_items WHERE item_type='FOLDER' AND name='mail'",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .unwrap();
-    drop(connection);
-    let moved = Command::new(env!("CARGO_BIN_EXE_synck"))
-        .current_dir(&root)
-        .args(["mv", "mail", "renamed", "-m", "Rename mail folder"])
-        .output()
-        .unwrap();
-    assert!(
-        moved.status.success(),
-        "{}",
-        String::from_utf8_lossy(&moved.stderr)
-    );
-    let mut repository = synck_local::Repository::discover(&root).await.unwrap();
-    assert!(repository.status().await.unwrap().is_empty());
-    repository
-        .set_checkout_paths(&["other".into()])
-        .await
-        .unwrap();
-    assert_eq!(
-        fs::read(root.join("renamed/nested/message.eml")).unwrap(),
-        original
-    );
-    assert!(repository.status().await.unwrap().is_empty());
-    repository.set_checkout_paths(&[]).await.unwrap();
-    drop(repository);
-
-    // Replay the existing journal as if the process stopped after acceptance
-    // but before clearing its move intent. No observation rewrite is required.
-    fs::write(
-        root.join(".synck/move.json"),
-        serde_json::to_vec(&json!({
-            "version":2,"operation_id":uuid::Uuid::new_v4().to_string(),
-            "source":"mail","destination":"renamed","item_id":folder,
-            "item_type":"FOLDER","base_seq":head,"result_head_seq":head+1,
-            "new_parent_id":null,"new_name":"renamed","message":"Rename mail folder"
-        }))
-        .unwrap(),
-    )
-    .unwrap();
-    let repository = synck_local::Repository::discover(&root).await.unwrap();
-    assert!(repository.status().await.unwrap().is_empty());
-    assert!(!root.join(".synck/move.json").exists());
-    assert_eq!(repository.log(None).await.unwrap().len(), 3);
-    assert_eq!(
-        fs::read(root.join("renamed/nested/message.eml")).unwrap(),
-        original
-    );
-}
-
-#[tokio::test]
-async fn email_sources_follow_physical_folder_moves_without_hiding_copies_or_edits() {
-    let temporary = tempfile::tempdir().unwrap();
-    let root = temporary.path().join("repository");
-    synck_local::portable::init_repository(&root, "local-author")
-        .await
-        .unwrap();
-    fs::create_dir_all(root.join("mail/nested")).unwrap();
-    fs::create_dir(root.join("other")).unwrap();
-    let original = b"From: sender@example.test\r\nSubject: Message\r\n\r\noriginal";
-    fs::write(root.join("mail/nested/message.eml"), original).unwrap();
-    let repository = synck_local::Repository::discover(&root).await.unwrap();
-    repository.commit("Import mail").await.unwrap();
-    fs::rename(root.join("mail"), root.join("renamed")).unwrap();
-    let changes = repository.status().await.unwrap();
-    assert_eq!(changes.len(), 1, "{changes:?}");
-    assert_eq!(changes[0].path, "renamed");
-    assert_eq!(changes[0].kind, synck_local::ChangeKind::Rename);
-    repository.commit("Rename mail folder").await.unwrap();
-    drop(repository);
-    let repository = synck_local::Repository::discover(&root).await.unwrap();
-    assert!(repository.status().await.unwrap().is_empty());
-    fs::write(root.join("other/message.eml"), original).unwrap();
-    fs::write(root.join("renamed/nested/copy.eml"), original).unwrap();
-    fs::create_dir_all(root.join("mail/nested")).unwrap();
-    fs::write(root.join("mail/nested/message.eml"), original).unwrap();
-    fs::write(root.join("renamed/nested/message.eml"), b"changed original").unwrap();
-    let changes = repository.status().await.unwrap();
-    for path in [
-        "other/message.eml",
-        "renamed/nested/copy.eml",
-        "mail/nested/message.eml",
-        "renamed/nested/message.eml",
-    ] {
-        assert!(
-            changes.iter().any(|change| change.path == path),
-            "missing {path}: {changes:?}"
-        );
-    }
-    drop(repository);
-    let portable = PortableRepository::open(&root).unwrap();
-    assert_eq!(portable.verify().await.unwrap().commits, 3);
-    let connection = rusqlite::Connection::open(root.join(".synck/repository.sqlite3")).unwrap();
-    assert_eq!(
-        connection
-            .query_row(
-                "SELECT count(*) FROM vcs_items WHERE item_type='EMAIL'",
-                [],
-                |row| row.get::<_, i64>(0)
-            )
-            .unwrap(),
-        1
-    );
-}
-
-#[tokio::test]
-async fn email_sources_use_current_ownership_after_folder_moves() {
-    let temporary = tempfile::tempdir().unwrap();
-    let root = temporary.path().join("repository");
-    synck_local::portable::init_repository(&root, "local-author")
-        .await
-        .unwrap();
-    fs::create_dir(root.join("mail")).unwrap();
-    fs::create_dir_all(root.join("archive/message.eml")).unwrap();
-    let original = b"From: sender@example.test\r\nSubject: Message\r\n\r\noriginal";
-    fs::write(root.join("mail/message.eml"), original).unwrap();
-    let repository = synck_local::Repository::discover(&root).await.unwrap();
-    repository.commit("Import mail").await.unwrap();
-
-    fs::rename(root.join("archive"), root.join("old-archive")).unwrap();
-    fs::rename(root.join("mail"), root.join("archive")).unwrap();
-    let changes = repository.status().await.unwrap();
-    assert_eq!(changes.len(), 2, "{changes:?}");
-    for path in ["archive", "old-archive"] {
-        assert!(changes.iter().any(|change| {
-            change.path == path && change.kind == synck_local::ChangeKind::Rename
-        }));
-    }
-    repository.commit("Move folders").await.unwrap();
-    drop(repository);
-
-    let repository = synck_local::Repository::discover(&root).await.unwrap();
-    assert!(repository.status().await.unwrap().is_empty());
-    assert_eq!(
-        fs::read(root.join("archive/message.eml")).unwrap(),
-        original
-    );
-    assert!(root.join("old-archive/message.eml").is_dir());
-    assert_eq!(repository.log(None).await.unwrap().len(), 3);
-    let connection = rusqlite::Connection::open(root.join(".synck/repository.sqlite3")).unwrap();
-    assert_eq!(
-        connection
-            .query_row(
-                "SELECT count(*) FROM vcs_items WHERE item_type='EMAIL'",
-                [],
-                |row| row.get::<_, i64>(0)
-            )
-            .unwrap(),
-        1
-    );
-}
-
-#[tokio::test]
-async fn email_sources_use_current_ownership_for_tracked_files() {
-    let temporary = tempfile::tempdir().unwrap();
-    let root = temporary.path().join("repository");
-    synck_local::portable::init_repository(&root, "local-author")
-        .await
-        .unwrap();
-    fs::create_dir(root.join("mail")).unwrap();
-    let original = b"From: sender@example.test\r\nSubject: Message\r\n\r\noriginal";
-    fs::write(root.join("mail/message.eml"), original).unwrap();
-    fs::write(root.join("draft.txt"), original).unwrap();
-    let repository = synck_local::Repository::discover(&root).await.unwrap();
-    repository
-        .commit("Import mail and track draft")
-        .await
-        .unwrap();
-
-    #[cfg(windows)]
-    let draft_creation = fs::metadata(root.join("draft.txt"))
-        .unwrap()
-        .created()
-        .unwrap();
-    fs::remove_file(root.join("mail/message.eml")).unwrap();
-    fs::rename(root.join("draft.txt"), root.join("mail/message.eml")).unwrap();
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::FileTimesExt;
-
-        // This test requires an exact tracked identity. NTFS can tunnel the
-        // deleted email source's creation time onto the renamed draft.
-        fs::OpenOptions::new()
-            .write(true)
-            .open(root.join("mail/message.eml"))
-            .unwrap()
-            .set_times(fs::FileTimes::new().set_created(draft_creation))
-            .unwrap();
-    }
-    let changes = repository.status().await.unwrap();
-    assert_eq!(changes.len(), 1, "{changes:?}");
-    assert_eq!(changes[0].kind, synck_local::ChangeKind::MoveRename);
-    assert_eq!(changes[0].path, "mail/message.eml");
-    assert_eq!(changes[0].source_path.as_deref(), Some("draft.txt"));
-    let error = repository
-        .commit("Reject FILE email rename")
-        .await
-        .unwrap_err();
-    assert!(error.to_string().contains("EMAIL_IMPORT_REQUIRES_NEW_ITEM"));
-    assert_eq!(repository.log(None).await.unwrap().len(), 2);
-    assert_eq!(fs::read(root.join("mail/message.eml")).unwrap(), original);
 }
 
 #[tokio::test]
@@ -2202,10 +1574,7 @@ async fn chunked_bare_writes_and_cli_conversion_preserve_readable_content() {
     let mail = fixture.root.join("message.eml");
     let bytes = b"From: sender@example.test\r\nSubject: Message\r\n\r\nchunked email";
     fs::write(&mail, bytes).unwrap();
-    let (email, _) = repository
-        .create_file(None, "Message", &mail)
-        .await
-        .unwrap();
+    let (email, _) = repository.import_email(None, &mail, None).await.unwrap();
     let exported = fixture.root.join("exported.eml");
     repository
         .export_file(&email, &exported, None)
