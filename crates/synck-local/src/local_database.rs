@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use rusqlite::{Connection, OpenFlags};
-use synck_vcs_sqlite::{SqliteStorage, validate_database_family};
+use synck_vcs_sqlite::{SqliteStorage, open_connection, validate_database_family};
 
 use crate::error::{LocalError, Result};
 
@@ -48,7 +48,7 @@ fn open(storage: &SqliteStorage, writable: bool, create: bool) -> Result<Connect
     if create {
         flags |= OpenFlags::SQLITE_OPEN_CREATE;
     }
-    let connection = Connection::open_with_flags(&path, flags)?;
+    let connection = open_connection(&path, flags)?;
     connection.busy_timeout(Duration::from_secs(5))?;
     connection.pragma_update(None, "foreign_keys", "ON")?;
     if writable {

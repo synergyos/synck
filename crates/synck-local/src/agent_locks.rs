@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use rusqlite::{Connection, OpenFlags, params};
+use synck_vcs_sqlite::open_connection;
 use serde::Serialize;
 use uuid::Uuid;
 
@@ -111,7 +112,7 @@ fn open(root: &Path, repo_id: &str, create: bool) -> Result<Option<Connection>> 
             let file = options
                 .open(&temporary)
                 .at("create agent locks", &temporary)?;
-            let connection = Connection::open_with_flags(
+            let connection = open_connection(
                 &temporary,
                 OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NOFOLLOW,
             )?;
@@ -132,7 +133,7 @@ fn open(root: &Path, repo_id: &str, create: bool) -> Result<Option<Connection>> 
         }
         result?;
     }
-    let connection = Connection::open_with_flags(
+    let connection = open_connection(
         &path,
         OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NOFOLLOW,
     )?;

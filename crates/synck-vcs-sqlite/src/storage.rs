@@ -10,6 +10,8 @@ use async_trait::async_trait;
 use chrono::{DateTime, SecondsFormat, Utc};
 use rusqlite::types::{Type, Value};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Row, params, params_from_iter};
+
+use crate::connection::open_connection;
 use synck_vcs::errors::StorageError;
 use synck_vcs::storage::{SealedCommitInsert, StorageBackend, StorageTxn};
 use synck_vcs::types::{
@@ -220,7 +222,7 @@ impl SqliteStorage {
         if create {
             flags |= OpenFlags::SQLITE_OPEN_CREATE;
         }
-        let conn = Connection::open_with_flags(path, flags).map_err(map_sqlite_error)?;
+        let conn = open_connection(path, flags).map_err(map_sqlite_error)?;
         configure_writable(&conn)?;
         Ok(conn)
     }
@@ -239,7 +241,7 @@ impl SqliteStorage {
 
     fn open_readonly_unchecked(&self) -> Result<Connection, StorageError> {
         let path = self.resolved_open_path(false)?;
-        let conn = Connection::open_with_flags(
+        let conn = open_connection(
             path,
             OpenFlags::SQLITE_OPEN_READ_ONLY
                 | OpenFlags::SQLITE_OPEN_NO_MUTEX

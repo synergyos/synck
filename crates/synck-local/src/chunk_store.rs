@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use fastcdc::v2020::{FastCDC, Normalization};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
+use synck_vcs_sqlite::open_connection;
 use sha2::{Digest, Sha256};
 use synck_vcs::types::{ObjectId, RepoId};
 
@@ -79,7 +80,7 @@ impl ChunkStore {
             })?;
         drop(seed);
         let open_path = resolved_open_path(path)?;
-        let connection = Connection::open_with_flags(
+        let connection = open_connection(
             open_path,
             OpenFlags::SQLITE_OPEN_READ_WRITE
                 | OpenFlags::SQLITE_OPEN_NO_MUTEX
@@ -115,7 +116,7 @@ impl ChunkStore {
     pub(crate) fn open_readonly(&self) -> Result<Connection> {
         validate_regular_file(&self.path)?;
         let open_path = resolved_open_path(&self.path)?;
-        let connection = Connection::open_with_flags(
+        let connection = open_connection(
             open_path,
             OpenFlags::SQLITE_OPEN_READ_ONLY
                 | OpenFlags::SQLITE_OPEN_NO_MUTEX
@@ -128,7 +129,7 @@ impl ChunkStore {
     pub(crate) fn open_writable(&self) -> Result<Connection> {
         validate_regular_file(&self.path)?;
         let open_path = resolved_open_path(&self.path)?;
-        let connection = Connection::open_with_flags(
+        let connection = open_connection(
             open_path,
             OpenFlags::SQLITE_OPEN_READ_WRITE
                 | OpenFlags::SQLITE_OPEN_NO_MUTEX
@@ -741,7 +742,7 @@ impl ChunkStore {
     pub(crate) fn backup_to(&self, destination: &Path) -> Result<()> {
         let source = self.open_readonly()?;
         let open_destination = resolved_open_path(destination)?;
-        let mut destination_connection = Connection::open_with_flags(
+        let mut destination_connection = open_connection(
             open_destination,
             OpenFlags::SQLITE_OPEN_READ_WRITE
                 | OpenFlags::SQLITE_OPEN_CREATE
