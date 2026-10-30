@@ -32,12 +32,12 @@
         "item_type": "FILE",
         "name": "doc.txt"
       },
-      "event_type": "ITEM_CREATE",
+      "event_type": "FILE::CREATE",
       "item_id": "01890c6c-1111-7777-8888-aaaaaaaaaaaa"
     },
-    "canonical_event": "{\"create_item\":{\"item_type\":\"FILE\",\"name\":\"doc.txt\"},\"event_type\":\"ITEM_CREATE\",\"item_id\":\"01890c6c-1111-7777-8888-aaaaaaaaaaaa\"}",
-    "event_digest": "sha256:c4450657eb41f5b4f2b44290b459265c68bd1ae2ce2489cc2d140b69ffdb6505",
-    "events_digest": "sha256:8039be6671e20d856866b03828312241c0a2768ad3a66b9263e976984a066e8c",
+    "canonical_event": "{\"create_item\":{\"item_type\":\"FILE\",\"name\":\"doc.txt\"},\"event_type\":\"FILE::CREATE\",\"item_id\":\"01890c6c-1111-7777-8888-aaaaaaaaaaaa\"}",
+    "event_digest": "sha256:bf5c158bdd12cb9286f5d6f59d440b58df632430f17dbd572b5b10e6e36d2d36",
+    "events_digest": "sha256:abf0c8409216194dd47ed91ac64a6f7d8c426cd7411da1e4693ec4c3542edbdb",
     "commit": {
       "object_type": "vcs_commit",
       "format_version": 6,
@@ -46,16 +46,16 @@
       "occurred_at": null,
       "message": "first",
       "event_count": 1,
-      "events_digest": "sha256:8039be6671e20d856866b03828312241c0a2768ad3a66b9263e976984a066e8c"
+      "events_digest": "sha256:abf0c8409216194dd47ed91ac64a6f7d8c426cd7411da1e4693ec4c3542edbdb"
     },
-    "canonical_commit": "{\"author_id\":\"author-1\",\"committer_id\":\"author-1\",\"event_count\":1,\"events_digest\":\"sha256:8039be6671e20d856866b03828312241c0a2768ad3a66b9263e976984a066e8c\",\"format_version\":6,\"message\":\"first\",\"object_type\":\"vcs_commit\",\"occurred_at\":null}",
-    "commit_id": "sha256:87f6d1df82eca9184a59b63e8c30d7fa1597ff6c9f1eb11f236e8e233ce7387a"
+    "canonical_commit": "{\"author_id\":\"author-1\",\"committer_id\":\"author-1\",\"event_count\":1,\"events_digest\":\"sha256:abf0c8409216194dd47ed91ac64a6f7d8c426cd7411da1e4693ec4c3542edbdb\",\"format_version\":6,\"message\":\"first\",\"object_type\":\"vcs_commit\",\"occurred_at\":null}",
+    "commit_id": "sha256:965762afd83b5e3bafdcbd6c909e7cfce8ab0785f756cc80030a15b7e2c1bb0e"
   },
   {
     "name": "canonical_vector_update_text",
     "event": {
       "base_seq": 1,
-      "event_type": "UPDATE",
+      "event_type": "FILE::SET_METADATA",
       "item_id": "01890c6c-2222-7777-8888-bbbbbbbbbbbb",
       "set_content": {
         "body": "sha256:90e1404a224d37429674c135ebe6d850a4a692581336ac60fe27045dc991b4d9"
@@ -63,9 +63,9 @@
       "set_name": "New.txt",
       "metadata_id": "sha256:f786d1459533831e80f67f74d2af0e1816221bdcd2359e0c138fc293289bcde3"
     },
-    "canonical_event": "{\"base_seq\":1,\"event_type\":\"UPDATE\",\"item_id\":\"01890c6c-2222-7777-8888-bbbbbbbbbbbb\",\"metadata_id\":\"sha256:f786d1459533831e80f67f74d2af0e1816221bdcd2359e0c138fc293289bcde3\",\"set_content\":{\"body\":\"sha256:90e1404a224d37429674c135ebe6d850a4a692581336ac60fe27045dc991b4d9\"},\"set_name\":\"New.txt\"}",
-    "event_digest": "sha256:a3fe99852ef3d4fb6674b3884d34fd40e8d8b407757e4d4588f61576152218d1",
-    "events_digest": "sha256:867db815785191edc2da6fe35aba7eae4306e0ea8bdcdf631ef85905be289fc0",
+    "canonical_event": "{\"base_seq\":1,\"event_type\":\"FILE::SET_METADATA\",\"item_id\":\"01890c6c-2222-7777-8888-bbbbbbbbbbbb\",\"metadata_id\":\"sha256:f786d1459533831e80f67f74d2af0e1816221bdcd2359e0c138fc293289bcde3\",\"set_content\":{\"body\":\"sha256:90e1404a224d37429674c135ebe6d850a4a692581336ac60fe27045dc991b4d9\"},\"set_name\":\"New.txt\"}",
+    "event_digest": "sha256:07dc8016d644101b9769cc137407505ffd42ae5937d4bb41f773f055ea554816",
+    "events_digest": "sha256:6ce04ad038bf31dcb0e0a6cb2557b5f69a51c8feb640cd45bc7840b588dfa55a",
     "commit": {
       "object_type": "vcs_commit",
       "format_version": 6,
@@ -74,10 +74,10 @@
       "occurred_at": null,
       "message": null,
       "event_count": 1,
-      "events_digest": "sha256:867db815785191edc2da6fe35aba7eae4306e0ea8bdcdf631ef85905be289fc0"
+      "events_digest": "sha256:6ce04ad038bf31dcb0e0a6cb2557b5f69a51c8feb640cd45bc7840b588dfa55a"
     },
-    "canonical_commit": "{\"author_id\":\"author-2\",\"committer_id\":\"author-2\",\"event_count\":1,\"events_digest\":\"sha256:867db815785191edc2da6fe35aba7eae4306e0ea8bdcdf631ef85905be289fc0\",\"format_version\":6,\"message\":null,\"object_type\":\"vcs_commit\",\"occurred_at\":null}",
-    "commit_id": "sha256:5eb582c379da9db3207b27323464d9a1b403894eb4f85a82859d2e026d7383ad",
+    "canonical_commit": "{\"author_id\":\"author-2\",\"committer_id\":\"author-2\",\"event_count\":1,\"events_digest\":\"sha256:6ce04ad038bf31dcb0e0a6cb2557b5f69a51c8feb640cd45bc7840b588dfa55a\",\"format_version\":6,\"message\":null,\"object_type\":\"vcs_commit\",\"occurred_at\":null}",
+    "commit_id": "sha256:a60266ca9d741887229bdad7e294bdcba016a5b5843f1a503aec3f160a0466d9",
     "metadata": {
       "value": {
         "k": "v",
@@ -98,13 +98,13 @@
     "name": "canonical_vector_set_parent_move_to_root",
     "event": {
       "base_seq": 1,
-      "event_type": "MOVE",
+      "event_type": "FILE::SET_PARENT",
       "item_id": "01890c6c-3333-7777-8888-cccccccccccc",
       "set_parent": null
     },
-    "canonical_event": "{\"base_seq\":1,\"event_type\":\"MOVE\",\"item_id\":\"01890c6c-3333-7777-8888-cccccccccccc\",\"set_parent\":null}",
-    "event_digest": "sha256:0ff22bb475411d497b0048d222c65bcfaf2832edfdfe432770c6dedf9d8a3ddb",
-    "events_digest": "sha256:8c21e2a50d74ab0c8865672bed3c1f78cdf0dff36219abeed8983a5cf420a188",
+    "canonical_event": "{\"base_seq\":1,\"event_type\":\"FILE::SET_PARENT\",\"item_id\":\"01890c6c-3333-7777-8888-cccccccccccc\",\"set_parent\":null}",
+    "event_digest": "sha256:34317a3d6fd33c06461ea28c6504cf872dc3be801b910ac6123bfb2b0c35c93a",
+    "events_digest": "sha256:d5825db5c6c67de2bfc2ce9bda64ed76cf590bdf30f3f5c182ac72b1fb83adf2",
     "commit": {
       "object_type": "vcs_commit",
       "format_version": 6,
@@ -113,22 +113,22 @@
       "occurred_at": null,
       "message": null,
       "event_count": 1,
-      "events_digest": "sha256:8c21e2a50d74ab0c8865672bed3c1f78cdf0dff36219abeed8983a5cf420a188"
+      "events_digest": "sha256:d5825db5c6c67de2bfc2ce9bda64ed76cf590bdf30f3f5c182ac72b1fb83adf2"
     },
-    "canonical_commit": "{\"author_id\":\"author-3\",\"committer_id\":\"author-3\",\"event_count\":1,\"events_digest\":\"sha256:8c21e2a50d74ab0c8865672bed3c1f78cdf0dff36219abeed8983a5cf420a188\",\"format_version\":6,\"message\":null,\"object_type\":\"vcs_commit\",\"occurred_at\":null}",
-    "commit_id": "sha256:a411e5537c23ea4d78d11162a6e45c599f3a42bf2af1668571a438e0146e0e4a"
+    "canonical_commit": "{\"author_id\":\"author-3\",\"committer_id\":\"author-3\",\"event_count\":1,\"events_digest\":\"sha256:d5825db5c6c67de2bfc2ce9bda64ed76cf590bdf30f3f5c182ac72b1fb83adf2\",\"format_version\":6,\"message\":null,\"object_type\":\"vcs_commit\",\"occurred_at\":null}",
+    "commit_id": "sha256:b1f8e98be82518e7bd33751c24c829881a6d4a8ef9c961f588cccfceae63d007"
   },
   {
     "name": "canonical_vector_set_parent_move_under_folder",
     "event": {
       "base_seq": 1,
-      "event_type": "MOVE",
+      "event_type": "FILE::SET_PARENT",
       "item_id": "01890c6c-4444-7777-8888-dddddddddddd",
       "set_parent": "01890c6c-5555-7777-8888-eeeeeeeeeeee"
     },
-    "canonical_event": "{\"base_seq\":1,\"event_type\":\"MOVE\",\"item_id\":\"01890c6c-4444-7777-8888-dddddddddddd\",\"set_parent\":\"01890c6c-5555-7777-8888-eeeeeeeeeeee\"}",
-    "event_digest": "sha256:1fbea02a66f32238b3475294f2b5bc11f1cf99a183cb5f124d1b02879f1e41b5",
-    "events_digest": "sha256:8b914cddbd62473d48fc866cd970d452732fb28b4ff678b77a7c720b2944f536",
+    "canonical_event": "{\"base_seq\":1,\"event_type\":\"FILE::SET_PARENT\",\"item_id\":\"01890c6c-4444-7777-8888-dddddddddddd\",\"set_parent\":\"01890c6c-5555-7777-8888-eeeeeeeeeeee\"}",
+    "event_digest": "sha256:cada54b910486abd9d17dcaa711be33fdf9bf336fcf25edbb6d810c98838cfd0",
+    "events_digest": "sha256:a2dacbf8b60b6c5ae70fd38d65c917354fb3c8b6e0c8fa96c74c78192603bd50",
     "commit": {
       "object_type": "vcs_commit",
       "format_version": 6,
@@ -137,23 +137,23 @@
       "occurred_at": null,
       "message": null,
       "event_count": 1,
-      "events_digest": "sha256:8b914cddbd62473d48fc866cd970d452732fb28b4ff678b77a7c720b2944f536"
+      "events_digest": "sha256:a2dacbf8b60b6c5ae70fd38d65c917354fb3c8b6e0c8fa96c74c78192603bd50"
     },
-    "canonical_commit": "{\"author_id\":\"author-4\",\"committer_id\":\"author-4\",\"event_count\":1,\"events_digest\":\"sha256:8b914cddbd62473d48fc866cd970d452732fb28b4ff678b77a7c720b2944f536\",\"format_version\":6,\"message\":null,\"object_type\":\"vcs_commit\",\"occurred_at\":null}",
-    "commit_id": "sha256:e7736e0658ddb35b3f5eec21ae0eb2b8580a7e6bd05f6576d08751101b8239fb"
+    "canonical_commit": "{\"author_id\":\"author-4\",\"committer_id\":\"author-4\",\"event_count\":1,\"events_digest\":\"sha256:a2dacbf8b60b6c5ae70fd38d65c917354fb3c8b6e0c8fa96c74c78192603bd50\",\"format_version\":6,\"message\":null,\"object_type\":\"vcs_commit\",\"occurred_at\":null}",
+    "commit_id": "sha256:8c356d692fd80442672a3059cb7a7367ae3494a6e101dad1a84e0d3f9ef6815d"
   },
   {
     "name": "canonical_vector_federation_transition_federate",
     "event": {
       "base_seq": 1,
-      "event_type": "FEDERATE",
+      "event_type": "FILE::FEDERATE",
       "item_id": "01890c6c-6666-7777-8888-ffffffffffff",
       "set_federation_stream_id": "fid-1",
       "set_is_federated": true
     },
-    "canonical_event": "{\"base_seq\":1,\"event_type\":\"FEDERATE\",\"item_id\":\"01890c6c-6666-7777-8888-ffffffffffff\",\"set_federation_stream_id\":\"fid-1\",\"set_is_federated\":true}",
-    "event_digest": "sha256:61bc1b9f48d5c2d4555753c9f714d0dd525ee16e75c7c1b3ecfeeeac2b0b4a40",
-    "events_digest": "sha256:7382152c11bc7032bf6a95624f72b761a1623e80640cf809dc917e682bf2c0af",
+    "canonical_event": "{\"base_seq\":1,\"event_type\":\"FILE::FEDERATE\",\"item_id\":\"01890c6c-6666-7777-8888-ffffffffffff\",\"set_federation_stream_id\":\"fid-1\",\"set_is_federated\":true}",
+    "event_digest": "sha256:dd3454add8af55ebcd7e74f91a43c10d75a30ccea8a7320d6f6ee1869dbefa21",
+    "events_digest": "sha256:a199e52cdef3758029d2a7249d7f130ab55a65127b134963728f4ddc978aeca7",
     "commit": {
       "object_type": "vcs_commit",
       "format_version": 6,
@@ -162,22 +162,22 @@
       "occurred_at": null,
       "message": "federate",
       "event_count": 1,
-      "events_digest": "sha256:7382152c11bc7032bf6a95624f72b761a1623e80640cf809dc917e682bf2c0af"
+      "events_digest": "sha256:a199e52cdef3758029d2a7249d7f130ab55a65127b134963728f4ddc978aeca7"
     },
-    "canonical_commit": "{\"author_id\":\"author-5\",\"committer_id\":\"author-5\",\"event_count\":1,\"events_digest\":\"sha256:7382152c11bc7032bf6a95624f72b761a1623e80640cf809dc917e682bf2c0af\",\"format_version\":6,\"message\":\"federate\",\"object_type\":\"vcs_commit\",\"occurred_at\":null}",
-    "commit_id": "sha256:1da1da3aed974361ba6c9b6a6dfdfa84976406bea7837396fd89f44904391cb5"
+    "canonical_commit": "{\"author_id\":\"author-5\",\"committer_id\":\"author-5\",\"event_count\":1,\"events_digest\":\"sha256:a199e52cdef3758029d2a7249d7f130ab55a65127b134963728f4ddc978aeca7\",\"format_version\":6,\"message\":\"federate\",\"object_type\":\"vcs_commit\",\"occurred_at\":null}",
+    "commit_id": "sha256:332f1a5819713edc2139b6c4e0bab591a001b356f02147eb25a939afb68ed714"
   },
   {
     "name": "canonical_vector_json_integers_at_the_limit",
     "event": {
       "base_seq": 1,
-      "event_type": "NUMBERS2",
+      "event_type": "ITEM::NUMBERS",
       "item_id": "01890c6c-aaaa-7777-8888-aaaaaaaaaaaa",
       "metadata_id": "sha256:672479f40625c58e0f41f57f643204ce3dae844841bb1b505f9606ba0b7303b2"
     },
-    "canonical_event": "{\"base_seq\":1,\"event_type\":\"NUMBERS2\",\"item_id\":\"01890c6c-aaaa-7777-8888-aaaaaaaaaaaa\",\"metadata_id\":\"sha256:672479f40625c58e0f41f57f643204ce3dae844841bb1b505f9606ba0b7303b2\"}",
-    "event_digest": "sha256:84bdab0c66c89940c4da8bd57493a2e8af7abcfad528fb976feddca72501c710",
-    "events_digest": "sha256:4e085b08549756b6ab797596ac8ac3a2a200477d9721abd7b448a284b51f1b9e",
+    "canonical_event": "{\"base_seq\":1,\"event_type\":\"ITEM::NUMBERS\",\"item_id\":\"01890c6c-aaaa-7777-8888-aaaaaaaaaaaa\",\"metadata_id\":\"sha256:672479f40625c58e0f41f57f643204ce3dae844841bb1b505f9606ba0b7303b2\"}",
+    "event_digest": "sha256:e7d175b8c9e7f2386febfe1e0c5f1168fb221a827fad8a49756da7fac6ea5981",
+    "events_digest": "sha256:dff05597e6bb4981a2cb0eb3e7fec6a5dc1fb1a2e261f36b7896a32fb65362f4",
     "commit": {
       "object_type": "vcs_commit",
       "format_version": 6,
@@ -186,10 +186,10 @@
       "occurred_at": null,
       "message": null,
       "event_count": 1,
-      "events_digest": "sha256:4e085b08549756b6ab797596ac8ac3a2a200477d9721abd7b448a284b51f1b9e"
+      "events_digest": "sha256:dff05597e6bb4981a2cb0eb3e7fec6a5dc1fb1a2e261f36b7896a32fb65362f4"
     },
-    "canonical_commit": "{\"author_id\":\"author-9\",\"committer_id\":\"author-9\",\"event_count\":1,\"events_digest\":\"sha256:4e085b08549756b6ab797596ac8ac3a2a200477d9721abd7b448a284b51f1b9e\",\"format_version\":6,\"message\":null,\"object_type\":\"vcs_commit\",\"occurred_at\":null}",
-    "commit_id": "sha256:1580c47dd4bf34c406521549fee56022fabdb010ccc05b06f95531399305a223",
+    "canonical_commit": "{\"author_id\":\"author-9\",\"committer_id\":\"author-9\",\"event_count\":1,\"events_digest\":\"sha256:dff05597e6bb4981a2cb0eb3e7fec6a5dc1fb1a2e261f36b7896a32fb65362f4\",\"format_version\":6,\"message\":null,\"object_type\":\"vcs_commit\",\"occurred_at\":null}",
+    "commit_id": "sha256:6307510f42c9d3b6575706450a8a8a2f3415aee812ffbecf05e8415b19555384",
     "metadata": {
       "value": {
         "largest": 9007199254740991,
@@ -204,16 +204,16 @@
     "name": "canonical_vector_unicode_control_chars_and_separators",
     "event": {
       "base_seq": 1,
-      "event_type": "UNICODE_ESC",
+      "event_type": "ITEM::UNICODE_ESCAPES",
       "item_id": "01890c6c-bbbb-7777-8888-bbbbbbbbbbbb",
       "set_content": {
         "body": "sha256:17385be70582933b4226e3f727f8f5f726fcfbcd9162c9bd9a0507a0eeca38a4"
       },
       "metadata_id": "sha256:6e894e33fab3dfcd7a840f0923fd1d416a73b3af220d6c83ac1483cca4fffd3e"
     },
-    "canonical_event": "{\"base_seq\":1,\"event_type\":\"UNICODE_ESC\",\"item_id\":\"01890c6c-bbbb-7777-8888-bbbbbbbbbbbb\",\"metadata_id\":\"sha256:6e894e33fab3dfcd7a840f0923fd1d416a73b3af220d6c83ac1483cca4fffd3e\",\"set_content\":{\"body\":\"sha256:17385be70582933b4226e3f727f8f5f726fcfbcd9162c9bd9a0507a0eeca38a4\"}}",
-    "event_digest": "sha256:39709346d34456aeb64a8cf7daf6a647f70bafb6fd56374439c2e97451fa4326",
-    "events_digest": "sha256:0b8e8ff394dad78303f26e1c445348cb5e9208021d07bd76e6b1d6527e930722",
+    "canonical_event": "{\"base_seq\":1,\"event_type\":\"ITEM::UNICODE_ESCAPES\",\"item_id\":\"01890c6c-bbbb-7777-8888-bbbbbbbbbbbb\",\"metadata_id\":\"sha256:6e894e33fab3dfcd7a840f0923fd1d416a73b3af220d6c83ac1483cca4fffd3e\",\"set_content\":{\"body\":\"sha256:17385be70582933b4226e3f727f8f5f726fcfbcd9162c9bd9a0507a0eeca38a4\"}}",
+    "event_digest": "sha256:9459cb90170a037ad58b9f078ff398c5dc2e7afd0316d88fb52be349f4c93c88",
+    "events_digest": "sha256:f7505d792eb2a7a4798cfe940b4749de59f9ff082adfbaed22855ba691487830",
     "commit": {
       "object_type": "vcs_commit",
       "format_version": 6,
@@ -222,10 +222,10 @@
       "occurred_at": null,
       "message": null,
       "event_count": 1,
-      "events_digest": "sha256:0b8e8ff394dad78303f26e1c445348cb5e9208021d07bd76e6b1d6527e930722"
+      "events_digest": "sha256:f7505d792eb2a7a4798cfe940b4749de59f9ff082adfbaed22855ba691487830"
     },
-    "canonical_commit": "{\"author_id\":\"author-10\",\"committer_id\":\"author-10\",\"event_count\":1,\"events_digest\":\"sha256:0b8e8ff394dad78303f26e1c445348cb5e9208021d07bd76e6b1d6527e930722\",\"format_version\":6,\"message\":null,\"object_type\":\"vcs_commit\",\"occurred_at\":null}",
-    "commit_id": "sha256:2ee9660ec08dd7ea4ec3cb0c65ce609e0cfe3a25e8c973835ba9f8251c8974cf",
+    "canonical_commit": "{\"author_id\":\"author-10\",\"committer_id\":\"author-10\",\"event_count\":1,\"events_digest\":\"sha256:f7505d792eb2a7a4798cfe940b4749de59f9ff082adfbaed22855ba691487830\",\"format_version\":6,\"message\":null,\"object_type\":\"vcs_commit\",\"occurred_at\":null}",
+    "commit_id": "sha256:14df56038aabc13ac9d95acfe734f8078cf419c037aeee92db08367d88665b6f",
     "metadata": {
       "value": {
         "line_sep": " ",
@@ -248,13 +248,13 @@
     "name": "canonical_vector_federation_transition_unfederate",
     "event": {
       "base_seq": 1,
-      "event_type": "UNFEDERATE",
+      "event_type": "FILE::FEDERATE",
       "item_id": "01890c6c-cccc-7777-8888-cccccccccccc",
       "set_is_federated": false
     },
-    "canonical_event": "{\"base_seq\":1,\"event_type\":\"UNFEDERATE\",\"item_id\":\"01890c6c-cccc-7777-8888-cccccccccccc\",\"set_is_federated\":false}",
-    "event_digest": "sha256:741290999d66ba4877a1b3f9abb059cca66c9609d9a0c573967d0cd383469d8c",
-    "events_digest": "sha256:85ace6c4f7d4618d1b6e6e6abf076159f6bb07b9ecff23e6733863c148be146f",
+    "canonical_event": "{\"base_seq\":1,\"event_type\":\"FILE::FEDERATE\",\"item_id\":\"01890c6c-cccc-7777-8888-cccccccccccc\",\"set_is_federated\":false}",
+    "event_digest": "sha256:156383e26c27fecd6092837a6010f43aef1052b992199859129f325a224f9f65",
+    "events_digest": "sha256:015edb3a430d91fcda2397d244ecf45336bd5e7f12c89e3f7824e04fc4dc167c",
     "commit": {
       "object_type": "vcs_commit",
       "format_version": 6,
@@ -263,25 +263,25 @@
       "occurred_at": null,
       "message": "unfederate",
       "event_count": 1,
-      "events_digest": "sha256:85ace6c4f7d4618d1b6e6e6abf076159f6bb07b9ecff23e6733863c148be146f"
+      "events_digest": "sha256:015edb3a430d91fcda2397d244ecf45336bd5e7f12c89e3f7824e04fc4dc167c"
     },
-    "canonical_commit": "{\"author_id\":\"author-11\",\"committer_id\":\"author-11\",\"event_count\":1,\"events_digest\":\"sha256:85ace6c4f7d4618d1b6e6e6abf076159f6bb07b9ecff23e6733863c148be146f\",\"format_version\":6,\"message\":\"unfederate\",\"object_type\":\"vcs_commit\",\"occurred_at\":null}",
-    "commit_id": "sha256:dea82bca3e43c9ed2626c72ff88616bdcd5e7cfff9adce70afe8450e4bd8830e"
+    "canonical_commit": "{\"author_id\":\"author-11\",\"committer_id\":\"author-11\",\"event_count\":1,\"events_digest\":\"sha256:015edb3a430d91fcda2397d244ecf45336bd5e7f12c89e3f7824e04fc4dc167c\",\"format_version\":6,\"message\":\"unfederate\",\"object_type\":\"vcs_commit\",\"occurred_at\":null}",
+    "commit_id": "sha256:101b0d96e69a2b8d6bceea0ad2bfd7d2423e1ce593d0884cd08389ad5cfb4dae"
   },
   {
     "name": "canonical_vector_unicode_metadata_and_text",
     "event": {
       "base_seq": 1,
-      "event_type": "UNICODE",
+      "event_type": "ITEM::UNICODE",
       "item_id": "01890c6c-8888-7777-8888-bbbbbbbbbbbb",
       "set_content": {
         "body": "sha256:18b47816c7c77ba9f725c52e8224e608a5a4f17f5104e8415fd234cf4f67a5d9"
       },
       "metadata_id": "sha256:9590cefafe1411213b1272e265a2fbf5e1bc153997cd15f82fe2851f6f684269"
     },
-    "canonical_event": "{\"base_seq\":1,\"event_type\":\"UNICODE\",\"item_id\":\"01890c6c-8888-7777-8888-bbbbbbbbbbbb\",\"metadata_id\":\"sha256:9590cefafe1411213b1272e265a2fbf5e1bc153997cd15f82fe2851f6f684269\",\"set_content\":{\"body\":\"sha256:18b47816c7c77ba9f725c52e8224e608a5a4f17f5104e8415fd234cf4f67a5d9\"}}",
-    "event_digest": "sha256:a763f2fa3af1ecb4577281f30f4818cb7e4257afca1cc37b3024994ebbbf5895",
-    "events_digest": "sha256:96ae950d3dbb89b6fc4999884ae8361dfbf46ed368bb06b5796bb5349052cf94",
+    "canonical_event": "{\"base_seq\":1,\"event_type\":\"ITEM::UNICODE\",\"item_id\":\"01890c6c-8888-7777-8888-bbbbbbbbbbbb\",\"metadata_id\":\"sha256:9590cefafe1411213b1272e265a2fbf5e1bc153997cd15f82fe2851f6f684269\",\"set_content\":{\"body\":\"sha256:18b47816c7c77ba9f725c52e8224e608a5a4f17f5104e8415fd234cf4f67a5d9\"}}",
+    "event_digest": "sha256:4b6e5827fec2affaab998430f61149ec8940981ecd3570b1bb5d9f2e0e04381a",
+    "events_digest": "sha256:4858a5208b4500fe10ea1d1cc4cd72f8ca5b7aff90e5d050e26e88220fc3ab71",
     "commit": {
       "object_type": "vcs_commit",
       "format_version": 6,
@@ -290,10 +290,10 @@
       "occurred_at": null,
       "message": null,
       "event_count": 1,
-      "events_digest": "sha256:96ae950d3dbb89b6fc4999884ae8361dfbf46ed368bb06b5796bb5349052cf94"
+      "events_digest": "sha256:4858a5208b4500fe10ea1d1cc4cd72f8ca5b7aff90e5d050e26e88220fc3ab71"
     },
-    "canonical_commit": "{\"author_id\":\"author-7\",\"committer_id\":\"author-7\",\"event_count\":1,\"events_digest\":\"sha256:96ae950d3dbb89b6fc4999884ae8361dfbf46ed368bb06b5796bb5349052cf94\",\"format_version\":6,\"message\":null,\"object_type\":\"vcs_commit\",\"occurred_at\":null}",
-    "commit_id": "sha256:adbce36d1494578111d32c3c538ded63361b8f7adaa029b56b45357fa9c45d26",
+    "canonical_commit": "{\"author_id\":\"author-7\",\"committer_id\":\"author-7\",\"event_count\":1,\"events_digest\":\"sha256:4858a5208b4500fe10ea1d1cc4cd72f8ca5b7aff90e5d050e26e88220fc3ab71\",\"format_version\":6,\"message\":null,\"object_type\":\"vcs_commit\",\"occurred_at\":null}",
+    "commit_id": "sha256:2eb698466d5a63476be38968ed4675da5bb69362f03c47d00c0cabf3d1032f7d",
     "metadata": {
       "value": {
         "combining": "é",
@@ -315,16 +315,16 @@
     "name": "canonical_vector_large_payload_digest_stability",
     "event": {
       "item_id": "01890c6c-9999-7777-8888-cccccccccccc",
-      "event_type": "BIG",
+      "event_type": "ITEM::LARGE",
       "base_seq": 1,
       "set_content": {
         "body": "sha256:9313e1023c8f65b5deac0e9a7e2acbc59a14f27db8b4ea19ad648fe2d5b004d9"
       },
       "metadata_id": "sha256:f2027e35113824fd2e754b139fcb68c1edd5684e62d2b8eb727831c02bd74c7b"
     },
-    "canonical_event": "{\"base_seq\":1,\"event_type\":\"BIG\",\"item_id\":\"01890c6c-9999-7777-8888-cccccccccccc\",\"metadata_id\":\"sha256:f2027e35113824fd2e754b139fcb68c1edd5684e62d2b8eb727831c02bd74c7b\",\"set_content\":{\"body\":\"sha256:9313e1023c8f65b5deac0e9a7e2acbc59a14f27db8b4ea19ad648fe2d5b004d9\"}}",
-    "event_digest": "sha256:87ddc160d7f97ae95b82c377ca920db39808e402aba4eb2f2920e8693a24efb8",
-    "events_digest": "sha256:a09821a018de42e63224c222be2c7e7a90f5ab4e8400859ab9f95c327d35d665",
+    "canonical_event": "{\"base_seq\":1,\"event_type\":\"ITEM::LARGE\",\"item_id\":\"01890c6c-9999-7777-8888-cccccccccccc\",\"metadata_id\":\"sha256:f2027e35113824fd2e754b139fcb68c1edd5684e62d2b8eb727831c02bd74c7b\",\"set_content\":{\"body\":\"sha256:9313e1023c8f65b5deac0e9a7e2acbc59a14f27db8b4ea19ad648fe2d5b004d9\"}}",
+    "event_digest": "sha256:1d7c1b3dc6dc4802d4d7d1fb113bd79a6dfe3a8d483741d584519b76247c2ee7",
+    "events_digest": "sha256:6a8a791a87de0be085edf766b1bf47064b9e4c76cddbfdd4c4a80708eade8d38",
     "commit": {
       "object_type": "vcs_commit",
       "format_version": 6,
@@ -333,10 +333,10 @@
       "occurred_at": null,
       "message": "big",
       "event_count": 1,
-      "events_digest": "sha256:a09821a018de42e63224c222be2c7e7a90f5ab4e8400859ab9f95c327d35d665"
+      "events_digest": "sha256:6a8a791a87de0be085edf766b1bf47064b9e4c76cddbfdd4c4a80708eade8d38"
     },
-    "canonical_commit": "{\"author_id\":\"author-8\",\"committer_id\":\"author-8\",\"event_count\":1,\"events_digest\":\"sha256:a09821a018de42e63224c222be2c7e7a90f5ab4e8400859ab9f95c327d35d665\",\"format_version\":6,\"message\":\"big\",\"object_type\":\"vcs_commit\",\"occurred_at\":null}",
-    "commit_id": "sha256:015fd30690bc6c6af752593b29bed1a3b08edcb227f1e762081e70346d8c5db0",
+    "canonical_commit": "{\"author_id\":\"author-8\",\"committer_id\":\"author-8\",\"event_count\":1,\"events_digest\":\"sha256:6a8a791a87de0be085edf766b1bf47064b9e4c76cddbfdd4c4a80708eade8d38\",\"format_version\":6,\"message\":\"big\",\"object_type\":\"vcs_commit\",\"occurred_at\":null}",
+    "commit_id": "sha256:2e0e5f22311150396babde7c834f830315e6b76e1fa6b0467504a1728516e2fb",
     "metadata": {
       "value": {
         "note": "large payload vector",

@@ -32,7 +32,8 @@ destination. Non-UTF-8 names are refused rather than guessed.
 Hidden files are ignored by default except explicit control policy. The chosen
 hidden-file setting lives in `.synck/checkout.json`, not scan cache. Ignore
 rules and subtree selection are visibility policy, not erasure of history.
-The root `.synck` control directory cannot be recorded as an ordinary item.
+The `.synck` control directory and its aliases cannot be recorded as items, in
+any folder.
 Windows path warnings identify paths over 260 UTF-16 units; length is not a
 repository namespace rule because checkout locations vary by machine.
 

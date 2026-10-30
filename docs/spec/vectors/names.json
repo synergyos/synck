@@ -114,6 +114,174 @@
       "valid": false,
       "key": null,
       "fixed": "a_b"
+    },
+    {
+      "name": "ab",
+      "valid": false,
+      "key": null,
+      "fixed": "a_b"
+    },
+    {
+      "name": "ab",
+      "valid": false,
+      "key": null,
+      "fixed": "a_b"
+    },
+    {
+      "name": "ab",
+      "valid": false,
+      "key": null,
+      "fixed": "a_b"
+    },
+    {
+      "name": "ab",
+      "valid": false,
+      "key": null,
+      "fixed": "a_b"
+    },
+    {
+      "name": "a b",
+      "valid": true,
+      "key": "a b",
+      "fixed": "a b"
+    },
+    {
+      "name": "a b",
+      "valid": false,
+      "key": null,
+      "fixed": "a_b"
+    },
+    {
+      "name": "a b",
+      "valid": false,
+      "key": null,
+      "fixed": "a_b"
+    },
+    {
+      "name": "a‪b",
+      "valid": false,
+      "key": null,
+      "fixed": "a_b"
+    },
+    {
+      "name": "‮cod.exe",
+      "valid": false,
+      "key": null,
+      "fixed": "_cod.exe"
+    },
+    {
+      "name": "a⁦b",
+      "valid": false,
+      "key": null,
+      "fixed": "a_b"
+    },
+    {
+      "name": "a⁩b",
+      "valid": false,
+      "key": null,
+      "fixed": "a_b"
+    },
+    {
+      "name": "a‎b",
+      "valid": true,
+      "key": "a‎b",
+      "fixed": "a‎b"
+    },
+    {
+      "name": "a‏b",
+      "valid": true,
+      "key": "a‏b",
+      "fixed": "a‏b"
+    },
+    {
+      "name": ".synck",
+      "valid": false,
+      "key": null,
+      "fixed": "_.synck"
+    },
+    {
+      "name": ".SyNcK",
+      "valid": false,
+      "key": null,
+      "fixed": "_.SyNcK"
+    },
+    {
+      "name": ".ſynck",
+      "valid": false,
+      "key": null,
+      "fixed": "_.ſynck"
+    },
+    {
+      "name": ".sy‌nck",
+      "valid": false,
+      "key": null,
+      "fixed": "_.sy‌nck"
+    },
+    {
+      "name": ".synck‍",
+      "valid": false,
+      "key": null,
+      "fixed": "_.synck‍"
+    },
+    {
+      "name": "﻿.synck",
+      "valid": false,
+      "key": null,
+      "fixed": "_﻿.synck"
+    },
+    {
+      "name": ".syn⁮ck",
+      "valid": false,
+      "key": null,
+      "fixed": "_.syn⁮ck"
+    },
+    {
+      "name": ".synck.",
+      "valid": false,
+      "key": null,
+      "fixed": "_.synck"
+    },
+    {
+      "name": "SYNCK~1",
+      "valid": false,
+      "key": null,
+      "fixed": "_SYNCK~1"
+    },
+    {
+      "name": "synck~1",
+      "valid": false,
+      "key": null,
+      "fixed": "_synck~1"
+    },
+    {
+      "name": "sy‍nck~1",
+      "valid": false,
+      "key": null,
+      "fixed": "_sy‍nck~1"
+    },
+    {
+      "name": ".synckignore",
+      "valid": true,
+      "key": ".synckignore",
+      "fixed": ".synckignore"
+    },
+    {
+      "name": "synck~2",
+      "valid": true,
+      "key": "synck~2",
+      "fixed": "synck~2"
+    },
+    {
+      "name": "synck",
+      "valid": true,
+      "key": "synck",
+      "fixed": "synck"
+    },
+    {
+      "name": ".synck (2)",
+      "valid": true,
+      "key": ".synck (2)",
+      "fixed": ".synck (2)"
     }
   ]
 }

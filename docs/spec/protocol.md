@@ -18,7 +18,7 @@ identifies one ordered history. Administrative history replacement changes the
 generation; it never silently resets a client's state or erases pending work.
 
 `Cursor` is `{repository, repo_seq, checkpoint}`. Genesis has sequence zero and
-a `sha256:` digest of 64 zeroes. Published positions are positive signed 64-bit
+the repository's genesis value as its checkpoint. Published positions are positive signed 64-bit
 values starting at 1, with no gaps. Every next header must have the previous
 sequence plus one; reject missing positions even if the checkpoint hash matches.
 Checkpoints use the canonical framing and exact
@@ -46,8 +46,8 @@ Operation IDs use the format's 256-byte nonblank UTF-8 rule, not an ASCII-only
 subset. Encode an operation ID as one URL path segment; it is never a filesystem
 path. Install object metadata through Core's metadata API. Do not log content.
 
-`Capabilities` contains `protocol_version: 1`, `repository`, `latest` complete
-cursor and `policy`. Fixed transfer bounds are **512 records per page** and
+`Capabilities` contains `protocol_version: 1`, `repository`, `encrypted` (a client
+needs it to compute the genesis value), `latest` complete cursor and `policy`. Fixed transfer bounds are **512 records per page** and
 **8 MiB of serialized JSON per page**. These are not commit limits. The byte
 bound fits any format-valid individual event even with JSON numeric-byte history
 encoding. Producers stop a page before either bound, and paginate again. They
@@ -230,7 +230,7 @@ Remote lease adapters and clone command integration are pending plan steps.
 [The small vector](vectors/sync.json) preserves the initial commit ID while
 specifying the paged final request. [The 10,001-event vector](vectors/sync-large.json)
 contains an explicit deterministic ASCII event-generation recipe and independently
-computed hashes, a 16 KiB message, a 256-byte operation ID and an import-job ID.
+computed hashes, a 16 KiB message and a 256-byte operation ID.
 `cargo test --locked -p synck-sync --test protocol` checks these vectors, upload
 expiry, page ordering, retries, partial-history restart, tampering, exact receipt
 binding and separate policy refusals. These are shared-library checks, not a

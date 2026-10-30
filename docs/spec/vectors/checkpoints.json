@@ -1,29 +1,65 @@
-[
-  {
-    "previous": "0000000000000000000000000000000000000000000000000000000000000000",
-    "repo_seq": 1,
-    "commit_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-    "accepted_seconds": 1767225600,
-    "accepted_nanos": 0,
-    "checkpoint": "e6e272eaa4301eb6e8c012fb43bb20a4a6b52b9139bddc9e149685f5c920d31f",
-    "valid": true
-  },
-  {
-    "previous": "e6e272eaa4301eb6e8c012fb43bb20a4a6b52b9139bddc9e149685f5c920d31f",
-    "repo_seq": 2,
-    "commit_id": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-    "accepted_seconds": 1767225601,
-    "accepted_nanos": 123456789,
-    "checkpoint": "d5e14cb3123421eb2185726708abb0ffe805350cebc181a4ffb6867bcddd5890",
-    "valid": true
-  },
-  {
-    "previous": "d5e14cb3123421eb2185726708abb0ffe805350cebc181a4ffb6867bcddd5890",
-    "repo_seq": 4,
-    "commit_id": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-    "accepted_seconds": 1767225602,
-    "accepted_nanos": 0,
-    "checkpoint": "e18d3c646c0c9db155c84eb23f60b4f183d3954383011bfd3c71f2f62991c562",
-    "valid": false
-  }
-]
+{
+  "genesis": [
+    {
+      "name": "repository",
+      "repo_id": "019a2900-0000-7000-8000-000000000001",
+      "generation": "019a2900-0000-7000-8000-000000000002",
+      "format_version": 7,
+      "encrypted": false,
+      "value": "84d3cd883cefdbec1867e506ea6ec1f046fdec7590c85c0cafa9baaae37c25b2"
+    },
+    {
+      "name": "encrypted repository",
+      "repo_id": "019a2900-0000-7000-8000-000000000001",
+      "generation": "019a2900-0000-7000-8000-000000000002",
+      "format_version": 7,
+      "encrypted": true,
+      "value": "b70e9cc84be2ee1d69f1fd5fff9d46721f26ba4b1af770288a4045e713437b07"
+    },
+    {
+      "name": "another repository",
+      "repo_id": "019a2900-0000-7000-8000-000000000003",
+      "generation": "019a2900-0000-7000-8000-000000000002",
+      "format_version": 7,
+      "encrypted": false,
+      "value": "abde4d63700a9834ca85112828e22c7f71e1695a04d0cd2d048c6b590c68f132"
+    },
+    {
+      "name": "another generation",
+      "repo_id": "019a2900-0000-7000-8000-000000000001",
+      "generation": "019a2900-0000-7000-8000-000000000003",
+      "format_version": 7,
+      "encrypted": false,
+      "value": "b24ec3098515aa9da0593c624eeebd4df03f5cacd0a7d3eb40fba71f3482083d"
+    }
+  ],
+  "steps": [
+    {
+      "previous": "84d3cd883cefdbec1867e506ea6ec1f046fdec7590c85c0cafa9baaae37c25b2",
+      "repo_seq": 1,
+      "commit_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "accepted_seconds": 1767225600,
+      "accepted_nanos": 0,
+      "checkpoint": "d4269b9fcc0083c6efc1044a60830273dd54afc580221eb42d4784f2e9cec4e0",
+      "valid": true
+    },
+    {
+      "previous": "d4269b9fcc0083c6efc1044a60830273dd54afc580221eb42d4784f2e9cec4e0",
+      "repo_seq": 2,
+      "commit_id": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "accepted_seconds": 1767225601,
+      "accepted_nanos": 123456789,
+      "checkpoint": "9fdecf3d1e655bf85410bff9cecdee2c979921272ab28df20f5a5fe1b519d55c",
+      "valid": true
+    },
+    {
+      "previous": "9fdecf3d1e655bf85410bff9cecdee2c979921272ab28df20f5a5fe1b519d55c",
+      "repo_seq": 4,
+      "commit_id": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "accepted_seconds": 1767225602,
+      "accepted_nanos": 0,
+      "checkpoint": "bb334c99b85c53bdb38869f8d1113d61d307501a5579365cec7a047fe377aae1",
+      "valid": false
+    }
+  ]
+}

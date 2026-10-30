@@ -4,8 +4,8 @@
     "events": [
       {
         "family": 0,
-        "payload": "{\"base_seq\":1,\"event_type\":\"FILE::RENAME\",\"item_id\":\"01890c6c-1111-7777-8888-aaaaaaaaaaaa\",\"set_name\":\"résumé.txt\"}",
-        "digest": "sha256:45a0ea9e95e82fe0d21a5138bd59bdd4245b4107cb3c5729a77da2d6f47dd47f"
+        "payload": "{\"base_seq\":1,\"event_type\":\"FILE::SET_NAME\",\"item_id\":\"01890c6c-1111-7777-8888-aaaaaaaaaaaa\",\"set_name\":\"résumé.txt\"}",
+        "digest": "sha256:c07c634c2aa518e7f0c8a846ea2491b1cf24b7f5a8ace12b38f49ffcd5996203"
       }
     ],
     "header": {
@@ -16,18 +16,18 @@
       "occurred_at": null,
       "message": null,
       "event_count": 1,
-      "events_digest": "sha256:c972fe9f21b2df76769781875082aefd0fa17b54b2aa13ddbf73d66809993f98"
+      "events_digest": "sha256:43645129ccab9a13c00716f3c56fe6b45cea73233b8f79f6a233994e92c2f97f"
     },
-    "canonical": "{\"author_id\":\"alice\",\"committer_id\":\"alice\",\"event_count\":1,\"events_digest\":\"sha256:c972fe9f21b2df76769781875082aefd0fa17b54b2aa13ddbf73d66809993f98\",\"format_version\":6,\"message\":null,\"object_type\":\"vcs_commit\",\"occurred_at\":null}",
-    "commit_id": "sha256:a4fa431fcf273e177c5bdfb0ef46ec8e22af1d9c3ea1d71456478a4e49f850dd"
+    "canonical": "{\"author_id\":\"alice\",\"committer_id\":\"alice\",\"event_count\":1,\"events_digest\":\"sha256:43645129ccab9a13c00716f3c56fe6b45cea73233b8f79f6a233994e92c2f97f\",\"format_version\":6,\"message\":null,\"object_type\":\"vcs_commit\",\"occurred_at\":null}",
+    "commit_id": "sha256:9744803107429df01dc4e8a15bb412f2a4ebcea1fa197560c8542304abf68c29"
   },
   {
     "name": "mixed",
     "events": [
       {
         "family": 0,
-        "payload": "{\"base_seq\":1,\"event_type\":\"FILE::RENAME\",\"item_id\":\"01890c6c-1111-7777-8888-aaaaaaaaaaaa\",\"set_name\":\"résumé.txt\"}",
-        "digest": "sha256:45a0ea9e95e82fe0d21a5138bd59bdd4245b4107cb3c5729a77da2d6f47dd47f"
+        "payload": "{\"base_seq\":1,\"event_type\":\"FILE::SET_NAME\",\"item_id\":\"01890c6c-1111-7777-8888-aaaaaaaaaaaa\",\"set_name\":\"résumé.txt\"}",
+        "digest": "sha256:c07c634c2aa518e7f0c8a846ea2491b1cf24b7f5a8ace12b38f49ffcd5996203"
       },
       {
         "family": 1,
@@ -43,10 +43,10 @@
       "occurred_at": "2026-10-28T12:34:56.123456789Z",
       "message": null,
       "event_count": 2,
-      "events_digest": "sha256:8baa0dd8ea617600d514875d9782cd951712cd1603e32bff5f7d9daf7b04ccd5"
+      "events_digest": "sha256:a5a19a957ecf9e1501f8f9a4464505752cef2589e0c1fe8eba8175f9add254ee"
     },
-    "canonical": "{\"author_id\":\"alice\",\"committer_id\":\"bob\",\"event_count\":2,\"events_digest\":\"sha256:8baa0dd8ea617600d514875d9782cd951712cd1603e32bff5f7d9daf7b04ccd5\",\"format_version\":6,\"message\":null,\"object_type\":\"vcs_commit\",\"occurred_at\":\"2026-10-28T12:34:56.123456789Z\"}",
-    "commit_id": "sha256:ba63bc1fb7b34f16c230b91d3a0bb72cc4825ea49346d130d1de57faa71f1ff6"
+    "canonical": "{\"author_id\":\"alice\",\"committer_id\":\"bob\",\"event_count\":2,\"events_digest\":\"sha256:a5a19a957ecf9e1501f8f9a4464505752cef2589e0c1fe8eba8175f9add254ee\",\"format_version\":6,\"message\":null,\"object_type\":\"vcs_commit\",\"occurred_at\":\"2026-10-28T12:34:56.123456789Z\"}",
+    "commit_id": "sha256:f4b2bd5a010a6900d535f391bd184a33d1b3bfe0e3b9e7a22daa378b2ea4187b"
   },
   {
     "name": "reference",

@@ -35,13 +35,15 @@ JSON payload, including escaping.
 | One item or attached-ref event payload | 1,048,576 bytes (1 MiB) |
 | One name | 255 bytes |
 | One record key | 256 bytes |
+| One item type | 64 bytes |
+| One event type | 128 bytes |
+| Hashed JSON nesting | 64 levels |
 
 Author and committer IDs are nonempty. A stored operation ID is null or
 nonblank UTF-8; append submissions require one. Preserve its exact bytes,
 including whitespace; do not trim or derive a different retry identity.
 A message is null or nonempty; an empty message is rejected. Name normalization
-and forbidden-character rules below still apply. Unknown event types remain interpretable as envelopes;
-the event payload bound covers their strings without a separate type-name cap.
+and forbidden-character rules below still apply.
 
 There is **no per-commit event-count or aggregate byte admission limit**. Counts
 and positions must still fit their specified integer representation. Transfer
@@ -116,6 +118,8 @@ serialize floating-point numbers identically:
   exponents and negative zero are rejected. A decimal value is a string.
 - A string or key must not contain U+0000. Other control characters use the
   escapes RFC 8785 prescribes.
+- Arrays and objects nest at most 64 levels, the outermost being level 1. A parser's
+  own limit differs between implementations, so the format fixes one.
 
 `vectors/json.json` lists accepted and rejected texts.
 
@@ -162,6 +166,35 @@ An attached-ref envelope has required `owner_item_id`, `event_type`,
 are valid. Refs cannot change an owner's structure. Their ledger starts at one
 and is independent of item sequence; an initial ref base is zero.
 
+### Item and event types
+
+An item type matches `[A-Z][A-Z0-9_]*`, at most 64 bytes. `ITEM` is not an item
+type.
+
+An event type is two or more segments joined by `::`, at most 128 bytes in all.
+Each segment matches `[A-Z][A-Z0-9_.]*`. The first segment is the event's family.
+An item event's family is the item's type, or `ITEM` for a family event that
+applies to any type. A ref event's family is its ledger's name, such as
+`FILE_VERSION`, and is not the owner's type. A later segment may name a subitem.
+A reader replays an unknown event type from its structural fields alone.
+
+These are the core events. Each has one name, the item's type followed by the name
+below, and `ITEM::` followed by one of these names is rejected. An event other than
+`CREATE` carries `base_seq`, unless its item was created in that commit.
+
+| Name | Items | Fields |
+| --- | --- | --- |
+| `CREATE` | All | `create_item`, optional `metadata_id` and `set_content` |
+| `SET_NAME` | Tree items | `set_name` |
+| `SET_PARENT` | Tree items | `set_parent` |
+| `SET_LINK` | Records | `set_link` |
+| `SET_METADATA` | All | `metadata_id` |
+| `SET_CONTENT` | All with content | `set_content`, and metadata where the family requires it |
+| `TRASH` | All | `set_in_trash: true` |
+| `RESTORE` | All | `set_in_trash: false` |
+| `TOMBSTONE` | All | `set_tombstoned: true` |
+| `FEDERATE` | All | `set_is_federated`, and `set_federation_stream_id` when true |
+
 ### Structural replay
 
 Apply commits in published `repo_seq` order and their events in index order.
@@ -173,8 +206,7 @@ the pre-commit ref head and increment it consecutively. Refs require an existing
 owner, which may have been created earlier in that commit.
 
 Creation fixes item identity, type and class, starts lifecycle LIVE and sequencing mode
-LOCAL unless federated bootstrap applies. Core event types use the item's type
-or `ITEM` as their `::`-separated family. Apply structural fields to the evolving
+LOCAL unless federated bootstrap applies. Apply structural fields to the evolving
 in-commit state. Parents must exist in this repository and be FOLDER items;
 root is null, and parent cycles are forbidden. Live tree-item siblings must have
 distinct name keys. Tombstones are terminal; tombstoned items receive no more
@@ -256,6 +288,31 @@ filing, as Git notes attach local data to objects you do not own.
 
 `vectors/records.json` lists commit sequences with the expected result.
 
+### FILE and FOLDER events
+
+Version 1 of the FILE family is exactly `FILE::CREATE`, `SET_NAME`, `SET_PARENT`,
+`SET_METADATA`, `SET_CONTENT`, `TRASH`, `RESTORE`, `TOMBSTONE` and `FEDERATE`. The
+FOLDER family is exactly the same list without `SET_CONTENT`. A typed FILE or FOLDER
+reader reports any other event type on these items as unsupported, and never guesses.
+
+Each event holds only the fields the core table gives it, with these additions:
+
+- `SET_NAME`, `SET_PARENT`, `TRASH`, `RESTORE` and `TOMBSTONE` carry no metadata.
+  A move and a rename are two events, which may share a commit.
+- `FILE::CREATE` and `FILE::SET_CONTENT` carry `set_content` with exactly `bytes`, and
+  metadata with `content` holding exactly `size`.
+- `FILE::SET_CONTENT` metadata may also hold `upload_intent_id` (nonempty string),
+  `revision_origin` (`LOCAL` or `FEDERATED`) and `provenance`. Any other key is
+  rejected.
+- `provenance` holds `source` and `committed_by` (nonempty strings),
+  `human_editor_ids` (array of distinct nonempty strings) and optional
+  `primary_human_editor_id` (null, or a member of that array). Any other key is
+  rejected.
+- `FOLDER::CREATE` carries no content, and may carry metadata. `SET_METADATA` and
+  both `CREATE` events may hold keys this family does not name.
+- `SET_METADATA` carries `metadata_id` and no other optional field.
+- `FEDERATE` carries no metadata or content.
+
 ### FILE byte reconstruction
 
 A FILE is created with its first bytes: `FILE::CREATE` at item sequence one always
@@ -280,7 +337,19 @@ sequence. Labels resolve that same revision as specified below.
 These rules apply to tree-item names. A tree-item name is nonempty NFC-normalized
 UTF-8, at most 255 bytes. It is not `.` or `..`, contains none of
 `< > : " / \ | ? *`, U+0000–U+001F or U+007F, and does not end in ASCII space or
-dot. Unicode format characters, including emoji joiners, are allowed.
+dot.
+
+A name also contains none of these, because each can change what a terminal or file
+manager shows:
+
+- C1 controls, U+0080–U+009F, which include the terminal control introducer U+009B.
+- Line and paragraph separators, U+2028 and U+2029.
+- Bidirectional embeddings, overrides and isolates, U+202A–U+202E and U+2066–U+2069,
+  which can make `cod.exe` read as `exe.doc`.
+
+Other Unicode format characters are allowed, including emoji joiners and the
+left-to-right and right-to-left marks. These rules apply to tree-item names only: a
+title is display text, and record keys are compared as exact bytes.
 
 Every code point in a name must be assigned in Unicode 18.0.0, meaning its
 General_Category is not `Cn`. Private-use code points are assigned; noncharacters
@@ -294,6 +363,15 @@ by an extension: CON, PRN, AUX, NUL, CONIN$, CONOUT$, COM1–COM9 and LPT1–LPT
 COM and LPT followed by superscript ¹, ² or ³ are also forbidden. Spaces at the
 end of the stem before its first dot do not escape the restriction.
 
+A name is reserved, in every folder, when its control key is `.synck` or `synck~1`.
+The control key is the name's case-folded key with U+200C–U+200F, U+206A–U+206F and
+U+FEFF removed. `.synck` is the control directory. `SYNCK~1` is that directory's
+NTFS short name, because it is created before any repository file, and HFS+ ignores
+those code points when it compares names. A name that reached one of them would
+write into the control directory, so the rule does not depend on the file system a
+repository is on today. Names that merely begin with `.synck`, such as
+`.synckignore`, are not reserved.
+
 Sibling uniqueness uses Unicode 18.0.0 default full case folding of the NFC
 name, using CaseFolding.txt entries C and F, never locale-sensitive/Turkic
 folding. Preserve the display spelling. A case-only rename is allowed when it
@@ -302,7 +380,7 @@ data. The name vectors are language-neutral JSON in `vectors/names.json`.
 
 A proposed portable spelling normalizes NFC, replaces each forbidden character
 and each unassigned code point with `_`, strips trailing ASCII spaces/dots, substitutes `_` for an empty result,
-prefixes device names with `_`, and truncates on a UTF-8 boundary to 255 bytes.
+prefixes device and reserved names with `_`, and truncates on a UTF-8 boundary to 255 bytes.
 Strip any space or dot exposed by truncation. For sibling collisions append
 ` (2)`, ` (3)`, etc., reserving suffix bytes before truncation. Filesystem
 renaming requires explicit `--fix-names`; validation alone never renames files.
@@ -341,17 +419,29 @@ waiting for publication must not hold acceptance locks.
 The checkpoint is SHA-256 over the concatenation, without separators, of:
 
 1. The 19 ASCII bytes `synck-checkpoint-v1`.
-2. The preceding checkpoint's raw 32 bytes (32 zero bytes at genesis).
+2. The preceding checkpoint's raw 32 bytes, or the genesis value for the first commit.
 3. The positive repository sequence as an unsigned 64-bit big-endian integer.
 4. The commit ID's raw 32 digest bytes, without its `sha256:` prefix.
 5. The acceptance timestamp's Unix seconds as a signed 64-bit big-endian integer.
 6. Its nanosecond fraction as an unsigned 32-bit big-endian integer, below 10^9.
 
+The genesis value is SHA-256 over the concatenation of:
+
+1. The 16 ASCII bytes `synck-genesis-v1`.
+2. The repository ID's raw 16 bytes.
+3. The history generation's raw 16 bytes.
+4. The repository format, 7, as an unsigned 32-bit big-endian integer.
+5. One byte: 1 for an encrypted repository, otherwise 0.
+
+Every checkpoint therefore belongs to one history of one repository. History from
+another repository or generation fails at its first commit, and so does a
+configuration whose `encrypted` value was changed.
+
 Sequences start at 1 and are consecutive: 1, 2, 3, and so on. Gaps are invalid.
 Leap-second timestamps are not representable by this framing. Author time is
 distinct from acceptance time.
-Vectors in `vectors/checkpoints.json` include an invalid sequence gap and valid
-fractional time. The chain binds publication order relative to a trusted checkpoint. It does not
+Vectors in `vectors/checkpoints.json` fix the genesis value and include an invalid
+sequence gap and valid fractional time. The chain binds publication order relative to a trusted checkpoint. It does not
 by itself authenticate authority or detect the removal of an unknown suffix.
 A checkpoint is not a regulatory retention seal.
 
@@ -417,6 +507,19 @@ Removing a PLAIN object removes it for every item that references it, so a
 writer deletes the bytes only when no live reference remains. Erasing one
 reference leaves the bytes for the others. A legal erasure can override this, and
 the other references then read as missing.
+
+A writer that reuses a stored object and a collector that found it unreferenced
+MUST NOT both succeed, or an accepted event would reference removed bytes. A store
+with one writer at a time holds one lock across the collector's scan and removal, and
+across the writer's check, reference and commit. A store with concurrent writers
+keeps an object for a grace period after it last appeared to be needed: longer than
+any acceptance can run, and restarted by a writer before it reuses the object.
+Acceptance then proves the object durable in the same transaction as the reference,
+as it does for new content.
+
+Bytes are named by their hash, so storing the same bytes again makes every reference
+to them readable again, including one that was erased. A store that must keep an
+erasure refuses that object ID.
 
 ### SALTED
 
@@ -686,14 +789,14 @@ and mixed commits, distinct committer identity and nanosecond timestamps.
 ## History bundle boundary
 
 The NDJSON history bundle accepts version 5 only, with commit format 6. Its header
-carries `history_generation`, a canonical UUIDv7, alongside `repo_id`, export time,
-and source-schema provenance. Each commit record carries its `checkpoint` as a
+carries `history_generation`, a canonical UUIDv7, alongside `repo_id`, `encrypted`,
+export time and source-schema provenance. Each commit record carries its `checkpoint` as a
 `sha256:` digest; it has no parent-commit field. `operation_id` is a required key
 whose value may be null. A non-null operation ID must be nonblank. The importer preserves the generation and reconstructs and verifies
 every checkpoint from the accepted commit IDs, positions and acceptance times.
 
-Import is atomic into an empty repository. Invalid history or a checkpoint
-mismatch rolls back both canonical history and generation. Imported copies keep
+Import is atomic into an empty repository. Invalid history, a checkpoint mismatch
+or a missing or wrong end record rolls back both canonical history and generation. Imported copies keep
 the same generation; an empty imported history still installs the generation.
 A history bundle by itself is not a complete archival export: object bytes and
 all data required for reconstruction must accompany it for that purpose.
@@ -731,6 +834,23 @@ and nullability semantics match; `INTEGER PRIMARY KEY` rowid behavior matters.
 Owned views and triggers are rejected. Uniqueness expressions and defaults are
 compared as SQL tokens with string literals preserved exactly. Record validators
 remain responsible for semantic bounds; CHECK-clause spelling is not compared.
+
+## State digest
+
+The state digest is one hash of the structural state at a published position.
+Replay is the only source of state, so two implementations can agree on every
+commit and checkpoint hash and still disagree on what a history means. Comparing
+digests finds that. Verification reports it. It is not stored in history, is not
+part of any commit or checkpoint, and a reader does not need it.
+
+For each item created through that position, in ascending order of raw item ID
+bytes, form canonical JSON with exactly these fields, using null where a value is
+absent: `item_id`, `item_type`, `parent_folder_id`, `name`, `name_key`, `record_key`,
+`link_folder_id`, `content` (the current role map, `{}` when there is none),
+`head_seq`, `ref_head_seq`, `lifecycle_state`, `sequencing_mode` and
+`federation_stream_id`. The digest is SHA-256 over the 14 ASCII bytes
+`synck-state-v1` and a line feed, followed by each item's JSON and a line feed.
+`vectors/records.json` gives the digest after every accepted commit.
 
 ## Historical-state cache
 
@@ -906,21 +1026,24 @@ bytes and hence object IDs. Re-encoding chunks is allowed; replacing salts is no
 A bundle is UTF-8 newline-delimited JSON. Outer records need not use JCS; embedded
 `payload_json` strings must contain exact canonical envelope bytes. A nonempty
 header comes first, followed by zero or more metadata records, then complete
-commit/event groups, then item-head records, then federation-domain records.
-Blank body lines are ignored. Unknown fields and record types are rejected.
-No event may appear outside its commit group or after the item section.
+commit/event groups, then item-head records, then federation-domain records, then
+exactly one end record. Every record ends in a line feed. Blank body lines are
+ignored, and nothing follows the end record, not even a blank line. Unknown fields
+and record types are rejected. No event may appear outside its commit group or
+after the item section.
 
 All records contain `type`. Other fields are:
 
 | Type | Fields |
 | --- | --- |
-| `synck_vcs_bundle_header` | `bundle_format_version: 5`, `repo_id`, `history_generation`, `exported_at`, `schema: {subsystem, schema_id}`, `commit_format_version: 6` |
+| `synck_vcs_bundle_header` | `bundle_format_version: 5`, `repo_id`, `history_generation`, `encrypted`, `exported_at`, `schema: {subsystem, schema_id}`, `commit_format_version: 6` |
 | `metadata` | `object_id`, `payload_hex` |
 | `commit` | `commit_id`, `checkpoint`, `repo_seq`, `operation_id`, `format_version: 6`, `author_id`, `committer_id`, `message`, `occurred_at`, `created_at`, `event_count`, `events_digest` |
 | `event` | `commit_id`, `repo_seq`, `commit_event_idx`, `item_id`, `item_seq`, `event_type`, `payload_json`, `event_payload_digest`, `created_at`, `parent_folder_id`, `parent_folder_id_before` |
 | `ref_event` | `commit_id`, `repo_seq`, `commit_event_idx`, `owner_item_id`, `ref_seq`, `event_type`, `payload_json`, `event_payload_digest`, `created_at` |
 | `item` | `item_id`, `item_type`, `parent_folder_id`, `name`, `name_key`, `record_key`, `link_folder_id`, `head_seq`, `ref_head_seq`, `lifecycle_state`, `created_at`, `created_by`, `sequencing_mode`, `federation_stream_id` |
 | `federation_domain` | `domain_id`, `last_domain_seq`, `created_at`, `updated_at` |
+| `synck_vcs_bundle_end` | `record_count`, `checkpoint`, `digest` |
 
 Optional commit message, author time, operation IDs, parents, names, keys, links
 and stream IDs are JSON null when absent. `ref_head_seq` may be omitted when zero.
@@ -929,6 +1052,14 @@ is unprefixed lower hex of the complete metadata frame. `schema` is source
 provenance, not a schema migration instruction: the SQLite writer emits
 `subsystem: "synck_vcs_sqlite", schema_id: "core-v7"`. The generic bundle
 boundary also recognizes `synck_vcs_pg` provenance; that is not a 0.1 reader.
+
+The end record is how a reader knows it has the whole bundle, as a Git packfile
+has a count and a trailer. `record_count` is the number of records before it,
+including the header and not counting blank lines. `checkpoint` is the last commit's
+checkpoint, or the genesis value for an empty history. `digest` is the `sha256:`
+hash of every byte before the end record, blank lines included. A reader checks all
+three before it accepts anything, and treats a bundle without an end record as
+truncated. `vectors/bundle.json` fixes a bundle and lists rejected variants.
 
 Commits are ordered by consecutive `repo_seq`, starting at 1; gaps are invalid.
 Exactly `event_count` event/ref records immediately follow each commit, with contiguous
@@ -950,8 +1081,8 @@ container/configuration needed to interpret it. An NDJSON bundle alone does not.
    Reject duplicate commit IDs, operation IDs or publication positions.
 4. Replay structure and item/ref bases, including final namespace uniqueness,
    record classes, key uniqueness, link rules, parent acyclicity and terminal
-   tombstones. Compare canonical item heads.
-5. Recompute every checkpoint in order from the zero predecessor and acceptance
+   tombstones. Compare canonical item heads and report the state digest.
+5. Recompute every checkpoint in order from the genesis value and acceptance
    timestamps. Compare its commit, sequence and digest, the generation and any
    externally trusted checkpoint. A locally self-consistent replacement is not
    proof of continuity with a previously trusted generation.
@@ -962,13 +1093,13 @@ container/configuration needed to interpret it. An NDJSON bundle alone does not.
    files only after validation; a streaming decoder can discover corruption late.
 
 The language-neutral vectors under `vectors/` cover names, hashed JSON, object
-forms, encryption, metadata, envelopes, tree and record rules, commits,
-checkpoints and FILE labels. `vectors/file-folder/` contains
+forms, encryption, metadata, envelopes, tree and record rules, state digests,
+commits, checkpoints, bundles and FILE labels. `vectors/file-folder/` contains
 profile intent and conformance examples; its `events.json` is an **application
 view**, with expanded `set_metadata` for comparing independently salted writes,
 not an accepted-envelope encoding. The top-level `events.json` fixes accepted
-bytes and hashes. These canonicalization cases may use synthetic event types
-without satisfying structural family admission; they are not whole valid histories.
+bytes and hashes. These canonicalization cases follow the event type grammar but
+need not satisfy family admission; they are not whole valid histories.
 Neither example IDs nor synthetic digests imply object presence.
 
 ## Administrative replacement and retention boundary
