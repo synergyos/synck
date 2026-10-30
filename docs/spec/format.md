@@ -6,6 +6,12 @@ versions are independent of release numbers. There are no older-format readers
 or migrations. The normative SQL and JSON vectors linked here are part of this
 specification; no Rust source is needed to interpret a repository.
 
+Only bytes are specified: what a repository, an event, an object and a bundle
+contain, and what makes them valid. Commands, caches, checkouts and recovery belong
+to the [guides](../README.md). Every rule here binds a writer, a reader and a
+verifier unless it names one of them; examples and rationale do not add rules. A
+present-tense rule is as binding as one spelled MUST.
+
 ## Core and item families
 
 The core is everything a reader needs without knowing any item type: this
@@ -64,18 +70,13 @@ A repository is a directory containing `.synck/` with:
 - `object-store.sqlite3`: required only in CHUNKED mode, schema
   [object-store.sql](object-store.sql).
 - `checkout.json`: optional mutable checkout state.
-- `lock`: required empty file for local coordination. Locking is an implementation
-  mechanism; readers must obtain a consistent snapshot, including SQLite WAL contents.
+- `lock`: required empty file for local coordination. A reader must obtain a consistent snapshot, including SQLite WAL contents.
 - `tmp/`: optional; holds the recovery intents of interrupted operations.
 
-`repository.local.sqlite3`, `repository.state.sqlite3`, their SQLite sidecars,
-and scan caches are disposable. Optional `agent-locks.sqlite3` holds local edit
-reservations; it is neither canonical history nor a disposable cache. Archives
-and imports omit it, and readers need not interpret it. See
-[local agents](../local-repository.md#local-agents-sharing-a-checkout).
-`checkout.json` and recovery intents in `tmp/` are not disposable. Never copy only a live SQLite main file: use SQLite's
-backup API or a quiescent, checkpointed snapshot. Treat repository paths as
-untrusted; do not follow object or database symlinks outside the repository.
+Any other file in `.synck/` is outside the format, and a reader ignores it. Nothing
+outside the format contributes to any hash, and verification neither requires nor
+trusts it. Treat repository paths as untrusted; do not follow object or database
+symlinks outside the repository.
 
 Configuration is an object with required `format_version: 7`, `repo_id`,
 `authority` (`LOCAL`, `FOLLOWER`, or `INDEPENDENT_LOCAL`), optional
@@ -89,8 +90,8 @@ history.
 identifies the repository. It is an object with `paths` (array of selected
 relative paths; empty means all), `hidden_files` (`ignore`, default, or `track`)
 and optional `pending`, which holds `previous_paths` (null or an array) while
-transitioning its materialized paths. A missing file means the defaults. Replace
-it atomically. It is not canonical history and copies do not carry it.
+transitioning its materialized paths. A missing file means the defaults. It is not
+canonical history and copies do not carry it.
 
 Authority is local operational configuration, not a cryptographic credential.
 `LOCAL` is a repository created here, and it accepts writes. `FOLLOWER` is an
@@ -261,19 +262,16 @@ content. Trash is reversible and retains history.
 
 Parents, sibling names, keys and links are checked at the end of each commit, on the
 state after all its events. So a child may precede its parent in one commit, and a
-name swap is legal. A writer may be stricter, and the sync protocol sends folders
-first. A parent must exist in this repository and be a FOLDER; root is null, and
+name swap is legal. A parent must exist in this repository and be a FOLDER; root is null, and
 parent cycles are forbidden. Live tree-item siblings have distinct name keys.
 
 `vcs_items` must reach that final state in one step. Its unique indexes are checked
 per statement, so a writer replaying a swap deletes the touched rows and reinserts
 them, or uses another way that never holds a duplicate.
 
-A LIVE item under LIVE folders is a rule of the write path, not of replay. A local
-writer keeps it at the end of every commit, including atomic descendant trash,
-restoration and tombstoning. Replay does not check it, because federated streams
-apply one item at a time, so a folder in the trash may hold a live child.
-Reconstruction leaves such a child out.
+A LIVE item under LIVE folders is a rule of the write path, not of replay. Federated
+streams apply one item at a time, so a folder in the trash may hold a live child.
+Replay accepts that, and reconstruction leaves such a child out.
 
 #### Federation
 
@@ -286,9 +284,7 @@ A `CREATE` may carry `set_is_federated: true` and `set_federation_stream_id`, bo
 neither. That is federated bootstrap: the item starts FEDERATED, and one more
 `FEDERATE` with the same stream is allowed in that commit. Outside bootstrap,
 switching to federated is a local append and switching to local is a federated
-ingest. At most one mode change per item per commit is permitted. This is the
-engine's existing ingest contract; it does not specify the future cross-machine sync
-protocol.
+ingest. At most one mode change per item per commit is permitted.
 
 ### Tree items and records
 
@@ -486,11 +482,7 @@ of one name apart holds two files with one repository name, and that is a name
 conflict. The other name rules still fail as they do for any file.
 
 Whole-path length is not a repository constraint: it depends on the checkout's
-location. The Windows MSVC CLI embeds a `longPathAware` manifest and uses extended
-absolute paths for filesystem operations. Windows status and checkout commands
-warn on stderr for each observed/selected path whose ordinary absolute spelling
-exceeds 260 UTF-16 code units, excluding the `\\?\` prefix. These warnings do
-not reject history or change names. Other applications can have shorter limits.
+location.
 
 ## Source attribution
 
@@ -699,9 +691,8 @@ repository, item, role or epoch. Deduplication does not apply.
 
 Key epoch 1 is the first repository key. Key epoch 0 means the object does not use
 a repository key: its item has a `sealed_key` role, whose bytes are a sealed key
-for that item alone. A hosted service uses this to store incoming email it can
-never read afterwards: it makes a one-email key, encrypts with scheme 1, seals the
-key to the repository's ingest public key, and keeps neither. A `sealed_key`
+for that item alone, so that a writer can store an object it can never read
+afterwards. A `sealed_key`
 object is opaque and is the one stored object that is not in a frame. Keys, epochs,
 rotation and sealing belong to the product's key specification, not to this format.
 
@@ -848,12 +839,6 @@ events stay, so the fact that it existed stays, and so does the source's PLAIN I
 which can confirm a guess at the whole message. Generated provider-import commit
 messages use counts and source account, never message subjects or addresses.
 
-The local writer stores `title` only when the import names one.
-
-The local writer implements file import. No provider acquisition client ships
-in 0.2; this profile defines its stored-data boundary without adding an unused
-provider writer or administrative policy layer.
-
 ### FOLDER workspaces
 
 A workspace is a FOLDER whose current metadata has one `workspace` object, with
@@ -900,19 +885,15 @@ in the label. Erasing that content therefore affects the revision and its label
 without changing either ledger. Erasing label metadata makes the label's
 presentation unavailable; structural history remains verifiable.
 
-The local writer labels each new FILE's first revision (item sequence 1) in the
-same commit. Its first ref is sequence 1, `MINOR`, `INTERNAL`, with order
-key 1024. Live labels sort by `(order_key, creation_ref_seq, version_id)`; starting
+A writer that labels a new FILE's first revision does so in the commit that creates
+it, with sequence 1, `MINOR`, `INTERNAL` and order key 1024. Live labels sort by `(order_key, creation_ref_seq, version_id)`; starting
 at 0.0, MAJOR increments the major and resets the minor, MINOR increments the
 minor. UUIDs and sequences remain the identities; computed numbers are display.
 
 ## Commit size
 
 The format imposes no fixed per-commit event-count or aggregate byte cap.
-Storage integers and available resources still bound representable commits.
-Local commits are atomic, including moves and renames; no batch command or
-batch recovery journal is part of 0.2. Pagination limits apply to individual
-read requests, never to the validity of a stored commit.
+Storage integers still bound representable commits.
 
 ## Commit identity
 
@@ -956,30 +937,12 @@ the same generation; an empty imported history still installs the generation.
 A history bundle by itself is not a complete archival export: object bytes and
 all data required for reconstruction must accompany it for that purpose.
 
-## Typed reader scope
-
-The 0.2 reader does not interpret hosted TASK, TASK_LIST, POST, TABLE, DATABASE,
-CALENDAR, CALENDAR_EVENT,
-TIME_SETTINGS, TIME_BOOK, TIME_ENTRY, CALL, LOCAL_COMPANION, PROFILE or
-FEDERATED_MOUNT state. Requesting typed presentation for these families returns an explicit
-unsupported-state error. Core hash verification remains independent of family
-presentation. No calendar recurrence engine, hosted organization reducer or
-call/time-tracking state machine is shipped for these absent local writers.
-
-FILE resource-fork presentation and `FILE_RESOURCE_FORK::*` typed events are
-not part of 0.2. Ordinary FILE bytes and explicitly supported content roles are
-the portable content boundary.
-
 ## SQLite schema version policy
 
 Core SQLite is UTF-8, with `PRAGMA application_id = 0x53594E4B` (1398361675),
 `PRAGMA user_version = 7` and `PRAGMA journal_mode = WAL`. All three persist in the
-file, and a read-only reader cannot set them, so a new database sets them. The adapter
-creates this schema directly and refuses prior schema versions without modifying
-their version stamps or definitions. There are no core or local schema migrations.
-The current local projection schema is 13, in `repository.local.sqlite3`.
-The state tree lives in `repository.state.sqlite3`. Neither database is copied
-into a portable repository. These cache schema versions are implementation details.
+file, and a read-only reader cannot set them, so a new database sets them. A reader
+refuses any other schema version and leaves it unchanged. There are no migrations.
 
 Schema compatibility compares owned table names, STRICT typing, named columns
 and their declared types, nullability, defaults, primary-key positions, unique
@@ -1009,86 +972,12 @@ absent: `item_id`, `item_type`, `parent_folder_id`, `name`, `name_key`, `record_
 `synck-state-v1` and a line feed, followed by each item's JSON and a line feed.
 `vectors/records.json` gives the digest after every accepted commit.
 
-## Historical-state cache
-
-The checkpoint chain proves ordered history. The historical-state tree does not
-belong to canonical history and does not contribute to any commit or checkpoint
-hash. SQLite stores its `vcs_state_nodes`, `vcs_state_roots`, and
-`vcs_state_projection_heads` tables in a separate `repository.state.sqlite3`
-file. These are implementation details, not portable format requirements.
-Verification neither requires nor trusts this cache. Historical listings create
-and replay a missing cache under the repository lock; explicit index rebuilding
-repairs damaged cache contents without modifying canonical history.
-
-## Checkout database
-
-`repository.sqlite3` contains no `local_*` tables. FILE-head projections,
-plaintext digests and filesystem observations live
-in `repository.local.sqlite3`. Local transactions may read canonical history
-through a read-only SQLite attachment; they cannot write it. Acceptance and local
-projection updates are separate transactions. Existing recovery replays accepted
-history after an interrupted projection update. Missing cache databases are
-created and replayed under the checkout lock; existing malformed databases are
-refused rather than silently reset.
-Changed working files are never promoted into history during cache rebuilding.
-The hidden-files preference is `hidden_files` in `checkout.json`. Durable operation intents and checkout
-configuration are not disposable caches.
-
-A complete portable copy backs up the canonical database and transfers referenced
-objects. It does not copy checkout observations, settings or the state-tree cache.
-Enabling a checkout initializes that machine's local database. Unused workspace,
-batch-import and obsolete storage-mode tables do not exist in the current schema.
-
 ## Ref sequence origin
 
 An item's attached ref ledger starts at sequence 1. Every subsequent ref event
 advances it by exactly one, independently of the item's ordinary event sequence.
 All ref events for one owner in a commit carry the same pre-commit
 `base_ref_seq`. `initial_ref_seq` is not a field and must be rejected as unknown.
-There is no legacy-baseline migration API. Typed FILE readers do not load frozen
-sidecar history or supplemental legacy-sidecar roots.
-
-## Atomic subtree operations
-
-Lifecycle operations have no aggregate descendant-count cap. They carry the exact
-prepared descendant set and protect its item heads under the ordinary acceptance
-locks. The transaction rereads at most the expected count plus one for each
-root; an extra descendant or changed membership rejects the proposal as stale.
-This query bound detects races; it does not impose a format or commit-size limit.
-
-## Portable-name diagnostics
-
-Filesystem discovery applies ignore rules before portable-name validation. It
-collects all observed name violations into one diagnostic, with original and
-proposed paths quoted so control characters remain visible. Valid sibling names
-are reserved before repairing invalid spellings; equal valid case-fold keys keep
-the lexicographically first spelling. Remaining conflicts receive ` (2)`,
-` (3)`, and so on, with UTF-8 truncation before the suffix when needed.
-Suggestions also avoid existing ignored filesystem entries. A renamed ancestor
-is reflected in every reported descendant destination. Diagnostics do not rename
-files or publish a repository when initialization fails.
-
-## Explicit filesystem name repair
-
-`init --fix-names` initializes repository metadata and then repairs non-portable
-names. As with ordinary initialization, existing user files remain uncommitted.
-`commit --fix-names` repairs names throughout the observed checkout, remaps any
-selected paths, and records the selected changes in one ordinary commit. Both
-commands report every rename. Ignored entries are never renamed or overwritten.
-The JSON commit result includes `renamed` when this flag is used.
-
-Repairs are local filesystem operations, not history rewrites. A local journal
-records file and parent identities before mutation. Descendants move before
-ancestors, through temporary sibling names, using no-replace renames. Each
-completed rename is directory-synced before its progress record is synced.
-Interrupted repairs resume on the next locked checkout open, checking identities
-and refusing an occupied destination. Existing history and content IDs remain
-unchanged until the subsequent ordinary commit. Initialization publishes its
-metadata before repair so an interruption leaves recoverable state.
-
-Importing working files uses these same initialization/commit commands. A
-complete repository import preserves canonical names and hashes; it does not
-repair or rewrite imported history.
 
 ## Canonical SQLite relations
 
@@ -1135,13 +1024,9 @@ row with `next_repo_seq` 1.
   `last_domain_seq` is nonnegative. Local-only repositories normally have no
   rows. Domain cursor metadata is operational provenance, not commit ancestry.
 
-A published snapshot has no unsequenced commits. The current export
-command requires that state and refuses a snapshot containing unpublished
-acceptances. It must not silently omit them. Live engines can validly have
-unsequenced accepted commits: the sequencer must finish publication before a
-complete published snapshot is exported. It must preserve per-item, ref and
-structural dependencies; allocating a sequence before acceptance commits would
-allow scans to skip late transactions and is forbidden.
+A published snapshot has no unsequenced commits. A live repository can validly hold
+accepted, unsequenced commits; a copy of one is not a published snapshot until the
+sequencer has finished.
 
 ### WHOLE_FILE storage
 
@@ -1174,10 +1059,8 @@ decoded output exactly `raw_size`, frame window at most 262144 bytes. A stored
 compressed payload is nonempty and its size multiplied by 100 is less than
 `raw_size * 95`. These chunk codecs are separate from a salted object's codec byte.
 
-Chunk boundaries have no semantic meaning. Readers must not reproduce a writer's
-chunking algorithm. The current writer uses FastCDC and optionally Office ZIP
-member boundaries, and stores small inputs directly when compression is not
-profitable. Copying or changing storage modes must preserve the exact stored
+Chunk boundaries have no semantic meaning, and a reader never reproduces a writer's
+chunking. Copying or changing storage modes must preserve the exact stored
 bytes and hence object IDs. Re-encoding chunks is allowed; replacing salts is not.
 
 ## Bundle record details
@@ -1210,9 +1093,8 @@ Optional commit message, author time, operation IDs, parents, names, keys, links
 and stream IDs are JSON null when absent. `ref_head_seq` may be omitted when zero.
 Digest fields use prefixed hexadecimal spelling, except `payload_hex`, which
 is unprefixed lower hex of the complete metadata frame. `schema` is source
-provenance, not a schema migration instruction: the SQLite writer emits
-`subsystem: "synck_vcs_sqlite", schema_id: "core-v7"`. A hosted export names
-`synck_vcs_pg`, and a reader treats that as provenance too.
+provenance, not a schema instruction: a reader records it and does not act on it.
+The vectors name `subsystem: "synck_vcs_sqlite", schema_id: "core-v7"`.
 
 The end record is how a reader knows it has the whole bundle, as a Git packfile
 has a count and a trailer. `record_count` is the number of records before it,
@@ -1260,50 +1142,17 @@ its bundle is still a valid bundle.
 The language-neutral vectors under `vectors/` cover names, hashed JSON, object
 forms, encryption, metadata, envelopes, tree and record rules, state digests,
 commits, checkpoints, bundles and FILE labels. [vectors/README.md](vectors/README.md)
-describes each file. `vectors/file-folder/` holds one writer's intent and error
-vocabulary, and its `events.json` is an **application view**, with expanded
-`set_metadata` for comparing independently salted writes; all of it is outside the
-format. The top-level `events.json` fixes accepted bytes and hashes. These
+describes each file. `vectors/file-folder/` is outside the format: it holds one
+writer's intent and error vocabulary, and an application view of events. The top-level `events.json` fixes accepted bytes and hashes. These
 canonicalization cases follow the event type grammar but need not satisfy family
 admission; they are not whole valid histories. Neither example IDs nor synthetic
 digests imply object presence.
 
-## Administrative replacement and retention boundary
+## History generations
 
-Normal writes append history. Undo appends a compensating change. A future
-explicit administrative rewrite may replace history under the same repository
-ID, but must allocate a new generation, validate structural dependencies and
-bases, recalculate changed event/commit hashes and checkpoints, and publish the
-replacement atomically. Verification never makes corrupt data acceptable by
-recalculating its hashes. Old cursors must fail continuity checks; clients must
-reconcile the replacement explicitly and revalidate pending proposals. A reclone
-is not the format's required reconciliation mechanism.
-
-Original exports retain their generation, IDs, salts and bytes. Live-history
-replacement cannot rewrite them. A checkpoint chain authenticates continuity
-only relative to a trusted checkpoint; it neither imposes immutability nor proves
-who accepted a record. Access controls, signatures and archival custody are
-separate responsibilities.
-
-A complete export is one consistent history cut, with every referenced metadata
-and content object, decoding information and exact salts. Missing objects are
-valid in thin repositories but prohibit a claim of complete preservation.
-A separate regulated archive integration must durably capture accepted records,
-including work awaiting sequencing, with resumable progress and verified
-preservation acknowledgements. Required source history and objects remain pinned
-until that acknowledgement. Destructive maintenance must not race capture or
-remove the only required copy. A best-effort callback is insufficient.
-
-The integration must preserve capture identity/progress across generation
-replacement, and archive credentials must prevent live-repository administrators
-from changing retained copies. Retention periods, legal holds, classification,
-immutable storage, redundancy, retrieval and preservation of encryption keys
-belong to that separate archival product. It must retain compatible readers or
-verified migrations despite this core's pre-1.0 single-format-reader policy.
-Periodic exports alone cannot preserve records deleted between exports; no
-universal nightly cutoff or retention duration is assumed.
-
-Synck 0.2 specifies these integration requirements but does not implement an
-administrative rewrite command, capture pins, an archive acknowledgement service
-or regulatory/WORM compliance. Its complete-export command is the foundation,
-not a substitute for those controls.
+Normal writes append. A history generation names one unbroken history: replacing
+history under the same repository ID allocates a new generation, and every event,
+commit and checkpoint it changes has a new hash. Verification never makes corrupt
+data acceptable by recalculating its hashes. Old cursors fail continuity checks.
+A checkpoint chain authenticates continuity only relative to a trusted checkpoint;
+it neither imposes immutability nor proves who accepted a record.

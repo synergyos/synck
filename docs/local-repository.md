@@ -34,8 +34,41 @@ hidden-file setting lives in `.synck/checkout.json`, not scan cache. Ignore
 rules and subtree selection are visibility policy, not erasure of history.
 The `.synck` control directory and its aliases cannot be recorded as items, in
 any folder.
-Windows path warnings identify paths over 260 UTF-16 units; length is not a
-repository namespace rule because checkout locations vary by machine.
+
+Whole-path length is not a repository rule, because checkout locations vary by
+machine. The Windows MSVC CLI embeds a `longPathAware` manifest and uses extended
+absolute paths. Windows status and checkout commands warn on stderr for each path
+whose ordinary absolute spelling exceeds 260 UTF-16 code units, excluding the
+`\\?\` prefix. These warnings do not reject history or change names. Other
+applications can have shorter limits.
+
+## Name diagnostics and repair
+
+Filesystem discovery applies ignore rules before name validation. It collects all
+violations into one diagnostic, with original and proposed paths quoted so control
+characters remain visible. Valid sibling names are reserved before invalid
+spellings are repaired; equal valid case-fold keys keep the lexicographically first
+spelling. Remaining conflicts receive ` (2)`, ` (3)`, and so on, with UTF-8
+truncation before the suffix when needed. Suggestions also avoid existing ignored
+entries, and a renamed ancestor is reflected in every reported descendant
+destination. Diagnostics rename nothing and publish no repository when
+initialization fails.
+
+`init --fix-names` initializes repository metadata and then repairs non-portable
+names; as with ordinary initialization, existing files remain uncommitted.
+`commit --fix-names` repairs names throughout the observed checkout, remaps any
+selected paths, and records the selected changes in one ordinary commit. Both report
+every rename, and the JSON commit result includes `renamed`. Ignored entries are
+never renamed or overwritten.
+
+Repairs are local filesystem operations, not history rewrites. A local journal
+records file and parent identities before mutation. Descendants move before
+ancestors, through temporary sibling names, using no-replace renames. Each completed
+rename is directory-synced before its progress record is synced. Interrupted repairs
+resume on the next locked checkout open, checking identities and refusing an occupied
+destination. Initialization publishes its metadata before repair, so an interruption
+leaves recoverable state. A complete repository import preserves canonical names and
+hashes; it does not repair or rewrite imported history.
 
 ## Local agents sharing a checkout
 
@@ -99,15 +132,17 @@ locks. There is no canonical format change or server synchronization of leases.
 FILE content is stored as its exact bytes, and its object ID is their SHA-256, so
 `sha256sum` confirms a file and identical bytes are stored once. Captures stream
 with bounded memory. CHUNKED is the CLI initialization default; WHOLE_FILE is
-available with `--storage-mode`. File exports and restores return exact source
-bytes.
+available with `--storage-mode`. Chunking uses FastCDC and, for Office files, ZIP
+member boundaries; small inputs are stored directly when compression does not help.
+File exports and restores return exact source bytes.
 
 An `.eml` or `.msg` file in a working tree is an ordinary FILE. Committing never
 converts it. `synck repository import-email` creates an EMAIL record, linked to a
 folder with `--link`, and leaves the file alone. `synck item export` writes its
 original source to disk. An email has no name: its
-title is its subject unless set otherwise, and two emails may share a title.
-Originals and extracted attachments are retained; Markdown/HTML rendering is
+title is its subject unless set otherwise, and two emails may share a title. The
+stored `title` exists only when the import names one. No provider acquisition client
+ships in 0.2. Originals and extracted attachments are retained; Markdown/HTML rendering is
 computed when read. EMAIL creation metadata records the parser version.
 
 ## Inspect, restore and undo
@@ -126,7 +161,8 @@ Commit log order is repository publication order. Item history follows stable
 identity through moves/renames. A FILE content revision is distinct from a named
 version label: labels point at FILE item sequences and do not store duplicate
 content references. `version list/create/promote/demote/set-description/tombstone`
-manages those labels. Tombstoning a label does not delete its FILE history.
+manages those labels. Tombstoning a label does not delete its FILE history. Each
+new FILE gets its first label in the commit that creates it.
 
 `restore` and `restore-tree` change working files; recording them requires a
 commit. `revert` appends a compensating commit, preserving prior history. Durable
@@ -148,6 +184,22 @@ reads catch a valid but stale index up before using it, including in a normal
 checkout; being behind canonical history is not an integrity failure. `fsck`
 checks stored row validity before decoding checkpoints so malformed timestamps
 are reported with the affected commit and field, also under `--json`.
+
+`repository.local.sqlite3`, `repository.state.sqlite3`, their SQLite sidecars and
+scan caches are disposable and outside the format. `agent-locks.sqlite3`,
+`checkout.json` and recovery intents in `tmp/` are not disposable. Never copy only a
+live SQLite main file: use SQLite's backup API or a quiescent, checkpointed snapshot.
+
+The state cache holds `vcs_state_nodes`, `vcs_state_roots` and
+`vcs_state_projection_heads`. Historical listings create and replay a missing cache
+under the repository lock, and explicit index rebuilding repairs damaged contents
+without modifying canonical history. `repository.sqlite3` has no `local_*` tables:
+FILE-head projections, plaintext digests and filesystem observations live in
+`repository.local.sqlite3`, whose schema version is an implementation detail. Local
+transactions may read canonical history through a read-only attachment and cannot
+write it. Acceptance and projection updates are separate transactions, and recovery
+replays accepted history after an interrupted update. Changed working files are
+never promoted into history during a rebuild.
 
 `storage` reports physical usage, `storage optimize` changes supported physical
 storage, and `gc` removes unreferenced content. Reachability includes all retained

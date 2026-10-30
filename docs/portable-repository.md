@@ -89,5 +89,19 @@ A verified complete archive is suitable input to a separate archival service.
 It is not itself immutable storage. Continuous regulated capture needs durable
 progress, pins until verified acknowledgement, independent permissions, holds,
 retrieval and long-term reader availability. It must cover accepted unpublished
-records and survive history replacement. The [retention contract](spec/format.md#administrative-replacement-and-retention-boundary)
-states those requirements without claiming that 0.2 implements them.
+records and survive history replacement. Periodic exports alone cannot preserve
+records deleted between exports.
+
+A future administrative rewrite may replace history under the same repository ID. It
+must allocate a new generation, validate structural dependencies and bases, and
+publish the replacement atomically. Clients must reconcile explicitly and revalidate
+pending proposals; a reclone is not the required mechanism. Original exports keep
+their generation, IDs, salts and bytes.
+
+Archive credentials must prevent live-repository administrators from changing
+retained copies. Retention periods, legal holds, classification, immutable storage,
+redundancy and preservation of encryption keys belong to that separate product,
+which must retain compatible readers or verified migrations despite this project's
+pre-1.0 single-format policy. Synck 0.2 implements none of this: no administrative
+rewrite command, capture pins, acknowledgement service or WORM compliance. Its
+complete export is the foundation, not a substitute for those controls.

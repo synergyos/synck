@@ -35,10 +35,13 @@ by tables, types and keys, not SQL formatting or performance-index names.
 
 After 1.0 the core format is frozen, and item families are versioned separately;
 see [Core and item families](spec/format.md#core-and-item-families). The 0.2 typed
-scope is FILE/FOLDER, CHAT and EMAIL. Hosted-only readers and old
-FILE sidecars/resource forks were removed. Generic envelopes still provide
-structural integrity for uninterpreted families. No cross-machine sync protocol
-is included in this release.
+scope is FILE/FOLDER, CHAT and EMAIL. Requesting typed presentation of TASK,
+TASK_LIST, POST, TABLE, DATABASE, CALENDAR, CALENDAR_EVENT, TIME_SETTINGS,
+TIME_BOOK, TIME_ENTRY, CALL, LOCAL_COMPANION, PROFILE or FEDERATED_MOUNT state
+returns an explicit unsupported-state error. FILE resource forks are not part of
+0.2. Generic envelopes still provide structural integrity for uninterpreted
+families, and hash verification does not depend on presentation. No cross-machine
+sync protocol is included in this release.
 
 `ItemReader::export_cache` / `ItemReader::from_cache` persist a disposable
 versioned incremental reader snapshot, including independent ref positions and

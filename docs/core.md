@@ -18,6 +18,13 @@ commit hash. All changes succeed or none do. Multiple events for one item use
 the same pre-commit base. Applications should use checked FILE/FOLDER intents for
 filesystem mutations so subtree closure and namespace swaps are validated together.
 
+Lifecycle operations have no aggregate descendant-count cap. They carry the exact
+prepared descendant set and protect its item heads under the ordinary acceptance
+locks. The transaction rereads at most the expected count plus one for each root; an
+extra descendant or changed membership rejects the proposal as stale. This query
+bound detects races; it does not impose a commit-size limit. Page limits apply to
+read requests, never to the validity of a stored commit.
+
 Acceptance and repository publication are separate. The sequencer assigns
 `repo_seq` and its checkpoint atomically after acceptance. Waiting for publication
 must not retain item/folder acceptance locks. Publication failure delays repo-wide
@@ -27,6 +34,8 @@ unpublished work. Repository scans use published positions and event indexes.
 Never allocate repository positions in independent acceptance transactions:
 transactions can finish out of order and a cursor would then skip a late commit.
 The SQLite adapter serializes publication, preserving accepted dependencies.
+A published export refuses a snapshot that holds unsequenced commits rather than
+silently omitting them; the sequencer finishes first.
 A commit's hash identifies its content; its checkpoint binds its placement and
 acceptance time. The history generation distinguishes explicit replacement from
 ordinary extension. Checkpoints do not implement authentication or retention.
@@ -78,9 +87,9 @@ History can be valid while payloads are absent. Typed presentation and exports
 that need an absent object fail explicitly. Present objects with wrong hashes or
 framing are corrupt. Verification never repairs history by changing hashes.
 
-Normal undo appends compensating history. Administrative history replacement,
-erasure and regulated retention integration are not implemented commands in 0.2.
-Their required boundaries are specified in the [format](spec/format.md#administrative-replacement-and-retention-boundary).
+Normal undo appends compensating history. Administrative history replacement and
+regulated retention integration are not implemented in 0.2; see
+[the retention boundary](portable-repository.md#retention-boundary).
 
 ## API and compatibility
 
