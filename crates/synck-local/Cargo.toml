@@ -37,7 +37,7 @@ serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
-zstd = "0.13"
+zstd = "0.14"
 
 [dev-dependencies]
 base64 = "0.22"
