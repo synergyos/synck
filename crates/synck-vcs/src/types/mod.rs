@@ -387,6 +387,7 @@ pub use crate::content::EventContent;
 
 /// Logical representation of an `events` table row.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EventRow {
     pub repo_id: RepoId,
     pub item_id: ItemId,
@@ -474,6 +475,7 @@ pub struct RefEventProposal {
 
 /// Logical representation of an attached ref-event row.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RefEventRow {
     pub repo_id: RepoId,
     pub owner_item_id: ItemId,
@@ -539,6 +541,7 @@ impl CommitEventRow {
 
 /// Logical representation of a `commits` table row.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CommitRow {
     /// Repository membership; not part of canonical commit identity.
     pub repo_id: RepoId,

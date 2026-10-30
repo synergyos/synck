@@ -32,7 +32,7 @@ All routes are under `/v1/repositories/{repo_id}/sync`:
 | Method and suffix | Request / result |
 | --- | --- |
 | `GET /capabilities` | `Capabilities` |
-| `PUT /uploads/{operation_id}/pages/{offset}` | `ProposalPage` / durable next offset and expiry |
+| `PUT /uploads/{operation_id}/pages/{offset}` | `ProposalPage` / `PageAck` |
 | `POST /proposals` | `SubmitRequest` / `SubmitResult` |
 | `GET /receipts/{operation_id}` | exact accepted `Receipt`, or not found |
 | `POST /history` | `HistoryRequest` / `HistoryPage` |
@@ -126,6 +126,53 @@ operation reuse. Core uniqueness alone does not establish an identical retry.
 `SubmitResult` is `accepted`, `conflict` (item IDs/current heads, zero for absence),
 or `POLICY_LIMIT`. The server never merges or substitutes newer bases silently.
 The client preserves pending bytes and reconciles explicit conflicts.
+
+## JSON shapes
+
+Every value is one JSON object with exactly the fields below, in any order; a
+receiver refuses an unknown field. A `?` marks a field whose value may be null, and
+the field is still present, except `repo_seq` in commit and event rows, which is
+omitted on an unpublished row. UUIDs are canonical lowercase strings. Digests and
+object IDs are `sha256:` plus 64 lowercase hex digits. Timestamps are RFC 3339 UTC
+with up to nine fractional digits, and a receiver compares instants. Integers are
+JSON integers.
+
+| Shape | Fields |
+| --- | --- |
+| `RepositoryIdentity` | `repo_id`, `generation` |
+| `Cursor` | `repository`, `repo_seq`, `checkpoint` |
+| `Capabilities` | `protocol_version`, `repository`, `encrypted`, `latest` (`Cursor`), `policy` |
+| `ServerPolicy` | `max_events_per_commit?`, `max_object_bytes?`, `quota_bytes?` |
+| `ItemHead` | `item_id`, `head_seq` |
+| `ProposalPage` | `repository`, `operation_id`, `offset`, `records` |
+| `PageAck` | `next_offset`, `expires_at` |
+| `CommitMetadata` | `author_id`, `committer_id`, `message?`, `occurred_at?` |
+| `SubmitRequest` | `repository`, `operation_id`, `metadata`, `event_count`, `events_digest`, `guard_count`, `guards_digest` |
+| `Receipt` | `operation_id`, `request_digest`, `commit_id`, `accepted_at`, `published?` (`Cursor`) |
+| `HistoryRequest` | `after` (`HistoryPosition`), `limit` |
+| `HistoryPosition` | `completed` (`Cursor`), `pending?` |
+| `PendingCommit` | `commit_id`, `next_event_index` |
+| `HistoryPage` | `after`, `fragments`, `has_more` |
+| `HistoryFragment` | `header`, `events` |
+| `PublishedHeader` | `commit` (`CommitRow`), `checkpoint` |
+| `CommitRow` | `repo_id`, `commit_id`, `repo_seq`, `format_version`, `author_id`, `committer_id`, `message?`, `occurred_at?`, `created_at`, `event_count`, `events_digest` |
+
+`SubmitResult` is tagged by `status`. `accepted` has `receipt`. `conflict` has `items`,
+a list of `ItemHead`, where `head_seq` zero means the item is absent. `POLICY_LIMIT`
+has `limit`, `maximum` and `actual`. `limit` is `events_per_commit`, `object_bytes` or
+`quota_bytes`.
+
+An event in a fragment is tagged by `event_family`. `item` has `repo_id`, `item_id`,
+`item_seq`, `event_type`, `commit_id`, `commit_event_idx`, `repo_seq`, `payload`,
+`event_payload_digest`, `created_at`, `parent_folder_id?` and
+`parent_folder_id_before?`. `ref` has `repo_id`, `owner_item_id`, `ref_seq`,
+`event_type`, `commit_id`, `commit_event_idx`, `repo_seq`, `payload`,
+`event_payload_digest` and `created_at`. A `payload` is the event's exact canonical
+bytes, as a JSON array of integers from 0 to 255.
+
+A proposal record is `{"kind": "item" | "ref" | "guard", "value": ...}`. An `item`
+value is an event envelope with its `item_id`, a `ref` value is a ref envelope, and a
+`guard` value is an `ItemHead`.
 
 ## Expiry, receipts and restart
 
@@ -235,6 +282,9 @@ computed hashes, a 16 KiB message and a 256-byte operation ID.
 expiry, page ordering, retries, partial-history restart, tampering, exact receipt
 binding and separate policy refusals. These are shared-library checks, not a
 claim of a deployed service or completed clone/import executor.
+
+[The wire vector](vectors/sync-wire.json) gives one value of each shape above,
+values a receiver must refuse, and one proposal with two head guards.
 
 [The packed-history vectors](vectors/sync-history.json) independently specify
 128 small commits transferred in one page and a page that continues one commit,

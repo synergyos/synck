@@ -809,3 +809,53 @@ fn history_rejects_a_sequence_gap_even_with_a_matching_checkpoint() {
     assert!(state.push(&page).is_err());
     assert_eq!(state.position(), &original);
 }
+
+/// Parsing and serializing a `valid` value gives the same JSON; `validate`, where a
+/// type has it, refuses what its shape alone admits.
+fn wire_value(kind: &str, value: &serde_json::Value) -> Result<serde_json::Value, String> {
+    fn parse<T: serde::de::DeserializeOwned + serde::Serialize>(
+        value: &serde_json::Value,
+        check: impl FnOnce(&T) -> Result<(), ProtocolError>,
+    ) -> Result<serde_json::Value, String> {
+        let parsed: T = serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
+        check(&parsed).map_err(|e| e.to_string())?;
+        Ok(serde_json::to_value(parsed).unwrap())
+    }
+    match kind {
+        "Capabilities" => parse(value, Capabilities::validate),
+        "ProposalPage" => parse::<ProposalPage>(value, |_| Ok(())),
+        "PageAck" => parse::<PageAck>(value, |_| Ok(())),
+        "SubmitRequest" => parse::<SubmitRequest>(value, |_| Ok(())),
+        "SubmitResult" => parse::<SubmitResult>(value, |_| Ok(())),
+        "Receipt" => parse::<Receipt>(value, |_| Ok(())),
+        "HistoryRequest" => parse(value, HistoryRequest::validate),
+        "HistoryPage" => parse::<HistoryPage>(value, |_| Ok(())),
+        other => panic!("unknown type {other}"),
+    }
+}
+
+#[test]
+fn wire_vector_fixes_every_json_shape() {
+    let vector: serde_json::Value =
+        serde_json::from_str(include_str!("../../../docs/spec/vectors/sync-wire.json")).unwrap();
+    for case in vector["valid"].as_array().unwrap() {
+        let kind = case["type"].as_str().unwrap();
+        assert_eq!(wire_value(kind, &case["value"]).unwrap(), case["value"], "{kind}");
+    }
+    for case in vector["invalid"].as_array().unwrap() {
+        let kind = case["type"].as_str().unwrap();
+        assert!(wire_value(kind, &case["value"]).is_err(), "{kind}: {}", case["reason"]);
+    }
+}
+
+#[test]
+fn guarded_vector_binds_events_guards_and_request() {
+    let vector: serde_json::Value =
+        serde_json::from_str(include_str!("../../../docs/spec/vectors/sync-wire.json")).unwrap();
+    let guarded = &vector["guarded"];
+    let request: SubmitRequest = serde_json::from_value(guarded["request"].clone()).unwrap();
+    let records: Vec<ProposalRecord> = serde_json::from_value(guarded["records"].clone()).unwrap();
+    let validated = upload(&request, &records, 1).finish(&request, now()).unwrap();
+    assert_eq!(validated.commit_id.as_str(), guarded["commit_id"]);
+    assert_eq!(validated.request_digest.as_str(), guarded["request_digest"]);
+}

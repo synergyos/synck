@@ -163,6 +163,14 @@ pub struct ProposalPage {
     pub records: Vec<ProposalRecord>,
 }
 
+/// The reply to a durably installed page.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PageAck {
+    pub next_offset: u64,
+    pub expires_at: Timestamp,
+}
+
 /// A small immutable submission referring to already staged pages. The request
 /// digest binds metadata, generation, operation ID, event and guard summaries.
 #[derive(Clone, Debug, Serialize, Deserialize)]
