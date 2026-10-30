@@ -20,14 +20,17 @@ identity where detected; a case-only rename follows the same namespace rules.
 
 Names follow one portable rule set on every OS: NFC, at most 255 UTF-8 bytes,
 Unicode case-folded sibling uniqueness, no reserved device stems or forbidden
-characters, and no trailing space/dot. Invalid-name errors list every proposed
+characters, no code point unassigned in Unicode 18.0.0, and no trailing space/dot.
+A file whose on-disk name is NFD is accepted: the repository stores NFC, the local
+index remembers the spelling on disk, and the file is never renamed. New files are
+written as NFC. Invalid-name errors list every proposed
 repair. `init --fix-names` or `commit --fix-names` explicitly performs and reports
 deterministic renames before recording. Without that flag, names are not changed.
 Repair journals recover interrupted renames without overwriting a newly occupied
 destination. Non-UTF-8 names are refused rather than guessed.
 
 Hidden files are ignored by default except explicit control policy. The chosen
-hidden-file setting lives in checkout configuration, not scan cache. Ignore
+hidden-file setting lives in `.synck/checkout.json`, not scan cache. Ignore
 rules and subtree selection are visibility policy, not erasure of history.
 The root `.synck` control directory cannot be recorded as an ordinary item.
 Windows path warnings identify paths over 260 UTF-16 units; length is not a
@@ -92,18 +95,18 @@ locks. There is no canonical format change or server synchronization of leases.
 
 ## Content and imported email
 
-FILE content is a salted RAW object. Working-tree change detection uses plain
-SHA-256 in disposable caches, so a fresh salt does not create a false edit.
-Captures stream with bounded memory. CHUNKED is the CLI initialization default;
-WHOLE_FILE is available with `--storage-mode`. Stored objects include their frame;
-file exports and restores remove it and return exact source bytes.
+FILE content is stored as its exact bytes, and its object ID is their SHA-256, so
+`sha256sum` confirms a file and identical bytes are stored once. Captures stream
+with bounded memory. CHUNKED is the CLI initialization default; WHOLE_FILE is
+available with `--storage-mode`. File exports and restores return exact source
+bytes.
 
-Local `.eml`/`.msg` sources become EMAIL items named after the source filename
-without its email extension. Originals and extracted attachments are retained;
-Markdown/HTML rendering is computed when read. EMAIL creation metadata records
-the parser version. Exact unchanged import-source bytes are recognized after
-cache rebuilding; editing a source makes it visible again. Existing FILE items
-cannot silently turn into EMAIL items by rename or content replacement.
+An `.eml` or `.msg` file in a working tree is an ordinary FILE. Committing never
+converts it. An explicit import creates an EMAIL record linked to a folder, and an
+explicit export writes its original source to disk. An email has no name: its
+title is its subject unless set otherwise, and two emails may share a title.
+Originals and extracted attachments are retained; Markdown/HTML rendering is
+computed when read. EMAIL creation metadata records the parser version.
 
 ## Inspect, restore and undo
 
@@ -135,7 +138,7 @@ Export commands refuse existing destinations and publish validated output only.
 `fsck` checks canonical history/checkpoints and objects. It reports missing
 payloads as thin history; present invalid bytes are corruption. A cache cannot
 prove that a repository is correct. `repository.local.sqlite3` holds checkout
-projections, scan digests and email-source observations; `repository.state.sqlite3`
+projections and scan digests; `repository.state.sqlite3`
 holds historical indexes. Missing caches are rebuilt under the repository lock,
 without accepting working-file edits or changing commit identity. Existing
 malformed databases fail explicitly rather than being silently reset. History

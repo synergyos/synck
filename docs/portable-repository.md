@@ -22,7 +22,7 @@ or exports are unavailable. Existing malformed caches or databases are not
 silently reset by opening them.
 
 The typed reader supports FILE/FOLDER, CHAT and EMAIL. FILE exports return exact
-original application bytes, without their salted frame. Historical reads use a
+original application bytes. Historical reads use a
 published boundary; refs and item histories retain their separate sequences.
 
 ## Complete copies
@@ -41,7 +41,7 @@ object frames. Cache databases and working files are not copied. Destination
 publication uses a private staging directory and refuses to overwrite an
 existing destination. Interrupted work does not publish a partial archive.
 
-WHOLE_FILE stores one framed object per file; CHUNKED stores deduplicated chunks
+WHOLE_FILE stores one object per file; CHUNKED stores deduplicated chunks
 in SQLite. `archive --storage-mode WHOLE_FILE|CHUNKED` can convert the physical
 representation without changing any object ID. Never copy a live SQLite main
 file without its WAL snapshot; the CLI uses SQLite backup.

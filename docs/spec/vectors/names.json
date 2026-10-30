@@ -1,5 +1,5 @@
 {
-  "unicode_version": "17.0.0",
+  "unicode_version": "18.0.0",
   "cases": [
     {
       "name": "Report",
@@ -84,6 +84,36 @@
       "valid": false,
       "key": null,
       "fixed": "汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉汉"
+    },
+    {
+      "name": "꟝",
+      "valid": true,
+      "key": "ɷ",
+      "fixed": "꟝"
+    },
+    {
+      "name": "",
+      "valid": true,
+      "key": "",
+      "fixed": ""
+    },
+    {
+      "name": "a͸b",
+      "valid": false,
+      "key": null,
+      "fixed": "a_b"
+    },
+    {
+      "name": "a￾b",
+      "valid": false,
+      "key": null,
+      "fixed": "a_b"
+    },
+    {
+      "name": "a􏿿b",
+      "valid": false,
+      "key": null,
+      "fixed": "a_b"
     }
   ]
 }

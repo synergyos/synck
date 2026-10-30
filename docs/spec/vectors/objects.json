@@ -1,23 +1,32 @@
 [
   {
-    "name": "empty raw",
-    "codec": "RAW",
-    "salt_hex": "0000000000000000000000000000000000000000000000000000000000000000",
+    "name": "empty plain",
+    "form": "PLAIN",
+    "valid": true,
     "bytes_hex": "",
-    "payload_hex": "53594e434b5f4f424a4543545f563100000000000000000000000000000000000000000000000000000000000000000000",
-    "id": "sha256:3ca921e536e1b83ea20d5794329305ab92e2a4361bfa1f23b1e214bc5cf1c23a"
+    "payload_hex": "",
+    "id": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
   },
   {
-    "name": "binary raw",
-    "codec": "RAW",
-    "salt_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "name": "binary plain",
+    "form": "PLAIN",
+    "valid": true,
     "bytes_hex": "00ff0180",
-    "payload_hex": "53594e434b5f4f424a4543545f56310000000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f00ff0180",
-    "id": "sha256:c3a2a335587be80fa97bac8be05a642394cf6c47a5270630077a211d5f460cc7"
+    "payload_hex": "00ff0180",
+    "id": "sha256:edc81f7e4ee358fb91e94bd9bd74079c3dcba36f40f2c8a36e7ae0567afecc8f"
+  },
+  {
+    "name": "plain bytes that look like a salted frame",
+    "form": "PLAIN",
+    "valid": true,
+    "bytes_hex": "53594e434b5f4f424a4543545f56310001000000000000000000000000000000000000000000000000000000000000000078",
+    "payload_hex": "53594e434b5f4f424a4543545f56310001000000000000000000000000000000000000000000000000000000000000000078",
+    "id": "sha256:3d98da7c6024c0b7247395adc30abd975ec122b4648639889c1243064792885a"
   },
   {
     "name": "exact utf8",
-    "codec": "UTF8",
+    "form": "SALTED",
+    "valid": true,
     "salt_hex": "1f1e1d1c1b1a191817161514131211100f0e0d0c0b0a09080706050403020100",
     "bytes_hex": "2000c3a9f09fa6800d0a",
     "payload_hex": "53594e434b5f4f424a4543545f563100011f1e1d1c1b1a191817161514131211100f0e0d0c0b0a090807060504030201002000c3a9f09fa6800d0a",
@@ -25,10 +34,39 @@
   },
   {
     "name": "empty utf8",
-    "codec": "UTF8",
+    "form": "SALTED",
+    "valid": true,
     "salt_hex": "0000000000000000000000000000000000000000000000000000000000000000",
     "bytes_hex": "",
     "payload_hex": "53594e434b5f4f424a4543545f563100010000000000000000000000000000000000000000000000000000000000000000",
     "id": "sha256:db93fb245639db4d6133b921c895a6757032237d5a8c9db04e3cd5bff6bca64e"
+  },
+  {
+    "name": "codec 0 is not defined",
+    "form": "SALTED",
+    "valid": false,
+    "payload_hex": "53594e434b5f4f424a4543545f56310000000000000000000000000000000000000000000000000000000000000000000078",
+    "id": "sha256:ca53038cafd509a7cc7c56d6aa4f44690ac4dd2beb1186fd21a2b615d9f53c73"
+  },
+  {
+    "name": "codec 2 is not defined",
+    "form": "SALTED",
+    "valid": false,
+    "payload_hex": "53594e434b5f4f424a4543545f56310002000000000000000000000000000000000000000000000000000000000000000078",
+    "id": "sha256:f7cf1b690487b97d1f3bdb7def16692ce197de485f93a6d0733a6e555d0a1423"
+  },
+  {
+    "name": "utf8 frame holds invalid UTF-8",
+    "form": "SALTED",
+    "valid": false,
+    "payload_hex": "53594e434b5f4f424a4543545f563100010000000000000000000000000000000000000000000000000000000000000000ff",
+    "id": "sha256:77254470533a5eeec3efdf17498cd22dea5acdb94df840b30c307c70ff0c1c73"
+  },
+  {
+    "name": "frame shorter than its header",
+    "form": "SALTED",
+    "valid": false,
+    "payload_hex": "53594e434b5f4f424a4543545f5631000100000000000000000000000000000000000000000000000000000000000000",
+    "id": "sha256:006f132c095e5f94980cc9e187ecfb6eb90e9400310d02c60e83fab8255d1e1d"
   }
 ]

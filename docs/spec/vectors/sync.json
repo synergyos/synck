@@ -10,8 +10,7 @@
       "author_id": "owner",
       "committer_id": "device",
       "message": null,
-      "occurred_at": null,
-      "import_job_id": null
+      "occurred_at": null
     },
     "event_count": 1,
     "events_digest": "sha256:6dd239933df3c248cca540488bdeb3b304b94c3868dab642e838690dbec0d521",
@@ -19,8 +18,8 @@
     "guards_digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
   },
   "events_digest": "sha256:6dd239933df3c248cca540488bdeb3b304b94c3868dab642e838690dbec0d521",
-  "commit_id": "sha256:668e8d2d276878e3f500a40cbcdfd96983154182f0bb94e2fc3a021678e1ca6c",
-  "request_digest": "sha256:453d5a0a293ce8e3ac65cd9ac972b84cc4a084124ef69069bc9e1639784685b1",
+  "commit_id": "sha256:78b4ecce3d51431b4685c5337cb67a1b98f6d6a51f007de870e44397042565df",
+  "request_digest": "sha256:bae866564d1427277fdfadd4c3f1e5e2eb5316ce6ba31cc5f5d5d3a78bb91f87",
   "canonical_event_utf8": "{\"create_item\":{\"item_type\":\"FILE\",\"name\":\"hello.txt\"},\"event_type\":\"FILE_CREATE\",\"item_id\":\"019a2900-0000-7000-8000-000000000003\",\"set_content\":{\"bytes\":\"sha256:abababababababababababababababababababababababababababababababab\"}}",
   "records": [
     {

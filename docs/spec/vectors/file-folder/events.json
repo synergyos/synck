@@ -14,11 +14,7 @@
       "item_type": "FILE",
       "parent_folder_id": "0198e901-d208-7670-ae29-000000000001",
       "name": "a.txt"
-    }
-  },
-  {
-    "item_id": "0198e901-d208-7670-ae29-000000000002",
-    "event_type": "FILE::SET_CONTENT",
+    },
     "set_metadata": {
       "content": {
         "size": 1

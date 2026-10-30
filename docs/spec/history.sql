@@ -1,7 +1,7 @@
 CREATE TABLE vcs_metadata_objects (
     repo_id TEXT NOT NULL,
     object_id BLOB NOT NULL CHECK (length(object_id) = 32),
-    payload BLOB NOT NULL CHECK (length(payload) BETWEEN 49 AND 1048625),
+    payload BLOB NOT NULL CHECK (length(payload) BETWEEN 49 AND 1048642),
     PRIMARY KEY (repo_id, object_id)
 ) STRICT;
 
@@ -10,15 +10,22 @@ CREATE TABLE vcs_items (
     item_id TEXT NOT NULL,
     item_type TEXT NOT NULL,
     parent_folder_id TEXT,
-    name TEXT NOT NULL,
-    name_key TEXT NOT NULL,
+    name TEXT,
+    name_key TEXT,
+    record_key TEXT,
+    link_folder_id TEXT,
     head_seq INTEGER NOT NULL CHECK (head_seq >= 1),
     lifecycle_state TEXT NOT NULL CHECK (lifecycle_state IN ('LIVE','TRASH','TOMBSTONED')),
     created_at TEXT NOT NULL,
     created_by TEXT NOT NULL,
     sequencing_mode TEXT NOT NULL CHECK (sequencing_mode IN ('LOCAL','FEDERATED')),
     federation_stream_id TEXT, ref_head_seq INTEGER NOT NULL DEFAULT 0 CHECK (ref_head_seq >= 0),
-    PRIMARY KEY (repo_id, item_id)
+    PRIMARY KEY (repo_id, item_id),
+    CHECK (
+        (name IS NOT NULL AND name_key IS NOT NULL AND record_key IS NULL AND link_folder_id IS NULL)
+        OR
+        (name IS NULL AND name_key IS NULL AND parent_folder_id IS NULL)
+    )
 ) STRICT;
 
 CREATE TABLE vcs_commits (
@@ -34,7 +41,7 @@ CREATE TABLE vcs_commits (
     occurred_at TEXT,
     created_at TEXT NOT NULL,
     event_count INTEGER,
-    events_digest BLOB, import_job_id TEXT,
+    events_digest BLOB,
     PRIMARY KEY (repo_id, commit_pk),
     UNIQUE (repo_id, commit_id),
     CHECK (repo_seq IS NULL OR repo_seq >= 1),
@@ -72,7 +79,15 @@ WHERE repo_seq IS NULL AND commit_id IS NOT NULL;
 
 CREATE UNIQUE INDEX idx_vcs_items_unique_name_key
 ON vcs_items (repo_id, COALESCE(parent_folder_id, ''), name_key)
-WHERE lifecycle_state = 'LIVE';
+WHERE lifecycle_state = 'LIVE' AND name_key IS NOT NULL;
+
+CREATE UNIQUE INDEX idx_vcs_items_unique_record_key
+ON vcs_items (repo_id, item_type, record_key)
+WHERE lifecycle_state = 'LIVE' AND record_key IS NOT NULL;
+
+CREATE INDEX idx_vcs_items_link_folder
+ON vcs_items (repo_id, link_folder_id)
+WHERE link_folder_id IS NOT NULL;
 
 CREATE UNIQUE INDEX idx_vcs_items_federated_unique
 ON vcs_items (repo_id, federation_stream_id)

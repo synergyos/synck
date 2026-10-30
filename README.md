@@ -33,9 +33,9 @@ everyday use, internals and a full command reference.
 
 `synck init` turns any folder into a repository. Existing files stay
 uncommitted until you commit them, and a default `.synckignore` keeps
-operating-system and editor clutter out. Saved `.eml` and `.msg` files are
-committed as email items, chats live alongside your files, and content is stored
-in compressed, deduplicated chunks.
+operating-system and editor clutter out. Email is imported as records filed in
+your folders, chats live alongside your files, and content is stored in
+compressed, deduplicated chunks.
 
 ## Why Synck
 
@@ -68,7 +68,8 @@ difference is deliberate.
   changes in order. There are no branches or merges, and independent content edits to different
   items do not conflict. Structural changes still share namespace constraints.
 - **Integrity throughout.** Commits, file versions and message bodies are
-  identified by SHA-256. Content objects include a random salt. `synck fsck`
+  identified by SHA-256, and a file's ID is the SHA-256 of its bytes. Small
+private text and metadata include a random salt. `synck fsck`
   checks history/checkpoints and available objects, reporting absent payloads
   separately from corruption.
 - **Complete, self-contained archives.** A complete archive holds its history

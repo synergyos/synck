@@ -24,7 +24,7 @@ validate dependencies and explicitly reconcile stale clients. It cannot change
 an already retained archive. These semantics do not mean a mutable local disk
 is WORM storage or satisfies financial-record retention rules.
 
-Complete copies preserve IDs, generation, frames and salts. Thin repositories
+Complete copies preserve IDs, generation and exact stored objects. Thin repositories
 can omit referenced payloads and remain structurally valid; complete archival
 exports cannot. A long-term archive must retain a compatible reader or verified
 migration independently of this project's pre-1.0 support policy.
@@ -33,7 +33,9 @@ Private cache schemas are not portable contracts. Deleting a disposable cache
 causes replay, not a history migration. Canonical database structure is validated
 by tables, types and keys, not SQL formatting or performance-index names.
 
-The 0.2 typed scope is FILE/FOLDER, CHAT and EMAIL. Hosted-only readers and old
+After 1.0 the core format is frozen, and item families are versioned separately;
+see [Core and item families](spec/format.md#core-and-item-families). The 0.2 typed
+scope is FILE/FOLDER, CHAT and EMAIL. Hosted-only readers and old
 FILE sidecars/resource forks were removed. Generic envelopes still provide
 structural integrity for uninterpreted families. No cross-machine sync protocol
 is included in this release.

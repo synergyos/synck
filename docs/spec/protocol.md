@@ -1,7 +1,7 @@
 # Central synchronization protocol 1
 
 This transport-neutral contract uses [format 7](format.md), commit format 6 and
-salted objects. `synck-sync` provides wire values, streaming verification and
+its objects. `synck-sync` provides wire values, streaming verification and
 admission-policy helpers. Authentication, durable staging, cleanup, transaction
 installation and Core acceptance belong to the authority/client adapters.
 The generic `synck serve`, clone/pull integration, remote lease commands and
@@ -36,8 +36,8 @@ All routes are under `/v1/repositories/{repo_id}/sync`:
 | `POST /proposals` | `SubmitRequest` / `SubmitResult` |
 | `GET /receipts/{operation_id}` | exact accepted `Receipt`, or not found |
 | `POST /history` | `HistoryRequest` / `HistoryPage` |
-| `PUT /objects/{object_id}` | exact canonical salted bytes, immutable installation |
-| `GET /objects/{object_id}` | exact framed bytes, or explicit missing |
+| `PUT /objects/{object_id}` | exact stored bytes, immutable installation |
+| `GET /objects/{object_id}` | exact stored bytes, or explicit missing |
 
 HTTP deployments require authenticated TLS and authorization on every route,
 including receipts and immutable object downloads. IDs are not access tokens.
@@ -56,8 +56,7 @@ Receivers cap network bytes before parsing; in-memory validation alone cannot
 protect an unbounded parser. Headers are small because format limits are fixed.
 
 `policy` has nullable `max_events_per_commit`, `max_object_bytes` and `quota_bytes`.
-Null means unrestricted. Object/quota byte counts refer to canonical framed
-object bytes. The authority checks quota against its durable usage and new,
+Null means unrestricted. Object/quota byte counts refer to stored object bytes. The authority checks quota against its durable usage and new,
 nonduplicated object bytes transactionally. Policy may refuse admission of valid
 content; it never makes existing accepted history invalid or untransferable.
 The reference `synck serve` advertises all three values as null and can serve any
@@ -87,7 +86,7 @@ unique, sorted by item ID, and assert a positive pre-commit head. There is no
 aggregate event, byte or guard-count cap. Guards are paged so they cannot become
 a hidden limit on the number of affected items.
 
-The client persists exact events, object bytes, salt/object identity, operation
+The client persists exact events, object bytes, object identity, operation
 ID and final metadata before reporting a saved pending change. Upload pages at
 the next acknowledged offset. The server durably installs a page before replying;
 a same-offset retry returns the original acknowledgement only for identical
@@ -100,7 +99,7 @@ The final `SubmitRequest` contains:
 
 ```text
 repository, operation_id
-metadata: {author_id, committer_id, message, occurred_at, import_job_id}
+metadata: {author_id, committer_id, message, occurred_at}
 event_count, events_digest
 guard_count, guards_digest
 ```
@@ -111,8 +110,7 @@ SHA-256 of its canonical payload, with all ordinary events before refs.
 canonical RFC 8785 JSON, in sorted order; an empty guard stream hashes empty
 bytes. `request_digest` hashes canonical RFC 8785 JSON of the final typed request.
 It binds generation, operation, metadata and both stream summaries. Page size or
-boundaries do not affect these identities. `import_job_id` is null or the format's
-canonical UUIDv4 and participates in commit identity, exactly as local Core does.
+boundaries do not affect these identities.
 
 `validate_submit` checks only the header and computes identity. The authority
 must call `ProposalVerifier::finish` against the actual staged pages, then prove
@@ -194,25 +192,27 @@ accepted state and unsent local work intact.
 
 ## Objects, encryption and bulk import
 
-Objects transfer as `application/octet-stream` with exact salted framing. Validate
-framing, codec and digest before immutable installation. Missing is different from
+Objects transfer as `application/octet-stream` with their exact stored bytes.
+Validate the digest and, where the role selects a frame, the frame, before
+immutable installation. Missing is different from
 empty. Thin replicas may install verified envelopes without every content body;
 new content-bearing acceptance requires referenced objects durable. Encryption,
 keys and signatures belong to the product profile, not a competing sync format.
 
 Large imports follow the existing SynckHub client-side job model: a durable,
 disk-backed inventory before upload, folders first, then independently atomic
-batches sized from advertised policy. Each batch has stable item IDs, operation
-ID and `import_job_id`. Independent batches run in parallel after parent
+batches sized from advertised policy. Each batch has stable item IDs and an
+operation ID. Independent batches run in parallel after parent
 prerequisites are durable. Reconcile exact receipts before advancing progress.
 Transport paging does not split a pre-existing commit: the importer deliberately
 constructs new bounded commits from the inventory. This preserves the model for
 two million files without loading the inventory into memory or altering history.
 
-Store each file's object ID and salt in the import state database. Plaintext
-SHA-256 cannot reconstruct a salted object ID for `adopt-existing`. Surviving
-state permits exact reuse; lost state means uploading bytes again. Do not infer
-ownership of a same-name remote file or overwrite unrelated work.
+Store each file's object ID in the import state database. In an unencrypted
+repository a file's ID is its plain SHA-256, so `adopt-existing` can recompute it
+and needs no upload for bytes the authority already holds. In an encrypted
+repository each upload is a new object, and lost state means uploading again. Do
+not infer ownership of a same-name remote file or overwrite unrelated work.
 
 ## Reservations and clones
 

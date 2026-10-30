@@ -1,0 +1,1201 @@
+[
+  {
+    "name": "record without key or link",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "TASK::CREATE",
+            "create_item": {
+              "item_type": "TASK"
+            }
+          }
+        ],
+        "valid": true
+      }
+    ]
+  },
+  {
+    "name": "record with name",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "TASK::CREATE",
+            "create_item": {
+              "item_type": "TASK",
+              "name": "a"
+            }
+          }
+        ],
+        "valid": false,
+        "reason": "record type in tree form"
+      }
+    ]
+  },
+  {
+    "name": "tree item without name",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "FOLDER::CREATE",
+            "create_item": {
+              "item_type": "FOLDER"
+            }
+          }
+        ],
+        "valid": false,
+        "reason": "tree type in record form"
+      }
+    ]
+  },
+  {
+    "name": "record with parent",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "TASK::CREATE",
+            "create_item": {
+              "item_type": "TASK",
+              "parent_folder_id": "019a2900-0000-7000-8000-000000000200"
+            }
+          }
+        ],
+        "valid": false,
+        "reason": "record with parent"
+      }
+    ]
+  },
+  {
+    "name": "tree item with key",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "FOLDER::CREATE",
+            "create_item": {
+              "item_type": "FOLDER",
+              "name": "a",
+              "key": "k"
+            }
+          }
+        ],
+        "valid": false,
+        "reason": "tree item with key or link"
+      }
+    ]
+  },
+  {
+    "name": "tree item with link",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000200",
+            "event_type": "FOLDER::CREATE",
+            "create_item": {
+              "item_type": "FOLDER",
+              "name": "F"
+            }
+          },
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "FOLDER::CREATE",
+            "create_item": {
+              "item_type": "FOLDER",
+              "name": "a",
+              "link": "019a2900-0000-7000-8000-000000000200"
+            }
+          }
+        ],
+        "valid": false,
+        "reason": "tree item with key or link"
+      }
+    ]
+  },
+  {
+    "name": "empty key",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "CHAT::CREATE",
+            "create_item": {
+              "item_type": "CHAT",
+              "key": ""
+            }
+          }
+        ],
+        "valid": false,
+        "reason": "empty key"
+      }
+    ]
+  },
+  {
+    "name": "file created with bytes",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "FILE::CREATE",
+            "create_item": {
+              "item_type": "FILE",
+              "name": "a"
+            },
+            "set_content": {
+              "bytes": "sha256:abababababababababababababababababababababababababababababababab"
+            }
+          }
+        ],
+        "valid": true
+      }
+    ]
+  },
+  {
+    "name": "file created without bytes",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "FILE::CREATE",
+            "create_item": {
+              "item_type": "FILE",
+              "name": "a"
+            }
+          }
+        ],
+        "valid": false,
+        "reason": "FILE created without bytes"
+      }
+    ]
+  },
+  {
+    "name": "unknown type, either form",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "FUTURE::CREATE",
+            "create_item": {
+              "item_type": "FUTURE"
+            }
+          }
+        ],
+        "valid": true
+      },
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000203",
+            "event_type": "FUTURE::CREATE",
+            "create_item": {
+              "item_type": "FUTURE",
+              "name": "a"
+            }
+          }
+        ],
+        "valid": true
+      }
+    ]
+  },
+  {
+    "name": "records do not use the name namespace",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000200",
+            "event_type": "FOLDER::CREATE",
+            "create_item": {
+              "item_type": "FOLDER",
+              "name": "Same"
+            }
+          },
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "TASK::CREATE",
+            "create_item": {
+              "item_type": "TASK"
+            }
+          },
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000203",
+            "event_type": "TASK::CREATE",
+            "create_item": {
+              "item_type": "TASK"
+            }
+          }
+        ],
+        "valid": true
+      }
+    ]
+  },
+  {
+    "name": "empty commit message",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "TASK::CREATE",
+            "create_item": {
+              "item_type": "TASK"
+            }
+          }
+        ],
+        "valid": false,
+        "message": "",
+        "reason": "empty message"
+      }
+    ]
+  },
+  {
+    "name": "rename a record",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "TASK::CREATE",
+            "create_item": {
+              "item_type": "TASK"
+            }
+          }
+        ],
+        "valid": true
+      },
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "base_seq": 1,
+            "event_type": "TASK::RENAME",
+            "set_name": "a"
+          }
+        ],
+        "valid": false,
+        "reason": "set_name or set_parent on a record"
+      }
+    ]
+  },
+  {
+    "name": "move a record",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000200",
+            "event_type": "FOLDER::CREATE",
+            "create_item": {
+              "item_type": "FOLDER",
+              "name": "F"
+            }
+          },
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "TASK::CREATE",
+            "create_item": {
+              "item_type": "TASK"
+            }
+          }
+        ],
+        "valid": true
+      },
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "base_seq": 1,
+            "event_type": "TASK::MOVE",
+            "set_parent": "019a2900-0000-7000-8000-000000000200"
+          }
+        ],
+        "valid": false,
+        "reason": "set_name or set_parent on a record"
+      }
+    ]
+  },
+  {
+    "name": "link a tree item",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000200",
+            "event_type": "FOLDER::CREATE",
+            "create_item": {
+              "item_type": "FOLDER",
+              "name": "F"
+            }
+          },
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000201",
+            "event_type": "FOLDER::CREATE",
+            "create_item": {
+              "item_type": "FOLDER",
+              "name": "G"
+            }
+          }
+        ],
+        "valid": true
+      },
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000201",
+            "base_seq": 1,
+            "event_type": "FOLDER::SET_LINK",
+            "set_link": "019a2900-0000-7000-8000-000000000200"
+          }
+        ],
+        "valid": false,
+        "reason": "set_link on a tree item"
+      }
+    ]
+  },
+  {
+    "name": "link at creation to a folder of the same commit",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000200",
+            "event_type": "FOLDER::CREATE",
+            "create_item": {
+              "item_type": "FOLDER",
+              "name": "F"
+            }
+          },
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "EMAIL::CREATE",
+            "create_item": {
+              "item_type": "EMAIL",
+              "link": "019a2900-0000-7000-8000-000000000200"
+            }
+          }
+        ],
+        "valid": true
+      }
+    ]
+  },
+  {
+    "name": "link to a missing item",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "EMAIL::CREATE",
+            "create_item": {
+              "item_type": "EMAIL",
+              "link": "019a2900-0000-7000-8000-000000000201"
+            }
+          }
+        ],
+        "valid": false,
+        "reason": "link target is not a folder"
+      }
+    ]
+  },
+  {
+    "name": "link to a record",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "TASK_LIST::CREATE",
+            "create_item": {
+              "item_type": "TASK_LIST"
+            }
+          }
+        ],
+        "valid": true
+      },
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000203",
+            "event_type": "EMAIL::CREATE",
+            "create_item": {
+              "item_type": "EMAIL",
+              "link": "019a2900-0000-7000-8000-000000000202"
+            }
+          }
+        ],
+        "valid": false,
+        "reason": "link target is not a folder"
+      }
+    ]
+  },
+  {
+    "name": "move and clear a link",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000200",
+            "event_type": "FOLDER::CREATE",
+            "create_item": {
+              "item_type": "FOLDER",
+              "name": "F"
+            }
+          },
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000201",
+            "event_type": "FOLDER::CREATE",
+            "create_item": {
+              "item_type": "FOLDER",
+              "name": "G"
+            }
+          },
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "EMAIL::CREATE",
+            "create_item": {
+              "item_type": "EMAIL",
+              "link": "019a2900-0000-7000-8000-000000000200"
+            }
+          }
+        ],
+        "valid": true
+      },
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "base_seq": 1,
+            "event_type": "EMAIL::SET_LINK",
+            "set_link": "019a2900-0000-7000-8000-000000000201"
+          }
+        ],
+        "valid": true
+      },
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "base_seq": 2,
+            "event_type": "EMAIL::SET_LINK",
+            "set_link": null
+          }
+        ],
+        "valid": true
+      }
+    ]
+  },
+  {
+    "name": "set a link to a folder in the trash",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000200",
+            "event_type": "FOLDER::CREATE",
+            "create_item": {
+              "item_type": "FOLDER",
+              "name": "F"
+            }
+          },
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "EMAIL::CREATE",
+            "create_item": {
+              "item_type": "EMAIL"
+            }
+          }
+        ],
+        "valid": true
+      },
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000200",
+            "base_seq": 1,
+            "event_type": "ITEM::TRASH",
+            "set_in_trash": true
+          }
+        ],
+        "valid": true
+      },
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "base_seq": 1,
+            "event_type": "EMAIL::SET_LINK",
+            "set_link": "019a2900-0000-7000-8000-000000000200"
+          }
+        ],
+        "valid": false,
+        "reason": "link set to a folder that is not live"
+      }
+    ]
+  },
+  {
+    "name": "trash keeps a link",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000200",
+            "event_type": "FOLDER::CREATE",
+            "create_item": {
+              "item_type": "FOLDER",
+              "name": "F"
+            }
+          },
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "EMAIL::CREATE",
+            "create_item": {
+              "item_type": "EMAIL",
+              "link": "019a2900-0000-7000-8000-000000000200"
+            }
+          }
+        ],
+        "valid": true
+      },
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000200",
+            "base_seq": 1,
+            "event_type": "ITEM::TRASH",
+            "set_in_trash": true
+          }
+        ],
+        "valid": true
+      },
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000200",
+            "base_seq": 2,
+            "event_type": "ITEM::RESTORE",
+            "set_in_trash": false
+          }
+        ],
+        "valid": true
+      }
+    ]
+  },
+  {
+    "name": "trash a folder with its records in one commit",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000200",
+            "event_type": "FOLDER::CREATE",
+            "create_item": {
+              "item_type": "FOLDER",
+              "name": "F"
+            }
+          },
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "EMAIL::CREATE",
+            "create_item": {
+              "item_type": "EMAIL",
+              "link": "019a2900-0000-7000-8000-000000000200"
+            }
+          }
+        ],
+        "valid": true
+      },
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000200",
+            "base_seq": 1,
+            "event_type": "ITEM::TRASH",
+            "set_in_trash": true
+          },
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "base_seq": 1,
+            "event_type": "ITEM::TRASH",
+            "set_in_trash": true
+          }
+        ],
+        "valid": true
+      }
+    ]
+  },
+  {
+    "name": "tombstone a folder that still has a link",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000200",
+            "event_type": "FOLDER::CREATE",
+            "create_item": {
+              "item_type": "FOLDER",
+              "name": "F"
+            }
+          },
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "EMAIL::CREATE",
+            "create_item": {
+              "item_type": "EMAIL",
+              "link": "019a2900-0000-7000-8000-000000000200"
+            }
+          }
+        ],
+        "valid": true
+      },
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000200",
+            "base_seq": 1,
+            "event_type": "ITEM::TOMBSTONE",
+            "set_tombstoned": true
+          }
+        ],
+        "valid": false,
+        "reason": "link to a tombstoned folder"
+      }
+    ]
+  },
+  {
+    "name": "tombstone a folder and clear its link",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000200",
+            "event_type": "FOLDER::CREATE",
+            "create_item": {
+              "item_type": "FOLDER",
+              "name": "F"
+            }
+          },
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "EMAIL::CREATE",
+            "create_item": {
+              "item_type": "EMAIL",
+              "link": "019a2900-0000-7000-8000-000000000200"
+            }
+          }
+        ],
+        "valid": true
+      },
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000200",
+            "base_seq": 1,
+            "event_type": "ITEM::TOMBSTONE",
+            "set_tombstoned": true
+          },
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "base_seq": 1,
+            "event_type": "EMAIL::SET_LINK",
+            "set_link": null
+          }
+        ],
+        "valid": true
+      }
+    ]
+  },
+  {
+    "name": "tombstone a folder and its record",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000200",
+            "event_type": "FOLDER::CREATE",
+            "create_item": {
+              "item_type": "FOLDER",
+              "name": "F"
+            }
+          },
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "EMAIL::CREATE",
+            "create_item": {
+              "item_type": "EMAIL",
+              "link": "019a2900-0000-7000-8000-000000000200"
+            }
+          }
+        ],
+        "valid": true
+      },
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000200",
+            "base_seq": 1,
+            "event_type": "ITEM::TOMBSTONE",
+            "set_tombstoned": true
+          },
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "base_seq": 1,
+            "event_type": "ITEM::TOMBSTONE",
+            "set_tombstoned": true
+          }
+        ],
+        "valid": true
+      }
+    ]
+  },
+  {
+    "name": "tombstone a folder linked by a record in the trash",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000200",
+            "event_type": "FOLDER::CREATE",
+            "create_item": {
+              "item_type": "FOLDER",
+              "name": "F"
+            }
+          },
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "EMAIL::CREATE",
+            "create_item": {
+              "item_type": "EMAIL",
+              "link": "019a2900-0000-7000-8000-000000000200"
+            }
+          }
+        ],
+        "valid": true
+      },
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "base_seq": 1,
+            "event_type": "ITEM::TRASH",
+            "set_in_trash": true
+          }
+        ],
+        "valid": true
+      },
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000200",
+            "base_seq": 1,
+            "event_type": "ITEM::TOMBSTONE",
+            "set_tombstoned": true
+          }
+        ],
+        "valid": false,
+        "reason": "link to a tombstoned folder"
+      }
+    ]
+  },
+  {
+    "name": "two live records with one key",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "CHAT::CREATE",
+            "create_item": {
+              "item_type": "CHAT",
+              "key": "k"
+            }
+          },
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000203",
+            "event_type": "CHAT::CREATE",
+            "create_item": {
+              "item_type": "CHAT",
+              "key": "k"
+            }
+          }
+        ],
+        "valid": false,
+        "reason": "record key conflict"
+      }
+    ]
+  },
+  {
+    "name": "one key under two types",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "CHAT::CREATE",
+            "create_item": {
+              "item_type": "CHAT",
+              "key": "k"
+            }
+          },
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000203",
+            "event_type": "POST::CREATE",
+            "create_item": {
+              "item_type": "POST",
+              "key": "k"
+            }
+          }
+        ],
+        "valid": true
+      }
+    ]
+  },
+  {
+    "name": "keys are exact bytes",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "CHAT::CREATE",
+            "create_item": {
+              "item_type": "CHAT",
+              "key": "k"
+            }
+          },
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000203",
+            "event_type": "CHAT::CREATE",
+            "create_item": {
+              "item_type": "CHAT",
+              "key": "K"
+            }
+          }
+        ],
+        "valid": true
+      }
+    ]
+  },
+  {
+    "name": "reuse a key while the old record is in the trash",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "CHAT::CREATE",
+            "create_item": {
+              "item_type": "CHAT",
+              "key": "k"
+            }
+          }
+        ],
+        "valid": true
+      },
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "base_seq": 1,
+            "event_type": "ITEM::TRASH",
+            "set_in_trash": true
+          }
+        ],
+        "valid": true
+      },
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000203",
+            "event_type": "CHAT::CREATE",
+            "create_item": {
+              "item_type": "CHAT",
+              "key": "k"
+            }
+          }
+        ],
+        "valid": true
+      }
+    ]
+  },
+  {
+    "name": "restore while another live record has the key",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "CHAT::CREATE",
+            "create_item": {
+              "item_type": "CHAT",
+              "key": "k"
+            }
+          }
+        ],
+        "valid": true
+      },
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "base_seq": 1,
+            "event_type": "ITEM::TRASH",
+            "set_in_trash": true
+          }
+        ],
+        "valid": true
+      },
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000203",
+            "event_type": "CHAT::CREATE",
+            "create_item": {
+              "item_type": "CHAT",
+              "key": "k"
+            }
+          }
+        ],
+        "valid": true
+      },
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "base_seq": 2,
+            "event_type": "ITEM::RESTORE",
+            "set_in_trash": false
+          }
+        ],
+        "valid": false,
+        "reason": "record key conflict"
+      }
+    ]
+  },
+  {
+    "name": "reuse a key after a tombstone",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "CHAT::CREATE",
+            "create_item": {
+              "item_type": "CHAT",
+              "key": "k"
+            }
+          }
+        ],
+        "valid": true
+      },
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "base_seq": 1,
+            "event_type": "ITEM::TOMBSTONE",
+            "set_tombstoned": true
+          }
+        ],
+        "valid": true
+      },
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000203",
+            "event_type": "CHAT::CREATE",
+            "create_item": {
+              "item_type": "CHAT",
+              "key": "k"
+            }
+          }
+        ],
+        "valid": true
+      }
+    ]
+  },
+  {
+    "name": "swap a key inside one commit",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "CHAT::CREATE",
+            "create_item": {
+              "item_type": "CHAT",
+              "key": "k"
+            }
+          }
+        ],
+        "valid": true
+      },
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "base_seq": 1,
+            "event_type": "ITEM::TRASH",
+            "set_in_trash": true
+          },
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000203",
+            "event_type": "CHAT::CREATE",
+            "create_item": {
+              "item_type": "CHAT",
+              "key": "k"
+            }
+          }
+        ],
+        "valid": true
+      }
+    ]
+  },
+  {
+    "name": "federate a linked record",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000200",
+            "event_type": "FOLDER::CREATE",
+            "create_item": {
+              "item_type": "FOLDER",
+              "name": "F"
+            }
+          },
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "CHAT::CREATE",
+            "create_item": {
+              "item_type": "CHAT",
+              "link": "019a2900-0000-7000-8000-000000000200"
+            }
+          }
+        ],
+        "valid": true
+      },
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "base_seq": 1,
+            "event_type": "CHAT::FEDERATE",
+            "set_is_federated": true,
+            "set_federation_stream_id": "s"
+          }
+        ],
+        "valid": false,
+        "reason": "federated record with a link"
+      }
+    ]
+  },
+  {
+    "name": "federate and move the link to a companion",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000200",
+            "event_type": "FOLDER::CREATE",
+            "create_item": {
+              "item_type": "FOLDER",
+              "name": "F"
+            }
+          },
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "CHAT::CREATE",
+            "create_item": {
+              "item_type": "CHAT",
+              "link": "019a2900-0000-7000-8000-000000000200"
+            }
+          }
+        ],
+        "valid": true
+      },
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "base_seq": 1,
+            "event_type": "CHAT::FEDERATE",
+            "set_link": null,
+            "set_is_federated": true,
+            "set_federation_stream_id": "s"
+          },
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000205",
+            "event_type": "LOCAL_COMPANION::CREATE",
+            "create_item": {
+              "item_type": "LOCAL_COMPANION",
+              "key": "019a2900-0000-7000-8000-000000000202",
+              "link": "019a2900-0000-7000-8000-000000000200"
+            }
+          }
+        ],
+        "valid": true
+      }
+    ]
+  },
+  {
+    "name": "link a federated record",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000200",
+            "event_type": "FOLDER::CREATE",
+            "create_item": {
+              "item_type": "FOLDER",
+              "name": "F"
+            }
+          },
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "CHAT::CREATE",
+            "create_item": {
+              "item_type": "CHAT"
+            }
+          }
+        ],
+        "valid": true
+      },
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "base_seq": 1,
+            "event_type": "CHAT::FEDERATE",
+            "set_is_federated": true,
+            "set_federation_stream_id": "s"
+          }
+        ],
+        "valid": true
+      },
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "base_seq": 2,
+            "event_type": "CHAT::SET_LINK",
+            "set_link": "019a2900-0000-7000-8000-000000000200"
+          }
+        ],
+        "valid": false,
+        "reason": "federated record with a link"
+      }
+    ]
+  }
+]

@@ -1,0 +1,102 @@
+[
+  {
+    "name": "zero",
+    "text": "0",
+    "valid": true
+  },
+  {
+    "name": "largest integer",
+    "text": "9007199254740991",
+    "valid": true
+  },
+  {
+    "name": "smallest integer",
+    "text": "-9007199254740991",
+    "valid": true
+  },
+  {
+    "name": "above the limit",
+    "text": "9007199254740992",
+    "valid": false
+  },
+  {
+    "name": "below the limit",
+    "text": "-9007199254740992",
+    "valid": false
+  },
+  {
+    "name": "exact power of two",
+    "text": "18014398509481984",
+    "valid": false
+  },
+  {
+    "name": "fraction",
+    "text": "1.5",
+    "valid": false
+  },
+  {
+    "name": "trailing zero fraction",
+    "text": "1.0",
+    "valid": false
+  },
+  {
+    "name": "exponent",
+    "text": "1e3",
+    "valid": false
+  },
+  {
+    "name": "negative zero",
+    "text": "-0",
+    "valid": false
+  },
+  {
+    "name": "nul escape in a string",
+    "text": "{\"a\":\"x\\u0000y\"}",
+    "valid": false
+  },
+  {
+    "name": "nul escape in a key",
+    "text": "{\"\\u0000\":1}",
+    "valid": false
+  },
+  {
+    "name": "other control escape",
+    "text": "{\"a\":\"\\u0001\"}",
+    "valid": true
+  },
+  {
+    "name": "short escapes",
+    "text": "{\"a\":\"\\b\\t\\n\\f\\r\"}",
+    "valid": true
+  },
+  {
+    "name": "unsorted keys",
+    "text": "{\"b\":1,\"a\":2}",
+    "valid": false
+  },
+  {
+    "name": "sorted by UTF-16 code units",
+    "text": "{\"𐀀\":1,\"\":2}",
+    "valid": true
+  },
+  {
+    "name": "duplicate keys",
+    "text": "{\"a\":1,\"a\":2}",
+    "valid": false
+  },
+  {
+    "name": "whitespace",
+    "text": "{\"a\": 1}",
+    "valid": false
+  },
+  {
+    "name": "lone surrogate",
+    "text": "{\"a\":\"\\ud800\"}",
+    "valid": false
+  },
+  {
+    "name": "uppercase hex escape",
+    "text": "{\"a\":\"\\u001F\"}",
+    "valid": false
+  }
+]

@@ -44,12 +44,11 @@ Item IDs are permanent, including across renames and moves.
   A repeated call with the same ID returns the commit (and, for
   `create-file`, the item) accepted the first time and adds no history.
   Reusing an ID for different bytes, another FILE or another location is
-  refused. Email sources (`.eml`, `.msg`) passed to `create-file` do not
-  accept an operation ID.
+  refused.
 
-`--base-content <blob-id>` is the salted content object ID returned by Synck
-for the revision the application started editing from. It is not the plain
-SHA-256 of the exported bytes. The save is accepted only while that is
+`--base-content <blob-id>` is the content object ID returned by Synck for the
+revision the application started editing from. In an unencrypted repository it
+is the plain SHA-256 of those bytes. The save is accepted only while that is
 still the document's current content; renames and moves do not affect it.
 
 ## Saving a revision
