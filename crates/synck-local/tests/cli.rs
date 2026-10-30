@@ -347,6 +347,39 @@ fn cli_monitor_tracks_immediate_external_changes_and_stops_cleanly() {
 }
 
 #[cfg(windows)]
+#[cfg(unix)]
+#[test]
+fn cli_monitor_exits_when_its_repository_is_removed() {
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path().join("repository");
+    fs::create_dir(&root).unwrap();
+    assert!(synck(&root, &["init", "--author", "author"]).status.success());
+    let config: Value =
+        serde_json::from_slice(&fs::read(root.join(".synck/config.json")).unwrap()).unwrap();
+    let mut monitor = Command::new(env!("CARGO_BIN_EXE_synck"))
+        .args(["__monitor-server", "--root"])
+        .arg(&root)
+        .args(["--repo-id", config["repo_id"].as_str().unwrap()])
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !root.join(".synck/monitor.sock").exists() {
+        assert!(Instant::now() < deadline, "monitor did not start");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    fs::remove_dir_all(&root).unwrap();
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while monitor.try_wait().unwrap().is_none() {
+        if Instant::now() >= deadline {
+            monitor.kill().unwrap();
+            panic!("monitor outlived its repository");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 #[test]
 fn cli_monitor_starts_tracks_changes_and_stops_cleanly() {
     let temporary = tempfile::tempdir().unwrap();

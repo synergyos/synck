@@ -20,6 +20,9 @@ const PROTOCOL_VERSION: u32 = 1;
 const MAX_FRAME_BYTES: usize = 8 * 1024 * 1024;
 const MAX_CANDIDATES: usize = 65_536;
 const REQUEST_DEADLINE: Duration = Duration::from_secs(2);
+/// Watchers do not always report the removal of their own root.
+#[cfg(unix)]
+const REPOSITORY_CHECK_INTERVAL: Duration = Duration::from_secs(1);
 const SOCKET_FILE: &str = "monitor.sock";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -762,7 +765,12 @@ fn run_platform_server(root: &Path, metadata_path: &Path, repo_id: &RepoId) -> R
             LocalError::MonitorUnavailable(format!("cannot watch repository: {error}"))
         })?;
 
+    let repository_replaced = || {
+        path_identity(root).ok() != Some(root_identity)
+            || path_identity(metadata_path).ok() != Some(metadata_identity)
+    };
     let mut history = EventHistory::new();
+    let mut checked_at = Instant::now();
     let mut stop = false;
     while !stop {
         while let Ok(event) = receiver.try_recv() {
@@ -781,9 +789,7 @@ fn run_platform_server(root: &Path, metadata_path: &Path, repo_id: &RepoId) -> R
         }
         match listener.accept() {
             Ok((mut stream, _)) => {
-                if path_identity(root).ok() != Some(root_identity)
-                    || path_identity(metadata_path).ok() != Some(metadata_identity)
-                {
+                if repository_replaced() {
                     stop = true;
                     continue;
                 }
@@ -830,6 +836,10 @@ fn run_platform_server(root: &Path, metadata_path: &Path, repo_id: &RepoId) -> R
                     },
                     Err(mpsc::RecvTimeoutError::Timeout) => {}
                     Err(mpsc::RecvTimeoutError::Disconnected) => stop = true,
+                }
+                if checked_at.elapsed() >= REPOSITORY_CHECK_INTERVAL {
+                    checked_at = Instant::now();
+                    stop |= repository_replaced();
                 }
             }
             Err(source) => {
