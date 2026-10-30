@@ -86,6 +86,26 @@ fn init_history_maintenance_and_copy_work_in_both_modes() {
 }
 
 #[test]
+fn received_text_cannot_drive_the_terminal() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    run(root, &["init", "--author", "ana\u{1b}[2J"]);
+    std::fs::write(root.join("note.txt"), "hello\n").unwrap();
+    let message = "line\u{1b}]0;title\u{7}\u{202e}one";
+    run(root, &["commit", "-m", message]);
+
+    let log = run(root, &["log"]);
+    assert!(log.contains(r"line\u{1b}]0;title\u{7}\u{202e}one"), "{log}");
+    assert!(log.contains(r"ana\u{1b}[2J"), "{log}");
+    for output in [log, run(root, &["log", "--oneline"]), run(root, &["show", "HEAD"])] {
+        assert!(!output.contains(['\u{1b}', '\u{7}', '\u{202e}']), "{output}");
+    }
+
+    let exact = json(root, &["log", "--json"]);
+    assert_eq!(exact["commits"][0]["message"], message);
+}
+
+#[test]
 fn init_alias_and_empty_directory_share_defaults() {
     let temp = tempfile::tempdir().unwrap();
     for command in [

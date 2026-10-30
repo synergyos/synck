@@ -713,7 +713,7 @@ async fn main() -> ExitCode {
             if json {
                 eprintln!("{}", cli_json::error(&error));
             } else {
-                eprintln!("synck: {error}");
+                eprintln!("synck: {}", visible_lines(&error.to_string()));
             }
             if integrity_command && matches!(error, LocalError::Integrity(_)) {
                 ExitCode::from(2)
@@ -892,7 +892,7 @@ async fn run_checkout(
                 println!("root {}", info.root.display());
                 println!("format_version {}", info.format_version);
                 println!("repo_id {}", info.repo_id);
-                println!("author {}", info.author);
+                println!("author {}", visible(&info.author));
                 if let Some(commit) = head {
                     println!("head_repo_seq {}", commit.repo_seq);
                     println!("head_commit_id {}", commit.commit_id);
@@ -965,7 +965,7 @@ async fn run_checkout(
                             })
                         );
                     } else {
-                        println!("author {author}");
+                        println!("author {}", visible(&author));
                     }
                 }
                 ConfigCommand::SetAuthor { author } => {
@@ -981,7 +981,7 @@ async fn run_checkout(
                             })
                         );
                     } else {
-                        println!("author {author}");
+                        println!("author {}", visible(&author));
                     }
                 }
                 ConfigCommand::HiddenFiles => {
@@ -1160,7 +1160,7 @@ async fn run_checkout(
                         .format("%Y-%m-%d %H:%M %:z")
                         .to_string();
                     let sequence = styled(COMMIT_STYLE, &commit.repo_seq.to_string());
-                    let mut header = format!("{sequence} | {created_at} | {}", commit.author);
+                    let mut header = format!("{sequence} | {created_at} | {}", visible(&commit.author));
                     if let Some(message) = commit.message.as_deref() {
                         header.push_str(" | ");
                         header.push_str(&one_line_message(message));
@@ -1329,7 +1329,7 @@ async fn run_checkout(
                         item.repo_seq,
                         item.commit_id,
                         item.deleted_at.to_rfc3339(),
-                        item.path
+                        visible(&item.path)
                     );
                 }
             }
@@ -1395,7 +1395,7 @@ async fn run_checkout(
                         for version in versions {
                             println!(
                                 "{} {} {} {} {} {} {} {} {} {} {}",
-                                version.label.as_deref().unwrap_or("-"),
+                                visible(version.label.as_deref().unwrap_or("-")),
                                 version.version_id,
                                 version.lifecycle_state,
                                 version.kind,
@@ -1405,7 +1405,7 @@ async fn run_checkout(
                                 version.created_at.to_rfc3339(),
                                 version.blob_id,
                                 version.size,
-                                version.description.as_deref().unwrap_or("-")
+                                visible(version.description.as_deref().unwrap_or("-"))
                             );
                         }
                     }
@@ -1565,7 +1565,7 @@ async fn run_checkout(
             }
             let report = repository.fsck().await.map_err(|error| (error, true))?;
             for notice in &report.notices {
-                eprintln!("fsck: notice: {notice}");
+                eprintln!("fsck: notice: {}", visible_lines(&notice.to_string()));
             }
             let finding_count = report.len();
             let findings_omitted = report.findings_omitted;
@@ -1587,7 +1587,7 @@ async fn run_checkout(
                 println!("fsck ok");
             } else {
                 for finding in &findings {
-                    eprintln!("fsck: {finding}");
+                    eprintln!("fsck: {}", visible_lines(&finding.to_string()));
                 }
                 if findings_omitted != 0 {
                     eprintln!("fsck: {findings_omitted} additional finding(s) omitted");
@@ -2104,7 +2104,7 @@ fn print_monitor_status(status: &MonitorStatus, json_output: bool) {
             })
         );
     } else if let Some(detail) = detail {
-        println!("monitor {name}: {detail}");
+        println!("monitor {name}: {}", visible_lines(&detail));
     } else {
         println!("monitor {name}");
     }
@@ -2120,7 +2120,7 @@ fn print_context(
     println!("root {}", info.root.display());
     println!("format_version {}", info.format_version);
     println!("repo_id {}", info.repo_id);
-    println!("author {}", info.author);
+    println!("author {}", visible(&info.author));
     if let Some(head) = recent_commits.first() {
         println!("head_repo_seq {}", head.repo_seq);
         println!("head_commit_id {}", head.commit_id);
@@ -2147,7 +2147,12 @@ fn print_context(
             .created_at
             .with_timezone(&chrono::Local)
             .format("%Y-%m-%d %H:%M %:z");
-        print!("{} | {} | {}", commit.repo_seq, created_at, commit.author);
+        print!(
+            "{} | {} | {}",
+            commit.repo_seq,
+            created_at,
+            visible(&commit.author)
+        );
         if let Some(message) = commit.message.as_deref() {
             println!(" | {}", one_line_message(message));
         } else {
@@ -2158,6 +2163,10 @@ fn print_context(
 
 fn print_text_diff(entry: &TextDiffEntry) {
     match &entry.kind {
+        // A pipe gets the exact patch.
+        TextDiffKind::Patch(patch) if std::io::stdout().is_terminal() => {
+            print!("{}", visible_lines(patch));
+        }
         TextDiffKind::Patch(patch) => print!("{patch}"),
         TextDiffKind::Binary => println!(
             "Binary files {} and {} differ",
@@ -2173,11 +2182,35 @@ fn print_text_diff(entry: &TextDiffEntry) {
 }
 
 fn diff_path(path: Option<&str>) -> String {
-    path.map_or_else(|| "/dev/null".to_string(), |path| path.to_string())
+    path.map_or_else(|| "/dev/null".to_string(), visible)
 }
 
 fn one_line_message(message: &str) -> String {
-    message.replace(['\r', '\n'], " ")
+    visible(&message.replace(['\r', '\n'], " "))
+}
+
+/// Text from a repository may come from anyone. Escape what would drive the
+/// terminal or reorder what is read: controls and bidirectional overrides.
+fn visible(text: &str) -> String {
+    escape_terminal_text(text, |_| false)
+}
+
+fn visible_lines(text: &str) -> String {
+    escape_terminal_text(text, |c| matches!(c, '\n' | '\t'))
+}
+
+fn escape_terminal_text(text: &str, keep: impl Fn(char) -> bool) -> String {
+    let mut escaped = String::with_capacity(text.len());
+    for c in text.chars() {
+        let hostile = c.is_control()
+            || matches!(c, '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}');
+        if hostile && !keep(c) {
+            escaped.extend(c.escape_unicode());
+        } else {
+            escaped.push(c);
+        }
+    }
+    escaped
 }
 
 fn print_detailed_log_entry(entry: &DetailedLogEntry, align_change_markers: bool) {
@@ -2212,7 +2245,7 @@ fn print_log_header(
     let sequence = styled(COMMIT_STYLE, &commit.repo_seq.to_string());
     let mut header = format!(
         "{sequence} | {created_at} | {} | {}",
-        commit.author,
+        visible(&commit.author),
         change_summary(entry.changes_total, changes_shown)
     );
     if let Some(event_count) = event_count {
@@ -2247,7 +2280,7 @@ fn print_event_history_commit(value: &EventHistoryCommit) {
     let mut header = format!(
         "{sequence} | {} | {} | {} | {}",
         commit.created_at.to_rfc3339(),
-        commit.author,
+        visible(&commit.author),
         counted(commit.changes.len(), "change", "changes"),
         counted(value.events.len(), "event", "events")
     );
@@ -2264,9 +2297,12 @@ fn print_commit_events(events: &[CommitEvent]) {
     for event in events {
         println!(
             "    {} | {} | item {} | item-seq {}",
-            event.commit_event_idx, event.event_type, event.item_id, event.item_seq
+            event.commit_event_idx,
+            visible(&event.event_type),
+            event.item_id,
+            event.item_seq
         );
-        println!("        {}", event.payload);
+        println!("        {}", visible(&event.payload.to_string()));
     }
 }
 
@@ -2276,8 +2312,8 @@ fn print_history_commit(commit: &HistoryCommit, align_change_markers: bool) {
         commit.repo_seq,
         commit.commit_id,
         commit.created_at.to_rfc3339(),
-        commit.author,
-        commit.message.as_deref().unwrap_or("")
+        visible(&commit.author),
+        visible_lines(commit.message.as_deref().unwrap_or(""))
     );
     print_changes(&commit.changes, align_change_markers);
 }
@@ -2313,14 +2349,16 @@ fn format_change(change: &Change, marker_width: Option<usize>) -> String {
             "{}{}{} -> {}",
             marker,
             separator,
-            change
-                .source_path
-                .as_deref()
-                .expect("relocation has a source path"),
-            change.path
+            visible(
+                change
+                    .source_path
+                    .as_deref()
+                    .expect("relocation has a source path")
+            ),
+            visible(&change.path)
         )
     } else {
-        format!("{marker}{separator}{}", change.path)
+        format!("{marker}{separator}{}", visible(&change.path))
     }
 }
 
