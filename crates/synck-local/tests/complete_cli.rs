@@ -561,6 +561,7 @@ async fn direct_file_writes_carry_attribution_base_checks_and_replay() {
             author: Some("user:alex".into()),
             occurred_at: Some("2026-10-27T09:30:00Z".parse().unwrap()),
             operation_id: Some(uuid::Uuid::from_u128(operation)),
+            ..Default::default()
         };
         let mut repo = PortableRepository::open(&root).unwrap();
 

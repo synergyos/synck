@@ -513,7 +513,7 @@ pub fn validate_bundle_ref_event_payload_json_and_digest(
 mod bundle_tests {
     use super::*;
     use crate::types::{
-        CreateItem, EventContent, EventProposal, ItemId, canonical_event_proposal_bytes,
+        EventContent, EventProposal, ItemId, canonical_event_proposal_bytes,
         compute_sha256_digest_bytes, sha256_digest_from_digest_bytes,
     };
     use uuid::Uuid;
@@ -584,7 +584,7 @@ mod bundle_tests {
     #[test]
     fn canonical_payload_json_digest_matches() {
         let item_id = crate::types::ItemId::new();
-        let ev = EventProposal { set_link: None,
+        let ev = EventProposal { set_link: None, merged_from: None,
             item_id: Some(item_id),
             event_type: "ITEM::NOTE".to_string(),
             set_metadata: None,
@@ -686,7 +686,7 @@ mod bundle_tests {
         }
 
         fn gen_event_proposal(rng: &mut XorShift64) -> EventProposal {
-            EventProposal { set_link: None,
+            EventProposal { set_link: None, merged_from: None,
                 item_id: Some(gen_item_id(rng)),
                 event_type: "ITEM::NOTE".to_string(),
                 set_metadata: if rng.next_bool() {

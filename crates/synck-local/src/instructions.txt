@@ -105,6 +105,9 @@ from and a UUID per write; a repeated operation ID returns the original commit,
 and a changed base fails with JSON error kind CONFLICT and the current head:
     synck --json repository save-file <file-id> <source> --path <directory> --base-content <blob-id> --operation-id <uuid> [-m <message>] [--author <author>] [--occurred-at <rfc3339>]
 create-file accepts the same message, author, time and operation ID options.
+Duplicate a file to record its origin, and record a merge on the revision that took it in:
+    synck repository duplicate <file-id> <name> --path <directory> [--parent <folder-id>]
+    synck repository save-file <file-id> <source> --path <directory> --merged-from <item-id>@<seq>
 
 EMAIL AND CHATS
 

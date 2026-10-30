@@ -534,12 +534,12 @@ mod tests {
     }
 
     fn create_proposal() -> EventProposal {
-        EventProposal { set_link: None,
+        EventProposal { set_link: None, merged_from: None,
             item_id: None,
             event_type: "FILE::CREATE".to_string(),
             set_metadata: None,
             set_content: Some(crate::content::EventContent::bytes(crate::types::ObjectId::from_digest([7; 32]))),
-            create_item: Some(CreateItem { key: None, link: None,
+            create_item: Some(CreateItem { key: None, link: None, derived_from: None,
                 item_type: "FILE".to_string(),
                 parent_folder_id: None,
                 name: Some("file.txt".to_string()),

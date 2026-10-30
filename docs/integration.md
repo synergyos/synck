@@ -28,7 +28,8 @@ Item IDs are permanent, including across renames and moves.
 | Purpose | Command |
 | --- | --- |
 | Create a document | `synck --json repository create-file <name> <source> [--parent <folder-id>] [write options] --path <repo>` |
-| Save a revision | `synck --json repository save-file <item-id> <source> [--base-content <blob-id>] [write options] --path <repo>` |
+| Save a revision | `synck --json repository save-file <item-id> <source> [--base-content <blob-id>] [--merged-from <item-id>@<seq>] [write options] --path <repo>` |
+| Duplicate a document | `synck --json repository duplicate <item-id> <name> [--parent <folder-id>] [write options] --path <repo>` |
 | Read the current state | `synck --json item show <item-id> --path <repo>` |
 | Read the current bytes | `synck --json item export <item-id> <destination> --path <repo>` |
 

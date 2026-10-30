@@ -9,13 +9,13 @@ use synck_vcs::bundle::BundleReader;
 use synck_vcs::metadata::MetadataRef;
 use synck_vcs::object::{Object, plain_id};
 use synck_local::portable::{
-    Authority, BundleSnapshot, PortableRepository, import_repository, materialize_repository,
+    Authority, BundleSnapshot, PortableRepository, WriteOptions, import_repository, materialize_repository,
 };
 use synck_vcs::config::CoreConfig;
 use synck_vcs::repo::Repo;
 use synck_vcs::storage::{Storage, StorageBackend};
 use synck_vcs::types::{
-    CommitProposal, CreateItem, EventContent, EventProposal, ItemId, RepoId,
+    CommitProposal, CreateItem, EventContent, EventProposal, ItemId, ItemRevision, RepoId,
 };
 use synck_vcs_sqlite::SqliteStorage;
 
@@ -1288,6 +1288,56 @@ async fn import_email_records_an_email_and_leaves_the_working_file_alone() {
     assert!(items.iter().any(|item| {
         item.item_type == "FILE" && item.name.as_deref() == Some("message.eml")
     }));
+}
+
+#[tokio::test]
+async fn duplicates_record_their_origin_and_merges_move_the_merge_base() {
+    let fixture = fixture().await;
+    let mut repository = PortableRepository::open(&fixture.source).unwrap();
+    let head = repository.show_item(&fixture.file, None).await.unwrap();
+    let origin = head.item.projection.latest_item_seq;
+    let (copy, _) = repository
+        .duplicate_file_with(&fixture.file, None, "copy.txt", &Default::default())
+        .await
+        .unwrap();
+    let shown = repository.show_item(&copy, None).await.unwrap().item.projection;
+    assert_eq!(shown.derived_from.as_ref().unwrap().item_id, fixture.file);
+    assert_eq!(shown.derived_from.as_ref().unwrap().item_seq, origin);
+    assert_eq!(shown.content_blob_id, head.item.projection.content_blob_id);
+
+    let edited = fixture.root.join("edited.txt");
+    fs::write(&edited, b"edited in the copy").unwrap();
+    repository.save_file(&copy, &edited).await.unwrap();
+    let copy_seq = repository.show_item(&copy, None).await.unwrap().item.projection.latest_item_seq;
+    let merge = |item_seq| WriteOptions {
+        merged_from: Some(ItemRevision { item_id: copy.clone(), item_seq }),
+        ..Default::default()
+    };
+    for (item_seq, expected) in [(copy_seq + 1, "does not exist"), (0, "does not exist")] {
+        let error = repository
+            .save_file_with(&fixture.file, &edited, None, &merge(item_seq))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains(expected), "{error}");
+    }
+    repository
+        .save_file_with(&fixture.file, &edited, None, &merge(copy_seq))
+        .await
+        .unwrap();
+    let merged = repository.show_item(&fixture.file, None).await.unwrap().item.projection;
+    assert_eq!(merged.merged_from, vec![ItemRevision { item_id: copy.clone(), item_seq: copy_seq }]);
+    repository.verify().await.unwrap();
+
+    // A checkout's write path records the same fact.
+    repository.enable_checkout("local-editor", &[]).await.unwrap();
+    let (second, _) = repository
+        .duplicate_file_with(&fixture.file, None, "second.txt", &Default::default())
+        .await
+        .unwrap();
+    assert_eq!(fs::read(fixture.source.join("second.txt")).unwrap(), b"edited in the copy");
+    let shown = repository.show_item(&second, None).await.unwrap().item.projection;
+    assert_eq!(shown.derived_from.unwrap().item_id, fixture.file);
+    repository.verify().await.unwrap();
 }
 
 #[tokio::test]

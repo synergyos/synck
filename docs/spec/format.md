@@ -154,6 +154,7 @@ Every accepted item envelope is a JSON object with required `item_id` and
 | `set_parent` | Folder UUIDv7, or explicit null to move to root; absence leaves the parent unchanged |
 | `set_name` | New portable name |
 | `set_link` | Folder UUIDv7, or explicit null to clear the link; absence leaves it unchanged |
+| `merged_from` | Source revision this event takes in; see Item sources |
 | `set_in_trash` | Boolean; true enters TRASH, false restores LIVE |
 | `set_tombstoned` | Boolean; true permanently enters TOMBSTONED |
 | `set_is_federated` | Boolean mode transition |
@@ -163,8 +164,8 @@ Every accepted item envelope is a JSON object with required `item_id` and
 
 | Class | Form |
 | --- | --- |
-| Tree item | `{ "item_type": string, "name": string, "parent_folder_id"?: UUIDv7 }`; omitted parent means root |
-| Record | `{ "item_type": string, "key"?: string, "link"?: UUIDv7 }` |
+| Tree item | `{ "item_type": string, "name": string, "parent_folder_id"?: UUIDv7, "derived_from"?: source }`; omitted parent means root |
+| Record | `{ "item_type": string, "key"?: string, "link"?: UUIDv7, "derived_from"?: source }` |
 
 All other absent optional values are omitted, not null. Nested `create_item`
 also rejects unknown fields. Inline metadata, inline content, parent commit IDs
@@ -349,6 +350,31 @@ always LOCAL, and federation never carries it, so each repository keeps its own
 filing, as Git notes attach local data to objects you do not own.
 
 `vectors/records.json` lists commit sequences with the expected result.
+
+### Item sources
+
+An item can name a revision of another item as its source. `create_item.derived_from`
+says the item began as that revision, as a duplicate does. `merged_from` on a later
+event says the item took that revision in. Both are a source: exactly
+`{ "item_id": UUIDv7, "item_seq": positive integer }`. Any item type may have them,
+and they are part of the event, so they are hashed and never change. These are replay
+rules:
+
+- A source is another item in the same repository, of any type.
+- Its revision exists before the commit that names it: `item_seq` is at most that
+  item's head at the end of the previous commit. Sources therefore cannot form a
+  cycle. The source may be in any lifecycle state, then or later.
+- `merged_from` never appears on an event with `create_item`, and an event has at most
+  one. A commit may hold several.
+- An event of a FEDERATED item, or one with `set_is_federated: true`, has neither,
+  because the source may not exist in another repository.
+
+The merge base of an item and a source is the last `merged_from` naming that source,
+or else `derived_from` if it names that source. The core stores and checks the relation
+and does not merge. The family or application decides what merging means, and records
+the result as an ordinary event. Sources are not item state and are not in the state
+digest. A writer never infers a source from equal content: only an explicit duplicate
+or merge records one, and a commit of a working tree records none.
 
 ### FILE and FOLDER events
 
@@ -680,7 +706,7 @@ object is opaque and is the one stored object that is not in a frame. Keys, epoc
 rotation and sealing belong to the product's key specification, not to this format.
 
 An encrypted repository exposes item IDs, types, tree-item names and parents,
-record keys and links, lifecycle, operation IDs, federation stream IDs, times,
+record keys and links, item sources, lifecycle, operation IDs, federation stream IDs, times,
 actors, order, object IDs and exact sizes, since a scheme 1 object is 66 bytes longer
 than its plaintext. Operation IDs and stream IDs must hold no content. A commit
 message in an encrypted repository must be null. `vectors/encrypted.json` fixes the
@@ -1180,7 +1206,7 @@ All records contain `type`. Other fields are:
 | `federation_domain` | `domain_id`, `last_domain_seq`, `created_at`, `updated_at` |
 | `synck_vcs_bundle_end` | `record_count`, `checkpoint`, `digest` |
 
-Optional commit message, author time, operation IDs, parents, names, keys, links
+Optional commit message, author time, operation IDs, parents, names, keys, links, sources
 and stream IDs are JSON null when absent. `ref_head_seq` may be omitted when zero.
 Digest fields use prefixed hexadecimal spelling, except `payload_hex`, which
 is unprefixed lower hex of the complete metadata frame. `schema` is source

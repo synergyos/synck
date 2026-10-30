@@ -31,7 +31,7 @@ fn create(kind: &str) -> (ItemReader, ItemId) {
     let id = ItemId::new();
     let mut reader = ItemReader::new(id.clone());
     let mut first = event(&id, &format!("{kind}::CREATE"), json!({}), None);
-    first.create_item = Some(CreateItem { key: None, link: None,
+    first.create_item = Some(CreateItem { key: None, link: None, derived_from: None,
         item_type: kind.into(),
         name: Some("Example".into()),
         parent_folder_id: None,
@@ -285,7 +285,7 @@ fn hosted_only_native_domains_are_explicitly_unsupported() {
         let id = ItemId::new();
         let mut reader = ItemReader::new(id.clone());
         let mut first = event(&id, &format!("{kind}::CREATE"), json!({}), None);
-        first.create_item = Some(CreateItem { key: None, link: None,
+        first.create_item = Some(CreateItem { key: None, link: None, derived_from: None,
             item_type: kind.into(),
             name: Some("unsupported".into()),
             parent_folder_id: None,

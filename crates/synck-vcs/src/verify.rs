@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 use crate::envelope::{CommitEnvelopeValidator, EnvelopeItemState, EnvelopeRefState};
 pub use crate::envelope::{VerifyCommit, VerifyEvent, VerifyRefEvent};
 use crate::naming::compute_name_key;
-use crate::transition::{ItemState, apply_event as apply_item_event};
+use crate::transition::{ItemState, apply_event as apply_item_event, check_source_revision};
 use crate::content::EventContent;
 use crate::types::{
     EventProposal, ItemId, LifecycleState, SequencingMode, canonical_json_bytes,
@@ -106,6 +106,15 @@ impl SemanticVerifier {
                     });
                     if let Some(proposal) = validator.validate_event(event, item) {
                         let context = format!("{label} event {}", event.commit_event_idx);
+                        if let Some(source) = proposal.source_revision()
+                            && let Err(error) = check_source_revision(
+                                &event.item_id,
+                                source,
+                                self.last_item_seq.get(&source.item_id).copied(),
+                            )
+                        {
+                            replay_findings.push(format!("{context}: {error}"));
+                        }
                         touched.entry(event.item_id.clone()).or_insert_with(|| {
                             let replayed = self.replayed_items.get(&event.item_id);
                             replayed.map(|item| item.state.clone())
@@ -563,12 +572,12 @@ mod tests {
 
     fn valid_history() -> (VerifyCommit, Vec<VerifyEvent>, VerifyItem) {
         let item_id = ItemId::new();
-        let proposal = EventProposal { set_link: None,
+        let proposal = EventProposal { set_link: None, merged_from: None,
             item_id: Some(item_id.clone()),
             event_type: "FILE::CREATE".to_string(),
             set_metadata: None,
             set_content: Some(crate::content::EventContent::bytes(crate::types::ObjectId::from_digest([7; 32]))),
-            create_item: Some(CreateItem { key: None, link: None,
+            create_item: Some(CreateItem { key: None, link: None, derived_from: None,
                 item_type: "FILE".to_string(),
                 parent_folder_id: None,
                 name: Some("file.txt".to_string()),
@@ -754,7 +763,7 @@ mod tests {
     fn ref_after_owner_tombstone_is_rejected_at_event_position() {
         let (create_commit, create_events, _) = valid_history();
         let item_id = create_events[0].item_id.clone();
-        let tombstone = EventProposal { set_link: None,
+        let tombstone = EventProposal { set_link: None, merged_from: None,
             item_id: Some(item_id.clone()),
             event_type: "FILE::TOMBSTONE".to_string(),
             set_metadata: None,
@@ -814,7 +823,7 @@ mod tests {
         );
 
         let mut ref_event = verify_ref_event(item_id.clone(), 0);
-        let item_proposal = EventProposal { set_link: None,
+        let item_proposal = EventProposal { set_link: None, merged_from: None,
             item_id: Some(item_id.clone()),
             event_type: "FILE::SET_METADATA".to_string(),
             set_metadata: Some(crate::metadata::MetadataRef::new(serde_json::json!({"key": "value"})).unwrap()),

@@ -1014,7 +1014,7 @@ fn base_event(
         create_item: None,
         set_parent: None,
         set_name: None,
-        set_link: None,
+        set_link: None, merged_from: None,
         set_tombstoned: None,
         set_in_trash: None,
         set_is_federated: None,

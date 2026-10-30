@@ -533,6 +533,62 @@
       "occurred_at": null,
       "message": null,
       "event_count": 1,
+      "events_digest": "sha256:7775e072c4c5be72f5b8d89e0e97887ae5702e5660b13ca9e5ac2b689d9a2081"
+    },
+    "name": "canonical_vector_derived_from",
+    "event": {
+      "item_id": "01890c6c-4444-7777-8888-dddddddddddd",
+      "event_type": "TASK::CREATE",
+      "create_item": {
+        "item_type": "TASK",
+        "derived_from": {
+          "item_id": "01890c6c-3333-7777-8888-cccccccccccc",
+          "item_seq": 7
+        }
+      }
+    },
+    "canonical_event": "{\"create_item\":{\"derived_from\":{\"item_id\":\"01890c6c-3333-7777-8888-cccccccccccc\",\"item_seq\":7},\"item_type\":\"TASK\"},\"event_type\":\"TASK::CREATE\",\"item_id\":\"01890c6c-4444-7777-8888-dddddddddddd\"}",
+    "event_digest": "sha256:ffdc98964af2d41419b46c16d2ffa83b3fa4254f656362be417d93785ba0477a",
+    "events_digest": "sha256:7775e072c4c5be72f5b8d89e0e97887ae5702e5660b13ca9e5ac2b689d9a2081",
+    "canonical_commit": "{\"author_id\":\"human\",\"committer_id\":\"human\",\"event_count\":1,\"events_digest\":\"sha256:7775e072c4c5be72f5b8d89e0e97887ae5702e5660b13ca9e5ac2b689d9a2081\",\"format_version\":6,\"message\":null,\"object_type\":\"vcs_commit\",\"occurred_at\":null}",
+    "commit_id": "sha256:22ce8b85927050828cde3e16f775645a63d249fc2de2d2de83ec3a68f3e3b387"
+  },
+  {
+    "commit": {
+      "object_type": "vcs_commit",
+      "format_version": 6,
+      "author_id": "human",
+      "committer_id": "human",
+      "occurred_at": null,
+      "message": null,
+      "event_count": 1,
+      "events_digest": "sha256:3cab85abf9dcba974da7bc1009e3b4c91df52e276b43408af60df3ccd37cfd33"
+    },
+    "name": "canonical_vector_merged_from",
+    "event": {
+      "item_id": "01890c6c-4444-7777-8888-dddddddddddd",
+      "base_seq": 8,
+      "event_type": "TASK::SET_CONTENT",
+      "merged_from": {
+        "item_id": "01890c6c-3333-7777-8888-cccccccccccc",
+        "item_seq": 9
+      }
+    },
+    "canonical_event": "{\"base_seq\":8,\"event_type\":\"TASK::SET_CONTENT\",\"item_id\":\"01890c6c-4444-7777-8888-dddddddddddd\",\"merged_from\":{\"item_id\":\"01890c6c-3333-7777-8888-cccccccccccc\",\"item_seq\":9}}",
+    "event_digest": "sha256:233e371f6af6b5683df2a83faba4887156dcce459c5cb8fb30fd2f3efedc2cbe",
+    "events_digest": "sha256:3cab85abf9dcba974da7bc1009e3b4c91df52e276b43408af60df3ccd37cfd33",
+    "canonical_commit": "{\"author_id\":\"human\",\"committer_id\":\"human\",\"event_count\":1,\"events_digest\":\"sha256:3cab85abf9dcba974da7bc1009e3b4c91df52e276b43408af60df3ccd37cfd33\",\"format_version\":6,\"message\":null,\"object_type\":\"vcs_commit\",\"occurred_at\":null}",
+    "commit_id": "sha256:89aee221c7b3e9e9ed42ac2e71bdd7ed4db22062d19d6520b2580acd7062e86b"
+  },
+  {
+    "commit": {
+      "object_type": "vcs_commit",
+      "format_version": 6,
+      "author_id": "human",
+      "committer_id": "human",
+      "occurred_at": null,
+      "message": null,
+      "event_count": 1,
       "events_digest": "sha256:7a56820dc569df0d1e53a2b32fc984f1ed76720c1d3ee16e8701dafe3ed5fc24"
     },
     "name": "canonical_vector_set_title",

@@ -2250,6 +2250,408 @@
     ]
   },
   {
+    "name": "derived from an earlier revision",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "TASK::CREATE",
+            "create_item": {
+              "item_type": "TASK"
+            }
+          }
+        ],
+        "valid": true,
+        "state_digest": "sha256:5e2a625412af6fe1edec988009c74853470e8fa9589902901634355b15e9c0af"
+      },
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000203",
+            "event_type": "TASK::CREATE",
+            "create_item": {
+              "item_type": "TASK",
+              "derived_from": {
+                "item_id": "019a2900-0000-7000-8000-000000000202",
+                "item_seq": 1
+              }
+            }
+          }
+        ],
+        "valid": true,
+        "state_digest": "sha256:b8200ebc93ef891f7dd9ee1c5ebd8aa06da60c2e2e17b51a6201367889952b83"
+      }
+    ]
+  },
+  {
+    "name": "derived across item types",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "EMAIL::CREATE",
+            "create_item": {
+              "item_type": "EMAIL"
+            }
+          }
+        ],
+        "valid": true,
+        "state_digest": "sha256:832413e15c6b2645629942fc0273d4b3047950e85039536d0ae1d458a730cb48"
+      },
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000203",
+            "event_type": "TASK::CREATE",
+            "create_item": {
+              "item_type": "TASK",
+              "derived_from": {
+                "item_id": "019a2900-0000-7000-8000-000000000202",
+                "item_seq": 1
+              }
+            }
+          }
+        ],
+        "valid": true,
+        "state_digest": "sha256:0c9ba5dcf81ca565045a4a4dbdf58196a635d8253f79c1aaf9b051a7850820f8"
+      }
+    ]
+  },
+  {
+    "name": "merged from an earlier revision, keeping trash and repeats",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "TASK::CREATE",
+            "create_item": {
+              "item_type": "TASK"
+            }
+          },
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000203",
+            "event_type": "TASK::CREATE",
+            "create_item": {
+              "item_type": "TASK"
+            }
+          }
+        ],
+        "valid": true,
+        "state_digest": "sha256:b8200ebc93ef891f7dd9ee1c5ebd8aa06da60c2e2e17b51a6201367889952b83"
+      },
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "base_seq": 1,
+            "event_type": "TASK::TRASH",
+            "set_in_trash": true
+          },
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000203",
+            "base_seq": 1,
+            "event_type": "TASK::NOTE",
+            "merged_from": {
+              "item_id": "019a2900-0000-7000-8000-000000000202",
+              "item_seq": 1
+            }
+          }
+        ],
+        "valid": true,
+        "state_digest": "sha256:54475854e2ff4ff06682579e765a645959b0079e81139823a02134092f544761"
+      },
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000203",
+            "base_seq": 2,
+            "event_type": "TASK::NOTE",
+            "merged_from": {
+              "item_id": "019a2900-0000-7000-8000-000000000202",
+              "item_seq": 2
+            }
+          }
+        ],
+        "valid": true,
+        "state_digest": "sha256:66ca8aecb396a0e3c233fc5044cab4083485252e3a0bce3a2248a041d0ca9e4d"
+      }
+    ]
+  },
+  {
+    "name": "source revision from the future",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "TASK::CREATE",
+            "create_item": {
+              "item_type": "TASK"
+            }
+          }
+        ],
+        "valid": true,
+        "state_digest": "sha256:5e2a625412af6fe1edec988009c74853470e8fa9589902901634355b15e9c0af"
+      },
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000203",
+            "event_type": "TASK::CREATE",
+            "create_item": {
+              "item_type": "TASK",
+              "derived_from": {
+                "item_id": "019a2900-0000-7000-8000-000000000202",
+                "item_seq": 2
+              }
+            }
+          }
+        ],
+        "valid": false,
+        "reason": "source revision does not exist before this commit"
+      }
+    ]
+  },
+  {
+    "name": "source revision zero",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "TASK::CREATE",
+            "create_item": {
+              "item_type": "TASK"
+            }
+          }
+        ],
+        "valid": true,
+        "state_digest": "sha256:5e2a625412af6fe1edec988009c74853470e8fa9589902901634355b15e9c0af"
+      },
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000203",
+            "event_type": "TASK::CREATE",
+            "create_item": {
+              "item_type": "TASK",
+              "derived_from": {
+                "item_id": "019a2900-0000-7000-8000-000000000202",
+                "item_seq": 0
+              }
+            }
+          }
+        ],
+        "valid": false,
+        "reason": "source revision does not exist before this commit"
+      }
+    ]
+  },
+  {
+    "name": "source from the same commit",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "TASK::CREATE",
+            "create_item": {
+              "item_type": "TASK"
+            }
+          },
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000203",
+            "event_type": "TASK::CREATE",
+            "create_item": {
+              "item_type": "TASK",
+              "derived_from": {
+                "item_id": "019a2900-0000-7000-8000-000000000202",
+                "item_seq": 1
+              }
+            }
+          }
+        ],
+        "valid": false,
+        "reason": "source revision does not exist before this commit"
+      }
+    ]
+  },
+  {
+    "name": "source revision made by the same commit",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "TASK::CREATE",
+            "create_item": {
+              "item_type": "TASK"
+            }
+          },
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000203",
+            "event_type": "TASK::CREATE",
+            "create_item": {
+              "item_type": "TASK"
+            }
+          }
+        ],
+        "valid": true,
+        "state_digest": "sha256:b8200ebc93ef891f7dd9ee1c5ebd8aa06da60c2e2e17b51a6201367889952b83"
+      },
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "base_seq": 1,
+            "event_type": "TASK::NOTE"
+          },
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000203",
+            "base_seq": 1,
+            "event_type": "TASK::NOTE",
+            "merged_from": {
+              "item_id": "019a2900-0000-7000-8000-000000000202",
+              "item_seq": 2
+            }
+          }
+        ],
+        "valid": false,
+        "reason": "source revision does not exist before this commit"
+      }
+    ]
+  },
+  {
+    "name": "source from another repository",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000203",
+            "event_type": "TASK::CREATE",
+            "create_item": {
+              "item_type": "TASK",
+              "derived_from": {
+                "item_id": "019a2900-0000-7000-8000-000000000202",
+                "item_seq": 1
+              }
+            }
+          }
+        ],
+        "valid": false,
+        "reason": "source revision does not exist before this commit"
+      }
+    ]
+  },
+  {
+    "name": "an item is not its own source",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "TASK::CREATE",
+            "create_item": {
+              "item_type": "TASK"
+            }
+          }
+        ],
+        "valid": true,
+        "state_digest": "sha256:5e2a625412af6fe1edec988009c74853470e8fa9589902901634355b15e9c0af"
+      },
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "base_seq": 1,
+            "event_type": "TASK::NOTE",
+            "merged_from": {
+              "item_id": "019a2900-0000-7000-8000-000000000202",
+              "item_seq": 1
+            }
+          }
+        ],
+        "valid": false,
+        "reason": "an item is not its own source"
+      }
+    ]
+  },
+  {
+    "name": "merged_from on a created item",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "TASK::CREATE",
+            "create_item": {
+              "item_type": "TASK"
+            }
+          }
+        ],
+        "valid": true,
+        "state_digest": "sha256:5e2a625412af6fe1edec988009c74853470e8fa9589902901634355b15e9c0af"
+      },
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000203",
+            "event_type": "TASK::CREATE",
+            "create_item": {
+              "item_type": "TASK"
+            },
+            "merged_from": {
+              "item_id": "019a2900-0000-7000-8000-000000000202",
+              "item_seq": 1
+            }
+          }
+        ],
+        "valid": false,
+        "reason": "merged_from on a created item"
+      }
+    ]
+  },
+  {
+    "name": "a federated event has no source",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "TASK::CREATE",
+            "create_item": {
+              "item_type": "TASK"
+            }
+          }
+        ],
+        "valid": true,
+        "state_digest": "sha256:5e2a625412af6fe1edec988009c74853470e8fa9589902901634355b15e9c0af"
+      },
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000203",
+            "event_type": "TASK::CREATE",
+            "create_item": {
+              "item_type": "TASK",
+              "derived_from": {
+                "item_id": "019a2900-0000-7000-8000-000000000202",
+                "item_seq": 1
+              }
+            },
+            "set_is_federated": true,
+            "set_federation_stream_id": "stream-1"
+          }
+        ],
+        "valid": false,
+        "reason": "a federated event has no source revision"
+      }
+    ]
+  },
+  {
     "name": "federated bootstrap",
     "commits": [
       {

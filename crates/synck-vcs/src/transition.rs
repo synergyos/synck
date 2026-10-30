@@ -2,7 +2,7 @@
 
 use crate::naming::{NameError, compute_name_key};
 use crate::state::ItemValue;
-use crate::types::{CreateItem, EventProposal, ItemId, ItemRow, LifecycleState, SequencingMode};
+use crate::types::{CreateItem, EventProposal, ItemId, ItemRevision, ItemRow, LifecycleState, SequencingMode};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ItemState {
@@ -94,6 +94,24 @@ impl From<&ItemValue> for ItemState {
     }
 }
 
+/// A source is another item's revision from before the naming commit, which
+/// keeps sources acyclic. `source_head` is that item's head before the commit.
+pub fn check_source_revision(
+    item_id: &ItemId,
+    source: &ItemRevision,
+    source_head: Option<i64>,
+) -> Result<(), TransitionError> {
+    if source.item_id == *item_id {
+        return Err(TransitionError::Invalid("an item is not its own source"));
+    }
+    if source.item_seq < 1 || source_head.is_none_or(|head| source.item_seq > head) {
+        return Err(TransitionError::Invalid(
+            "source revision does not exist before this commit",
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AppliedTransition {
     pub parent_folder_id_before: Option<ItemId>,
@@ -129,6 +147,15 @@ pub fn apply_event(
     }
     if proposal.set_tombstoned == Some(false) {
         return Err(TransitionError::Invalid("a tombstone is permanent"));
+    }
+    if proposal.create_item.is_some() && proposal.merged_from.is_some() {
+        return Err(TransitionError::Invalid("merged_from on a created item"));
+    }
+    if proposal.source_revision().is_some()
+        && (state.sequencing_mode == SequencingMode::Federated
+            || proposal.set_is_federated == Some(true))
+    {
+        return Err(TransitionError::Invalid("a federated event has no source revision"));
     }
     if let Some(parent) = proposal.set_parent.as_ref() {
         state.parent_folder_id.clone_from(parent);
@@ -186,7 +213,7 @@ mod tests {
             create_item: None,
             set_parent: None,
             set_name: None,
-            set_link: None,
+            set_link: None, merged_from: None,
             set_tombstoned: None,
             set_in_trash: None,
             set_is_federated: None,

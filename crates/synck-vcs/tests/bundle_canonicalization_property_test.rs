@@ -157,7 +157,7 @@ fn gen_event_content(rng: &mut XorShift64) -> EventContent {
 fn gen_event_proposal(rng: &mut XorShift64) -> EventProposal {
     let item_id = gen_item_id(rng);
     let create_item = if rng.next_bool() {
-        Some(CreateItem { key: None, link: None,
+        Some(CreateItem { key: None, link: None, derived_from: None,
             item_type: "FOLDER".to_string(),
             parent_folder_id: if rng.next_bool() {
                 Some(gen_item_id(rng))
@@ -170,7 +170,7 @@ fn gen_event_proposal(rng: &mut XorShift64) -> EventProposal {
         None
     };
 
-    EventProposal { set_link: None,
+    EventProposal { set_link: None, merged_from: None,
         item_id: Some(item_id),
         event_type: if create_item.is_some() { "FOLDER::CREATE" } else { "ITEM::NOTE" }.to_string(),
         set_metadata: if rng.next_bool() {

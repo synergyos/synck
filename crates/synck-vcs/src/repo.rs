@@ -14,7 +14,7 @@ use crate::invariants::{
 use crate::naming::{NameError, NameErrorKind};
 use crate::sequencer::Sequencer;
 use crate::storage::{SealedCommitInsert, Storage, StorageTxn};
-use crate::transition::{ItemState, TransitionError, apply_event as apply_item_event};
+use crate::transition::{ItemState, TransitionError, check_source_revision, apply_event as apply_item_event};
 use crate::types::{
     AcceptedCommit, COMMIT_EVENT_FAMILY_ITEM, COMMIT_EVENT_FAMILY_REF,
     COMMIT_FORMAT_VERSION, CommitEventRow, CommitPk, CommitProposal, CommitRow,
@@ -1400,6 +1400,7 @@ impl Repo {
             .into_iter()
             .map(|row| (row.item_id.clone(), row))
             .collect();
+        check_source_revisions(&mut *txn, &repo_id, &proposal.events, &event_item_ids).await?;
 
         for (guard_item_id, expected_head_seq) in &combined_guards {
             let row =
@@ -1990,6 +1991,11 @@ impl Repo {
         let mut mode_change_count = 0usize;
         let mut bootstrap_rebind_seen = false;
         for (idx, ev) in proposal.events.iter().enumerate() {
+            if ev.source_revision().is_some() {
+                return Err(CoreError::InvalidProposal(
+                    "a federated event has no source revision".to_string(),
+                ));
+            }
             // If present, create_item must be the first event.
             if ev.create_item.is_some() && idx != 0 {
                 return Err(CoreError::InvalidProposal(
@@ -2945,6 +2951,11 @@ impl Repo {
         let mut created_items: Vec<CreatedItemInfo> = Vec::new();
         let mut create_item_ids: HashSet<ItemId> = HashSet::new();
         for (idx, ev) in proposal.events.iter().enumerate() {
+            if ev.source_revision().is_some() {
+                return Err(CoreError::InvalidProposal(
+                    "a federated event has no source revision".to_string(),
+                ));
+            }
             if ev.create_item.is_some() {
                 let Some(item_id) = &ev.item_id else {
                     return Err(CoreError::InvalidProposal(
@@ -3515,6 +3526,38 @@ fn link_target(event: &EventProposal) -> Option<&ItemId> {
         .as_ref()
         .and_then(|create| create.link.as_ref())
         .or_else(|| event.set_link.as_ref().and_then(Option::as_ref))
+}
+
+/// Source revisions are read before the commit's events change any head.
+async fn check_source_revisions<T: StorageTxn + ?Sized>(
+    txn: &mut T,
+    repo_id: &RepoId,
+    events: &[EventProposal],
+    item_ids: &[ItemId],
+) -> Result<(), CoreError> {
+    let sources: Vec<ItemId> = events
+        .iter()
+        .filter_map(EventProposal::source_revision)
+        .map(|source| source.item_id.clone())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    if sources.is_empty() {
+        return Ok(());
+    }
+    let heads: HashMap<ItemId, i64> = txn
+        .get_items(repo_id, &sources)
+        .await?
+        .into_iter()
+        .map(|row| (row.item_id, row.head_seq))
+        .collect();
+    for (event, item_id) in events.iter().zip(item_ids) {
+        if let Some(source) = event.source_revision() {
+            check_source_revision(item_id, source, heads.get(&source.item_id).copied())
+                .map_err(|error| CoreError::InvalidProposal(error.to_string()))?;
+        }
+    }
+    Ok(())
 }
 
 /// The rules on a commit's final state, shared by every write path.

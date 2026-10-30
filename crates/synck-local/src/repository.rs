@@ -2075,12 +2075,12 @@ mod tests {
         let creates = item_ids
             .iter()
             .enumerate()
-            .map(|(index, item_id)| EventProposal { set_link: None,
+            .map(|(index, item_id)| EventProposal { set_link: None, merged_from: None,
                 item_id: Some(item_id.clone()),
                 event_type: "FOLDER::CREATE".to_string(),
                 set_metadata: None,
                 set_content: None,
-                create_item: Some(CreateItem { key: None, link: None,
+                create_item: Some(CreateItem { key: None, link: None, derived_from: None,
                     item_type: "FOLDER".to_string(),
                     parent_folder_id: None,
                     name: Some(format!("folder-{index}")),
@@ -2115,7 +2115,7 @@ mod tests {
         let renames = item_ids
             .iter()
             .enumerate()
-            .map(|(index, item_id)| EventProposal { set_link: None,
+            .map(|(index, item_id)| EventProposal { set_link: None, merged_from: None,
                 item_id: Some(item_id.clone()),
                 event_type: "FOLDER::SET_NAME".to_string(),
                 set_metadata: None,
@@ -2186,12 +2186,12 @@ mod tests {
         init(temporary.path(), "author").await.unwrap();
         let repository = Repository::discover(temporary.path()).await.unwrap();
         let events = (0..10_001)
-            .map(|index| EventProposal { set_link: None,
+            .map(|index| EventProposal { set_link: None, merged_from: None,
                 item_id: Some(synck_vcs::types::ItemId::new()),
                 event_type: "FOLDER::CREATE".to_string(),
                 set_metadata: None,
                 set_content: None,
-                create_item: Some(CreateItem { key: None, link: None,
+                create_item: Some(CreateItem { key: None, link: None, derived_from: None,
                     item_type: "FOLDER".to_string(),
                     parent_folder_id: None,
                     name: Some(format!("folder-{index}")),
@@ -2239,12 +2239,12 @@ mod tests {
                     message: Some("create".to_string()),
                     occurred_at: None,
                     operation_id: Some(Uuid::new_v4().to_string()),
-                    events: vec![EventProposal { set_link: None,
+                    events: vec![EventProposal { set_link: None, merged_from: None,
                         item_id: Some(item_id.clone()),
                         event_type: "FOLDER::CREATE".to_string(),
                         set_metadata: None,
                         set_content: None,
-                        create_item: Some(CreateItem { key: None, link: None,
+                        create_item: Some(CreateItem { key: None, link: None, derived_from: None,
                             item_type: "FOLDER".to_string(),
                             parent_folder_id: None,
                             name: Some("before".to_string()),
@@ -2272,7 +2272,7 @@ mod tests {
                     message: Some("move".to_string()),
                     occurred_at: None,
                     operation_id: Some(Uuid::new_v4().to_string()),
-                    events: vec![EventProposal { set_link: None,
+                    events: vec![EventProposal { set_link: None, merged_from: None,
                         item_id: Some(item_id),
                         event_type: "FOLDER::MOVE".to_string(),
                         set_metadata: None,
@@ -2311,12 +2311,12 @@ mod tests {
                     message: Some("reserved name".to_string()),
                     occurred_at: None,
                     operation_id: Some(Uuid::new_v4().to_string()),
-                    events: vec![EventProposal { set_link: None,
+                    events: vec![EventProposal { set_link: None, merged_from: None,
                         item_id: Some(ItemId::new()),
                         event_type: "FOLDER::CREATE".to_string(),
                         set_metadata: None,
                         set_content: None,
-                        create_item: Some(CreateItem { key: None, link: None,
+                        create_item: Some(CreateItem { key: None, link: None, derived_from: None,
                             item_type: "FOLDER".to_string(),
                             parent_folder_id: None,
                             name: Some(".SyNcK".to_string()),

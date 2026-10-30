@@ -409,7 +409,8 @@ impl Repository {
             .collect();
         self.guard_agent_paths(&reserved_paths)?;
         let captured = self.capture_changed_files(&working, &changes, captured_file)?;
-        let prepared = self.prepare_working_commit(&committed, &working, &changes, &working_ids, message, &captured)?;
+        let mut prepared = self.prepare_working_commit(&committed, &working, &changes, &working_ids, message, &captured)?;
+        options.mark_file_write(&mut prepared.events);
         self.guard_agent_paths(&reserved_paths)?;
         let accepted = self
             .core()

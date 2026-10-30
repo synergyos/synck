@@ -575,6 +575,14 @@ pub struct SubtreeClosureGuard {
     pub require_empty_live_descendants: bool,
 }
 
+/// One revision of an item in the same repository.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ItemRevision {
+    pub item_id: ItemId,
+    pub item_seq: i64,
+}
+
 /// Event proposal used when building commits.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -615,6 +623,9 @@ pub struct EventProposal {
         deserialize_with = "deserialize_set_parent_tristate"
     )]
     pub set_link: Option<Option<ItemId>>,
+    /// The revision of another item this event takes in; the next merge base.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merged_from: Option<ItemRevision>,
 
     /// Mark item tombstoned (permanent delete).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -655,6 +666,15 @@ fn application_metadata(value: &mut serde_json::Value) -> Result<Option<Metadata
 }
 
 impl EventProposal {
+    /// The revision of another item this event names as its source.
+    pub fn source_revision(&self) -> Option<&ItemRevision> {
+        self.merged_from.as_ref().or_else(|| {
+            self.create_item
+                .as_ref()
+                .and_then(|create| create.derived_from.as_ref())
+        })
+    }
+
     /// Construct application input, salting metadata once before acceptance.
     /// Wire readers must use Deserialize, which accepts only metadata IDs.
     pub fn from_fields(mut value: serde_json::Value) -> Result<Self, serde_json::Error> {
@@ -728,6 +748,9 @@ pub struct CreateItem {
     pub key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub link: Option<ItemId>,
+    /// The revision of another item this item began as.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub derived_from: Option<ItemRevision>,
 }
 
 const TREE_ITEM_TYPES: &[&str] = &["FILE", "FOLDER", "FEDERATED_MOUNT"];
@@ -764,7 +787,7 @@ impl CreateItem {
             parent_folder_id: parent,
             name: Some(name.into()),
             key: None,
-            link: None,
+            link: None, derived_from: None,
         }
     }
 
@@ -775,6 +798,7 @@ impl CreateItem {
             name: None,
             key,
             link,
+            derived_from: None,
         }
     }
 
@@ -1260,7 +1284,7 @@ mod tests {
 
     #[test]
     fn canonical_event_proposal_bytes_are_utf8_json() {
-        let ev = EventProposal { set_link: None,
+        let ev = EventProposal { set_link: None, merged_from: None,
             item_id: Some(ItemId::parse("01890c6c-1111-7777-8888-aaaaaaaaaaaa").unwrap()),
             event_type: "ITEM::NOTE".to_string(),
             set_metadata: None,
@@ -1281,7 +1305,7 @@ mod tests {
 
     #[test]
     fn canonical_event_accepts_integers_at_the_limit() {
-        let ev = EventProposal { set_link: None,
+        let ev = EventProposal { set_link: None, merged_from: None,
             item_id: Some(ItemId::parse("01890c6c-1111-7777-8888-aaaaaaaaaaaa").unwrap()),
             event_type: "ITEM::NOTE".to_string(),
             set_metadata: Some(crate::metadata::MetadataRef::new(serde_json::json!({
@@ -1375,7 +1399,7 @@ mod tests {
         let item_id = ItemId::parse("01890c6c-1111-7777-8888-aaaaaaaaaaaa").unwrap();
 
         // No change => set_parent is absent.
-        let no_change = EventProposal { set_link: None,
+        let no_change = EventProposal { set_link: None, merged_from: None,
             item_id: Some(item_id.clone()),
             event_type: "FILE::SET_PARENT".to_string(),
             set_metadata: None,

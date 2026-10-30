@@ -32,7 +32,7 @@ use synck_vcs::state::{NamespaceKey, StateIndexStore, StateTree};
 use synck_vcs::storage::{Storage, StorageBackend};
 use synck_vcs::types::{
     AcceptedCommit, ObjectId, CommitEventRow, CommitId, CommitProposal, EventContent,
-    EventProposal, ItemCursor, ItemId, ItemRow, LifecycleState, RefEventRow, RepoEventCursor,
+    EventProposal, ItemCursor, ItemId, ItemRevision, ItemRow, LifecycleState, RefEventRow, RepoEventCursor,
     RepoId, SequencingMode, Timestamp,
 };
 use synck_vcs::verify::{
@@ -374,9 +374,22 @@ pub struct WriteOptions {
     pub author: Option<String>,
     pub occurred_at: Option<Timestamp>,
     pub operation_id: Option<Uuid>,
+    pub derived_from: Option<ItemRevision>,
+    pub merged_from: Option<ItemRevision>,
 }
 
 impl WriteOptions {
+    /// Record the requested source revision on a FILE write.
+    pub(crate) fn mark_file_write(&self, events: &mut [EventProposal]) {
+        for event in events {
+            match (event.event_type.as_str(), event.create_item.as_mut()) {
+                ("FILE::CREATE", Some(create)) => create.derived_from.clone_from(&self.derived_from),
+                ("FILE::SET_CONTENT", None) => event.merged_from.clone_from(&self.merged_from),
+                _ => {}
+            }
+        }
+    }
+
     fn validate(&self) -> Result<()> {
         if let Some(message) = &self.message
             && (message.is_empty() || message.len() > MAX_MESSAGE_BYTES)
@@ -1804,7 +1817,8 @@ impl PortableRepository {
         self.proposal_with(events, &WriteOptions::default())
     }
 
-    fn proposal_with(&self, events: Vec<EventProposal>, options: &WriteOptions) -> CommitProposal {
+    fn proposal_with(&self, mut events: Vec<EventProposal>, options: &WriteOptions) -> CommitProposal {
+        options.mark_file_write(&mut events);
         let committer = self.config.author.clone().expect("validated local author");
         CommitProposal {
             author_id: options.author.clone().unwrap_or_else(|| committer.clone()),
@@ -2127,11 +2141,50 @@ impl PortableRepository {
     ) -> Result<(ItemId, CommitId)> {
         self.writable()?;
         options.validate()?;
+        let content = self.store_file(source)?;
+        self.create_file_content(parent, name, content, options).await
+    }
+
+    /// Create a FILE from another FILE's current bytes, recording that revision
+    /// as its origin. Identical bytes are one object, so nothing is copied.
+    pub async fn duplicate_file_with(
+        &mut self,
+        source: &ItemId,
+        parent: Option<ItemId>,
+        name: &str,
+        options: &WriteOptions,
+    ) -> Result<(ItemId, CommitId)> {
+        self.writable()?;
+        options.validate()?;
+        let item = self.show_item(source, None).await?.item.projection;
+        let (Some(blob_id), Some(size)) = (item.content_blob_id, item.size) else {
+            return Err(invalid("only a FILE with content can be duplicated"));
+        };
+        let content = BlobRef {
+            blob_id: ObjectId::parse(blob_id).map_err(corrupt)?,
+            size: u64::try_from(size).map_err(corrupt)?,
+        };
+        let options = WriteOptions {
+            derived_from: Some(ItemRevision {
+                item_id: source.clone(),
+                item_seq: item.latest_item_seq,
+            }),
+            ..options.clone()
+        };
+        self.create_file_content(parent, name, content, &options).await
+    }
+
+    async fn create_file_content(
+        &mut self,
+        parent: Option<ItemId>,
+        name: &str,
+        content: BlobRef,
+        options: &WriteOptions,
+    ) -> Result<(ItemId, CommitId)> {
         let location = Location {
             parent_item_id: parent.clone(),
             name: name.into(),
         };
-        let content = self.store_file(source)?;
         if let Some(replayed) = self
             .replayed_file_write(options.operation_id, None, Some(&location), &content)
             .await?

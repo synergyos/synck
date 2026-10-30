@@ -401,6 +401,21 @@ enum PortableCommand {
         #[arg(long, default_value = ".")]
         path: PathBuf,
     },
+    /// Copy a FILE's current content into a new FILE that records its origin.
+    Duplicate {
+        /// FILE item ID to duplicate.
+        item_id: String,
+        /// Name of the new file.
+        name: String,
+        /// Folder item ID to create it in; the top level by default.
+        #[arg(long)]
+        parent: Option<String>,
+        #[command(flatten)]
+        write: WriteArgs,
+        /// Repository directory.
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
+    },
     /// Import an .eml or .msg file as an EMAIL record; the file itself is left alone.
     ImportEmail {
         /// Local .eml or .msg file to read.
@@ -426,6 +441,9 @@ enum PortableCommand {
         /// Refuse with CONFLICT unless the current content is this blob ID.
         #[arg(long)]
         base_content: Option<String>,
+        /// Record that this content takes in another item's revision, as <item-id>@<seq>.
+        #[arg(long)]
+        merged_from: Option<String>,
         #[command(flatten)]
         write: WriteArgs,
         /// Repository directory.
@@ -500,6 +518,7 @@ impl WriteArgs {
             author: self.author.clone(),
             occurred_at,
             operation_id,
+            ..Default::default()
         })
     }
 }
@@ -1655,6 +1674,15 @@ fn print_name_repairs(repairs: &[synck_local::NameRepair]) {
     }
 }
 
+fn item_revision(value: &str) -> Result<synck_vcs::types::ItemRevision, LocalError> {
+    let invalid = || LocalError::Invalid("--merged-from must be <item-id>@<seq>".to_string());
+    let (item_id, item_seq) = value.split_once('@').ok_or_else(invalid)?;
+    Ok(synck_vcs::types::ItemRevision {
+        item_id: portable_item_id(item_id)?,
+        item_seq: item_seq.parse().map_err(|_| invalid())?,
+    })
+}
+
 fn portable_item_id(value: &str) -> synck_local::Result<synck_vcs::types::ItemId> {
     synck_vcs::types::ItemId::parse(value).map_err(|error| LocalError::Invalid(error.to_string()))
 }
@@ -1811,6 +1839,29 @@ async fn run_portable(command: &PortableCommand, tokens: &[String]) -> synck_loc
             Ok(())
         }
         .await,
+        PortableCommand::Duplicate {
+            path,
+            item_id,
+            name,
+            parent,
+            write,
+        } => async {
+            let options = write.options()?;
+            let outcome = open(path)?
+                .duplicate_file_with(
+                    &portable_item_id(item_id)?,
+                    parent.as_deref().map(portable_item_id).transpose()?,
+                    name,
+                    &options,
+                )
+                .await?;
+            println!(
+                "{}",
+                json!({"schema_version":1,"item_id":outcome.0,"commit_id":outcome.1})
+            );
+            Ok(())
+        }
+        .await,
         PortableCommand::ImportEmail {
             path,
             source,
@@ -1839,9 +1890,11 @@ async fn run_portable(command: &PortableCommand, tokens: &[String]) -> synck_loc
             item_id,
             source,
             base_content,
+            merged_from,
             write,
         } => async {
-            let options = write.options()?;
+            let mut options = write.options()?;
+            options.merged_from = merged_from.as_deref().map(item_revision).transpose()?;
             let base_content = base_content
                 .as_deref()
                 .map(|value| {

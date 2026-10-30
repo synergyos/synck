@@ -3,7 +3,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use synck_vcs::metadata::MetadataRef;
-use synck_vcs::types::{ObjectId, CommitId, EventProposal, ItemId, LifecycleState, is_record_type};
+use synck_vcs::types::{ObjectId, CommitId, EventProposal, ItemId, ItemRevision, LifecycleState, is_record_type};
 
 use crate::metadata::{
     ITEM_SOURCE_MODIFIED_AT_REPAIR_EVENT_TYPE, ITEM_SUBTYPE_STANDARD,
@@ -29,6 +29,12 @@ pub struct ReplicaItemProjection {
     pub last_updated_by: String,
     pub item_date_at: DateTime<Utc>,
     pub item_date_kind: String,
+    /// The revision this item began as.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub derived_from: Option<ItemRevision>,
+    /// The last merged revision of each source, oldest merge first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub merged_from: Vec<ItemRevision>,
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -82,6 +88,8 @@ pub fn apply_replica_item_event(
             last_updated_by: updated_by.to_string(),
             item_date_at: updated_at,
             item_date_kind: "LAST_UPDATED".to_string(),
+            derived_from: create.derived_from.clone(),
+            merged_from: Vec::new(),
         },
     };
 
@@ -95,6 +103,10 @@ pub fn apply_replica_item_event(
     }
     if let Some(name) = proposal.set_name.as_ref() {
         item.name.clone_from(name);
+    }
+    if let Some(source) = proposal.merged_from.as_ref() {
+        item.merged_from.retain(|merged| merged.item_id != source.item_id);
+        item.merged_from.push(source.clone());
     }
     if let Some(tombstoned) = proposal.set_tombstoned {
         item.lifecycle_state = if tombstoned {
@@ -317,12 +329,12 @@ mod tests {
     fn create_and_content_project_exact_navigation_fields() {
         let item_id = ItemId::new();
         let now = Utc::now();
-        let create = EventProposal { set_link: None,
+        let create = EventProposal { set_link: None, merged_from: None,
             item_id: Some(item_id.clone()),
             event_type: "FILE::CREATE".to_string(),
             set_metadata: Some(synck_vcs::metadata::MetadataRef::new(serde_json::json!({"subtype":"STANDARD","color_metadata":"blue"})).unwrap()),
             set_content: None,
-            create_item: Some(CreateItem { key: None, link: None,
+            create_item: Some(CreateItem { key: None, link: None, derived_from: None,
                 item_type: "FILE".to_string(),
                 parent_folder_id: None,
                 name: Some("Report.PDF".to_string()),
@@ -378,12 +390,12 @@ mod tests {
     fn direct_chat_profile_is_tree_hidden_without_create_metadata() {
         let item_id = ItemId::new();
         let now = Utc::now();
-        let create = EventProposal { set_link: None,
+        let create = EventProposal { set_link: None, merged_from: None,
             item_id: None,
             event_type: "CHAT::CREATE".to_string(),
             set_metadata: None,
             set_content: None,
-            create_item: Some(CreateItem { key: None, link: None,
+            create_item: Some(CreateItem { key: None, link: None, derived_from: None,
                 item_type: "CHAT".to_string(),
                 parent_folder_id: None,
                 name: Some("direct-chat-opaque".to_string()),
@@ -400,7 +412,7 @@ mod tests {
             .expect("project CHAT create");
         assert_eq!(created.metadata_json, serde_json::json!({}));
 
-        let profile = EventProposal { set_link: None,
+        let profile = EventProposal { set_link: None, merged_from: None,
             item_id: None,
             event_type: "CHAT::SET_PROFILE".to_string(),
             set_metadata: Some(synck_vcs::metadata::MetadataRef::new(serde_json::json!({"chat_kind": "DIRECT"})).unwrap()),

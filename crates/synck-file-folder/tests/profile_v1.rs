@@ -77,7 +77,7 @@ fn current(
 }
 
 fn event(item_id: ItemId, event_type: &str, base_seq: Option<i64>) -> EventProposal {
-    EventProposal { set_link: None,
+    EventProposal { set_link: None, merged_from: None,
         item_id: Some(item_id),
         event_type: event_type.to_string(),
         set_metadata: None,
@@ -1015,7 +1015,7 @@ fn projector_preserves_visible_changes_and_profile_heads_only() {
     let file_id = item(1);
     let record_id = item(2);
     let mut create = event(file_id.clone(), "FILE::CREATE", None);
-    create.create_item = Some(synck_vcs::types::CreateItem { key: None, link: None,
+    create.create_item = Some(synck_vcs::types::CreateItem { key: None, link: None, derived_from: None,
         item_type: "FILE".to_string(),
         parent_folder_id: None,
         name: Some("file.txt".to_string()),
@@ -1123,7 +1123,7 @@ fn projector_emits_head_only_groups_omits_out_of_profile_commits_and_keeps_tombs
 fn projector_omits_an_out_of_profile_item_created_and_mutated_in_one_commit() {
     let record_id = item(3);
     let mut create = event(record_id.clone(), "RECORD::CREATE", None);
-    create.create_item = Some(synck_vcs::types::CreateItem { key: None, link: None,
+    create.create_item = Some(synck_vcs::types::CreateItem { key: None, link: None, derived_from: None,
         item_type: "RECORD".to_string(),
         parent_folder_id: None,
         name: Some("record".to_string()),

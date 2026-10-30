@@ -27,12 +27,12 @@ fn backend() -> (tempfile::TempDir, SqliteStorage) {
 }
 
 fn create_event(name: &str) -> EventProposal {
-    EventProposal { set_link: None,
+    EventProposal { set_link: None, merged_from: None,
         item_id: None,
         event_type: "FILE::CREATE".to_string(),
         set_metadata: None,
         set_content: Some(synck_vcs::content::EventContent::bytes(synck_vcs::types::ObjectId::from_digest([7; 32]))),
-        create_item: Some(CreateItem { key: None, link: None,
+        create_item: Some(CreateItem { key: None, link: None, derived_from: None,
             item_type: "FILE".to_string(),
             parent_folder_id: None,
             name: Some(name.to_string()),
@@ -503,12 +503,12 @@ fn create_item_event(
     parent_folder_id: Option<ItemId>,
     name: &str,
 ) -> EventProposal {
-    EventProposal { set_link: None,
+    EventProposal { set_link: None, merged_from: None,
         item_id: Some(item_id),
         event_type: format!("{item_type}::CREATE"),
         set_metadata: None,
         set_content: (item_type == "FILE").then(|| synck_vcs::content::EventContent::bytes(synck_vcs::types::ObjectId::from_digest([7; 32]))),
-        create_item: Some(CreateItem { key: None, link: None,
+        create_item: Some(CreateItem { key: None, link: None, derived_from: None,
             item_type: item_type.to_string(),
             parent_folder_id,
             name: Some(name.to_string()),
@@ -529,7 +529,7 @@ fn set_parent_event(
     base_seq: i64,
     parent_folder_id: Option<ItemId>,
 ) -> EventProposal {
-    EventProposal { set_link: None,
+    EventProposal { set_link: None, merged_from: None,
         item_id: Some(item_id),
         event_type: format!("{item_type}::SET_PARENT"),
         set_metadata: None,
@@ -551,7 +551,7 @@ fn lifecycle_event(
     base_seq: i64,
     in_trash: bool,
 ) -> EventProposal {
-    EventProposal { set_link: None,
+    EventProposal { set_link: None, merged_from: None,
         item_id: Some(item_id),
         event_type: format!(
             "{item_type}::{}",
@@ -571,7 +571,7 @@ fn lifecycle_event(
 }
 
 fn trash_event(item_id: ItemId, base_seq: i64) -> EventProposal {
-    EventProposal { set_link: None,
+    EventProposal { set_link: None, merged_from: None,
         item_id: Some(item_id),
         event_type: "FILE::TRASH".to_string(),
         set_metadata: None,
@@ -976,7 +976,7 @@ async fn projector_is_commit_bounded_handles_name_swaps_and_rebuilds_identically
     let alpha = created.created_items[0].item_id.clone();
     let beta = created.created_items[1].item_id.clone();
 
-    let rename = |item_id: ItemId, name: &str| EventProposal { set_link: None,
+    let rename = |item_id: ItemId, name: &str| EventProposal { set_link: None, merged_from: None,
         item_id: Some(item_id),
         event_type: "FILE::RENAME".to_string(),
         set_metadata: None,
@@ -1494,7 +1494,7 @@ async fn repo_enforces_base_sequence_and_operation_id() {
         .await
         .unwrap();
     let item_id = accepted.created_items[0].item_id.clone();
-    let stale = EventProposal { set_link: None,
+    let stale = EventProposal { set_link: None, merged_from: None,
         item_id: Some(item_id),
         event_type: "FILE::TRASH".to_string(),
         set_metadata: None,
@@ -1548,12 +1548,12 @@ async fn federated_bootstrap_rejects_a_second_rebind_event() {
     let repo_id = RepoId::new();
     let repo = Repo::new(Storage::new(Arc::new(storage)), CoreConfig::default());
     let stream = "bootstrap-stream".to_string();
-    let create = EventProposal { set_link: None,
+    let create = EventProposal { set_link: None, merged_from: None,
         item_id: None,
         event_type: "FILE::CREATE".to_string(),
         set_metadata: None,
         set_content: Some(synck_vcs::content::EventContent::bytes(synck_vcs::types::ObjectId::from_digest([7; 32]))),
-        create_item: Some(CreateItem { key: None, link: None,
+        create_item: Some(CreateItem { key: None, link: None, derived_from: None,
             item_type: "FILE".to_string(),
             parent_folder_id: None,
             name: Some("federated.txt".to_string()),
@@ -1566,7 +1566,7 @@ async fn federated_bootstrap_rejects_a_second_rebind_event() {
         set_federation_stream_id: None,
         base_seq: None,
     };
-    let rebind = EventProposal { set_link: None,
+    let rebind = EventProposal { set_link: None, merged_from: None,
         item_id: None,
         event_type: "FILE::FEDERATE".to_string(),
         set_metadata: None,
