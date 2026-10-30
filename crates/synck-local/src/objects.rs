@@ -188,6 +188,49 @@ pub(crate) fn verify_object_file(path: &Path, expected_digest: &str, size: u64) 
     Ok(())
 }
 
+pub(crate) struct PlainDigest(pub(crate) Sha256);
+impl Default for PlainDigest { fn default() -> Self { Self(Sha256::new()) } }
+impl Write for PlainDigest {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> { self.0.update(bytes); Ok(bytes.len()) }
+    fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+}
+impl PlainDigest { pub(crate) fn finish(self) -> String { hex::encode(self.0.finalize()) } }
+
+impl Repository {
+    pub(crate) fn record_plain_digest(&self, id: &ObjectId, digest: &str) -> Result<()> {
+        let connection = crate::local_database::open_writable(self.storage())?;
+        connection.execute("INSERT INTO local_object_digests(repo_id,object_id,plain_sha256) VALUES(?1,?2,?3) ON CONFLICT(repo_id,object_id) DO UPDATE SET plain_sha256=excluded.plain_sha256",
+            rusqlite::params![self.config().repo_id().as_str(), id.as_str(), digest])?;
+        Ok(())
+    }
+    pub(crate) fn cached_plain_digests(&self) -> Result<std::collections::HashMap<ObjectId, String>> {
+        let connection = crate::local_database::open_readonly(self.storage())?;
+        let mut statement = connection.prepare("SELECT object_id,plain_sha256 FROM local_object_digests WHERE repo_id=?1")?;
+        let rows = statement.query_map([self.config().repo_id().as_str()], |row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?)))?;
+        let mut digests = std::collections::HashMap::new();
+        for row in rows {
+            let (id,digest) = row?;
+            let id = ObjectId::parse(id).map_err(|e| LocalError::Integrity(e.to_string()))?;
+            ObjectId::parse(format!("sha256:{digest}")).map_err(|e| LocalError::Integrity(e.to_string()))?;
+            digests.insert(id,digest);
+        }
+        Ok(digests)
+    }
+    pub(crate) fn plain_digest(&self, id: &ObjectId) -> Result<String> {
+        use rusqlite::OptionalExtension;
+        let connection = crate::local_database::open_readonly(self.storage())?;
+        let cached: Option<String> = connection.query_row("SELECT plain_sha256 FROM local_object_digests WHERE repo_id=?1 AND object_id=?2",
+            rusqlite::params![self.config().repo_id().as_str(),id.as_str()], |row| row.get(0)).optional()?;
+        if let Some(digest) = cached { return Ok(digest); }
+        drop(connection);
+        let mut digest = PlainDigest::default();
+        self.portable_view()?.copy_blob(id,&mut digest)?;
+        let digest = digest.finish();
+        self.record_plain_digest(id,&digest)?;
+        Ok(digest)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs::File;
@@ -501,47 +544,4 @@ mod tests {
     }
 
 
-}
-
-pub(crate) struct PlainDigest(pub(crate) Sha256);
-impl Default for PlainDigest { fn default() -> Self { Self(Sha256::new()) } }
-impl Write for PlainDigest {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> { self.0.update(bytes); Ok(bytes.len()) }
-    fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
-}
-impl PlainDigest { pub(crate) fn finish(self) -> String { hex::encode(self.0.finalize()) } }
-
-impl Repository {
-    pub(crate) fn record_plain_digest(&self, id: &ObjectId, digest: &str) -> Result<()> {
-        let connection = crate::local_database::open_writable(self.storage())?;
-        connection.execute("INSERT INTO local_object_digests(repo_id,object_id,plain_sha256) VALUES(?1,?2,?3) ON CONFLICT(repo_id,object_id) DO UPDATE SET plain_sha256=excluded.plain_sha256",
-            rusqlite::params![self.config().repo_id().as_str(), id.as_str(), digest])?;
-        Ok(())
-    }
-    pub(crate) fn cached_plain_digests(&self) -> Result<std::collections::HashMap<ObjectId, String>> {
-        let connection = crate::local_database::open_readonly(self.storage())?;
-        let mut statement = connection.prepare("SELECT object_id,plain_sha256 FROM local_object_digests WHERE repo_id=?1")?;
-        let rows = statement.query_map([self.config().repo_id().as_str()], |row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?)))?;
-        let mut digests = std::collections::HashMap::new();
-        for row in rows {
-            let (id,digest) = row?;
-            let id = ObjectId::parse(id).map_err(|e| LocalError::Integrity(e.to_string()))?;
-            ObjectId::parse(format!("sha256:{digest}")).map_err(|e| LocalError::Integrity(e.to_string()))?;
-            digests.insert(id,digest);
-        }
-        Ok(digests)
-    }
-    pub(crate) fn plain_digest(&self, id: &ObjectId) -> Result<String> {
-        use rusqlite::OptionalExtension;
-        let connection = crate::local_database::open_readonly(self.storage())?;
-        let cached: Option<String> = connection.query_row("SELECT plain_sha256 FROM local_object_digests WHERE repo_id=?1 AND object_id=?2",
-            rusqlite::params![self.config().repo_id().as_str(),id.as_str()], |row| row.get(0)).optional()?;
-        if let Some(digest) = cached { return Ok(digest); }
-        drop(connection);
-        let mut digest = PlainDigest::default();
-        self.portable_view()?.copy_blob(id,&mut digest)?;
-        let digest = digest.finish();
-        self.record_plain_digest(id,&digest)?;
-        Ok(digest)
-    }
 }

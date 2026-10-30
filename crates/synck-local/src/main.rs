@@ -787,8 +787,8 @@ async fn run(cli: Cli) -> Result<ExitCode, (LocalError, bool)> {
         Command::Storage {
             command: Some(StorageCommand::Optimize)
         }
-    ) {
-        if let Some(changed) = synck_local::portable::optimize_complete_repository(&current)
+    )
+        && let Some(changed) = synck_local::portable::optimize_complete_repository(&current)
             .await
             .map_err(|error| (error, false))?
         {
@@ -802,14 +802,13 @@ async fn run(cli: Cli) -> Result<ExitCode, (LocalError, bool)> {
             );
             return Ok(ExitCode::SUCCESS);
         }
-    }
     if matches!(
         cli.command,
         Command::Fsck {
             rebuild_state_index: false
         }
-    ) {
-        if let Some(report) = synck_local::portable::verify_complete_repository(&current)
+    )
+        && let Some(report) = synck_local::portable::verify_complete_repository(&current)
             .await
             .map_err(|error| (error, true))?
         {
@@ -819,7 +818,6 @@ async fn run(cli: Cli) -> Result<ExitCode, (LocalError, bool)> {
             );
             return Ok(ExitCode::SUCCESS);
         }
-    }
     let integrity_command = matches!(cli.command, Command::Fsck { .. });
     let mut repository = Repository::discover_complete(&current)
         .await

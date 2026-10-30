@@ -190,9 +190,7 @@ fn local_adapter_matches_shared_conformance_corpus() {
                 let classified = classify_commit(&commit, &rows, &item_kinds).unwrap();
                 let visible = classified
                     .into_iter()
-                    .filter_map(|event| match event.profile {
-                        _ => Some(event.proposal),
-                    })
+                    .map(|event| event.proposal)
                     .collect::<Vec<_>>();
                 assert_eq!(
                     canonical_events(&visible),

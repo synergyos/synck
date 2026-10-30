@@ -148,6 +148,7 @@ pub struct CommitMetadata {
     rename_all = "snake_case",
     deny_unknown_fields
 )]
+#[allow(clippy::large_enum_variant)] // Records are read and applied one at a time.
 pub enum ProposalRecord {
     Item(EventProposal),
     Ref(RefEventProposal),

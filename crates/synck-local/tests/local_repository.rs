@@ -9,6 +9,7 @@ fn set_native_hidden(path: &Path) {
     use std::os::unix::ffi::OsStrExt;
 
     let path = CString::new(path.as_os_str().as_bytes()).unwrap();
+    // SAFETY: `path` is a live NUL-terminated string for the whole call.
     let result = unsafe { libc::chflags(path.as_ptr(), libc::UF_HIDDEN) };
     assert_eq!(
         result,

@@ -262,8 +262,8 @@ pub(crate) fn guard(
     }
     // Supplying credentials opts into reserved writes. Never silently fall back
     // to an unreserved write after a path was released or a token was lost.
-    if !tokens.is_empty() {
-        if let Some(paths) = paths {
+    if !tokens.is_empty()
+        && let Some(paths) = paths {
             for path in paths {
                 if !records
                     .iter()
@@ -273,7 +273,6 @@ pub(crate) fn guard(
                 }
             }
         }
-    }
     Ok(())
 }
 

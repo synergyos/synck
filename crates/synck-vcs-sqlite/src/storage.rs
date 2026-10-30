@@ -358,7 +358,9 @@ fn is_link_or_reparse(path: &Path, metadata: &fs::Metadata) -> Result<bool, Stor
                     path.display()
                 ),
             })?;
+        // SAFETY: an all-zero value is a valid instance of this plain C struct.
         let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+        // SAFETY: `file` owns an open handle and `info` is a live output.
         if unsafe { GetFileInformationByHandle(file.as_raw_handle() as _, &mut info) } == 0 {
             return Err(StorageError::Io {
                 detail: format!(
@@ -1835,209 +1837,6 @@ impl StorageTxn for SqliteTxn {
     }
 }
 
-#[cfg(test)]
-mod checked_append_work_tests {
-    use super::*;
-    use synck_vcs::config::CoreConfig;
-    use synck_vcs::repo::Repo;
-    use synck_vcs::storage::Storage;
-    use synck_vcs::types::{CommitProposal, CreateItem, EventContent, EventProposal};
-
-    #[derive(Clone, Copy)]
-    enum Case {
-        Content,
-        Rename,
-        Move,
-    }
-
-    #[tokio::test]
-    async fn checked_file_folder_work_ignores_unrelated_repository_items() {
-        for case in [Case::Content, Case::Rename, Case::Move] {
-            let small = measured_checked_append(case, 100).await;
-            let large = measured_checked_append(case, 10_000).await;
-            assert_eq!(small, large);
-
-            let expected = match case {
-                Case::Content => AppendMetrics {
-                    item_batches: vec![(1, 1)],
-                    single_item_reads: Vec::new(),
-                    conflict_key_batches: vec![1],
-                    descendant_batches: Vec::new(),
-                },
-                Case::Rename => AppendMetrics {
-                    item_batches: vec![(1, 1), (1, 1)],
-                    single_item_reads: Vec::new(),
-                    conflict_key_batches: vec![2],
-                    descendant_batches: Vec::new(),
-                },
-                Case::Move => AppendMetrics {
-                    // Source lookup, locked touched/destination rows, then the
-                    // fixed parent-existence and acyclicity ancestor reads.
-                    item_batches: vec![(1, 1), (2, 2), (1, 1), (1, 1)],
-                    single_item_reads: Vec::new(),
-                    conflict_key_batches: vec![3],
-                    descendant_batches: Vec::new(),
-                },
-            };
-            assert_eq!(small, expected);
-        }
-    }
-
-    async fn measured_checked_append(case: Case, unrelated_items: usize) -> AppendMetrics {
-        let directory = tempfile::tempdir().expect("tempdir");
-        let storage = SqliteStorage::new(directory.path().join("repository.sqlite3"));
-        storage.init_schema().await.expect("initialize schema");
-        let repo_id = RepoId::new();
-        let repo = Repo::new(
-            Storage::new(Arc::new(storage.clone())),
-            CoreConfig::default(),
-        );
-
-        let file_id = ItemId::new();
-        let first_parent_id = if matches!(case, Case::Rename | Case::Move) {
-            Some(ItemId::new())
-        } else {
-            None
-        };
-        let second_parent_id = if matches!(case, Case::Move) {
-            Some(ItemId::new())
-        } else {
-            None
-        };
-        let mut setup_events = Vec::new();
-        if let Some(parent_id) = &first_parent_id {
-            setup_events.push(create_event(parent_id.clone(), "FOLDER", None, "first"));
-        }
-        if let Some(parent_id) = &second_parent_id {
-            setup_events.push(create_event(parent_id.clone(), "FOLDER", None, "second"));
-        }
-        setup_events.push(create_event(
-            file_id.clone(),
-            "FILE",
-            first_parent_id,
-            "file.txt",
-        ));
-        repo.append(
-            repo_id.clone(),
-            CommitProposal {
-                author_id: "test".to_string(),
-                committer_id: "test".to_string(),
-                message: None,
-                occurred_at: None,
-                operation_id: Some("setup".to_string()),
-                events: setup_events,
-            },
-        )
-        .await
-        .expect("setup append");
-        insert_unrelated_items(&storage, &repo_id, unrelated_items);
-
-        let (event_type, set_content, set_parent, set_name) = match case {
-            Case::Content => (
-                "FILE::SET_CONTENT",
-                Some(EventContent::bytes(synck_vcs::types::ObjectId::from_digest([42;32]))),
-                None,
-                None,
-            ),
-            Case::Rename => (
-                "FILE::SET_NAME",
-                None,
-                None,
-                Some("renamed.txt".to_string()),
-            ),
-            Case::Move => ("FILE::SET_PARENT", None, Some(second_parent_id), None),
-        };
-        storage.reset_append_metrics();
-        repo.append_file_folder_checked(
-            repo_id,
-            CommitProposal {
-                author_id: "test".to_string(),
-                committer_id: "test".to_string(),
-                message: None,
-                occurred_at: None,
-                operation_id: Some("measured".to_string()),
-                events: vec![EventProposal { set_link: None, merged_from: None,
-                    item_id: Some(file_id),
-                    event_type: event_type.to_string(),
-                    set_metadata: None,
-                    set_content,
-                    create_item: None,
-                    set_parent,
-                    set_name,
-                    set_tombstoned: None,
-                    set_in_trash: None,
-                    set_is_federated: None,
-                    set_federation_stream_id: None,
-                    base_seq: Some(1),
-                }],
-            },
-            &[],
-            &[],
-        )
-        .await
-        .expect("checked append");
-        storage.append_metrics()
-    }
-
-    fn create_event(
-        item_id: ItemId,
-        item_type: &str,
-        parent_folder_id: Option<ItemId>,
-        name: &str,
-    ) -> EventProposal {
-        EventProposal { set_link: None, merged_from: None,
-            item_id: Some(item_id),
-            event_type: format!("{item_type}::CREATE"),
-            set_metadata: None,
-            set_content: (item_type == "FILE")
-                .then(|| synck_vcs::content::EventContent::bytes(synck_vcs::types::ObjectId::from_digest([7; 32]))),
-            create_item: Some(CreateItem { key: None, link: None, derived_from: None,
-                item_type: item_type.to_string(),
-                parent_folder_id,
-                name: Some(name.to_string()),
-            }),
-            set_parent: None,
-            set_name: None,
-            set_tombstoned: None,
-            set_in_trash: None,
-            set_is_federated: None,
-            set_federation_stream_id: None,
-            base_seq: None,
-        }
-    }
-
-    fn insert_unrelated_items(storage: &SqliteStorage, repo_id: &RepoId, count: usize) {
-        let mut connection = storage.open_writable().expect("open database");
-        let transaction = connection.transaction().expect("begin transaction");
-        let created_at = format_timestamp(Utc::now());
-        {
-            let mut statement = transaction
-                .prepare(
-                    "INSERT INTO vcs_items (
-                        repo_id, item_id, item_type, parent_folder_id, name, name_key,
-                        head_seq, lifecycle_state, created_at, created_by,
-                        sequencing_mode, federation_stream_id
-                     ) VALUES (?1, ?2, 'FILE', NULL, ?3, ?3, 1, 'LIVE', ?4,
-                               'test', 'LOCAL', NULL)",
-                )
-                .expect("prepare unrelated-item insert");
-            for index in 0..count {
-                let item_id = ItemId::new();
-                let name = format!("unrelated-{index:05}");
-                statement
-                    .execute(params![
-                        repo_id.as_str(),
-                        item_id.as_str(),
-                        name,
-                        created_at
-                    ])
-                    .expect("insert unrelated item");
-            }
-        }
-        transaction.commit().expect("commit unrelated items");
-    }
-}
-
 fn ensure_history_generation(conn: &Connection, repo_id: &RepoId) -> Result<(), StorageError> {
     conn.execute(
         "INSERT INTO vcs_history_generations (repo_id,generation) VALUES (?1,?2) ON CONFLICT(repo_id) DO NOTHING",
@@ -2279,4 +2078,207 @@ fn checked_publication_counter(conn: &Connection, repo_id: &RepoId) -> Result<i6
         });
     }
     Ok(expected)
+}
+
+#[cfg(test)]
+mod checked_append_work_tests {
+    use super::*;
+    use synck_vcs::config::CoreConfig;
+    use synck_vcs::repo::Repo;
+    use synck_vcs::storage::Storage;
+    use synck_vcs::types::{CommitProposal, CreateItem, EventContent, EventProposal};
+
+    #[derive(Clone, Copy)]
+    enum Case {
+        Content,
+        Rename,
+        Move,
+    }
+
+    #[tokio::test]
+    async fn checked_file_folder_work_ignores_unrelated_repository_items() {
+        for case in [Case::Content, Case::Rename, Case::Move] {
+            let small = measured_checked_append(case, 100).await;
+            let large = measured_checked_append(case, 10_000).await;
+            assert_eq!(small, large);
+
+            let expected = match case {
+                Case::Content => AppendMetrics {
+                    item_batches: vec![(1, 1)],
+                    single_item_reads: Vec::new(),
+                    conflict_key_batches: vec![1],
+                    descendant_batches: Vec::new(),
+                },
+                Case::Rename => AppendMetrics {
+                    item_batches: vec![(1, 1), (1, 1)],
+                    single_item_reads: Vec::new(),
+                    conflict_key_batches: vec![2],
+                    descendant_batches: Vec::new(),
+                },
+                Case::Move => AppendMetrics {
+                    // Source lookup, locked touched/destination rows, then the
+                    // fixed parent-existence and acyclicity ancestor reads.
+                    item_batches: vec![(1, 1), (2, 2), (1, 1), (1, 1)],
+                    single_item_reads: Vec::new(),
+                    conflict_key_batches: vec![3],
+                    descendant_batches: Vec::new(),
+                },
+            };
+            assert_eq!(small, expected);
+        }
+    }
+
+    async fn measured_checked_append(case: Case, unrelated_items: usize) -> AppendMetrics {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let storage = SqliteStorage::new(directory.path().join("repository.sqlite3"));
+        storage.init_schema().await.expect("initialize schema");
+        let repo_id = RepoId::new();
+        let repo = Repo::new(
+            Storage::new(Arc::new(storage.clone())),
+            CoreConfig::default(),
+        );
+
+        let file_id = ItemId::new();
+        let first_parent_id = if matches!(case, Case::Rename | Case::Move) {
+            Some(ItemId::new())
+        } else {
+            None
+        };
+        let second_parent_id = if matches!(case, Case::Move) {
+            Some(ItemId::new())
+        } else {
+            None
+        };
+        let mut setup_events = Vec::new();
+        if let Some(parent_id) = &first_parent_id {
+            setup_events.push(create_event(parent_id.clone(), "FOLDER", None, "first"));
+        }
+        if let Some(parent_id) = &second_parent_id {
+            setup_events.push(create_event(parent_id.clone(), "FOLDER", None, "second"));
+        }
+        setup_events.push(create_event(
+            file_id.clone(),
+            "FILE",
+            first_parent_id,
+            "file.txt",
+        ));
+        repo.append(
+            repo_id.clone(),
+            CommitProposal {
+                author_id: "test".to_string(),
+                committer_id: "test".to_string(),
+                message: None,
+                occurred_at: None,
+                operation_id: Some("setup".to_string()),
+                events: setup_events,
+            },
+        )
+        .await
+        .expect("setup append");
+        insert_unrelated_items(&storage, &repo_id, unrelated_items);
+
+        let (event_type, set_content, set_parent, set_name) = match case {
+            Case::Content => (
+                "FILE::SET_CONTENT",
+                Some(EventContent::bytes(synck_vcs::types::ObjectId::from_digest([42;32]))),
+                None,
+                None,
+            ),
+            Case::Rename => (
+                "FILE::SET_NAME",
+                None,
+                None,
+                Some("renamed.txt".to_string()),
+            ),
+            Case::Move => ("FILE::SET_PARENT", None, Some(second_parent_id), None),
+        };
+        storage.reset_append_metrics();
+        repo.append_file_folder_checked(
+            repo_id,
+            CommitProposal {
+                author_id: "test".to_string(),
+                committer_id: "test".to_string(),
+                message: None,
+                occurred_at: None,
+                operation_id: Some("measured".to_string()),
+                events: vec![EventProposal { set_link: None, merged_from: None,
+                    item_id: Some(file_id),
+                    event_type: event_type.to_string(),
+                    set_metadata: None,
+                    set_content,
+                    create_item: None,
+                    set_parent,
+                    set_name,
+                    set_tombstoned: None,
+                    set_in_trash: None,
+                    set_is_federated: None,
+                    set_federation_stream_id: None,
+                    base_seq: Some(1),
+                }],
+            },
+            &[],
+            &[],
+        )
+        .await
+        .expect("checked append");
+        storage.append_metrics()
+    }
+
+    fn create_event(
+        item_id: ItemId,
+        item_type: &str,
+        parent_folder_id: Option<ItemId>,
+        name: &str,
+    ) -> EventProposal {
+        EventProposal { set_link: None, merged_from: None,
+            item_id: Some(item_id),
+            event_type: format!("{item_type}::CREATE"),
+            set_metadata: None,
+            set_content: (item_type == "FILE")
+                .then(|| synck_vcs::content::EventContent::bytes(synck_vcs::types::ObjectId::from_digest([7; 32]))),
+            create_item: Some(CreateItem { key: None, link: None, derived_from: None,
+                item_type: item_type.to_string(),
+                parent_folder_id,
+                name: Some(name.to_string()),
+            }),
+            set_parent: None,
+            set_name: None,
+            set_tombstoned: None,
+            set_in_trash: None,
+            set_is_federated: None,
+            set_federation_stream_id: None,
+            base_seq: None,
+        }
+    }
+
+    fn insert_unrelated_items(storage: &SqliteStorage, repo_id: &RepoId, count: usize) {
+        let mut connection = storage.open_writable().expect("open database");
+        let transaction = connection.transaction().expect("begin transaction");
+        let created_at = format_timestamp(Utc::now());
+        {
+            let mut statement = transaction
+                .prepare(
+                    "INSERT INTO vcs_items (
+                        repo_id, item_id, item_type, parent_folder_id, name, name_key,
+                        head_seq, lifecycle_state, created_at, created_by,
+                        sequencing_mode, federation_stream_id
+                     ) VALUES (?1, ?2, 'FILE', NULL, ?3, ?3, 1, 'LIVE', ?4,
+                               'test', 'LOCAL', NULL)",
+                )
+                .expect("prepare unrelated-item insert");
+            for index in 0..count {
+                let item_id = ItemId::new();
+                let name = format!("unrelated-{index:05}");
+                statement
+                    .execute(params![
+                        repo_id.as_str(),
+                        item_id.as_str(),
+                        name,
+                        created_at
+                    ])
+                    .expect("insert unrelated item");
+            }
+        }
+        transaction.commit().expect("commit unrelated items");
+    }
 }

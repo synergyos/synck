@@ -1255,7 +1255,8 @@ fn projector_accepts_only_the_deployed_product_omission_shapes() {
         validate_projected_proposal(None, &[proposal], &file_kind).unwrap();
     }
 
-    for event_type in ["FOLDER::SET_METADATA"] {
+    {
+        let event_type = "FOLDER::SET_METADATA";
         let mut proposal = event(folder_id.clone(), event_type, Some(5));
         proposal.set_metadata = Some(synck_vcs::metadata::MetadataRef::new(json!({"contract": "product"})).unwrap());
         validate_projected_proposal(None, &[proposal], &folder_kind).unwrap();

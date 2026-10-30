@@ -340,8 +340,8 @@ impl Repository {
                 )));
             }
         }
-        if apply_selection {
-            if let Some(paths) = self.checkout_paths() {
+        if apply_selection
+            && let Some(paths) = self.checkout_paths() {
                 tree.retain(|path, _| crate::checkout::selected(paths, path));
                 for path in tree.keys() {
                     crate::checkout::normalize_paths(std::slice::from_ref(path))?;
@@ -352,7 +352,6 @@ impl Repository {
                     }
                 }
             }
-        }
         Ok(tree)
     }
 
@@ -2494,7 +2493,9 @@ fn file_times(
         FILE_BASIC_INFO, FileBasicInfo, GetFileInformationByHandleEx,
     };
 
+    // SAFETY: an all-zero value is a valid instance of this plain C struct.
     let mut info: FILE_BASIC_INFO = unsafe { std::mem::zeroed() };
+    // SAFETY: `file` owns an open handle and `info` holds the size passed.
     let result = unsafe {
         GetFileInformationByHandleEx(
             file.as_raw_handle() as _,

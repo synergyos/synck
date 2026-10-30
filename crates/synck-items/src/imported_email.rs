@@ -916,7 +916,7 @@ fn decode_msg_html_property(
         require_limit("decoded HTML body bytes", raw.len() as u64, maximum_bytes)?;
         return Ok(Some(raw.to_string()));
     }
-    if raw.len() % 2 != 0 || !raw.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+    if !raw.len().is_multiple_of(2) || !raw.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Ok(None);
     }
     require_limit(
@@ -1085,7 +1085,7 @@ fn duplicate_minifat_reference(error: &std::io::Error) -> bool {
 
 fn decode_msg_string8_property(bytes: &[u8], codepage: Option<u32>) -> Option<String> {
     if codepage == Some(1200) {
-        if bytes.ends_with(&[0, 0]) && bytes.len() % 2 == 0 {
+        if bytes.ends_with(&[0, 0]) && bytes.len().is_multiple_of(2) {
             let units = bytes[..bytes.len() - 2]
                 .chunks_exact(2)
                 .map(|unit| u16::from_le_bytes([unit[0], unit[1]]))
@@ -1189,7 +1189,7 @@ fn decode_msg_string8(bytes: &[u8], codepage: Option<u32>) -> Option<String> {
 }
 
 fn decode_ascii_hex(value: &str) -> Option<Vec<u8>> {
-    if value.len() % 2 != 0 {
+    if !value.len().is_multiple_of(2) {
         return None;
     }
     value
@@ -1294,16 +1294,14 @@ fn generate_rfc822(
     if let Some(value) = message.subject.as_deref() {
         push_header(&mut out, "Subject", value)?;
     }
-    if let Some(value) = message.from.as_ref() {
-        if let Some(value) = format_address(value) {
+    if let Some(value) = message.from.as_ref()
+        && let Some(value) = format_address(value) {
             push_header(&mut out, "From", value.as_str())?;
         }
-    }
-    if let Some(value) = message.sender.as_ref() {
-        if let Some(value) = format_address(value) {
+    if let Some(value) = message.sender.as_ref()
+        && let Some(value) = format_address(value) {
             push_header(&mut out, "Sender", value.as_str())?;
         }
-    }
     push_address_list_header(&mut out, "Reply-To", &message.reply_to)?;
     push_address_list_header(&mut out, "To", &message.to)?;
     push_address_list_header(&mut out, "Cc", &message.cc)?;
@@ -1513,9 +1511,7 @@ fn normalize_smtp_address(raw: &str) -> Option<String> {
         return None;
     }
     let upper = value.to_ascii_uppercase();
-    let Some((local, domain)) = value.split_once('@') else {
-        return None;
-    };
+    let (local, domain) = value.split_once('@')?;
     if upper.starts_with("/O=")
         || upper.starts_with("/CN=")
         || local.is_empty()
@@ -1531,9 +1527,7 @@ fn normalize_smtp_address(raw: &str) -> Option<String> {
 
 fn normalize_mime_type(raw: &str) -> Option<String> {
     let value = raw.trim();
-    let Some((top_level, subtype)) = value.split_once('/') else {
-        return None;
-    };
+    let (top_level, subtype) = value.split_once('/')?;
     let valid_token = |token: &str| {
         !token.is_empty()
             && token.chars().all(|ch| {

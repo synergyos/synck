@@ -403,10 +403,13 @@ fn spawn_server(executable: &Path, root: &Path, repo_id: &RepoId) -> Result<()> 
         .encode_wide()
         .chain(std::iter::once(0))
         .collect::<Vec<_>>();
+    // SAFETY: an all-zero value is a valid instance of this plain C struct.
     let mut startup: STARTUPINFOW = unsafe { std::mem::zeroed() };
     startup.cb =
         u32::try_from(std::mem::size_of::<STARTUPINFOW>()).expect("STARTUPINFOW size fits u32");
+    // SAFETY: an all-zero value is a valid instance of this plain C struct.
     let mut process: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
+    // SAFETY: every pointer is live and NUL-terminated for the call, and the command line is a writable wide string.
     if unsafe {
         CreateProcessW(
             application.as_ptr(),
@@ -424,6 +427,7 @@ fn spawn_server(executable: &Path, root: &Path, repo_id: &RepoId) -> Result<()> 
     {
         return Err(std::io::Error::last_os_error()).at("start monitor", executable);
     }
+    // SAFETY: CreateProcessW succeeded, so both handles are open and owned here.
     unsafe {
         CloseHandle(process.hThread);
         CloseHandle(process.hProcess);
@@ -686,7 +690,9 @@ fn path_identity(path: &Path) -> Result<PathIdentity> {
             path.display()
         )));
     }
+    // SAFETY: an all-zero value is a valid instance of this plain C struct.
     let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+    // SAFETY: `directory` owns an open handle and `info` is a live output.
     if unsafe { GetFileInformationByHandle(directory.as_raw_handle() as _, &mut info) } == 0 {
         return Err(LocalError::MonitorUnavailable(format!(
             "cannot read monitored directory identity: {}",
@@ -1122,6 +1128,7 @@ fn run_platform_server(root: &Path, metadata_path: &Path, repo_id: &RepoId) -> R
             if stop {
                 break;
             }
+            // SAFETY: `pipe` owns an open handle and this call uses no OVERLAPPED.
             let connected = unsafe { ConnectNamedPipe(pipe.0, std::ptr::null_mut()) } != 0;
             if connected {
                 break;
@@ -1160,15 +1167,18 @@ fn run_platform_server(root: &Path, metadata_path: &Path, repo_id: &RepoId) -> R
             break;
         }
         if !same_windows_user_client(pipe.0) {
+            // SAFETY: `pipe` owns this open server handle.
             unsafe { DisconnectNamedPipe(pipe.0) };
             continue;
         }
 
+        // SAFETY: `into_raw` hands over sole ownership of the open handle.
         let mut stream = unsafe { std::fs::File::from_raw_handle(pipe.into_raw() as _) };
         let deadline = Instant::now() + REQUEST_DEADLINE;
         let request: Request = match read_frame(&mut stream, deadline) {
             Ok(request) => request,
             Err(_) => {
+                // SAFETY: `stream` owns this open pipe handle for the call.
                 unsafe { DisconnectNamedPipe(stream.as_raw_handle() as _) };
                 continue;
             }
@@ -1178,10 +1188,12 @@ fn run_platform_server(root: &Path, metadata_path: &Path, repo_id: &RepoId) -> R
                 Ok(false) => {}
                 Ok(true) => {
                     stop = true;
+                    // SAFETY: `stream` owns this open pipe handle for the call.
                     unsafe { DisconnectNamedPipe(stream.as_raw_handle() as _) };
                     continue;
                 }
                 Err(_) => {
+                    // SAFETY: `stream` owns this open pipe handle for the call.
                     unsafe { DisconnectNamedPipe(stream.as_raw_handle() as _) };
                     continue;
                 }
@@ -1194,6 +1206,7 @@ fn run_platform_server(root: &Path, metadata_path: &Path, repo_id: &RepoId) -> R
             stop = true;
         }
         if !wrote_response {
+            // SAFETY: `stream` owns this open pipe handle for the call.
             unsafe { DisconnectNamedPipe(stream.as_raw_handle() as _) };
         }
     }
@@ -1220,6 +1233,7 @@ fn exchange(metadata_path: &Path, request: &Request) -> Result<Response> {
     let wide = wide_string(&pipe_name);
     let deadline = Instant::now() + REQUEST_DEADLINE;
     let handle = loop {
+        // SAFETY: `wide` is a live NUL-terminated name and the optional pointers are null.
         let handle = unsafe {
             CreateFileW(
                 wide.as_ptr(),
@@ -1256,10 +1270,12 @@ fn exchange(metadata_path: &Path, request: &Request) -> Result<Response> {
     let handle = WindowsHandle(handle);
     validate_windows_server_user(handle.0)?;
     let mode = PIPE_READMODE_BYTE | PIPE_WAIT;
+    // SAFETY: `handle` owns an open pipe and `mode` outlives the call.
     if unsafe { SetNamedPipeHandleState(handle.0, &mode, std::ptr::null(), std::ptr::null()) } == 0
     {
         return Err(std::io::Error::last_os_error()).at("configure monitor pipe", &pipe_name);
     }
+    // SAFETY: `into_raw` hands over sole ownership of the open handle.
     let mut stream = unsafe { std::fs::File::from_raw_handle(handle.into_raw() as _) };
     write_frame(&mut stream, request, deadline)?;
     read_frame(&mut stream, deadline)
@@ -1283,6 +1299,7 @@ impl WindowsHandle {
 #[cfg(windows)]
 impl Drop for WindowsHandle {
     fn drop(&mut self) {
+        // SAFETY: this wrapper owns the handle and closes it once.
         unsafe { windows_sys::Win32::Foundation::CloseHandle(self.0) };
     }
 }
@@ -1330,6 +1347,7 @@ fn create_windows_pipe(name: &str) -> Result<WindowsHandle> {
         bInheritHandle: 0,
     };
     let wide = wide_string(name);
+    // SAFETY: `wide` and `attributes` outlive the call, and `security` keeps its descriptor alive.
     let handle = unsafe {
         CreateNamedPipeW(
             wide.as_ptr(),
@@ -1363,9 +1381,11 @@ impl WindowsPipeSecurity {
 
         let sid = current_process_sid()?;
         let mut sid_string = std::ptr::null_mut();
+        // SAFETY: `sid` is a valid SID and `sid_string` is a live output.
         if unsafe { ConvertSidToStringSidW(sid.as_ptr(), &mut sid_string) } == 0 {
             return Err(std::io::Error::last_os_error()).at("format monitor user SID", "monitor");
         }
+        // SAFETY: the call above returned a NUL-terminated string that stays valid until LocalFree.
         let sid_text = unsafe {
             let mut length = 0;
             while *sid_string.add(length) != 0 {
@@ -1373,9 +1393,11 @@ impl WindowsPipeSecurity {
             }
             String::from_utf16_lossy(std::slice::from_raw_parts(sid_string, length))
         };
+        // SAFETY: `sid_string` came from ConvertSidToStringSidW and is not used again.
         unsafe { windows_sys::Win32::Foundation::LocalFree(sid_string.cast()) };
         let sddl = wide_string(&format!("D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;{sid_text})"));
         let mut descriptor = std::ptr::null_mut();
+        // SAFETY: `sddl` is a live NUL-terminated string and `descriptor` is a live output.
         if unsafe {
             ConvertStringSecurityDescriptorToSecurityDescriptorW(
                 sddl.as_ptr(),
@@ -1395,6 +1417,7 @@ impl WindowsPipeSecurity {
 #[cfg(windows)]
 impl Drop for WindowsPipeSecurity {
     fn drop(&mut self) {
+        // SAFETY: this wrapper owns the descriptor and frees it once.
         unsafe { windows_sys::Win32::Foundation::LocalFree(self.descriptor.cast()) };
     }
 }
@@ -1409,6 +1432,7 @@ impl OwnedSid {
     fn copy_from(sid: windows_sys::Win32::Security::PSID) -> Result<Self> {
         use windows_sys::Win32::Security::GetLengthSid;
 
+        // SAFETY: callers pass a valid SID.
         let length = unsafe { GetLengthSid(sid) };
         if length == 0 {
             return Err(std::io::Error::last_os_error()).at("read process SID length", "monitor");
@@ -1416,6 +1440,7 @@ impl OwnedSid {
         let length = usize::try_from(length).expect("SID length fits usize");
         let words = length.div_ceil(std::mem::size_of::<usize>());
         let mut storage = vec![0_usize; words];
+        // SAFETY: `storage` holds at least `length` bytes and cannot overlap the source SID.
         unsafe {
             std::ptr::copy_nonoverlapping(
                 sid.cast::<u8>(),
@@ -1433,6 +1458,7 @@ impl OwnedSid {
 
 #[cfg(windows)]
 fn current_process_sid() -> Result<OwnedSid> {
+    // SAFETY: this call takes no arguments and returns a pseudo handle.
     let process = unsafe { windows_sys::Win32::System::Threading::GetCurrentProcess() };
     process_sid(process)
 }
@@ -1443,11 +1469,13 @@ fn process_sid(process: windows_sys::Win32::Foundation::HANDLE) -> Result<OwnedS
     use windows_sys::Win32::System::Threading::OpenProcessToken;
 
     let mut token = std::ptr::null_mut();
+    // SAFETY: `process` is an open handle and `token` is a live output.
     if unsafe { OpenProcessToken(process, TOKEN_QUERY, &mut token) } == 0 {
         return Err(std::io::Error::last_os_error()).at("open process token", "monitor");
     }
     let token = WindowsHandle(token);
     let mut required = 0_u32;
+    // SAFETY: a null buffer with size zero asks only for the required size.
     unsafe {
         GetTokenInformation(token.0, TokenUser, std::ptr::null_mut(), 0, &mut required);
     }
@@ -1457,6 +1485,7 @@ fn process_sid(process: windows_sys::Win32::Foundation::HANDLE) -> Result<OwnedS
     let required_size = usize::try_from(required).expect("token information size fits usize");
     let words = required_size.div_ceil(std::mem::size_of::<usize>());
     let mut buffer = vec![0_usize; words];
+    // SAFETY: `buffer` is pointer-aligned and holds `required` bytes.
     if unsafe {
         GetTokenInformation(
             token.0,
@@ -1469,6 +1498,7 @@ fn process_sid(process: windows_sys::Win32::Foundation::HANDLE) -> Result<OwnedS
     {
         return Err(std::io::Error::last_os_error()).at("read process SID", "monitor");
     }
+    // SAFETY: GetTokenInformation filled `buffer`, which is aligned and outlives `user`.
     let user = unsafe { &*buffer.as_ptr().cast::<TOKEN_USER>() };
     OwnedSid::copy_from(user.User.Sid)
 }
@@ -1480,9 +1510,11 @@ fn validate_windows_server_user(pipe: windows_sys::Win32::Foundation::HANDLE) ->
     use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
 
     let mut pid = 0_u32;
+    // SAFETY: `pipe` is an open handle and `pid` is a live output.
     if unsafe { GetNamedPipeServerProcessId(pipe, &mut pid) } == 0 || pid == 0 {
         return Err(std::io::Error::last_os_error()).at("identify monitor server", "monitor");
     }
+    // SAFETY: this returns null on failure, and that is checked below.
     let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
     if process.is_null() {
         return Err(std::io::Error::last_os_error()).at("open monitor server", "monitor");
@@ -1490,6 +1522,7 @@ fn validate_windows_server_user(pipe: windows_sys::Win32::Foundation::HANDLE) ->
     let process = WindowsHandle(process);
     let server_sid = process_sid(process.0)?;
     let client_sid = current_process_sid()?;
+    // SAFETY: both SIDs are valid and owned here.
     if unsafe { EqualSid(server_sid.as_ptr(), client_sid.as_ptr()) } == 0 {
         return Err(LocalError::MonitorUnavailable(
             "monitor server belongs to another user".to_string(),
@@ -1505,9 +1538,11 @@ fn same_windows_user_client(pipe: windows_sys::Win32::Foundation::HANDLE) -> boo
     use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
 
     let mut pid = 0_u32;
+    // SAFETY: `pipe` is an open handle and `pid` is a live output.
     if unsafe { GetNamedPipeClientProcessId(pipe, &mut pid) } == 0 || pid == 0 {
         return false;
     }
+    // SAFETY: this returns null on failure, and that is checked below.
     let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
     if process.is_null() {
         return false;
@@ -1519,6 +1554,7 @@ fn same_windows_user_client(pipe: windows_sys::Win32::Foundation::HANDLE) -> boo
     let Ok(server_sid) = current_process_sid() else {
         return false;
     };
+    // SAFETY: both SIDs are valid and owned here.
     unsafe { EqualSid(client_sid.as_ptr(), server_sid.as_ptr()) != 0 }
 }
 
@@ -1546,6 +1582,7 @@ impl MonitorIo for std::fs::File {
         let deadline = Instant::now() + timeout;
         loop {
             let mut available = 0_u32;
+            // SAFETY: the file owns an open pipe, `available` is live and the rest are null.
             if unsafe {
                 PeekNamedPipe(
                     self.as_raw_handle() as _,
@@ -1839,6 +1876,7 @@ mod tests {
 
         let sid = current_process_sid().unwrap();
         assert_eq!(sid.as_ptr() as usize % std::mem::align_of::<usize>(), 0);
+        // SAFETY: `sid` is valid and owned here.
         assert_ne!(unsafe { EqualSid(sid.as_ptr(), sid.as_ptr()) }, 0);
     }
 }

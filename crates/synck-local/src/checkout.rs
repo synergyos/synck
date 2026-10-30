@@ -99,11 +99,10 @@ pub(crate) fn validate_config(config: &Config) -> Result<()> {
             "checkout paths are not canonical".into(),
         ));
     }
-    if let Some(transition) = &checkout.pending {
-        if let Some(paths) = &transition.previous_paths {
+    if let Some(transition) = &checkout.pending
+        && let Some(paths) = &transition.previous_paths {
             normalize_paths(paths)?;
         }
-    }
     Ok(())
 }
 

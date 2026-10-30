@@ -1805,6 +1805,7 @@ pub(crate) fn rename_noreplace(source: &Path, destination: &Path) -> std::io::Re
         let destination = windows_extended_length_path_units(
             &destination.as_os_str().encode_wide().collect::<Vec<_>>(),
         );
+        // SAFETY: both paths are live NUL-terminated wide strings.
         if unsafe {
             MoveFileExW(
                 source.as_ptr(),
@@ -1847,6 +1848,7 @@ pub(crate) fn replace_file(source: &Path, destination: &Path) -> std::io::Result
         let destination = windows_extended_length_path_units(
             &destination.as_os_str().encode_wide().collect::<Vec<_>>(),
         );
+        // SAFETY: both paths are live NUL-terminated wide strings.
         if unsafe {
             MoveFileExW(
                 source.as_ptr(),

@@ -558,7 +558,8 @@ mod bundle_tests {
     fn bundle_commit_requires_explicit_optional_fields_and_current_version() {
         let value = commit_json();
         assert!(decode_commit_record(value.clone()).is_ok());
-        for field in ["operation_id"] {
+        {
+            let field = "operation_id";
             let mut missing = value.clone();
             missing.as_object_mut().unwrap().remove(field);
             assert!(decode_commit_record(missing).is_err());

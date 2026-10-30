@@ -42,15 +42,14 @@ impl ServerPolicy {
     }
     pub fn check_quota(&self, stored: u64, additional: u64) -> Result<(), PolicyLimit> {
         // Saturation is a refusal even when the arithmetic cannot fit u64.
-        if let Some(maximum) = self.quota_bytes {
-            if stored.checked_add(additional).is_none() {
+        if let Some(maximum) = self.quota_bytes
+            && stored.checked_add(additional).is_none() {
                 return Err(PolicyLimit {
                     limit: PolicyLimitName::QuotaBytes,
                     maximum,
                     actual: u64::MAX,
                 });
             }
-        }
         check(
             PolicyLimitName::QuotaBytes,
             self.quota_bytes,
@@ -78,14 +77,13 @@ impl ServerPolicy {
     }
 }
 fn check(limit: PolicyLimitName, maximum: Option<u64>, actual: u64) -> Result<(), PolicyLimit> {
-    if let Some(maximum) = maximum {
-        if actual > maximum {
+    if let Some(maximum) = maximum
+        && actual > maximum {
             return Err(PolicyLimit {
                 limit,
                 maximum,
                 actual,
             });
         }
-    }
     Ok(())
 }

@@ -568,7 +568,7 @@ impl Repository {
         objects: &HashMap<String, ObjectId>,
     ) -> Result<PreparedWorkingCommit> {
         let built_intents =
-            build_intents(committed, working, changes, working_ids, &objects, None)?;
+            build_intents(committed, working, changes, working_ids, objects, None)?;
         let mut intents = built_intents.intents;
         let current = self.current_file_folder_context(&mut intents)?;
         let built = materialize_events(self.config().repo_id(), message, intents, &current)?;

@@ -273,9 +273,8 @@ impl ItemReader {
         event: &RefEventProposal,
         ctx: &RefReadContext<'_>,
     ) -> Result<(), ReadError> {
-        if let Some(reference) = &event.set_metadata {
-            if reference.value().is_none() { return Err(ReadError::NeedsMetadata(reference.id())); }
-        }
+        if let Some(reference) = &event.set_metadata
+            && reference.value().is_none() { return Err(ReadError::NeedsMetadata(reference.id())); }
         if event.owner_item_id != self.item_id {
             return Err(invalid("ref owner mismatch"));
         }
@@ -381,9 +380,8 @@ impl ItemReader {
         event: &EventProposal,
         context: ReadContext<'_>,
     ) -> Result<(), ReadError> {
-        if let Some(reference) = &event.set_metadata {
-            if reference.value().is_none() { return Err(ReadError::NeedsMetadata(reference.id())); }
-        }
+        if let Some(reference) = &event.set_metadata
+            && reference.value().is_none() { return Err(ReadError::NeedsMetadata(reference.id())); }
         if event.item_id.as_ref() != Some(&self.item_id)
             || context.item_seq != self.latest_item_seq() + 1
         {
@@ -398,11 +396,9 @@ impl ItemReader {
                 .ok_or_else(|| invalid("first event must create the item"))?,
         }
         .to_string();
-        if let Some(content) = &event.set_content {
-            if let Some(id) = content.get("body") {
-                if content.object("body").is_none() { return Err(ReadError::NeedsContent(id.clone())); }
-            }
-        }
+        if let Some(content) = &event.set_content
+            && let Some(id) = content.get("body")
+                && content.object("body").is_none() { return Err(ReadError::NeedsContent(id.clone())); }
         let mut projection = replica_projection::apply_replica_item_event(
             self.projection.clone(),
             self.item_id.clone(),

@@ -571,7 +571,7 @@ async fn child_reservation_does_not_authorize_parent_mutations() {
     ok(root, &["commit", "-m", "initial"]);
     let token = acquire(root, &["folder/a.txt", "moved"], "A");
     let mut repo = synck_local::Repository::discover(root).await.unwrap();
-    repo.set_agent_lock_tokens(&[token.clone()]).unwrap();
+    repo.set_agent_lock_tokens(std::slice::from_ref(&token)).unwrap();
     let entries = repo.working_tree().await.unwrap();
     let folder = entries.iter().find(|e| e.path == "folder").unwrap();
     assert!(matches!(

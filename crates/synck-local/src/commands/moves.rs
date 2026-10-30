@@ -183,21 +183,20 @@ impl Repository {
                 "move source and destination are the same".to_string(),
             ));
         }
-        if let Some(paths) = self.checkout_paths() {
-            if !crate::checkout::selected(paths, &destination)
+        if let Some(paths) = self.checkout_paths()
+            && (!crate::checkout::selected(paths, &destination)
                 || (!paths.is_empty()
                     && !paths.iter().any(|root| {
                         source == *root
                             || source
                                 .strip_prefix(root)
                                 .is_some_and(|p| p.starts_with('/'))
-                    }))
+                    })))
             {
                 return Err(LocalError::Invalid(
                     "move crosses a sparse checkout boundary; widen selection first".into(),
                 ));
             }
-        }
         let node = committed.get(&source).ok_or_else(|| {
             LocalError::Invalid(format!("move source is not a tracked live item: {source}"))
         })?;

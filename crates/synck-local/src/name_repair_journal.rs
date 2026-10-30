@@ -242,7 +242,7 @@ impl Repository {
     ) -> Result<()> {
         let parent_path = parent(&entry.repair.from);
         if directory_identity(
-            &directory,
+            directory,
             &directory
                 .dir_metadata()
                 .at("inspect rename parent", parent_path)?,
@@ -256,38 +256,38 @@ impl Repository {
             .iter()
             .any(|name| name == OsStr::new(&entry.temporary))
         {
-            require_identity(&directory, &entry.temporary, entry.identity)?;
+            require_identity(directory, &entry.temporary, entry.identity)?;
         } else if names.iter().any(|name| name == OsStr::new(old)) {
-            require_identity(&directory, old, entry.identity)?;
+            require_identity(directory, old, entry.identity)?;
             rename_between_noreplace(
-                &directory,
+                directory,
                 OsStr::new(old),
-                &directory,
+                directory,
                 OsStr::new(&entry.temporary),
                 Path::new(&entry.repair.from),
                 Path::new(&entry.temporary),
             )
             .at("stage portable name", &entry.repair.from)?;
-            sync_open_directory(&directory, &self.root_path().join(parent_path))?;
+            sync_open_directory(directory, &self.root_path().join(parent_path))?;
             names.remove(OsStr::new(old));
             names.insert(entry.temporary.clone().into());
             fail_after_rename(1)?;
         } else if names.iter().any(|name| name == OsStr::new(new)) {
-            require_identity(&directory, new, entry.identity)?;
+            require_identity(directory, new, entry.identity)?;
             return Ok(());
         } else {
             return Err(invalid("name repair source disappeared; journal retained"));
         }
         rename_between_noreplace(
-            &directory,
+            directory,
             OsStr::new(&entry.temporary),
-            &directory,
+            directory,
             OsStr::new(new),
             Path::new(&entry.temporary),
             Path::new(&entry.repair.to),
         )
         .at("publish portable name", &entry.repair.to)?;
-        sync_open_directory(&directory, &self.root_path().join(parent_path))?;
+        sync_open_directory(directory, &self.root_path().join(parent_path))?;
         names.remove(OsStr::new(&entry.temporary));
         names.insert(new.into());
         fail_after_rename(2)

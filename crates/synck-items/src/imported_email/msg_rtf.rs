@@ -180,11 +180,10 @@ fn collect_escape_or_skip_control(bytes: &[u8], index: &mut usize, html: &mut St
             *index += 1;
         }
         b'\'' if *index + 2 < bytes.len() => {
-            if let Ok(hex) = std::str::from_utf8(&bytes[*index + 1..*index + 3]) {
-                if let Ok(byte) = u8::from_str_radix(hex, 16) {
+            if let Ok(hex) = std::str::from_utf8(&bytes[*index + 1..*index + 3])
+                && let Ok(byte) = u8::from_str_radix(hex, 16) {
                     html.push(byte as char);
                 }
-            }
             *index += 3;
         }
         b'\r' | b'\n' | b'*' => *index += 1,

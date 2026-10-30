@@ -1047,7 +1047,6 @@ impl Repo {
         operation_kind: OperationKind,
     ) -> Result<AppendApplied, CoreError> {
         let mut proposal = proposal;
-        let ref_events = ref_events;
         let (subtree_guards, check_file_folder_parent_closure) = match profile {
             AppendProfile::Generic => (&[][..], false),
             AppendProfile::FileFolder { subtree_guards } => (subtree_guards, true),
@@ -2935,22 +2934,6 @@ async fn map_item_unique_violation<T: StorageTxn + ?Sized>(
     }))
 }
 
-
-#[cfg(test)]
-mod commit_metadata_limit_tests {
-    use super::*;
-
-    #[test]
-    fn federation_domain_receipt_keys_are_stable_distinct_and_bounded() {
-        let long_domain = "d".repeat(16 * 1024);
-        let first = federated_domain_operation_id(&long_domain, 41);
-        assert_eq!(first, federated_domain_operation_id(&long_domain, 41));
-        assert_ne!(first, federated_domain_operation_id(&long_domain, 42));
-        assert_ne!(first, federated_domain_operation_id("other", 41));
-        assert!(first.len() <= crate::limits::MAX_OPERATION_ID_BYTES);
-    }
-}
-
 fn prepare_existing_federated_ingest_events(
     ctx: &InvariantContext<'_>,
     item_row: &ItemRow,
@@ -3017,4 +3000,20 @@ pub fn validate_payload_limits(
         .map(canonical_event_proposal_bytes)
         .chain(ref_events.iter().map(canonical_ref_event_proposal_bytes))
         .collect()
+}
+
+
+#[cfg(test)]
+mod commit_metadata_limit_tests {
+    use super::*;
+
+    #[test]
+    fn federation_domain_receipt_keys_are_stable_distinct_and_bounded() {
+        let long_domain = "d".repeat(16 * 1024);
+        let first = federated_domain_operation_id(&long_domain, 41);
+        assert_eq!(first, federated_domain_operation_id(&long_domain, 41));
+        assert_ne!(first, federated_domain_operation_id(&long_domain, 42));
+        assert_ne!(first, federated_domain_operation_id("other", 41));
+        assert!(first.len() <= crate::limits::MAX_OPERATION_ID_BYTES);
+    }
 }

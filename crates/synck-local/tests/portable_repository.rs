@@ -1407,6 +1407,7 @@ async fn email_import_failed_object_write_can_retry_without_corrupt_publication(
         .arg(&root);
     // Fault only the child: let SQLite open normally, then fail the larger
     // immutable source write partway through with a recoverable write error.
+    // SAFETY: signal and setrlimit are async-signal-safe and the closure allocates nothing.
     unsafe {
         command.pre_exec(|| {
             libc::signal(libc::SIGXFSZ, libc::SIG_IGN);

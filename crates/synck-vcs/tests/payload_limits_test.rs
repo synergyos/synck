@@ -41,7 +41,7 @@ fn format_has_no_commit_event_or_aggregate_payload_cap() {
         canonical_ref_event_proposal_bytes(&reference).unwrap(),
     ];
     assert_eq!(
-        validate_payload_limits(&[event.clone()], &[reference]).unwrap(),
+        validate_payload_limits(std::slice::from_ref(&event), &[reference]).unwrap(),
         expected
     );
     let mut large = event.clone();

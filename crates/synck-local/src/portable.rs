@@ -444,7 +444,8 @@ impl PortableRepository {
         } else if config.authority != Authority::Follower {
             return Err(corrupt("local writer has no author"));
         }
-        for name in ["objects"] {
+        {
+            let name = "objects";
             metadata.open_dir_nofollow(name).at(
                 "open portable content directory",
                 root.join(".synck").join(name),
@@ -1604,8 +1605,8 @@ impl PortableRepository {
                     .map_err(corrupt)?;
                 if self.config.checkout.is_some() {
                     for row in &rows {
-                        if let CommitEventRow::Item(event) = row {
-                            if synck_file_folder::is_file_content_event(&event.event_type) {
+                        if let CommitEventRow::Item(event) = row
+                            && synck_file_folder::is_file_content_event(&event.event_type) {
                                 let proposal: EventProposal =
                                     event.proposal()?;
                                 let (blob, size) = crate::event_profile::parse_content(&proposal)
@@ -1615,7 +1616,6 @@ impl PortableRepository {
                                     (event.item_seq, blob.to_string(), size),
                                 );
                             }
-                        }
                     }
                 }
                 for row in &rows {
@@ -2450,15 +2450,14 @@ impl PortableRepository {
     }
 
     pub async fn archive_with_mode(&self, destination: &Path, mode: StorageMode) -> Result<()> {
-        if let Some(checkout) = &self.config.checkout {
-            if checkout.pending.is_some()
-                || !entries(&self.metadata.open_dir_nofollow("tmp").map_err(corrupt)?)?.is_empty()
+        if let Some(checkout) = &self.config.checkout
+            && (checkout.pending.is_some()
+                || !entries(&self.metadata.open_dir_nofollow("tmp").map_err(corrupt)?)?.is_empty())
             {
                 return Err(invalid(
                     "finish checkout recovery before copying the repository",
                 ));
             }
-        }
         let report = self.verify().await?;
         if !report.missing_objects.is_empty() || !report.missing_metadata.is_empty() {
             return Err(invalid("complete export requires all referenced content and metadata objects"));

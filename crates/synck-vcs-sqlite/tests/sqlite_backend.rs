@@ -2019,7 +2019,7 @@ async fn empty_live_subtree_guard_allows_trash_after_child_batch() {
                 events: vec![lifecycle_event(folder_id.clone(), "FOLDER", 1, true)],
             },
             &[],
-            &[empty_live.clone()],
+            std::slice::from_ref(&empty_live),
         )
         .await
         .unwrap_err();

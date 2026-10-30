@@ -18,7 +18,5 @@ pub fn event_policy(event_type: &str) -> Option<MutationPolicy> {
         };
     }
 
-    match event_type {
-        _ => None,
-    }
+    None
 }
