@@ -163,12 +163,13 @@ has `limit`, `maximum` and `actual`. `limit` is `events_per_commit`, `object_byt
 `quota_bytes`.
 
 An event in a fragment is tagged by `event_family`. `item` has `repo_id`, `item_id`,
-`item_seq`, `event_type`, `commit_id`, `commit_event_idx`, `repo_seq`, `payload`,
+`item_seq`, `event_type`, `commit_id`, `commit_event_idx`, `repo_seq`, `payload_json`,
 `event_payload_digest`, `created_at`, `parent_folder_id?` and
 `parent_folder_id_before?`. `ref` has `repo_id`, `owner_item_id`, `ref_seq`,
-`event_type`, `commit_id`, `commit_event_idx`, `repo_seq`, `payload`,
-`event_payload_digest` and `created_at`. A `payload` is the event's exact canonical
-bytes, as a JSON array of integers from 0 to 255.
+`event_type`, `commit_id`, `commit_event_idx`, `repo_seq`, `payload_json`,
+`event_payload_digest` and `created_at`. A `payload_json` is one JSON string whose
+UTF-8 encoding is the event's exact canonical bytes, as in a history bundle. It is a
+string and not a nested object so that a JSON parser cannot change those bytes.
 
 A proposal record is `{"kind": "item" | "ref" | "guard", "value": ...}`. An `item`
 value is an event envelope with its `item_id`, a `ref` value is a ref envelope, and a

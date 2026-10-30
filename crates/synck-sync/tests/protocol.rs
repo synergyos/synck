@@ -510,7 +510,7 @@ fn maximum_format_event_fits_both_transfers_without_relaxing_page_bounds() {
                 },
                 events: published.events.clone(),
             };
-            3
+            9
         ],
         has_more: false,
     };

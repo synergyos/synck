@@ -385,6 +385,20 @@ impl<'de> Deserialize<'de> for ObjectId {
 
 pub use crate::content::EventContent;
 
+/// Exact canonical payload bytes as one JSON string, as in a history bundle.
+mod payload_json {
+    use super::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(payload: &[u8], serializer: S) -> Result<S::Ok, S::Error> {
+        let text = std::str::from_utf8(payload).map_err(serde::ser::Error::custom)?;
+        serializer.serialize_str(text)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<u8>, D::Error> {
+        String::deserialize(deserializer).map(String::into_bytes)
+    }
+}
+
 /// Logical representation of an `events` table row.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -402,6 +416,7 @@ pub struct EventRow {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repo_seq: Option<i64>,
     /// Canonical RFC 8785 JSON bytes for the EventProposal payload.
+    #[serde(rename = "payload_json", with = "payload_json")]
     pub payload: Vec<u8>,
     #[serde(skip)]
     pub metadata: Option<Metadata>,
@@ -485,6 +500,7 @@ pub struct RefEventRow {
     pub commit_event_idx: i32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repo_seq: Option<i64>,
+    #[serde(rename = "payload_json", with = "payload_json")]
     pub payload: Vec<u8>,
     #[serde(skip)]
     pub metadata: Option<Metadata>,

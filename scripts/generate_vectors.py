@@ -768,14 +768,14 @@ def new_sync_wire():
     item_row = {
         "event_family": "item", "repo_id": identity["repo_id"], "item_id": first,
         "item_seq": 4, "event_type": "FOLDER::SET_NAME", "commit_id": commit_id,
-        "commit_event_idx": 0, "repo_seq": 1, "payload": list(item_payload),
+        "commit_event_idx": 0, "repo_seq": 1, "payload_json": item_payload.decode("utf-8"),
         "event_payload_digest": sha_id(item_payload), "created_at": accepted,
         "parent_folder_id": None, "parent_folder_id_before": None,
     }
     ref_row = {
         "event_family": "ref", "repo_id": identity["repo_id"], "owner_item_id": second,
         "ref_seq": 3, "event_type": "FILE_VERSION::TOMBSTONE", "commit_id": commit_id,
-        "commit_event_idx": 1, "repo_seq": 1, "payload": list(ref_payload),
+        "commit_event_idx": 1, "repo_seq": 1, "payload_json": ref_payload.decode("utf-8"),
         "event_payload_digest": sha_id(ref_payload), "created_at": accepted,
     }
     fragment = {"header": {"commit": row, "checkpoint": tip_id}, "events": [item_row, ref_row]}
