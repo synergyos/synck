@@ -24,6 +24,5 @@ sha2.workspace = true
 tokio.workspace = true
 tempfile = "3"
 
-# Existing Clippy allowances. These do not set the level of unlisted lints.
-[lints.clippy]
-needless_return = "allow"
+[lints]
+workspace = true

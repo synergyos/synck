@@ -15,6 +15,8 @@
 //! rules live in [`naming`]; the database enforces uniqueness only over the
 //! derived `name_key`.
 
+#![forbid(unsafe_code)]
+
 pub mod bundle;
 pub mod checkpoint;
 pub mod config;

@@ -1,5 +1,8 @@
 //! Shared format-7 synchronization contract. Storage, authentication and atomic
 //! Core acceptance belong to the authority; transfer validation is not acceptance.
+
+#![forbid(unsafe_code)]
+
 mod history;
 mod policy;
 mod proposal;

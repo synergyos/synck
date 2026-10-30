@@ -4,6 +4,8 @@
 //! event proposals, and projects complete accepted commits. It deliberately
 //! owns no storage, transport, authorization, or filesystem behavior.
 
+#![forbid(unsafe_code)]
+
 mod error;
 pub mod file_versions;
 mod materialize;

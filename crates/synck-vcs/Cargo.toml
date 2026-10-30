@@ -26,6 +26,5 @@ serde_json_canonicalizer = "0.3.1"
 unicode-normalization = "=0.1.26"
 ring = "0.17"
 
-# Existing Clippy allowances. These do not set the level of unlisted lints.
-[lints.clippy]
-too_many_arguments = "allow"
+[lints]
+workspace = true

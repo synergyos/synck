@@ -1921,6 +1921,7 @@ mod tests {
         impl Drop for Child {
             fn drop(&mut self) {
                 let _ = self.release.shutdown(std::net::Shutdown::Write);
+                // SAFETY: `pid` is this test's child and a null status is allowed.
                 unsafe {
                     while libc::waitpid(self.pid, std::ptr::null_mut(), 0) < 0
                         && io::Error::last_os_error().kind() == io::ErrorKind::Interrupted
@@ -1936,11 +1937,13 @@ mod tests {
         let (release, inherited) = UnixStream::pair().unwrap();
         let release_fd = release.as_raw_fd();
         let inherited_fd = inherited.as_raw_fd();
+        // SAFETY: the child below makes only async-signal-safe calls.
         let pid = unsafe { libc::fork() };
         assert!(pid >= 0);
         if pid == 0 {
             // Only async-signal-safe calls are allowed after a multithreaded
             // fork. Keep inherited descriptors alive until the parent is done.
+            // SAFETY: close, read and _exit are async-signal-safe, and `byte` outlives the read.
             unsafe {
                 libc::close(release_fd);
                 let mut byte = 0_u8;

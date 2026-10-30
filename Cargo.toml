@@ -17,6 +17,18 @@ repository = "https://github.com/synergyos/synck"
 rust-version = "1.91.1"
 version = "0.2.0"
 
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+dbg_macro = "deny"
+needless_return = "allow"
+todo = "deny"
+too_many_arguments = "allow"
+undocumented_unsafe_blocks = "deny"
+unimplemented = "deny"
+
 [workspace.dependencies]
 "async-trait" = "0.1"
 "cap-fs-ext" = "4"

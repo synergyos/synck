@@ -9,6 +9,8 @@
 //! reader support. Callers own verified storage, bounded history paging, body
 //! hydration and complete-history transfer.
 
+#![forbid(unsafe_code)]
+
 pub mod body_events;
 pub mod chat;
 pub mod email;

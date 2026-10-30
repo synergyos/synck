@@ -367,6 +367,7 @@ fn spawn_server(executable: &Path, root: &Path, repo_id: &RepoId) -> Result<()> 
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
+        // SAFETY: setsid is async-signal-safe and the closure touches nothing else.
         unsafe {
             command.pre_exec(|| {
                 if libc::setsid() == -1 {
@@ -946,6 +947,7 @@ fn same_user_peer(stream: &std::os::unix::net::UnixStream) -> bool {
     use std::os::fd::AsRawFd;
     let mut uid = 0;
     let mut gid = 0;
+    // SAFETY: both outputs are live integers and `stream` keeps the descriptor open.
     unsafe {
         libc::getpeereid(stream.as_raw_fd(), &mut uid, &mut gid) == 0 && uid == libc::geteuid()
     }
@@ -962,12 +964,15 @@ fn exchange(metadata_path: &Path, request: &Request) -> Result<Response> {
     let socket = rustix::net::socket(AddressFamily::UNIX, SocketType::STREAM, None)
         .map_err(std::io::Error::from)
         .at("create monitor connection", &socket_path)?;
+    // SAFETY: `into_raw_fd` hands over sole ownership of this open socket.
     let mut stream = unsafe { UnixStream::from_raw_fd(socket.into_raw_fd()) };
     stream
         .set_nonblocking(true)
         .at("configure monitor connection", &socket_path)?;
+    // SAFETY: F_GETFD only reads flags from a descriptor `stream` keeps open.
     let descriptor_flags = unsafe { libc::fcntl(stream.as_raw_fd(), libc::F_GETFD) };
     if descriptor_flags < 0
+        // SAFETY: F_SETFD only sets flags on a descriptor `stream` keeps open.
         || unsafe {
             libc::fcntl(
                 stream.as_raw_fd(),
@@ -1022,6 +1027,7 @@ fn wait_for_unix_connection(
             events: libc::POLLOUT,
             revents: 0,
         };
+        // SAFETY: `descriptor` is one live pollfd for a socket that stays open here.
         let result = unsafe { libc::poll(&mut descriptor, 1, timeout_ms) };
         if result == 0 {
             return Err(LocalError::MonitorUnavailable(

@@ -28,3 +28,6 @@ lol_html = "3"
 
 [dev-dependencies]
 hex.workspace = true
+
+[lints]
+workspace = true
