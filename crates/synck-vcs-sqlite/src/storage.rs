@@ -1271,11 +1271,24 @@ impl Drop for SqliteTxn {
 
 #[async_trait]
 impl StorageTxn for SqliteTxn {
-    async fn acceptance_timestamp(&mut self) -> Result<Timestamp, StorageError> {
+    async fn acceptance_timestamp(&mut self, repo_id: &RepoId) -> Result<Timestamp, StorageError> {
         if let Some(value) = self.acceptance_timestamp {
             return Ok(value);
         }
-        let value = Utc::now();
+        // `BEGIN IMMEDIATE` serializes writers, so following the latest waiting
+        // commit follows every commit this one can depend on.
+        let latest: Option<String> = self
+            .conn()?
+            .query_row(
+                "SELECT max(created_at) FROM vcs_commits WHERE repo_id = ?1 AND repo_seq IS NULL AND commit_id IS NOT NULL",
+                [repo_id.as_str()],
+                |row| row.get(0),
+            )
+            .map_err(map_sqlite_error)?;
+        let mut value = Utc::now();
+        if let Some(latest) = latest {
+            value = value.max(parse_timestamp(&latest)? + chrono::Duration::nanoseconds(1));
+        }
         self.acceptance_timestamp = Some(value);
         Ok(value)
     }
@@ -1578,6 +1591,7 @@ impl StorageTxn for SqliteTxn {
                 .ok_or_else(|| StorageError::Other {
                     detail: "repository sequence overflow".to_string(),
                 })?;
+            ensure_bases_published(self.conn()?, repo_id, commit_pk)?;
             self.conn()?
                 .execute(
                     "UPDATE vcs_commits SET repo_seq = ?3 WHERE repo_id = ?1 AND commit_pk = ?2 AND repo_seq IS NULL",
@@ -1989,6 +2003,42 @@ fn ensure_history_generation(conn: &Connection, repo_id: &RepoId) -> Result<(), 
 }
 
 /// Called only inside the transaction which assigns or imports the position.
+/// Refuse to publish a commit before the commit holding the previous event of
+/// any item or reference ledger it extends. Acceptance times normally make this
+/// impossible; stored times that invert a dependency must stop publication
+/// rather than produce history that cannot replay.
+fn ensure_bases_published(
+    conn: &Connection,
+    repo_id: &RepoId,
+    commit_pk: &str,
+) -> Result<(), StorageError> {
+    let inverted = conn
+        .query_row(
+            "SELECT 1 FROM vcs_events e
+             JOIN vcs_events p ON p.repo_id = e.repo_id AND p.item_id = e.item_id AND p.item_seq = e.item_seq - 1
+             JOIN vcs_commits c ON c.repo_id = p.repo_id AND c.commit_pk = p.commit_pk
+             WHERE e.repo_id = ?1 AND e.commit_pk = ?2 AND c.commit_pk <> e.commit_pk AND c.repo_seq IS NULL
+             UNION ALL
+             SELECT 1 FROM vcs_ref_events e
+             JOIN vcs_ref_events p ON p.repo_id = e.repo_id AND p.owner_item_id = e.owner_item_id AND p.ref_seq = e.ref_seq - 1
+             JOIN vcs_commits c ON c.repo_id = p.repo_id AND c.commit_pk = p.commit_pk
+             WHERE e.repo_id = ?1 AND e.commit_pk = ?2 AND c.commit_pk <> e.commit_pk AND c.repo_seq IS NULL
+             LIMIT 1",
+            params![repo_id.as_str(), commit_pk],
+            |_| Ok(()),
+        )
+        .optional()
+        .map_err(map_sqlite_error)?;
+    if inverted.is_some() {
+        return Err(StorageError::Other {
+            detail: format!(
+                "publication order would place commit {commit_pk} before a commit it builds on"
+            ),
+        });
+    }
+    Ok(())
+}
+
 fn publish_checkpoint(
     conn: &Connection,
     repo_id: &RepoId,

@@ -242,6 +242,16 @@ fractional time. The chain binds publication order relative to a trusted checkpo
 by itself authenticate authority or detect the removal of an unknown suffix.
 A checkpoint is not a regulatory retention seal.
 
+Publication order must be causal: a commit is never published before a commit
+whose result it depends on. Acceptance time carries that order, so an
+acceptance timestamp MUST be later than the acceptance time of every accepted,
+unpublished commit in the repository that the accepting transaction could
+depend on, even when the wall clock stepped back (take the later of the clock
+and that time plus one nanosecond). Before assigning a position, the sequencer
+MUST verify that the commit holding the previous event of every item and
+reference ledger the commit extends is already published, and fail the batch
+otherwise; it never publishes history that cannot replay.
+
 Sequencer implementations MUST serialize publication transactions per repository:
 only one such transaction may run for a repository at a time. Lock that
 repository's activity head, select committed unsequenced commits, validate the

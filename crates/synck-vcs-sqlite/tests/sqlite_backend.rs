@@ -13,9 +13,10 @@ use synck_vcs::state::{
 };
 use synck_vcs::storage::{Storage, StorageBackend};
 use synck_vcs::types::{
-    COMMIT_FORMAT_VERSION, CommitEventRow, CommitProposal, CreateItem, EventProposal,
+    COMMIT_FORMAT_VERSION, CommitEventRow, CommitId, CommitProposal, CreateItem, EventProposal,
     FederatedProposal, ItemCursor, ItemId, ItemRow,
     LifecycleState, RefEventProposal, RepoEventCursor, RepoId, SequencingMode, SubtreeClosureGuard,
+    commit_id_to_digest_bytes,
 };
 use synck_vcs_sqlite::{SqliteStorage, format_timestamp, parse_timestamp};
 
@@ -1189,8 +1190,9 @@ async fn transaction_timestamp_is_cached() {
     let (_dir, storage) = backend();
     storage.init_schema().await.unwrap();
     let mut txn = storage.begin_txn().await.unwrap();
-    let first = txn.acceptance_timestamp().await.unwrap();
-    let second = txn.acceptance_timestamp().await.unwrap();
+    let repo_id = RepoId::new();
+    let first = txn.acceptance_timestamp(&repo_id).await.unwrap();
+    let second = txn.acceptance_timestamp(&repo_id).await.unwrap();
     assert_eq!(first, second);
     txn.rollback().await.unwrap();
 }
@@ -2436,4 +2438,110 @@ async fn checked_lifecycle_accepts_more_than_9999_descendants_atomically() {
         assert_eq!(item.lifecycle_state, synck_vcs::types::LifecycleState::Trash);
         assert_eq!(item.head_seq, 2);
     }
+}
+
+fn set_acceptance_time(dir: &tempfile::TempDir, commit_id: &CommitId, created_at: &str) {
+    let connection = Connection::open(dir.path().join("repository.sqlite3")).unwrap();
+    let digest = commit_id_to_digest_bytes(commit_id);
+    let commit_pk: String = connection
+        .query_row(
+            "SELECT commit_pk FROM vcs_commits WHERE commit_id = ?1",
+            [digest.as_slice()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    connection
+        .execute(
+            "UPDATE vcs_commits SET created_at = ?2 WHERE commit_pk = ?1",
+            params![commit_pk, created_at],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "UPDATE vcs_events SET created_at = ?2 WHERE commit_pk = ?1",
+            params![commit_pk, created_at],
+        )
+        .unwrap();
+}
+
+async fn published_seq(repo: &Repo, repo_id: &RepoId, commit_id: &CommitId) -> Option<i64> {
+    repo.list_commits_by_repo_seq(repo_id.clone(), 1, None, 10)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|commit| &commit.commit_id == commit_id)
+        .and_then(|commit| commit.repo_seq)
+}
+
+// A wall clock that steps backwards between two dependent acceptances must
+// not let the later commit be published first.
+#[tokio::test]
+async fn publication_follows_acceptance_when_the_clock_steps_back() {
+    let (dir, storage) = backend();
+    storage.init_schema().await.unwrap();
+    let repo_id = RepoId::new();
+    let repo = Repo::new(Storage::new(Arc::new(storage)), CoreConfig::default());
+    let first = repo
+        .append(repo_id.clone(), commit(vec![create_event("file")]))
+        .await
+        .unwrap();
+    // The clock was ahead when the first commit was accepted.
+    set_acceptance_time(&dir, &first.commit_id, "2999-01-01T00:00:00.000000000Z");
+    let item_id = first.created_items[0].item_id.clone();
+    let second = repo
+        .append(
+            repo_id.clone(),
+            commit(vec![trash_event(item_id.clone(), 1)]),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        repo.sequence_repo_activity(repo_id.clone(), 32)
+            .await
+            .unwrap(),
+        2
+    );
+    assert_eq!(
+        published_seq(&repo, &repo_id, &first.commit_id).await,
+        Some(1)
+    );
+    assert_eq!(
+        published_seq(&repo, &repo_id, &second.commit_id).await,
+        Some(2)
+    );
+}
+
+// Stored acceptance times that invert a dependency (written before the
+// acceptance rule existed, or by another writer) must stop publication.
+#[tokio::test]
+async fn sequencer_refuses_a_batch_that_inverts_item_order() {
+    let (dir, storage) = backend();
+    storage.init_schema().await.unwrap();
+    let repo_id = RepoId::new();
+    let repo = Repo::new(Storage::new(Arc::new(storage)), CoreConfig::default());
+    let first = repo
+        .append(repo_id.clone(), commit(vec![create_event("file")]))
+        .await
+        .unwrap();
+    let item_id = first.created_items[0].item_id.clone();
+    let second = repo
+        .append(
+            repo_id.clone(),
+            commit(vec![trash_event(item_id.clone(), 1)]),
+        )
+        .await
+        .unwrap();
+    set_acceptance_time(&dir, &second.commit_id, "2000-01-01T00:00:00.000000000Z");
+
+    let error = repo
+        .sequence_repo_activity(repo_id.clone(), 32)
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("publication order"), "{error}");
+    assert_eq!(published_seq(&repo, &repo_id, &first.commit_id).await, None);
+    assert_eq!(
+        published_seq(&repo, &repo_id, &second.commit_id).await,
+        None
+    );
 }

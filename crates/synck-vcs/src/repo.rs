@@ -1498,7 +1498,7 @@ impl Repo {
             op: operation_kind,
         };
 
-        let commit_created_at = txn.acceptance_timestamp().await?;
+        let commit_created_at = txn.acceptance_timestamp(&repo_id).await?;
 
         for item_id in &state_item_ids {
             // If this item is created in this commit, synthesize an ItemRow
@@ -2191,7 +2191,7 @@ impl Repo {
                 txn.lock_conflict_keys(&lock_keys).await?;
                 item_lock_ms = item_lock_start.elapsed().as_millis() as u64;
                 load_item_ms = 0;
-                commit_created_at = txn.acceptance_timestamp().await?;
+                commit_created_at = txn.acceptance_timestamp(&repo_id).await?;
                 item_row
             } else {
                 bootstrap_created = true;
@@ -2242,7 +2242,7 @@ impl Repo {
                 let item_lock_start = Instant::now();
                 txn.lock_conflict_keys(&lock_keys).await?;
                 item_lock_ms = item_lock_start.elapsed().as_millis() as u64;
-                commit_created_at = txn.acceptance_timestamp().await?;
+                commit_created_at = txn.acceptance_timestamp(&repo_id).await?;
 
                 ItemRow {
                     repo_id: repo_id.clone(),
@@ -2758,7 +2758,7 @@ impl Repo {
                 }
 
                 let build_rows_start = Instant::now();
-                let proposal_created_at = txn.acceptance_timestamp().await?;
+                let proposal_created_at = txn.acceptance_timestamp(&repo_id).await?;
                 let repo_seq: Option<i64> = None;
                 let item_id = item_row.item_id.clone();
 
@@ -3156,7 +3156,7 @@ impl Repo {
             }
 
             let repo_seq: Option<i64> = None;
-            let commit_created_at = txn.acceptance_timestamp().await?;
+            let commit_created_at = txn.acceptance_timestamp(&repo_id).await?;
 
             // Before canonicalization, validate blob ids referenced by content.
             let mut local_proposal = CommitProposal {

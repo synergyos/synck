@@ -57,7 +57,12 @@ pub trait StorageTxn: Send {
     /// Core uses this value for persisted `created_at` fields. Proposal
     /// timestamps such as `occurred_at` are origin metadata and MUST NOT drive
     /// durable acceptance order.
-    async fn acceptance_timestamp(&mut self) -> Result<Timestamp, StorageError>;
+    ///
+    /// The value MUST be later than the acceptance time of every accepted,
+    /// unpublished commit this transaction could depend on, even when the
+    /// wall clock stepped back. Publication orders waiting commits by this
+    /// time, so it is what keeps publication causal.
+    async fn acceptance_timestamp(&mut self, repo_id: &RepoId) -> Result<Timestamp, StorageError>;
 
     /// Acquire transactional conflict locks for this operation.
     ///
