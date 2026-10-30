@@ -72,7 +72,10 @@ impl SqliteStorage {
             [], |row| row.get(0),
         ).map_err(sql_error)?;
         if empty {
-            connection.execute_batch(STATE_SCHEMA).map_err(sql_error)?;
+            // A killed process must leave no partial schema behind.
+            connection
+                .execute_batch(&format!("BEGIN IMMEDIATE;{STATE_SCHEMA}COMMIT;"))
+                .map_err(sql_error)?;
         }
         let expected = Connection::open_in_memory().map_err(sql_error)?;
         expected.execute_batch(STATE_SCHEMA).map_err(sql_error)?;
