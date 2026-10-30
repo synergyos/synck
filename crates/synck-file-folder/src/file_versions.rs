@@ -160,6 +160,7 @@ mod tests {
     fn revision_pointer_matches_language_neutral_vector() {
         use synck_vcs::{metadata::Metadata, types::canonical_ref_event_proposal_bytes};
         let vector: serde_json::Value = serde_json::from_str(include_str!("../../../docs/spec/vectors/file-version.json")).unwrap();
+        for vector in [&vector, &vector["with_source_commit"]] {
         let event: RefEventProposal = serde_json::from_value(vector["event"].clone()).unwrap();
         assert!(event.set_content.is_none());
         let id = event.set_metadata.as_ref().unwrap().id();
@@ -170,6 +171,7 @@ mod tests {
         let encoded = canonical_ref_event_proposal_bytes(&event).unwrap();
         assert_eq!(encoded, vector["canonical_event"].as_str().unwrap().as_bytes());
         assert_eq!(synck_vcs::types::sha256_prefixed_hex_from_digest_bytes(synck_vcs::types::compute_sha256_digest_bytes(&encoded)), vector["event_digest"].as_str().unwrap());
+        }
     }
 
     #[test]
