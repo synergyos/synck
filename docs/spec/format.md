@@ -225,8 +225,8 @@ bytes, compared as exact bytes, fixed at creation. At the end of every commit, a
 most one LIVE record has a given (item type, key), the same rule as sibling names.
 A record in the trash does not hold its key, and it cannot be restored while
 another live record does. A tombstoned record never holds its key. A key is
-visible in every repository, so in an encrypted repository a key derived from
-private data must use a keyed hash.
+visible in every repository, including encrypted ones, because the authority
+compares keys.
 
 An optional `link` files a record in one FOLDER. Any folder may be a target; which
 folders a record type may use is product policy, not format. A link has no name
