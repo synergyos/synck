@@ -729,6 +729,12 @@ impl PortableRepository {
         author_valid(author)?;
         if let Some(checkout) = &self.config.checkout {
             if checkout.pending.is_none() {
+                // A repeat of the finished request has nothing left to do.
+                if self.config.author.as_deref() == Some(author)
+                    && checkout.paths == crate::checkout::normalize_paths(paths)?
+                {
+                    return Ok(());
+                }
                 return Err(invalid("checkout already enabled; use checkout selection"));
             }
             // An interrupted enable finishes the transition it recorded.

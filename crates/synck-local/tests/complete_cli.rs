@@ -577,6 +577,8 @@ async fn imported_checkout_replays_moved_and_deleted_file_content_heads() {
     drop(repo);
     let mut copy = PortableRepository::open(&archive).unwrap();
     copy.enable_checkout("tester", &[]).await.unwrap();
+    copy.enable_checkout("tester", &[]).await.unwrap();
+    assert!(copy.enable_checkout("other", &[]).await.is_err());
     copy.verify().await.unwrap();
     assert_eq!(fs::read(archive.join("renamed.txt")).unwrap(), b"live");
     assert!(!archive.join("deleted.txt").exists());
