@@ -586,8 +586,11 @@ Content-ID and provider attachment ID), and the EMAIL owner as `item_id`.
 They are family subrecords within that item's ledger, not folder children.
 
 An email's title is the last `title` string in its `EMAIL::CREATE` or
-`EMAIL::SET_TITLE` metadata. With none, the title is the subject, and a missing
-subject shows `(no subject)`. A title is nonempty, and two emails may share one.
+`EMAIL::SET_TITLE` metadata, and a reader shows it exactly as stored. With none, a
+reader shows the subject, or `(no subject)` when it is missing, and may show the
+email's date before it. That date is display only and is never stored, so a
+viewer's setting and time zone apply to it. A title is nonempty, and two emails
+may share one.
 Erasing an email's metadata erases its subject and title; only the fact that it
 existed stays. Generated provider-import commit messages use counts and source
 account, never message subjects or addresses.
