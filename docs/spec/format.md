@@ -80,11 +80,11 @@ symlinks outside the repository.
 
 Configuration is an object with required `format_version: 7`, `repo_id`,
 `authority` (`LOCAL`, `FOLLOWER`, or `INDEPENDENT_LOCAL`), optional
-`storage_mode` (`WHOLE_FILE`, the default, or `CHUNKED`), optional `author`
-(string), and optional `encrypted` (boolean, default false). Unknown fields are
-rejected. `encrypted` is fixed when the repository is created and copies keep it.
-`author` is the default author ID for new commits, at most 256 bytes; it is not
-history.
+`storage_mode` (`WHOLE_FILE`, the default, or `CHUNKED`), `author` (string, required
+unless `authority` is `FOLLOWER`), and optional `encrypted` (boolean, default false).
+Unknown fields are rejected. `encrypted` is fixed when the repository is created and
+copies keep it. `author` is the default author ID for new commits, at most 256 bytes;
+it is not history.
 
 `.synck/checkout.json` holds mutable checkout state, apart from the file that
 identifies the repository. It is an object with `paths` (array of selected
@@ -94,10 +94,10 @@ transitioning its materialized paths. A missing file means the defaults. It is n
 canonical history and copies do not carry it.
 
 Authority is local operational configuration, not a cryptographic credential.
-`LOCAL` is a repository created here, and it accepts writes. `FOLLOWER` is an
-imported copy, and it refuses them. `INDEPENDENT_LOCAL` is a follower explicitly
-activated to accept its own writes. Independent activation is not a synchronization
-or distributed fencing protocol.
+`FOLLOWER` is an imported copy, and it refuses writes. `INDEPENDENT_LOCAL` accepts
+writes: a repository created here, or a copy given its own checkout. `LOCAL` accepts
+writes too: a copy activated to succeed a source that has retired. Neither is a
+synchronization or distributed fencing protocol.
 
 Repository IDs, item IDs, physical `commit_pk` IDs, history generations and FILE
 version IDs are UUIDv7, stored in lowercase hyphenated form. Commit IDs, object IDs, event digests and checkpoints are
