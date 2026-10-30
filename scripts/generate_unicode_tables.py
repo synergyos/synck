@@ -1,23 +1,33 @@
 #!/usr/bin/env python3
-"""Generate the name tables in synck-vcs from the Unicode Character Database.
+"""Generate the name tables from the Unicode Character Database.
 
 Usage: python3 -I scripts/generate_unicode_tables.py <directory-with-ucd-files>
 
-It reads CaseFolding.txt and DerivedGeneralCategory.txt, whose first lines must
-name the format's Unicode version, and rewrites case_folding.rs and assigned.rs.
+It reads the four files that format.md pins, by SHA-256, and rewrites
+case_folding.rs, assigned.rs and docs/spec/unicode-tables.json, which is the same
+data for an implementation in another language.
 """
+import hashlib
+import json
 import sys
 from pathlib import Path
 
 VERSION = "18.0.0"
 UCD = Path(sys.argv[1])
-OUT = Path(__file__).resolve().parent.parent / "crates/synck-vcs/src"
+ROOT = Path(__file__).resolve().parent.parent
+OUT = ROOT / "crates/synck-vcs/src"
+PINNED = {
+    "UnicodeData.txt": "0736451de439ae7baf1425136617da495e09ee5afbe6e394374db7009ea08950",
+    "DerivedNormalizationProps.txt": "98ac7f67d985fe781e317f6182e885e94cabb0c314769e6dd73e48b226931ccd",
+    "CaseFolding.txt": "a004797658a457bec4dc11683e39f69249ea3b595b752dbea6721c4c9f587b0d",
+    "DerivedGeneralCategory.txt": "d6b151d2d40ee9b1876d26f417980f45ffae47b6055ccf7203cb31f07a030f94",
+}
+for name, digest in PINNED.items():
+    assert hashlib.sha256((UCD / name).read_bytes()).hexdigest() == digest, name
 
 
 def lines(name):
-    text = (UCD / name).read_text(encoding="utf-8").splitlines()
-    assert VERSION in text[0], text[0]
-    for line in text:
+    for line in (UCD / name).read_text(encoding="utf-8").splitlines():
         line = line.split("#")[0].strip()
         if line:
             yield [field.strip() for field in line.split(";")]
@@ -27,26 +37,63 @@ def escape(code):
     return f"\\u{{{code:x}}}"
 
 
+def merge(ranges):
+    merged = []
+    for low, high, *value in sorted(ranges):
+        if merged and merged[-1][1] + 1 == low and merged[-1][2:] == value:
+            merged[-1][1] = high
+        else:
+            merged.append([low, high, *value])
+    return merged
+
+
+def code_range(code):
+    low, _, high = code.partition("..")
+    return int(low, 16), int(high or low, 16)
+
+
 folds = []
+fold_table = []
 for code, status, mapping, *_ in lines("CaseFolding.txt"):
     if status in ("C", "F"):
-        target = "".join(escape(int(c, 16)) for c in mapping.split())
-        folds.append((int(code, 16), target))
+        targets = [int(c, 16) for c in mapping.split()]
+        folds.append((int(code, 16), "".join(escape(c) for c in targets)))
+        fold_table.append([int(code, 16), *targets])
 folds.sort()
+fold_table.sort()
 
-ranges = []
-for code, category, *_ in lines("DerivedGeneralCategory.txt"):
-    if category != "Cn":
-        continue
-    low, _, high = code.partition("..")
-    ranges.append((int(low, 16), int(high or low, 16)))
-ranges.sort()
-merged = []
-for low, high in ranges:
-    if merged and merged[-1][1] + 1 == low:
-        merged[-1] = (merged[-1][0], high)
-    else:
-        merged.append((low, high))
+merged = merge(
+    code_range(code)
+    for code, category, *_ in lines("DerivedGeneralCategory.txt")
+    if category == "Cn"
+)
+
+decompositions = []
+classes = []
+for code, _, _, combining, _, decomposition, *_ in lines("UnicodeData.txt"):
+    if combining != "0":
+        classes.append((int(code, 16), int(code, 16), int(combining)))
+    if decomposition and not decomposition.startswith("<"):
+        decompositions.append([int(code, 16), *(int(c, 16) for c in decomposition.split())])
+exclusions = merge(
+    code_range(fields[0])
+    for fields in lines("DerivedNormalizationProps.txt")
+    if fields[1] == "Full_Composition_Exclusion"
+)
+
+tables = {
+    "unicode_version": VERSION,
+    "unassigned": merged,
+    "case_folding": fold_table,
+    "decompositions": sorted(decompositions),
+    "combining_classes": merge(classes),
+    "composition_exclusions": exclusions,
+}
+text = ",\n".join(
+    json.dumps(key) + ":" + json.dumps(value, separators=(",", ":"))
+    for key, value in tables.items()
+)
+(ROOT / "docs/spec/unicode-tables.json").write_text("{" + text + "}\n", encoding="utf-8")
 
 HEADER = f"""//! Source: https://www.unicode.org/Public/{VERSION}/ucd/
 //! Unicode data license: https://www.unicode.org/license.txt
@@ -89,6 +136,6 @@ pub(super) fn is_assigned(ch: char) -> bool {
 }
 
 const UNASSIGNED: &[(u32, u32)] = &[
-""" + "".join(f"    (0x{l:x}, 0x{h:x}),\n" for l, h in merged) + "];\n",
+""" + "".join(f"    (0x{low:x}, 0x{high:x}),\n" for low, high in merged) + "];\n",
     encoding="utf-8",
 )

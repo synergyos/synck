@@ -23,5 +23,6 @@ Their provenance is documented in:
 
 Third-party dependencies retain their own licenses.
 
-Unicode case-folding data: Copyright © 1991-2026 Unicode, Inc.
+Unicode case-folding, general category and normalization data, including
+docs/spec/unicode-tables.json: Copyright © 1991-2026 Unicode, Inc.
 Distributed under Unicode License V3; see docs/spec/unicode-license.txt.

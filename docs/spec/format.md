@@ -489,8 +489,20 @@ location.
 Normalization, case folding and assigned code points use the Unicode 18.0.0 data
 from <https://www.unicode.org/Public/18.0.0/ucd/>, under the
 [Unicode License V3](unicode-license.txt). A language's built-in Unicode tables
-follow its own release, not this one, and they disagree on real names. Build tables
-from these files:
+follow its own release, not this one, and they disagree on real names.
+[unicode-tables.json](unicode-tables.json) holds everything a name needs from these
+files, so an implementation need not parse them:
+
+| Field | Holds |
+| --- | --- |
+| `unassigned` | `[low, high]` ranges of code points with General_Category Cn |
+| `case_folding` | `[code, target...]` for each status C or F mapping |
+| `decompositions` | `[code, target...]` for each canonical, single-level decomposition |
+| `combining_classes` | `[low, high, class]` ranges of nonzero Canonical_Combining_Class |
+| `composition_exclusions` | `[low, high]` ranges of Full_Composition_Exclusion |
+
+Code points are integers. Hangul syllables compose and decompose by arithmetic and
+are in no table. `scripts/generate_unicode_tables.py` derives the file from:
 
 | File | SHA-256 |
 | --- | --- |
