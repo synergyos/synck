@@ -54,3 +54,15 @@ pub use chunk_store::StorageMode;
 
 /// Create a complete format-7 repository with chunked storage and a checkout.
 pub use portable::init_repository as init;
+
+/// Entry points for `synck-fuzz`. Not a supported API.
+#[doc(hidden)]
+pub mod fuzz_entry {
+    pub fn decode_chunk(codec: &str, raw_size: i64, payload: &[u8]) {
+        let _ = crate::chunk_store::decode_chunk(codec, raw_size, payload);
+    }
+
+    pub fn ooxml_regions(file: std::fs::File, size: u64) {
+        let _ = crate::ooxml::chunk_region_lengths(file, size, crate::ooxml::OoxmlKind::Docx);
+    }
+}

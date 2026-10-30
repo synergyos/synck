@@ -6,7 +6,9 @@ members = [
   "crates/synck-local",
   "crates/synck-items",
   "crates/synck-sync",
+  "crates/synck-fuzz",
 ]
+exclude = ["fuzz"]
 resolver = "2"
 
 [workspace.package]

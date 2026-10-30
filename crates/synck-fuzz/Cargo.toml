@@ -1,0 +1,22 @@
+[package]
+authors.workspace = true
+name = "synck-fuzz"
+version.workspace = true
+edition.workspace = true
+license = "Apache-2.0"
+repository.workspace = true
+description = "Checks for every format Synck reads from untrusted sources"
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+serde_json = { workspace = true, features = ["arbitrary_precision"] }
+synck-items = { path = "../synck-items" }
+synck-local = { path = "../synck-local" }
+synck-vcs = { path = "../synck-vcs" }
+
+[dev-dependencies]
+base64 = "0.22"
+
+[lints]
+workspace = true

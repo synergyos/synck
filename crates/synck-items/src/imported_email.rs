@@ -669,10 +669,10 @@ fn parse_msg(
             }
             drop(compound);
             let normalized_source = normalize_msg_strings(source)?;
-            Outlook::from_slice(normalized_source.as_slice())
-                .map_err(|error| ImportedEmailParseError::InvalidFormat(error.to_string()))?
+            outlook_from_slice(normalized_source.as_slice())
+                .map_err(ImportedEmailParseError::InvalidFormat)?
         }
-        Err(cfb_error) if duplicate_minifat_reference(&cfb_error) => Outlook::from_slice(
+        Err(cfb_error) if duplicate_minifat_reference(&cfb_error) => outlook_from_slice(
             source.as_slice(),
         )
         .map_err(|parse_error| {
@@ -1728,6 +1728,13 @@ fn fallback_attachment_name(path: &str, mime_type: &str) -> String {
         _ => ".bin",
     };
     format!("attachment-{path}{extension}")
+}
+
+/// `msg_parser` panics on hostile files, such as a non-ASCII stream name.
+fn outlook_from_slice(source: &[u8]) -> Result<Outlook, String> {
+    std::panic::catch_unwind(|| Outlook::from_slice(source))
+        .map_err(|_| "MSG parser refused the file".to_string())?
+        .map_err(|error| error.to_string())
 }
 
 fn msg_attachment_filename(attachment: &msg_parser::Attachment, index: usize) -> String {

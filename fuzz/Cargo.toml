@@ -1,0 +1,94 @@
+[package]
+name = "synck-fuzz-targets"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+synck-fuzz = { path = "../crates/synck-fuzz" }
+
+[workspace]
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "json"
+path = "fuzz_targets/json.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bundle"
+path = "fuzz_targets/bundle.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "object"
+path = "fuzz_targets/object.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "metadata"
+path = "fuzz_targets/metadata.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "state_node"
+path = "fuzz_targets/state_node.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "event"
+path = "fuzz_targets/event.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "name"
+path = "fuzz_targets/name.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "eml"
+path = "fuzz_targets/eml.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "msg"
+path = "fuzz_targets/msg.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "chunk"
+path = "fuzz_targets/chunk.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ooxml"
+path = "fuzz_targets/ooxml.rs"
+test = false
+doc = false
+bench = false

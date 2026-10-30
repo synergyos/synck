@@ -1005,7 +1005,7 @@ fn flush_batch(
     result
 }
 
-fn decode_chunk(codec: &str, raw_size: i64, payload: &[u8]) -> Result<Vec<u8>> {
+pub(crate) fn decode_chunk(codec: &str, raw_size: i64, payload: &[u8]) -> Result<Vec<u8>> {
     let raw_size = usize::try_from(raw_size)
         .ok()
         .filter(|size| (1..=MAX_CHUNK).contains(size))

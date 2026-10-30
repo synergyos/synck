@@ -1376,6 +1376,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "synck-fuzz"
+version = "0.2.0"
+dependencies = [
+ "base64",
+ "serde_json",
+ "synck-items",
+ "synck-local",
+ "synck-vcs",
+]
+
+[[package]]
 name = "synck-items"
 version = "0.2.0"
 dependencies = [
