@@ -506,7 +506,7 @@ impl Repository {
                 break;
             }
             for event in &events {
-                if event.event_type == "FILE::SET_CONTENT" {
+                if synck_file_folder::is_file_content_event(&event.event_type) {
                     let proposal = parse_event(event)?;
                     if proposal.set_content.is_some() {
                         let (blob_id, size) = event_content(&proposal)?;
@@ -1302,7 +1302,7 @@ mod tests {
                 &file_item_id,
                 &version_id,
                 &Uuid::new_v4().to_string(),
-                3,
+                2,
                 None,
                 Some(0),
                 &blob_id,

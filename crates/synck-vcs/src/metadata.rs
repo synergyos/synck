@@ -1,9 +1,11 @@
 //! Small erasable event metadata, stored as canonical JSON in salted objects.
 use crate::errors::CoreError;
-use crate::object::{Codec, Object, ObjectError};
+use crate::object::{ENCRYPTED_PREFIX, Form, Object, ObjectError, verify_stored};
 use crate::types::{ObjectId, canonical_json_bytes};
 
 pub const MAX_METADATA_BYTES: usize = 1024 * 1024;
+/// Prefix, scheme, epoch and nonce, then ciphertext with its 16-byte tag.
+const MAX_ENCRYPTED_METADATA_BYTES: usize = 50 + MAX_METADATA_BYTES + 16;
 
 #[derive(Debug, thiserror::Error)]
 pub enum MetadataError {
@@ -85,7 +87,7 @@ impl Metadata {
             return Err(MetadataError::Invalid);
         }
         Ok(Self {
-            object: Object::new(Codec::Utf8, &bytes)?,
+            object: Object::new(&bytes)?,
             value,
         })
     }
@@ -96,11 +98,24 @@ impl Metadata {
         }
         let object = Object::verify(id, payload)?;
         let value: serde_json::Value =
-            serde_json::from_str(object.utf8()?).map_err(|_| MetadataError::Invalid)?;
+            serde_json::from_str(object.utf8()).map_err(|_| MetadataError::Invalid)?;
         if !value.is_object() || canonical_json_bytes(&value)? != object.bytes() {
             return Err(MetadataError::Invalid);
         }
         Ok(Self { object, value })
+    }
+
+    /// Verify stored bytes of either form. An encrypted frame verifies by its ID
+    /// and frame alone, and has no readable value without its key.
+    pub fn verify_any(id: &ObjectId, payload: Vec<u8>) -> Result<Option<Self>, MetadataError> {
+        if !payload.starts_with(ENCRYPTED_PREFIX) {
+            return Self::verify(id, payload).map(Some);
+        }
+        if payload.len() > MAX_ENCRYPTED_METADATA_BYTES {
+            return Err(MetadataError::Invalid);
+        }
+        verify_stored(id, Form::Encrypted, &payload)?;
+        Ok(None)
     }
 
     pub fn id(&self) -> ObjectId {

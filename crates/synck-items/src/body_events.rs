@@ -46,10 +46,7 @@ pub fn restore(
         let object = objects
             .get(id)
             .ok_or_else(|| BodyEventError::InvalidContent("missing body".into()))?;
-        let body = object
-            .utf8()
-            .map_err(|error| BodyEventError::InvalidContent(error.to_string()))?;
-        validate_body(&event.event_type, body)?;
+        validate_body(&event.event_type, object.utf8())?;
         content
             .resolve(object.clone())
             .map_err(|error| BodyEventError::InvalidContent(error.to_string()))?;
@@ -60,14 +57,11 @@ pub fn restore(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use synck_vcs::{
-        object::Codec,
-        types::{EventContent, canonical_event_proposal_bytes},
-    };
+    use synck_vcs::types::{EventContent, canonical_event_proposal_bytes};
     #[test]
     fn resolving_a_body_preserves_envelope_and_exact_bytes() {
         let body = " \0🦀\r\n";
-        let object = Object::new(Codec::Utf8, body.as_bytes()).unwrap();
+        let object = Object::new(body.as_bytes()).unwrap();
         let mut event = EventProposal::from_fields(serde_json::json!({"event_type":"CHAT::MESSAGE::CREATE", "set_content":EventContent::body(object.id())})).unwrap();
         let before = canonical_event_proposal_bytes(&event).unwrap();
         restore(
@@ -82,8 +76,7 @@ mod tests {
                 .unwrap()
                 .object("body")
                 .unwrap()
-                .utf8()
-                .unwrap(),
+                .utf8(),
             body
         );
         assert_eq!(canonical_event_proposal_bytes(&event).unwrap(), before);

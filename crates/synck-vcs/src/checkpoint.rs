@@ -2,10 +2,32 @@
 use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
 
-use crate::types::{CommitId, commit_id_to_digest_bytes};
+use crate::errors::CoreError;
+use crate::types::{CommitId, RepoId, commit_id_to_digest_bytes};
+
+/// The repository format hashed into the genesis value.
+pub const REPOSITORY_FORMAT: u32 = 7;
 
 /// The predecessor of the first checkpoint, not a stored checkpoint itself.
-pub const GENESIS: [u8; 32] = [0; 32];
+/// It names one history of one repository, so no chain validates anywhere else.
+pub fn genesis(
+    repo_id: &RepoId,
+    generation: &str,
+    encrypted: bool,
+) -> Result<[u8; 32], CoreError> {
+    let raw = |value: &str| {
+        uuid::Uuid::parse_str(value)
+            .map(uuid::Uuid::into_bytes)
+            .map_err(|_| CoreError::InvalidProposal("invalid genesis identity".into()))
+    };
+    let mut hash = Sha256::new();
+    hash.update(b"synck-genesis-v1");
+    hash.update(raw(repo_id.as_str())?);
+    hash.update(raw(generation)?);
+    hash.update(REPOSITORY_FORMAT.to_be_bytes());
+    hash.update([u8::from(encrypted)]);
+    Ok(hash.finalize().into())
+}
 
 /// Hash a published position using fixed-width, big-endian framing.
 ///

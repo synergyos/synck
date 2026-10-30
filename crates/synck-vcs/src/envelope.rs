@@ -20,7 +20,6 @@ pub struct VerifyCommit {
     pub commit_id: Option<CommitId>,
     pub repo_seq: Option<i64>,
     pub format_version: i32,
-    pub import_job_id: Option<String>,
     pub author_id: String,
     pub committer_id: String,
     pub occurred_at: Option<crate::types::Timestamp>,
@@ -428,7 +427,6 @@ impl CommitEnvelopeValidator {
             &self.commit.committer_id,
             self.commit.occurred_at,
             self.commit.message.as_deref(),
-            self.commit.import_job_id.as_deref(),
             self.next_event_index,
             &events_digest,
         ) {
@@ -508,7 +506,6 @@ mod tests {
             &author,
             None,
             None,
-            None,
             events.len(),
             &events_digest,
         )
@@ -517,7 +514,6 @@ mod tests {
             commit_id: Some(compute_commit_id(&commit_bytes)),
             repo_seq: Some(1),
             format_version: COMMIT_FORMAT_VERSION,
-            import_job_id: None,
             committer_id: author.clone(),
             occurred_at: None,
             author_id: author,
@@ -538,15 +534,15 @@ mod tests {
     }
 
     fn create_proposal() -> EventProposal {
-        EventProposal {
+        EventProposal { set_link: None,
             item_id: None,
             event_type: "FILE::CREATE".to_string(),
             set_metadata: None,
-            set_content: None,
-            create_item: Some(CreateItem {
+            set_content: Some(crate::content::EventContent::bytes(crate::types::ObjectId::from_digest([7; 32]))),
+            create_item: Some(CreateItem { key: None, link: None,
                 item_type: "FILE".to_string(),
                 parent_folder_id: None,
-                name: "file.txt".to_string(),
+                name: Some("file.txt".to_string()),
             }),
             set_parent: None,
             set_name: None,
@@ -589,7 +585,7 @@ mod tests {
         create.set_federation_stream_id = Some("stream".to_string());
         let mut rebind = create_proposal();
         rebind.create_item = None;
-        rebind.event_type = "ITEM::FEDERATE".to_string();
+        rebind.event_type = "FILE::FEDERATE".to_string();
         rebind.set_is_federated = Some(true);
         rebind.set_federation_stream_id = Some("stream".to_string());
         assert!(

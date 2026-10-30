@@ -13,8 +13,9 @@ container, canonical JSON, event envelopes, tree and record rules, objects,
 commits and checkpoints. After 1.0 it changes only with a new repository format.
 
 Item families define event types, metadata keys and content roles. Each family
-is versioned separately, in this document. Adding a family or an event type never
-changes the core. All families below are at version 1.
+is versioned separately, in this document; no family version is stored in history.
+Adding a family or an event type never changes the core. All families below are at
+version 1.
 
 Migration-only event types are forbidden. A conversion between formats happens
 offline and writes the resulting history; it leaves no conversion, repair or
@@ -40,17 +41,18 @@ JSON payload, including escaping.
 | Hashed JSON nesting | 64 levels |
 
 Author and committer IDs are nonempty. A stored operation ID is null or
-nonblank UTF-8; append submissions require one. Preserve its exact bytes,
-including whitespace; do not trim or derive a different retry identity.
-A message is null or nonempty; an empty message is rejected. Name normalization
-and forbidden-character rules below still apply.
+nonblank UTF-8, and nonblank means at least one code point that is not Unicode
+White_Space. The schema's `trim()` check is a weaker backstop, not the rule. A
+commit submitted through the [protocol](protocol.md) requires one; a local commit
+may store null. Preserve its exact bytes, including whitespace; do not trim or
+derive a different retry identity. A message is null or nonempty; an empty message
+is rejected. Name normalization and forbidden-character rules below still apply.
 
 There is **no per-commit event-count or aggregate byte admission limit**. Counts
 and positions must still fit their specified integer representation. Transfer
 page bounds and optional server admission policy never change repository
 validity or split/rewrite accepted commits. See [the sync protocol](protocol.md).
-All public layers use `synck-vcs::limits`; Core configuration cannot override
-format validity. Previous `SYNCKHUB_*` constants are not part of this contract.
+Configuration cannot override format validity.
 
 ## Container and identifiers
 
@@ -62,8 +64,9 @@ A repository is a directory containing `.synck/` with:
 - `object-store.sqlite3`: required only in CHUNKED mode, schema
   [object-store.sql](object-store.sql).
 - `checkout.json`: optional mutable checkout state.
-- `lock`: local coordination file. Locking is an implementation mechanism;
-  readers must obtain a consistent snapshot, including SQLite WAL contents.
+- `lock`: required empty file for local coordination. Locking is an implementation
+  mechanism; readers must obtain a consistent snapshot, including SQLite WAL contents.
+- `tmp/`: optional; holds the recovery intents of interrupted operations.
 
 `repository.local.sqlite3`, `repository.state.sqlite3`, their SQLite sidecars,
 and scan caches are disposable. Optional `agent-locks.sqlite3` holds local edit
@@ -79,6 +82,8 @@ Configuration is an object with required `format_version: 7`, `repo_id`,
 `storage_mode` (`WHOLE_FILE`, the default, or `CHUNKED`), optional `author`
 (string), and optional `encrypted` (boolean, default false). Unknown fields are
 rejected. `encrypted` is fixed when the repository is created and copies keep it.
+`author` is the default author ID for new commits, at most 256 bytes; it is not
+history.
 
 `.synck/checkout.json` holds mutable checkout state, apart from the file that
 identifies the repository. It is an object with `paths` (array of selected
@@ -88,21 +93,27 @@ transitioning its materialized paths. A missing file means the defaults. Replace
 it atomically. It is not canonical history and copies do not carry it.
 
 Authority is local operational configuration, not a cryptographic credential.
-An imported copy is a FOLLOWER. Independent activation is not a synchronization
+`LOCAL` is a repository created here, and it accepts writes. `FOLLOWER` is an
+imported copy, and it refuses them. `INDEPENDENT_LOCAL` is a follower explicitly
+activated to accept its own writes. Independent activation is not a synchronization
 or distributed fencing protocol.
 
 Repository IDs, item IDs, physical `commit_pk` IDs, history generations and FILE
 version IDs are UUIDv7, stored in lowercase hyphenated form. Commit IDs, object IDs, event digests and checkpoints are
 `sha256:` plus 64 lowercase hexadecimal digits in JSON, and raw 32-byte digests
 in SQLite BLOB columns. They are distinct domains despite sharing spelling.
-Authors and committers are application identity strings, not UUIDs.
+Authors and committers are application identity strings, not UUIDs. A federation
+domain ID is a nonempty string, opaque to the format.
 
 Sequences are positive signed 64-bit integers in SQLite; ref bases also allow
-zero. Event indexes and event counts fit positive signed 32-bit storage/API
-integers (indexes start at zero). There is no smaller policy cap. SQLite time
-strings are RFC 3339 UTC; canonical writer timestamps use nine fractional digits
-and `Z`. Readers decode acceptance time to seconds and nanoseconds for checkpoint
-hashing. The spelling used for the commit's hashed `occurred_at` is canonical.
+zero. In hashed JSON they stop at 2^53 - 1, like every number. Event indexes start
+at zero and event counts are positive; both fit signed 32-bit storage/API integers.
+There is no smaller policy cap.
+
+Time strings are RFC 3339 UTC. A writer uses one spelling: nine fractional digits
+and `Z`. A reader compares instants, not spellings, and decodes acceptance time to
+seconds and nanoseconds for checkpoint hashing. The commit's `occurred_at` is hashed,
+so there only the writer's spelling is valid.
 
 ## Canonical JSON
 
@@ -168,8 +179,8 @@ and is independent of item sequence; an initial ref base is zero.
 
 ### Item and event types
 
-An item type matches `[A-Z][A-Z0-9_]*`, at most 64 bytes. `ITEM` is not an item
-type.
+An item type matches `[A-Z][A-Z0-9_]*`, at most 64 bytes. `ITEM` and `FILE_VERSION`
+are reserved: they begin event types and are never item types.
 
 An event type is two or more segments joined by `::`, at most 128 bytes in all.
 Each segment matches `[A-Z][A-Z0-9_.]*`. The first segment is the event's family.
@@ -179,8 +190,10 @@ applies to any type. A ref event's family is its ledger's name, such as
 A reader replays an unknown event type from its structural fields alone.
 
 These are the core events. Each has one name, the item's type followed by the name
-below, and `ITEM::` followed by one of these names is rejected. An event other than
-`CREATE` carries `base_seq`, unless its item was created in that commit.
+below, and `ITEM::` followed by one of these names is rejected. An event carries
+`base_seq` unless its item was created in that commit, so an event with `create_item`
+never has one. `create_item` may appear on any event whose family is the item's own
+type, and never on an `ITEM::` event.
 
 | Name | Items | Fields |
 | --- | --- | --- |
@@ -202,38 +215,87 @@ An item is created exactly once at item sequence one. Every next item event
 increments its sequence by one. All events targeting an existing item in one
 commit carry its head at the start of that commit as `base_seq`; all events for
 an item created within that commit omit the base. Ref events similarly share
-the pre-commit ref head and increment it consecutively. Refs require an existing
-owner, which may have been created earlier in that commit.
+the pre-commit ref head and increment it consecutively. An owner has one ref
+ledger. Refs require an existing owner that is not tombstoned, and the owner may
+have been created earlier in that commit.
 
-Creation fixes item identity, type and class, starts lifecycle LIVE and sequencing mode
-LOCAL unless federated bootstrap applies. Apply structural fields to the evolving
-in-commit state. Parents must exist in this repository and be FOLDER items;
-root is null, and parent cycles are forbidden. Live tree-item siblings must have
-distinct name keys. Tombstones are terminal; tombstoned items receive no more
-item events. Trash is reversible and retains its history. Names, links, keys and
-item types do not depend on metadata presence. Creation time/author come from
+Creation fixes item identity, type and class, and starts lifecycle LIVE and
+sequencing mode LOCAL unless federated bootstrap applies. Names, links, keys and
+item types do not depend on metadata presence. Creation time and author come from
 the creation commit.
 
-FILE/FOLDER checked mutations additionally require parent-closed LIVE state at
-the final commit boundary, including atomic descendant trash, restoration and
-tombstoning. Temporary name conflicts during an atomic swap must be resolved
-in the final state. Other tree items retain Core's parent-existence rule.
+Replay follows fields, not names. The core-event table is what writers emit and
+what families admit; a structural field on any event of the item's family applies
+with the same checks, so an unknown event type replays. The exceptions are the
+content rules below.
 
-LOCAL items accept append; FEDERATED items accept ingest. A transition to
-federated requires `set_is_federated: true` and a nonempty stream; a return to
-local requires false and no stream field. Ingest bootstrap materializes the
-true/stream pair into creation, and permits one structurally pure same-stream
-replay event in that bootstrap commit. Outside bootstrap, switching to federated
-is a local append and switching to local is a federated ingest. At most one mode
-change per item per commit is permitted. This is the engine's existing ingest
-contract; it does not specify the future cross-machine sync protocol.
+There are two kinds of rule. A replay rule depends only on structure, so any
+verifier applies it to any history, without metadata or family knowledge. An
+admission rule is what a family lets a writer add, and needs data that may be erased
+or encrypted, so it is checked only where that data is readable. `content.size` and
+the FILE revision labels are admission rules.
+
+#### Content
+
+`set_content` on an event with exactly two segments replaces the item's content
+snapshot. On a longer event type, such as `EMAIL::ATTACHMENT::CREATE`, it adds its
+objects to closure and leaves the snapshot unchanged, because a subitem is not the
+item. A `FILE::CREATE`, and any two-segment event with `set_content` on a FILE, must
+hold exactly `bytes`; `{}` is invalid there. A FOLDER has no content.
+
+#### Lifecycle
+
+| Before | `set_in_trash: true` | `set_in_trash: false` | `set_tombstoned: true` |
+| --- | --- | --- | --- |
+| LIVE | TRASH | no change | TOMBSTONED |
+| TRASH | no change | LIVE | TOMBSTONED |
+| TOMBSTONED | invalid | invalid | invalid |
+
+A repeated trash or restore changes nothing, so a retried history stays valid.
+`set_tombstoned: false` is invalid. Tombstoning is terminal: the item receives no
+more item or ref events, in that commit or later. It keeps its name, parent, link and
+content. Trash is reversible and retains history.
+
+#### Namespace
+
+Parents, sibling names, keys and links are checked at the end of each commit, on the
+state after all its events. So a child may precede its parent in one commit, and a
+name swap is legal. A writer may be stricter, and the sync protocol sends folders
+first. A parent must exist in this repository and be a FOLDER; root is null, and
+parent cycles are forbidden. Live tree-item siblings have distinct name keys.
+
+`vcs_items` must reach that final state in one step. Its unique indexes are checked
+per statement, so a writer replaying a swap deletes the touched rows and reinserts
+them, or uses another way that never holds a duplicate.
+
+A LIVE item under LIVE folders is a rule of the write path, not of replay. A local
+writer keeps it at the end of every commit, including atomic descendant trash,
+restoration and tombstoning. Replay does not check it, because federated streams
+apply one item at a time, so a folder in the trash may hold a live child.
+Reconstruction leaves such a child out.
+
+#### Federation
+
+Which items accept append and which accept ingest is a write-path rule: LOCAL items
+accept append and FEDERATED items accept ingest. A transition to federated requires
+`set_is_federated: true` and a nonempty stream; a return to local requires false and
+no stream field. A `federation_stream_id` is unique among FEDERATED items.
+
+A `CREATE` may carry `set_is_federated: true` and `set_federation_stream_id`, both or
+neither. That is federated bootstrap: the item starts FEDERATED, and one more
+`FEDERATE` with the same stream is allowed in that commit. Outside bootstrap,
+switching to federated is a local append and switching to local is a federated
+ingest. At most one mode change per item per commit is permitted. This is the
+engine's existing ingest contract; it does not specify the future cross-machine sync
+protocol.
 
 ### Tree items and records
 
-Every item type belongs to exactly one class. The class is visible in
-`create_item`, so a reader needs no type registry and replays unknown future
-types. A family fixes which form its type uses; the other form is invalid for
-that type.
+Every item type belongs to exactly one class. A type in the table below has that
+class, and the other form is invalid for it. A type outside the table has the class
+of its `create_item` form, so a reader needs no type registry and replays unknown
+future types. A later family that adopts such a type must accept both forms if
+history holds both, or it needs a new repository format.
 
 | Class | Item types |
 | --- | --- |
@@ -310,7 +372,7 @@ Each event holds only the fields the core table gives it, with these additions:
   rejected.
 - `FOLDER::CREATE` carries no content, and may carry metadata. `SET_METADATA` and
   both `CREATE` events may hold keys this family does not name.
-- `SET_METADATA` carries `metadata_id` and no other optional field.
+- `SET_METADATA` carries `metadata_id`, its `base_seq`, and no other optional field.
 - `FEDERATE` carries no metadata or content.
 
 ### FILE byte reconstruction
@@ -358,8 +420,9 @@ decomposition or a case folding, and implementations with different tables would
 then disagree on validity. Format 7 therefore pins its Unicode version, and a
 newer version of Unicode is adopted only by a new repository format.
 
-Windows device stems are forbidden, case-insensitively, including when followed
-by an extension: CON, PRN, AUX, NUL, CONIN$, CONOUT$, COM1–COM9 and LPT1–LPT9.
+Windows device stems are forbidden, ignoring the case of ASCII letters only,
+including when followed by an extension: CON, PRN, AUX, NUL, CONIN$, CONOUT$,
+COM1–COM9 and LPT1–LPT9.
 COM and LPT followed by superscript ¹, ² or ³ are also forbidden. Spaces at the
 end of the stem before its first dot do not escape the restriction.
 
@@ -374,9 +437,11 @@ repository is on today. Names that merely begin with `.synck`, such as
 
 Sibling uniqueness uses Unicode 18.0.0 default full case folding of the NFC
 name, using CaseFolding.txt entries C and F, never locale-sensitive/Turkic
-folding. Preserve the display spelling. A case-only rename is allowed when it
-does not conflict with another item. NFC normalization uses the Unicode 18.0.0
-data. The name vectors are language-neutral JSON in `vectors/names.json`.
+folding. `name_key` is exactly the output of that fold and is not normalized again,
+even where the fold leaves NFC, as U+01F0 does. Preserve the display spelling. A
+case-only rename is allowed when it does not conflict with another item. NFC
+normalization uses the Unicode 18.0.0 data. The name vectors are language-neutral
+JSON in `vectors/names.json`.
 
 A proposed portable spelling normalizes NFC, replaces each forbidden character
 and each unassigned code point with `_`, strips trailing ASCII spaces/dots, substitutes `_` for an empty result,
@@ -404,10 +469,17 @@ not reject history or change names. Other applications can have shorter limits.
 ## Source attribution
 
 Normalization, case folding and assigned code points use the Unicode 18.0.0 data
-from <https://www.unicode.org/Public/18.0.0/ucd/>: `UnicodeData.txt`,
-`DerivedNormalizationProps.txt`, `CaseFolding.txt` and
-`extracted/DerivedGeneralCategory.txt`, under the
-[Unicode License V3](unicode-license.txt).
+from <https://www.unicode.org/Public/18.0.0/ucd/>, under the
+[Unicode License V3](unicode-license.txt). A language's built-in Unicode tables
+follow its own release, not this one, and they disagree on real names. Build tables
+from these files:
+
+| File | SHA-256 |
+| --- | --- |
+| `UnicodeData.txt` | `0736451de439ae7baf1425136617da495e09ee5afbe6e394374db7009ea08950` |
+| `DerivedNormalizationProps.txt` | `98ac7f67d985fe781e317f6182e885e94cabb0c314769e6dd73e48b226931ccd` |
+| `CaseFolding.txt` | `a004797658a457bec4dc11683e39f69249ea3b595b752dbea6721c4c9f587b0d` |
+| `extracted/DerivedGeneralCategory.txt` | `d6b151d2d40ee9b1876d26f417980f45ffae47b6055ccf7203cb31f07a030f94` |
 
 ## Publication checkpoints
 
@@ -464,7 +536,7 @@ the activity-head lock until commit or rollback. Rollback leaves no assigned
 positions, counter advancement or checkpoints, so it creates no gap. Backends
 with row locks may select unsequenced commits using `FOR UPDATE SKIP LOCKED`;
 that does not replace the per-repository sequencer lock. Use a deterministic
-batch order (acceptance timestamp, then commit key). Never allocate `repo_seq`
+batch order (acceptance timestamp, then `commit_pk`). Never allocate `repo_seq`
 with `nextval()` or its equivalent in the acceptance transaction. SQLite uses
 `BEGIN IMMEDIATE` to serialize its writers; acceptance itself does not access
 the activity head or checkpoints.
@@ -487,15 +559,26 @@ There are three forms:
 
 | Form | Used for | Stored bytes |
 | --- | --- | --- |
-| PLAIN | File bytes and email sources, in unencrypted repositories | The exact bytes, unframed |
+| PLAIN | File bytes, email sources and attachments, in unencrypted repositories | The exact bytes, unframed |
 | SALTED | Metadata and UTF-8 bodies, in unencrypted repositories | The salted frame |
 | ENCRYPTED | Every metadata and content object, in encrypted repositories | The encrypted frame |
 
 The repository's `encrypted` setting and the role select the form, never the
 bytes: a PLAIN file can begin with any byte sequence, including a frame's magic.
-In an unencrypted repository these roles are PLAIN: `bytes` on FILE, and `source`
-on EMAIL and on EMAIL attachments. Metadata and every other core role are SALTED.
-A role of an unknown family is verified by its ID and treated as opaque.
+In an unencrypted repository, metadata is SALTED and a `set_content` role has the
+first form that applies:
+
+| Item type | Role | Form |
+| --- | --- | --- |
+| Any | `sealed_key` | Opaque |
+| FILE | `bytes` | PLAIN |
+| EMAIL, CHAT | `source`, including on attachments | PLAIN |
+| FILE, FOLDER, EMAIL, CHAT, TASK_LIST, TASK, POST, CALENDAR, CALENDAR_EVENT, CALL | Any other | SALTED |
+| Any other | Any | Opaque |
+
+In an encrypted repository every role except `sealed_key` is ENCRYPTED. An opaque
+object is verified by its ID alone, and so is an object nothing references. An
+object referenced under two forms is checked against each.
 
 ### PLAIN
 
@@ -520,6 +603,19 @@ as it does for new content.
 Bytes are named by their hash, so storing the same bytes again makes every reference
 to them readable again, including one that was erased. A store that must keep an
 erasure refuses that object ID.
+
+A PLAIN ID is the hash of the whole content, so whoever holds it can confirm a guess
+at bytes that were erased. A short templated email is such a guess. This is the cost
+of IDs that `sha256sum` confirms and of storing identical bytes once.
+
+### Erasure
+
+Erasing an object removes its bytes and leaves every event as it was. The reference
+then reads as missing, which is valid. To make the bytes gone, delete them, then
+compact: run `VACUUM` on each SQLite database that held them, followed by
+`PRAGMA wal_checkpoint(TRUNCATE)`. A WHOLE_FILE object is its file. Chunks shared
+with other objects stay. A list of refused IDs is the store's own state, kept outside
+`repository.sqlite3`, because it is neither history nor a canonical table.
 
 ### SALTED
 
@@ -558,8 +654,9 @@ change, and an old scheme stays readable for ever, because history is permanent.
 Scheme 0 is invalid. A verifier checks IDs and frames without any key. A reader
 with no key for a scheme or epoch reports the content as unavailable, not corrupt.
 
-Scheme 1 is XChaCha20-Poly1305, with a 24-byte random nonce and a 16-byte tag at
-the end of the ciphertext. Its plaintext is what the SALTED or PLAIN form would
+Scheme 1 is XChaCha20-Poly1305 (`draft-irtf-cfrg-xchacha-03`: HChaCha20 over the
+ChaCha20-Poly1305 of RFC 8439), with a 24-byte random nonce and a 16-byte tag at the
+end of the ciphertext. Its plaintext is what the SALTED or PLAIN form would
 hold after its header: file bytes, UTF-8 text or canonical JSON. Its associated
 data is the concatenation of:
 
@@ -583,9 +680,12 @@ object is opaque and is the one stored object that is not in a frame. Keys, epoc
 rotation and sealing belong to the product's key specification, not to this format.
 
 An encrypted repository exposes item IDs, types, tree-item names and parents,
-record keys and links, lifecycle, sizes, times, actors, order and object IDs. A
-commit message in an encrypted repository must be null. `vectors/encrypted.json`
-fixes the frame, associated data and ciphertext, and lists rejected variants.
+record keys and links, lifecycle, operation IDs, federation stream IDs, times,
+actors, order, object IDs and exact sizes, since a scheme 1 object is 66 bytes longer
+than its plaintext. Operation IDs and stream IDs must hold no content. A commit
+message in an encrypted repository must be null. `vectors/encrypted.json` fixes the
+frame, associated data and ciphertext, and lists rejected variants. It gives two
+verdicts: `frame_valid` needs no key, and `opens` needs one.
 
 ### Object use
 
@@ -603,6 +703,10 @@ Scalars and arrays at the root, noncanonical JSON, duplicate keys and numbers
 outside the hashed JSON rule are rejected. A verifier cannot check the JSON of an
 encrypted payload without its key. A writer uses a fresh salt even for identical JSON.
 `vectors/metadata.json` fixes the JSON, stored bytes and digest independently.
+
+A key's current value is found by walking back from the item's latest payload, among
+the events a family names for it: the first payload holding the key wins. An erased
+payload stops the walk and the key is unavailable, never an older value.
 
 SQLite stores available payloads in
 `vcs_metadata_objects(repo_id TEXT, object_id BLOB, payload BLOB)`, with the first
@@ -632,8 +736,9 @@ sequences and commit hashes, including envelopes with metadata references.
 `set_content`, when present, is a complete map from role names to canonical
 object ID strings. It contains at most 32 distinct roles. Each role matches
 `[a-z][a-z0-9_]{0,31}`; duplicate names, invalid IDs, null values and nested values
-are rejected. An omitted field leaves the previous content snapshot unchanged.
-An empty map clears it. Inline text and JSON are not event content.
+are rejected. An omitted field leaves the previous content snapshot unchanged, and
+an empty map clears it, under the [content rules](#content) of replay. Inline text
+and JSON are not event content.
 
 FILE content uses exactly `bytes`; CHAT message content uses `body`. EMAIL uses
 `source` and optionally `provider`; EMAIL attachments use `source`. Their metadata contains descriptors, never object references. Unknown
@@ -670,22 +775,40 @@ object references. Read state and flags stay outside history, per principal.
 
 ### EMAIL provider profile and titles
 
-The metadata payload's `mailcal` object has version `v: 2`; local imports use
-`origin.kind: "local_import"`, `parser_version`, `parser_limits`, `source`
-(`format`, `filename`, `mime_type`, `size_bytes`), `provider`, `account_id`,
-`provider_message_id`, `provider_thread_id`, `internet_message_id`, `subject`,
-`from`, `sender`, `to`, `cc`, `bcc`, `reply_to`, `sent_at`, `received_at`,
-`has_attachments`, `attachment_count`, and `imported_at`. Provider/account fields
-are null for local files. Header address entries have `name` and `email` (each string or null);
-missing scalar headers/times are null and missing recipient lists are empty.
-Metadata describes the content; it must not embed Synck object references.
+Version 1 of the EMAIL family is exactly `EMAIL::CREATE`, `SET_TITLE`, `SET_LINK`,
+`SET_METADATA`, `TRASH`, `RESTORE`, `TOMBSTONE` and `FEDERATE`, and
+`EMAIL::ATTACHMENT::CREATE`, `SET_METADATA`, `TRASH`, `RESTORE` and `TOMBSTONE`. There
+is no `EMAIL::SET_CONTENT`, because a message never changes.
+
+The `EMAIL::CREATE` metadata payload holds a `mailcal` object, and optionally `title`:
+
+| `mailcal` key | Value |
+| --- | --- |
+| `v` | 2 |
+| `parser_version` | Integer |
+| `parser_limits` | Object of integers: `source_bytes`, `header_bytes`, `header_count`, `mime_nesting`, `part_count`, `attachment_count`, `decoded_attachment_bytes`, `normalized_body_bytes`, `generated_rfc822_bytes`, `parser_concurrency` |
+| `origin` | `{"kind": "local_import"}` for a local import |
+| `source` | `format` (`eml` or `msg`), `filename`, `mime_type`, `size_bytes` |
+| `provider`, `account_id`, `provider_message_id`, `provider_thread_id` | String, or null for a local file |
+| `internet_message_id`, `subject` | String or null |
+| `from`, `sender` | An address or null |
+| `to`, `cc`, `bcc`, `reply_to` | Array of addresses, empty when missing |
+| `sent_at`, `received_at` | RFC 3339 string or null |
+| `has_attachments` | Boolean |
+| `attachment_count` | Integer |
+| `imported_at` | RFC 3339 string |
+
+An address has `name` and `email`, each a string or null. Metadata describes the
+content; it must not embed Synck object references.
 
 A provider archive uses `source` for the original raw MIME and `provider` for
 its original provider-native JSON, including provider snippet/body preview,
 labels, categories and importance. These are received originals, not Synck's
-renderings. Attachments use `EMAIL::ATTACHMENT::CREATE` events with `source`,
-metadata under `meta` (filename, MIME type, size, inline flag,
-Content-ID and provider attachment ID), and the EMAIL owner as `item_id`.
+renderings. Attachments use `EMAIL::ATTACHMENT::CREATE` events with `source` and
+the EMAIL owner as `item_id`. Their metadata has a `meta` object: `filename`,
+`mime_type`, `size_bytes`, `is_inline` (boolean), `content_id` and
+`provider_attachment_id` (each a string or null), and optional `origin`, which is
+`{"kind": "html_data_image", "version": 1}` for an image taken from the HTML body.
 They are family subrecords within that item's ledger, not folder children.
 
 An email's title is the last `title` string in its `EMAIL::CREATE` or
@@ -694,9 +817,13 @@ reader shows the subject, or `(no subject)` when it is missing, and may show the
 email's date before it. That date is display only and is never stored, so a
 viewer's setting and time zone apply to it. A title is nonempty, and two emails
 may share one.
-Erasing an email's metadata erases its subject and title; only the fact that it
-existed stays. Generated provider-import commit messages use counts and source
-account, never message subjects or addresses.
+Erasing an email's metadata and source erases its subject, title and text. Its
+events stay, so the fact that it existed stays, and so does the source's PLAIN ID,
+which can confirm a guess at the whole message. Generated provider-import commit
+messages use counts and source account, never message subjects or addresses.
+
+The local writer stores `title` only when an import names the email differently from
+its source file.
 
 The local writer implements file import. No provider acquisition client ships
 in 0.2; this profile defines its stored-data boundary without adding an unused
@@ -724,15 +851,18 @@ definitions and stay outside history.
 
 Named versions are `FILE_VERSION::*` events in a FILE's independent ref ledger.
 There are no version-set items, synthetic item identities or item-ledger version
-subitems. A ref's `set_content` must be absent. Its salted metadata contains
-`file_item_id` (equal to its envelope owner) and a UUIDv7 `version_id`.
+subitems. A ref's `set_content` must be absent. Its metadata contains
+`file_item_id` (equal to its envelope owner) and a UUIDv7 `version_id`. The rules
+in this section are admission rules, checked only where the metadata is readable.
 
-`CREATE` adds `operation_id` (a nonempty string unique among version creations),
+`CREATE` adds `operation_id` (a nonempty string unique in the repository),
 `source_item_seq` (the positive sequence of a FILE content revision), `kind`
 (`MAJOR` or `MINOR`), `label_source` (`INTERNAL` or `EXTERNAL`), signed integer
 `order_key`, and optional string/null `description`. Optional `source_commit_id`
-and `source_commit_event_idx` must agree with the referenced revision. The
-revision must precede the ref in accepted order, including within one commit.
+and `source_commit_event_idx` must each agree with the referenced revision. A
+revision in the same commit has no `source_commit_id`, because a commit cannot name
+itself. The revision must precede the ref in accepted order, including within one
+commit.
 Only one live label may reference any given revision of a FILE.
 
 `SET_DESCRIPTION`, `SET_KIND`, `SET_LABEL_SOURCE` and `SET_ORDER` change their
@@ -817,7 +947,9 @@ the portable content boundary.
 
 ## SQLite schema version policy
 
-Core SQLite uses application ID `0x53594E4B` and schema version 7. The adapter
+Core SQLite is UTF-8, with `PRAGMA application_id = 0x53594E4B` (1398361675),
+`PRAGMA user_version = 7` and `PRAGMA journal_mode = WAL`. All three persist in the
+file, and a read-only reader cannot set them, so a new database sets them. The adapter
 creates this schema directly and refuses prior schema versions without modifying
 their version stamps or definitions. There are no core or local schema migrations.
 The current local projection schema is 13, in `repository.local.sqlite3`.
@@ -939,7 +1071,9 @@ repair or rewrite imported history.
 foreign-key contract. All tables are STRICT. Each repository container contains
 one `repo_id`; every canonical row belongs to it. No `local_*` or state-tree
 tables belong in this database. Additional nonunique indexes are allowed, but
-additional owned tables, unique constraints, views or triggers are not.
+additional owned tables, unique constraints, views or triggers are not. A new
+repository has its `vcs_history_generations` row, and a `vcs_repo_activity_heads`
+row with `next_repo_seq` 1.
 
 - `vcs_commits` contains accepted commit headers. `commit_pk` is only a physical
   join key. A durable accepted commit has non-null `commit_id`, `events_digest`
@@ -976,7 +1110,7 @@ additional owned tables, unique constraints, views or triggers are not.
   `last_domain_seq` is nonnegative. Local-only repositories normally have no
   rows. Domain cursor metadata is operational provenance, not commit ancestry.
 
-A published snapshot has no unsequenced commits. The current complete-export
+A published snapshot has no unsequenced commits. The current export
 command requires that state and refuses a snapshot containing unpublished
 acceptances. It must not silently omit them. Live engines can validly have
 unsequenced accepted commits: the sequencer must finish publication before a
@@ -994,7 +1128,7 @@ Metadata stays in `vcs_metadata_objects` in either storage mode.
 
 ### CHUNKED storage
 
-`object-store.sqlite3` uses application ID `0x534F424A`, user version 1 and
+`object-store.sqlite3` uses `PRAGMA application_id = 0x534F424A`, `PRAGMA user_version = 1` and
 [object-store.sql](object-store.sql). `store_identity` contains exactly row
 `singleton = 1` with the same `repo_id` as configuration. `objects/` still exists
 but content is read from the object database.
@@ -1013,7 +1147,7 @@ A chunk's digest is SHA-256 of its decoded bytes.
 stores exactly one Zstandard frame: no trailing bytes or concatenated frames,
 decoded output exactly `raw_size`, frame window at most 262144 bytes. A stored
 compressed payload is nonempty and its size multiplied by 100 is less than
-`raw_size * 95`. These chunk codecs are separate from the object's codec byte.
+`raw_size * 95`. These chunk codecs are separate from a salted object's codec byte.
 
 Chunk boundaries have no semantic meaning. Readers must not reproduce a writer's
 chunking algorithm. The current writer uses FastCDC and optionally Office ZIP
@@ -1025,12 +1159,14 @@ bytes and hence object IDs. Re-encoding chunks is allowed; replacing salts is no
 
 A bundle is UTF-8 newline-delimited JSON. Outer records need not use JCS; embedded
 `payload_json` strings must contain exact canonical envelope bytes. A nonempty
-header comes first, followed by zero or more metadata records, then complete
+header comes first, followed by zero or more metadata records, then
 commit/event groups, then item-head records, then federation-domain records, then
-exactly one end record. Every record ends in a line feed. Blank body lines are
-ignored, and nothing follows the end record, not even a blank line. Unknown fields
-and record types are rejected. No event may appear outside its commit group or
-after the item section.
+exactly one end record. That section order is fixed. Within the metadata, item and
+domain sections a writer sorts by ID, so a history has one bundle; a reader does not
+depend on that order. Every record ends in a line feed. A blank body line is an empty
+line and is ignored, and nothing follows the end record, not even a blank line.
+Unknown fields and record types are rejected. No event may appear outside its commit
+group or after the item section.
 
 All records contain `type`. Other fields are:
 
@@ -1050,8 +1186,8 @@ and stream IDs are JSON null when absent. `ref_head_seq` may be omitted when zer
 Digest fields use prefixed hexadecimal spelling, except `payload_hex`, which
 is unprefixed lower hex of the complete metadata frame. `schema` is source
 provenance, not a schema migration instruction: the SQLite writer emits
-`subsystem: "synck_vcs_sqlite", schema_id: "core-v7"`. The generic bundle
-boundary also recognizes `synck_vcs_pg` provenance; that is not a 0.1 reader.
+`subsystem: "synck_vcs_sqlite", schema_id: "core-v7"`. A hosted export names
+`synck_vcs_pg`, and a reader treats that as provenance too.
 
 The end record is how a reader knows it has the whole bundle, as a Git packfile
 has a count and a trailer. `record_count` is the number of records before it,
@@ -1064,10 +1200,14 @@ truncated. `vectors/bundle.json` fixes a bundle and lists rejected variants.
 Commits are ordered by consecutive `repo_seq`, starting at 1; gaps are invalid.
 Exactly `event_count` event/ref records immediately follow each commit, with contiguous
 indexes from zero, item records first and ref records after. Their repeated
-commit ID, position and acceptance time must match. Item and domain sections
-must not duplicate identities; item-head fields must match structural replay.
-A complete archive must additionally supply every referenced object and the
-container/configuration needed to interpret it. An NDJSON bundle alone does not.
+commit ID, position and acceptance instant must match. Item and domain sections
+must not duplicate identities. Every replayed item has exactly one item record, and
+its fields must match structural replay.
+
+A repository, archive or export is complete when it holds every object its history
+references, together with the container and configuration needed to interpret it. An
+NDJSON bundle alone is not. A repository after erasure is valid but not complete, and
+its bundle is still a valid bundle.
 
 ## Independent verification procedure
 
@@ -1094,13 +1234,14 @@ container/configuration needed to interpret it. An NDJSON bundle alone does not.
 
 The language-neutral vectors under `vectors/` cover names, hashed JSON, object
 forms, encryption, metadata, envelopes, tree and record rules, state digests,
-commits, checkpoints, bundles and FILE labels. `vectors/file-folder/` contains
-profile intent and conformance examples; its `events.json` is an **application
-view**, with expanded `set_metadata` for comparing independently salted writes,
-not an accepted-envelope encoding. The top-level `events.json` fixes accepted
-bytes and hashes. These canonicalization cases follow the event type grammar but
-need not satisfy family admission; they are not whole valid histories.
-Neither example IDs nor synthetic digests imply object presence.
+commits, checkpoints, bundles and FILE labels. [vectors/README.md](vectors/README.md)
+describes each file. `vectors/file-folder/` holds one writer's intent and error
+vocabulary, and its `events.json` is an **application view**, with expanded
+`set_metadata` for comparing independently salted writes; all of it is outside the
+format. The top-level `events.json` fixes accepted bytes and hashes. These
+canonicalization cases follow the event type grammar but need not satisfy family
+admission; they are not whole valid histories. Neither example IDs nor synthetic
+digests imply object presence.
 
 ## Administrative replacement and retention boundary
 

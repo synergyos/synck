@@ -77,7 +77,7 @@ fn current(
 }
 
 fn event(item_id: ItemId, event_type: &str, base_seq: Option<i64>) -> EventProposal {
-    EventProposal {
+    EventProposal { set_link: None,
         item_id: Some(item_id),
         event_type: event_type.to_string(),
         set_metadata: None,
@@ -96,7 +96,6 @@ fn event(item_id: ItemId, event_type: &str, base_seq: Option<i64>) -> EventPropo
 #[test]
 fn shared_conformance_corpus_locks_profile_outcomes() {
     let fixture: ConformanceFixture = serde_json::from_str(CONFORMANCE_FIXTURE).unwrap();
-    assert_eq!(synck_file_folder::WORKTREE_CONTROL_NAME_KEY, ".synck");
     for case in fixture.cases {
         let current = case
             .current
@@ -922,7 +921,7 @@ fn lifecycle_rejects_mismatch_and_overlap_without_an_aggregate_size_cap() {
 }
 
 #[test]
-fn reserved_control_components_are_rejected_only_when_exposed() {
+fn reserved_control_names_are_invalid_in_every_folder() {
     let create = IntentProposal {
         message: None,
         intents: vec![Intent::CreateFolder {
@@ -937,7 +936,7 @@ fn reserved_control_components_are_rejected_only_when_exposed() {
         validate_and_materialize(&repo_id(), &create, &BTreeMap::new())
             .unwrap_err()
             .code,
-        SemanticErrorCode::ReservedWorktreePath
+        SemanticErrorCode::InvalidName
     );
 
     let nested_parent = item(10);
@@ -964,24 +963,11 @@ fn reserved_control_components_are_rejected_only_when_exposed() {
         validate_and_materialize(&repo_id(), &nested, &BTreeMap::new())
             .unwrap_err()
             .code,
-        SemanticErrorCode::ReservedWorktreePath
+        SemanticErrorCode::InvalidName
     );
 
-    let reserved_id = item(2);
     let file_id = item(3);
     let mut rows = BTreeMap::new();
-    rows.insert(
-        reserved_id.clone(),
-        current(
-            reserved_id.clone(),
-            "FOLDER",
-            None,
-            ".synck",
-            4,
-            ProfileLifecycleState::Trash,
-            Some(CommitId::parse(digest('a')).unwrap()),
-        ),
-    );
     rows.insert(
         file_id.clone(),
         current(
@@ -1010,7 +996,7 @@ fn reserved_control_components_are_rejected_only_when_exposed() {
         validate_and_materialize(&repo_id(), &relocate, &rows)
             .unwrap_err()
             .code,
-        SemanticErrorCode::ReservedWorktreePath
+        SemanticErrorCode::InvalidName
     );
     let unrelated = IntentProposal {
         message: None,
@@ -1022,82 +1008,6 @@ fn reserved_control_components_are_rejected_only_when_exposed() {
         }],
     };
     validate_and_materialize(&repo_id(), &unrelated, &rows).unwrap();
-    let restore = IntentProposal {
-        message: None,
-        intents: vec![Intent::Restore {
-            root: ItemBase {
-                item_id: reserved_id,
-                base_seq: 4,
-            },
-            trash_commit_id: CommitId::parse(digest('a')).unwrap(),
-            descendants: Vec::new(),
-            location: None,
-        }],
-    };
-    assert_eq!(
-        validate_and_materialize(&repo_id(), &restore, &rows)
-            .unwrap_err()
-            .code,
-        SemanticErrorCode::ReservedWorktreePath
-    );
-
-    let hidden_parent_id = item(20);
-    let relocated_root_id = item(21);
-    let hidden_reserved_id = item(22);
-    let mut hidden_rows = BTreeMap::new();
-    hidden_rows.insert(
-        hidden_parent_id.clone(),
-        current(
-            hidden_parent_id.clone(),
-            "FOLDER",
-            None,
-            "hidden",
-            1,
-            ProfileLifecycleState::Trash,
-            Some(CommitId::parse(digest('b')).unwrap()),
-        ),
-    );
-    hidden_rows.insert(
-        relocated_root_id.clone(),
-        current(
-            relocated_root_id.clone(),
-            "FOLDER",
-            Some(hidden_parent_id),
-            "relocated",
-            2,
-            ProfileLifecycleState::Live,
-            None,
-        ),
-    );
-    hidden_rows.insert(
-        hidden_reserved_id.clone(),
-        current(
-            hidden_reserved_id,
-            "FOLDER",
-            Some(relocated_root_id.clone()),
-            ".synck",
-            3,
-            ProfileLifecycleState::Live,
-            None,
-        ),
-    );
-    let expose_descendant = IntentProposal {
-        message: None,
-        intents: vec![Intent::UpdateFolder {
-            item_id: relocated_root_id,
-            base_seq: 2,
-            location: Location {
-                parent_item_id: None,
-                name: "relocated".to_string(),
-            },
-        }],
-    };
-    assert_eq!(
-        validate_and_materialize(&repo_id(), &expose_descendant, &hidden_rows)
-            .unwrap_err()
-            .code,
-        SemanticErrorCode::ReservedWorktreePath
-    );
 }
 
 #[test]
@@ -1105,12 +1015,13 @@ fn projector_preserves_visible_changes_and_profile_heads_only() {
     let file_id = item(1);
     let record_id = item(2);
     let mut create = event(file_id.clone(), "FILE::CREATE", None);
-    create.create_item = Some(synck_vcs::types::CreateItem {
+    create.create_item = Some(synck_vcs::types::CreateItem { key: None, link: None,
         item_type: "FILE".to_string(),
         parent_folder_id: None,
-        name: "file.txt".to_string(),
+        name: Some("file.txt".to_string()),
     });
-    create.set_metadata = Some(synck_vcs::metadata::MetadataRef::new(json!({"product": "preserved only in Core"})).unwrap());
+    create.set_content = Some(EventContent::bytes(ObjectId::parse(digest('2')).unwrap()));
+    create.set_metadata = Some(synck_vcs::metadata::MetadataRef::new(json!({"content": {"size": 1}, "product": "kept with the first bytes"})).unwrap());
     let mut omitted = event(file_id.clone(), "ITEM::DATA_LINK::PUT", None);
     omitted.set_metadata = Some(synck_vcs::metadata::MetadataRef::new(json!({"record_id": "r"})).unwrap());
     let mut out_of_profile = event(record_id.clone(), "ITEM::DATA_LINK::PUT", Some(1));
@@ -1127,49 +1038,17 @@ fn projector_preserves_visible_changes_and_profile_heads_only() {
     .unwrap()
     .unwrap();
     assert_eq!(group.changes.len(), 1);
-    assert!(group.changes[0].event.set_metadata.is_none());
+    let metadata = group.changes[0].event.set_metadata.as_ref().unwrap();
+    assert_eq!(metadata.get("product"), Some(&json!("kept with the first bytes")));
     assert_eq!(group.item_heads.len(), 1);
     assert_eq!(group.item_heads[0].head_seq, 2);
     let mut fixture: Value = serde_json::from_str(GROUPS_FIXTURE).unwrap();
     fixture["mixed_group"]["commit_id"] = json!(commit.commit_id);
+    fixture["mixed_group"]["changes"][0]["event"]["metadata_id"] = json!(metadata.id());
     assert_eq!(
         serde_json::to_value(&group).unwrap(),
         fixture["mixed_group"]
     );
-}
-
-#[test]
-fn projector_accepts_hash_bound_import_identity() {
-    let folder_id = item(41);
-    let mut create = event(folder_id, "FOLDER::CREATE", None);
-    create.create_item = Some(synck_vcs::types::CreateItem {
-        item_type: "FOLDER".to_string(),
-        parent_folder_id: None,
-        name: "Imported".to_string(),
-    });
-    let (mut commit, mut rows) = accepted_commit(vec![create], Some("import"));
-    let job_id = "550e8400-e29b-41d4-a716-446655440000";
-    let bytes = canonical_commit_bytes_for_hash(
-        &commit.author_id,
-        &commit.committer_id,
-        commit.occurred_at,
-        commit.message.as_deref(),
-        Some(job_id),
-        rows.len(),
-        &commit.events_digest,
-    )
-    .unwrap();
-    let commit_id = compute_commit_id(&bytes);
-    commit.format_version = COMMIT_FORMAT_VERSION;
-    commit.import_job_id = Some(job_id.to_string());
-    commit.commit_id = commit_id.clone();
-    for row in &mut rows {
-        row.commit_id = commit_id.clone();
-    }
-
-    let group = project_commit(&commit, &rows, &[]).unwrap().unwrap();
-    assert_eq!(group.commit_id, commit_id);
-    assert_eq!(group.changes.len(), 1);
 }
 
 #[test]
@@ -1244,10 +1123,10 @@ fn projector_emits_head_only_groups_omits_out_of_profile_commits_and_keeps_tombs
 fn projector_omits_an_out_of_profile_item_created_and_mutated_in_one_commit() {
     let record_id = item(3);
     let mut create = event(record_id.clone(), "RECORD::CREATE", None);
-    create.create_item = Some(synck_vcs::types::CreateItem {
+    create.create_item = Some(synck_vcs::types::CreateItem { key: None, link: None,
         item_type: "RECORD".to_string(),
         parent_folder_id: None,
-        name: "record".to_string(),
+        name: Some("record".to_string()),
     });
     let mut mutation = event(record_id, "RECORD::SET_METADATA", None);
     mutation.set_metadata = Some(synck_vcs::metadata::MetadataRef::new(json!({"field": "value"})).unwrap());
@@ -1377,7 +1256,7 @@ fn projector_accepts_only_the_deployed_product_omission_shapes() {
         validate_projected_proposal(None, &[proposal], &file_kind).unwrap();
     }
 
-    for event_type in ["FOLDER::SET_METADATA", "FOLDER::WORKFLOW_RUNTIME"] {
+    for event_type in ["FOLDER::SET_METADATA"] {
         let mut proposal = event(folder_id.clone(), event_type, Some(5));
         proposal.set_metadata = Some(synck_vcs::metadata::MetadataRef::new(json!({"contract": "product"})).unwrap());
         validate_projected_proposal(None, &[proposal], &folder_kind).unwrap();
@@ -1527,7 +1406,6 @@ fn accepted_commit(
         &"committer".to_string(),
         None,
         message,
-        None,
         rows.len(),
         &events_digest,
     )
@@ -1563,7 +1441,6 @@ fn accepted_commit(
             commit_id,
             repo_seq: Some(1),
             format_version: COMMIT_FORMAT_VERSION,
-            import_job_id: None,
             author_id: author,
             committer_id: "committer".to_string(),
             message: message.map(str::to_string),

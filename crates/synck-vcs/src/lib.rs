@@ -23,6 +23,7 @@ pub mod content;
 pub mod envelope;
 pub mod errors;
 pub mod invariants;
+mod assigned;
 mod case_folding;
 pub mod naming;
 pub mod metadata;

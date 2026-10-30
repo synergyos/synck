@@ -30,7 +30,6 @@ pub struct SealedCommitInsert {
     pub repo_seq: Option<i64>,
     pub operation_id: Option<String>,
     pub format_version: i32,
-    pub import_job_id: Option<String>,
     pub author_id: String,
     pub committer_id: String,
     pub message: Option<String>,
@@ -98,6 +97,13 @@ pub trait StorageTxn: Send {
 
     /// True when a folder has a live descendant. A live descendant must have
     /// a live path, so traversal stops at non-live children.
+    /// Non-tombstoned records whose link targets this folder.
+    async fn list_records_linked_to(
+        &mut self,
+        repo_id: &RepoId,
+        folder_id: &ItemId,
+    ) -> Result<Vec<ItemRow>, StorageError>;
+
     async fn has_live_descendants(
         &mut self,
         repo_id: &RepoId,
@@ -237,7 +243,6 @@ pub trait StorageTxn: Send {
         repo_seq: Option<i64>,
         operation_id: Option<&str>,
         format_version: i32,
-        import_job_id: Option<&str>,
         author_id: &str,
         committer_id: &str,
         message: Option<&str>,
@@ -256,7 +261,6 @@ pub trait StorageTxn: Send {
         repo_seq: Option<i64>,
         operation_id: Option<&str>,
         format_version: i32,
-        import_job_id: Option<&str>,
         author_id: &str,
         committer_id: &str,
         message: Option<&str>,
@@ -272,7 +276,6 @@ pub trait StorageTxn: Send {
             repo_seq,
             operation_id,
             format_version,
-            import_job_id,
             author_id,
             committer_id,
             message,
@@ -301,7 +304,6 @@ pub trait StorageTxn: Send {
                 commit.repo_seq,
                 commit.operation_id.as_deref(),
                 commit.format_version,
-                commit.import_job_id.as_deref(),
                 &commit.author_id,
                 &commit.committer_id,
                 commit.message.as_deref(),

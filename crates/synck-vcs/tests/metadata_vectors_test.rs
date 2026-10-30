@@ -1,5 +1,5 @@
 use synck_vcs::metadata::{MAX_METADATA_BYTES, Metadata};
-use synck_vcs::object::{Codec, Object};
+use synck_vcs::object::Object;
 use synck_vcs::types::ObjectId;
 
 #[test]
@@ -20,7 +20,7 @@ fn external_metadata_vector_and_salted_writes() {
 }
 
 #[test]
-fn metadata_rejects_noncanonical_json_wrong_codec_and_oversize_values() {
+fn metadata_rejects_noncanonical_json_and_oversize_values() {
     for bytes in [
         b"{\"x\": 1}".as_slice(),
         b"{\"x\":1,\"x\":1}",
@@ -28,11 +28,9 @@ fn metadata_rejects_noncanonical_json_wrong_codec_and_oversize_values() {
         b"[]",
         b"{\"x\":9007199254740993}",
     ] {
-        let object = Object::new(Codec::Utf8, bytes).unwrap();
+        let object = Object::new(bytes).unwrap();
         assert!(Metadata::verify(&object.id(), object.payload().to_vec()).is_err());
     }
-    let raw = Object::new(Codec::Raw, b"{}").unwrap();
-    assert!(Metadata::verify(&raw.id(), raw.payload().to_vec()).is_err());
     assert!(Metadata::new(serde_json::Value::Null).is_err());
     assert!(Metadata::new(serde_json::json!({"x":"a".repeat(MAX_METADATA_BYTES)})).is_err());
 }

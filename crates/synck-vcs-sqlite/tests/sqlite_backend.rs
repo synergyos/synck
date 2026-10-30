@@ -27,15 +27,15 @@ fn backend() -> (tempfile::TempDir, SqliteStorage) {
 }
 
 fn create_event(name: &str) -> EventProposal {
-    EventProposal {
+    EventProposal { set_link: None,
         item_id: None,
         event_type: "FILE::CREATE".to_string(),
         set_metadata: None,
-        set_content: None,
-        create_item: Some(CreateItem {
+        set_content: Some(synck_vcs::content::EventContent::bytes(synck_vcs::types::ObjectId::from_digest([7; 32]))),
+        create_item: Some(CreateItem { key: None, link: None,
             item_type: "FILE".to_string(),
             parent_folder_id: None,
-            name: name.to_string(),
+            name: Some(name.to_string()),
         }),
         set_parent: None,
         set_name: None,
@@ -65,12 +65,12 @@ async fn state_verification_bounds_bytes_without_rejecting_large_item_values() {
     let mut state = backend.verification_state_store(repo_id.clone()).unwrap();
     let mut roots = Vec::new();
     for size in [9, 9, 17] {
-        let bytes = encode_node(&StateNode::ItemValue(ItemValue {
+        let bytes = encode_node(&StateNode::ItemValue(ItemValue { link_folder_id: None, record_key: None,
             item_id: ItemId::new(),
             item_type: "FILE".to_string(),
             parent_folder_id: None,
-            name: "large".to_string(),
-            name_key: "large".to_string(),
+            name: Some("large".to_string()),
+            name_key: Some("large".to_string()),
             head_seq: 1,
             ref_head_seq: 0,
             lifecycle_state: LifecycleState::Live,
@@ -503,15 +503,15 @@ fn create_item_event(
     parent_folder_id: Option<ItemId>,
     name: &str,
 ) -> EventProposal {
-    EventProposal {
+    EventProposal { set_link: None,
         item_id: Some(item_id),
         event_type: format!("{item_type}::CREATE"),
         set_metadata: None,
-        set_content: None,
-        create_item: Some(CreateItem {
+        set_content: (item_type == "FILE").then(|| synck_vcs::content::EventContent::bytes(synck_vcs::types::ObjectId::from_digest([7; 32]))),
+        create_item: Some(CreateItem { key: None, link: None,
             item_type: item_type.to_string(),
             parent_folder_id,
-            name: name.to_string(),
+            name: Some(name.to_string()),
         }),
         set_parent: None,
         set_name: None,
@@ -529,7 +529,7 @@ fn set_parent_event(
     base_seq: i64,
     parent_folder_id: Option<ItemId>,
 ) -> EventProposal {
-    EventProposal {
+    EventProposal { set_link: None,
         item_id: Some(item_id),
         event_type: format!("{item_type}::SET_PARENT"),
         set_metadata: None,
@@ -551,7 +551,7 @@ fn lifecycle_event(
     base_seq: i64,
     in_trash: bool,
 ) -> EventProposal {
-    EventProposal {
+    EventProposal { set_link: None,
         item_id: Some(item_id),
         event_type: format!(
             "{item_type}::{}",
@@ -571,7 +571,7 @@ fn lifecycle_event(
 }
 
 fn trash_event(item_id: ItemId, base_seq: i64) -> EventProposal {
-    EventProposal {
+    EventProposal { set_link: None,
         item_id: Some(item_id),
         event_type: "FILE::TRASH".to_string(),
         set_metadata: None,
@@ -976,7 +976,7 @@ async fn projector_is_commit_bounded_handles_name_swaps_and_rebuilds_identically
     let alpha = created.created_items[0].item_id.clone();
     let beta = created.created_items[1].item_id.clone();
 
-    let rename = |item_id: ItemId, name: &str| EventProposal {
+    let rename = |item_id: ItemId, name: &str| EventProposal { set_link: None,
         item_id: Some(item_id),
         event_type: "FILE::RENAME".to_string(),
         set_metadata: None,
@@ -1056,8 +1056,8 @@ async fn projector_is_commit_bounded_handles_name_swaps_and_rebuilds_identically
         .all_items(root.item_map_root)
         .await
         .unwrap();
-    assert_eq!(items[&alpha].name, "beta");
-    assert_eq!(items[&beta].name, "alpha");
+    assert_eq!(items[&alpha].name, Some("beta".to_string()));
+    assert_eq!(items[&beta].name, Some("alpha".to_string()));
     assert_eq!(
         StateTree::new(&mut store)
             .get_namespace(
@@ -1205,13 +1205,13 @@ async fn rollback_discards_all_writes() {
     let item_id = ItemId::new();
     let mut transaction = storage.begin_txn().await.unwrap();
     transaction
-        .put_item(&ItemRow {
+        .put_item(&ItemRow { link_folder_id: None, record_key: None,
             repo_id: repo_id.clone(),
             item_id: item_id.clone(),
             item_type: "FILE".to_string(),
             parent_folder_id: None,
-            name: "file".to_string(),
-            name_key: "file".to_string(),
+            name: Some("file".to_string()),
+            name_key: Some("file".to_string()),
             head_seq: 1,
             ref_head_seq: 0,
             lifecycle_state: LifecycleState::Live,
@@ -1266,13 +1266,13 @@ async fn item_timestamp_order_and_cursor_are_chronological() {
     let first_id = ItemId::new();
     let second_id = ItemId::new();
 
-    let make_item = |item_id: ItemId, name: &str, created_at| ItemRow {
+    let make_item = |item_id: ItemId, name: &str, created_at| ItemRow { link_folder_id: None, record_key: None,
         repo_id: repo_id.clone(),
         item_id,
         item_type: "FILE".to_string(),
         parent_folder_id: None,
-        name: name.to_string(),
-        name_key: name.to_string(),
+        name: Some(name.to_string()),
+        name_key: Some(name.to_string()),
         head_seq: 1,
         ref_head_seq: 0,
         lifecycle_state: LifecycleState::Live,
@@ -1350,7 +1350,7 @@ async fn repo_append_sequence_and_read_contract() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(item.name, "file.txt");
+    assert_eq!(item.name, Some("file.txt".to_string()));
     let commits = repo
         .list_commits_by_repo_seq(repo_id.clone(), 1, None, 10)
         .await
@@ -1380,13 +1380,13 @@ async fn live_name_conflict_maps_to_unique_violation() {
     storage.init_schema().await.unwrap();
     let repo_id = RepoId::new();
     let now = Utc::now();
-    let item = |item_id| ItemRow {
+    let item = |item_id| ItemRow { link_folder_id: None, record_key: None,
         repo_id: repo_id.clone(),
         item_id,
         item_type: "FILE".to_string(),
         parent_folder_id: None,
-        name: "same".to_string(),
-        name_key: "same".to_string(),
+        name: Some("same".to_string()),
+        name_key: Some("same".to_string()),
         head_seq: 1,
         ref_head_seq: 0,
         lifecycle_state: LifecycleState::Live,
@@ -1406,13 +1406,13 @@ async fn live_name_conflict_maps_to_unique_violation() {
 async fn non_unique_constraint_is_not_reported_as_a_name_conflict() {
     let (_dir, storage) = backend();
     storage.init_schema().await.unwrap();
-    let item = ItemRow {
+    let item = ItemRow { link_folder_id: None, record_key: None,
         repo_id: RepoId::new(),
         item_id: ItemId::new(),
         item_type: "FILE".to_string(),
         parent_folder_id: None,
-        name: "file".to_string(),
-        name_key: "file".to_string(),
+        name: Some("file".to_string()),
+        name_key: Some("file".to_string()),
         head_seq: 0,
         ref_head_seq: 0,
         lifecycle_state: LifecycleState::Live,
@@ -1494,7 +1494,7 @@ async fn repo_enforces_base_sequence_and_operation_id() {
         .await
         .unwrap();
     let item_id = accepted.created_items[0].item_id.clone();
-    let stale = EventProposal {
+    let stale = EventProposal { set_link: None,
         item_id: Some(item_id),
         event_type: "FILE::TRASH".to_string(),
         set_metadata: None,
@@ -1548,15 +1548,15 @@ async fn federated_bootstrap_rejects_a_second_rebind_event() {
     let repo_id = RepoId::new();
     let repo = Repo::new(Storage::new(Arc::new(storage)), CoreConfig::default());
     let stream = "bootstrap-stream".to_string();
-    let create = EventProposal {
+    let create = EventProposal { set_link: None,
         item_id: None,
         event_type: "FILE::CREATE".to_string(),
         set_metadata: None,
-        set_content: None,
-        create_item: Some(CreateItem {
+        set_content: Some(synck_vcs::content::EventContent::bytes(synck_vcs::types::ObjectId::from_digest([7; 32]))),
+        create_item: Some(CreateItem { key: None, link: None,
             item_type: "FILE".to_string(),
             parent_folder_id: None,
-            name: "federated.txt".to_string(),
+            name: Some("federated.txt".to_string()),
         }),
         set_parent: None,
         set_name: None,
@@ -1566,7 +1566,7 @@ async fn federated_bootstrap_rejects_a_second_rebind_event() {
         set_federation_stream_id: None,
         base_seq: None,
     };
-    let rebind = EventProposal {
+    let rebind = EventProposal { set_link: None,
         item_id: None,
         event_type: "FILE::FEDERATE".to_string(),
         set_metadata: None,
@@ -1601,7 +1601,7 @@ async fn federated_bootstrap_rejects_a_second_rebind_event() {
         .create_item
         .as_mut()
         .expect("create event")
-        .name = "duplicate.txt".to_string();
+        .name = Some("duplicate.txt".to_string());
     let mut duplicate_rebind = rebind;
     duplicate_rebind.set_federation_stream_id = Some(duplicate_stream.clone());
     let error = repo

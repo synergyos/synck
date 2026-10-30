@@ -2,7 +2,8 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use synck_vcs::types::{ObjectId, CommitId, EventProposal, ItemId, LifecycleState};
+use synck_vcs::metadata::MetadataRef;
+use synck_vcs::types::{ObjectId, CommitId, EventProposal, ItemId, LifecycleState, is_record_type};
 
 use crate::metadata::{
     ITEM_SOURCE_MODIFIED_AT_REPAIR_EVENT_TYPE, ITEM_SUBTYPE_STANDARD,
@@ -67,7 +68,7 @@ pub fn apply_replica_item_event(
             item_id: item_id.clone(),
             item_type: create.item_type.clone(),
             item_subtype: ITEM_SUBTYPE_STANDARD.to_string(),
-            name: create.name.clone(),
+            name: create.name.clone().unwrap_or_default(),
             parent_folder_id: create.parent_folder_id.clone(),
             lifecycle_state: LifecycleState::Live,
             metadata_json: serde_json::json!({}),
@@ -136,6 +137,7 @@ pub fn apply_replica_item_event(
                 serde_json::Value::Bool(true),
             );
     }
+    set_record_title(&mut item, proposal)?;
     if proposal.event_type == format!("{}::CREATE", item.item_type)
         || proposal.event_type == format!("{}::SET_CONTENT", item.item_type)
     {
@@ -143,8 +145,6 @@ pub fn apply_replica_item_event(
             item.content_roles = content.roles().clone();
         }
     }
-    // Historical imports may embed the initial FILE blob in CREATE. Current
-    // writers still emit a separate SET_CONTENT under the FILE/FOLDER profile.
     if matches!(
         proposal.event_type.as_str(),
         "FILE::CREATE" | "FILE::SET_CONTENT"
@@ -241,6 +241,8 @@ fn invalid_repair(message: &str) -> ReplicaProjectionError {
     ))
 }
 
+const UNAVAILABLE_TITLE: &str = "(unavailable)";
+
 fn item_subtype(metadata: &serde_json::Value) -> Result<String, ReplicaProjectionError> {
     let Some(value) = metadata.get("subtype") else {
         return Ok(ITEM_SUBTYPE_STANDARD.to_string());
@@ -262,6 +264,49 @@ fn item_subtype(metadata: &serde_json::Value) -> Result<String, ReplicaProjectio
     Ok(subtype.to_string())
 }
 
+/// A record has no name, so `name` carries its title. An email without one shows
+/// its subject. That text stays here: it is display, never stored in history.
+/// Erased metadata ends the search: an older title must not come back.
+fn set_record_title(
+    item: &mut ReplicaItemProjection,
+    proposal: &EventProposal,
+) -> Result<(), ReplicaProjectionError> {
+    if !is_record_type(&item.item_type) {
+        return Ok(());
+    }
+    let set_title = proposal.event_type == format!("{}::SET_TITLE", item.item_type);
+    if !set_title && proposal.event_type != format!("{}::CREATE", item.item_type) {
+        return Ok(());
+    }
+    if proposal.set_metadata.as_ref().is_some_and(|metadata| metadata.value().is_none()) {
+        item.name = UNAVAILABLE_TITLE.to_string();
+        return Ok(());
+    }
+    let metadata = proposal.set_metadata.as_ref().and_then(MetadataRef::value);
+    let title = metadata
+        .and_then(|metadata| metadata.get("title"))
+        .and_then(serde_json::Value::as_str);
+    match title {
+        Some(title) if !title.is_empty() => item.name = title.to_string(),
+        Some(_) => {
+            return Err(ReplicaProjectionError::Invalid("a title is nonempty".to_string()));
+        }
+        None if set_title => {
+            return Err(ReplicaProjectionError::Invalid("SET_TITLE has no title".to_string()));
+        }
+        None if item.item_type == crate::email::ITEM_TYPE => {
+            let subject = metadata
+                .and_then(|metadata| metadata.get("mailcal"))
+                .and_then(|mailcal| mailcal.get("subject"))
+                .and_then(serde_json::Value::as_str)
+                .filter(|subject| !subject.is_empty());
+            item.name = subject.unwrap_or("(no subject)").to_string();
+        }
+        None => {}
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use synck_vcs::types::EventContent;
@@ -272,15 +317,15 @@ mod tests {
     fn create_and_content_project_exact_navigation_fields() {
         let item_id = ItemId::new();
         let now = Utc::now();
-        let create = EventProposal {
+        let create = EventProposal { set_link: None,
             item_id: Some(item_id.clone()),
             event_type: "FILE::CREATE".to_string(),
             set_metadata: Some(synck_vcs::metadata::MetadataRef::new(serde_json::json!({"subtype":"STANDARD","color_metadata":"blue"})).unwrap()),
             set_content: None,
-            create_item: Some(CreateItem {
+            create_item: Some(CreateItem { key: None, link: None,
                 item_type: "FILE".to_string(),
                 parent_folder_id: None,
-                name: "Report.PDF".to_string(),
+                name: Some("Report.PDF".to_string()),
             }),
             set_parent: None,
             set_name: None,
@@ -307,18 +352,41 @@ mod tests {
     }
 
     #[test]
+    fn erased_title_never_shows_an_older_one() {
+        let item_id = ItemId::new();
+        let now = Utc::now();
+        let create = EventProposal::from_fields(serde_json::json!({
+            "item_id": item_id, "event_type": "EMAIL::CREATE",
+            "create_item": {"item_type": "EMAIL"}, "set_metadata": {"title": "first"}
+        }))
+        .unwrap();
+        let created = apply_replica_item_event(None, item_id.clone(), 1, &create, now, "actor")
+            .unwrap();
+        assert_eq!(created.name, "first");
+        let mut erased: EventProposal = EventProposal::from_fields(serde_json::json!({
+            "item_id": item_id, "event_type": "EMAIL::SET_TITLE", "base_seq": 1,
+            "set_metadata": {"title": "second"}
+        }))
+        .unwrap();
+        erased.set_metadata = Some(MetadataRef::Absent(ObjectId::from_digest([1; 32])));
+        let projected =
+            apply_replica_item_event(Some(created), item_id, 2, &erased, now, "actor").unwrap();
+        assert_eq!(projected.name, UNAVAILABLE_TITLE);
+    }
+
+    #[test]
     fn direct_chat_profile_is_tree_hidden_without_create_metadata() {
         let item_id = ItemId::new();
         let now = Utc::now();
-        let create = EventProposal {
+        let create = EventProposal { set_link: None,
             item_id: None,
             event_type: "CHAT::CREATE".to_string(),
             set_metadata: None,
             set_content: None,
-            create_item: Some(CreateItem {
+            create_item: Some(CreateItem { key: None, link: None,
                 item_type: "CHAT".to_string(),
                 parent_folder_id: None,
-                name: "direct-chat-opaque".to_string(),
+                name: Some("direct-chat-opaque".to_string()),
             }),
             set_parent: None,
             set_name: None,
@@ -332,7 +400,7 @@ mod tests {
             .expect("project CHAT create");
         assert_eq!(created.metadata_json, serde_json::json!({}));
 
-        let profile = EventProposal {
+        let profile = EventProposal { set_link: None,
             item_id: None,
             event_type: "CHAT::SET_PROFILE".to_string(),
             set_metadata: Some(synck_vcs::metadata::MetadataRef::new(serde_json::json!({"chat_kind": "DIRECT"})).unwrap()),

@@ -11,7 +11,7 @@ mod tree;
 pub use codec::{decode_node, encode_node, hash_node_bytes};
 pub use projector::{
     StateProjectionReport, StateProjectionSource, catch_up_state_index,
-    catch_up_state_index_bounded, initialize_state_index,
+    catch_up_state_index_bounded, initialize_state_index, item_namespace,
 };
 pub use storage::{
     ProjectionItem, StagedNamespaceMutation, StateIndexStore, StateProjectionHead,
@@ -28,8 +28,7 @@ use uuid::Uuid;
 
 use crate::types::{CommitId, ItemId, LifecycleState, RepoId, SequencingMode, Timestamp};
 
-pub const LEGACY_FORMAT_VERSION: u8 = 1;
-pub const FORMAT_VERSION: u8 = 2;
+pub const FORMAT_VERSION: u8 = 3;
 pub const MAX_ENTRIES: usize = 16;
 pub const MIN_ENTRIES: usize = 8;
 pub const MAX_INDEX_NODE_BYTES: usize = 65_536;
@@ -94,8 +93,10 @@ pub struct ItemValue {
     pub item_id: ItemId,
     pub item_type: String,
     pub parent_folder_id: Option<ItemId>,
-    pub name: String,
-    pub name_key: String,
+    pub name: Option<String>,
+    pub name_key: Option<String>,
+    pub record_key: Option<String>,
+    pub link_folder_id: Option<ItemId>,
     pub head_seq: i64,
     pub ref_head_seq: i64,
     pub lifecycle_state: LifecycleState,
@@ -239,61 +240,18 @@ mod tests {
 
     use super::*;
 
-    const GOLDEN: &[(&str, usize, &str)] = &[
-        (
-            "010200",
-            3,
-            "a4cb5298285bc79a31b3188835a97a39ae860dc614cacc651177b159f5db52d0",
-        ),
-        (
-            "010400",
-            3,
-            "1372b7bbb2d660f3ac2e68d1464a3397d7922510ae2352c4a94b5b72293594dd",
-        ),
-        (
-            "010601890f2a7c0070008000000000000001000000000000000000a4cb5298285bc79a31b3188835a97a39ae860dc614cacc651177b159f5db52d01372b7bbb2d660f3ac2e68d1464a3397d7922510ae2352c4a94b5b72293594dd",
-            91,
-            "ae432b5fcc6da6311afa69558dca32f86f72e41e23a72b6e43963409c09ae048",
-        ),
-        (
-            "010101890f2a7c0070008000000000000002000000000000000446494c4500000000000000000a5265706f72742e747874000000000000000a7265706f72742e74787400000000000000030100000000649f6c80000000000000000000000005616c69636501000100000000000000022222222222222222222222222222222222222222222222222222222222222222",
-            144,
-            "f703695a2ed73f0c87845c7f555ed68117b62bfea91d06486ed3843b9b621da5",
-        ),
-        (
-            "01020101890f2a7c0070008000000000000002f703695a2ed73f0c87845c7f555ed68117b62bfea91d06486ed3843b9b621da5",
-            51,
-            "829cc552e00addd33769fb26acd60ecdfc373cf261c40c1654bb48d0ff6ccf9b",
-        ),
-        (
-            "01040100000a7265706f72742e74787401890f2a7c0070008000000000000002",
-            32,
-            "c950369b1bcac9dbcfeab3f7231ea0ee9c50a0ed13b9d308c7c8e309f6939205",
-        ),
-        (
-            "01030201890f2a7c0070008000000000000002829cc552e00addd33769fb26acd60ecdfc373cf261c40c1654bb48d0ff6ccf9b01890f2a7c00700080000000000000033333333333333333333333333333333333333333333333333333333333333333",
-            99,
-            "a51bfd1289a4a5f9f4a4ae59411596cdd403a6e597b1977aae18859c421d1cde",
-        ),
-        (
-            "010601890f2a7c00700080000000000000010000000000000007011111111111111111111111111111111111111111111111111111111111111111829cc552e00addd33769fb26acd60ecdfc373cf261c40c1654bb48d0ff6ccf9bc950369b1bcac9dbcfeab3f7231ea0ee9c50a0ed13b9d308c7c8e309f6939205",
-            123,
-            "9e66704854ef6d3575dd235c1767ae8cbddeaa8d004cbce534c16117ec13a287",
-        ),
-    ];
-
     fn item_id(number: u64) -> ItemId {
         ItemId::parse(format!("01890f2a-7c00-7000-8000-{number:012x}")).unwrap()
     }
 
     fn item_value(number: u64, head_seq: i64) -> ItemValue {
         let item_id = item_id(number);
-        ItemValue {
+        ItemValue { link_folder_id: None, record_key: None,
             item_id,
             item_type: "FILE".to_string(),
             parent_folder_id: None,
-            name: format!("file-{number:04}.txt"),
-            name_key: format!("file-{number:04}.txt"),
+            name: Some(format!("file-{number:04}.txt")),
+            name_key: Some(format!("file-{number:04}.txt")),
             head_seq,
             ref_head_seq: 0,
             lifecycle_state: LifecycleState::Live,
@@ -343,24 +301,9 @@ mod tests {
     }
 
     #[test]
-    fn legacy_golden_vectors_decode_and_upgrade_to_current_encoding() {
-        for (hex_bytes, expected_len, expected_hash) in GOLDEN {
-            let bytes = hex::decode(hex_bytes).unwrap();
-            assert_eq!(bytes.len(), *expected_len);
-            assert_eq!(
-                hex::encode(hash_node_bytes(&bytes).as_bytes()),
-                *expected_hash
-            );
-            let node = decode_node(&bytes).unwrap();
-            let upgraded = encode_node(&node).unwrap();
-            assert_eq!(upgraded[0], FORMAT_VERSION);
-            assert_eq!(decode_node(&upgraded).unwrap(), node);
-        }
-    }
-
-    #[test]
     fn decoder_rejects_truncation_trailing_bytes_and_untrusted_lengths() {
-        let bytes = hex::decode(GOLDEN[3].0).unwrap();
+        let bytes = encode_node(&StateNode::ItemValue(item_value(2, 1))).unwrap();
+        assert!(decode_node(&bytes).is_ok());
         assert!(decode_node(&bytes[..bytes.len() - 1]).is_err());
         let mut trailing = bytes.clone();
         trailing.push(0);
@@ -373,12 +316,12 @@ mod tests {
 
         assert!(decode_node(&[FORMAT_VERSION, 0xff]).is_err());
 
-        let mut unpaired_content = hex::decode(GOLDEN[3].0).unwrap();
+        let mut unpaired_content = bytes.clone();
         let content_tag = unpaired_content.len() - 41;
         unpaired_content[content_tag] = 0;
         assert!(decode_node(&unpaired_content).is_err());
 
-        let mut unknown_content_tag = hex::decode(GOLDEN[3].0).unwrap();
+        let mut unknown_content_tag = bytes.clone();
         unknown_content_tag[content_tag] = 2;
         assert!(decode_node(&unknown_content_tag).is_err());
     }
@@ -870,8 +813,8 @@ mod tests {
                 _ => format!("middle-{number:04}"),
             };
             let mut value = item_value(number, 1);
-            value.name.clone_from(&name);
-            value.name_key.clone_from(&name);
+            value.name = Some(name.clone());
+            value.name_key = Some(name.clone());
             values.push(ItemMutation::Put(value));
             namespace.push(NamespaceMutation::Put(
                 NamespaceKey::new(None, name),
@@ -907,7 +850,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(before.entries.len(), 1);
-        assert_eq!(before.entries[0].1.name, "!before");
+        assert_eq!(before.entries[0].1.name, Some("!before".to_string()));
         assert!(before.next_cursor.is_none());
         assert!(store.load_count() < 32, "loads={}", store.load_count());
 
@@ -924,7 +867,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(after.entries.len(), 1);
-        assert_eq!(after.entries[0].1.name, "z-after");
+        assert_eq!(after.entries[0].1.name, Some("z-after".to_string()));
         assert!(after.next_cursor.is_none());
         assert!(store.load_count() < 32, "loads={}", store.load_count());
     }
@@ -1011,11 +954,14 @@ mod tests {
 
     #[tokio::test]
     async fn root_reader_uses_the_typed_root_identity() {
-        let StateNode::Root(expected) = decode_node(&hex::decode(GOLDEN[7].0).unwrap()).unwrap()
-        else {
-            panic!("golden root decoded as another node kind");
-        };
         let mut store = MemoryNodeStore::default();
+        let expected = RootHeader {
+            repo_id: RepoId::parse("01890f2a-7c00-7000-8000-000000000001").unwrap(),
+            repo_seq: 0,
+            commit_id: None,
+            item_map_root: StateTree::new(&mut store).empty_item_root().await.unwrap(),
+            namespace_root: StateTree::new(&mut store).empty_namespace_root().await.unwrap(),
+        };
         let root_id = StateTree::new(&mut store)
             .store_root(expected.clone())
             .await
@@ -1115,7 +1061,7 @@ mod tests {
     #[test]
     fn codec_rejects_invalid_item_semantics_and_namespace_bound() {
         let mut value = item_value(1, 1);
-        value.name_key = "wrong".to_string();
+        value.name_key = Some("wrong".to_string());
         assert!(encode_node(&StateNode::ItemValue(value)).is_err());
 
         let key = NamespaceKey::new(None, "x".repeat(3061));

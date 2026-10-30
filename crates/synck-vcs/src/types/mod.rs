@@ -306,10 +306,14 @@ pub struct ItemRow {
     pub item_id: ItemId,
     pub item_type: ItemType,
     pub parent_folder_id: Option<ItemId>,
-    /// User-visible, case-preserving name.
-    pub name: String,
+    /// A tree item's case-preserving name; a record has none.
+    pub name: Option<String>,
     /// Canonicalized name key used for uniqueness and lookup.
-    pub name_key: String,
+    pub name_key: Option<String>,
+    /// A record's optional key, unique among LIVE records of its type.
+    pub record_key: Option<String>,
+    /// The FOLDER a record is filed in.
+    pub link_folder_id: Option<ItemId>,
     pub head_seq: i64,
     /// Head of the independent attached-ref ledger. Zero means no ref events.
     #[serde(default)]
@@ -545,8 +549,6 @@ pub struct CommitRow {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repo_seq: Option<i64>,
     pub format_version: i32,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub import_job_id: Option<String>,
     pub author_id: AuthorId,
     pub committer_id: CommitterId,
     pub message: Option<String>,
@@ -606,6 +608,13 @@ pub struct EventProposal {
     /// Rename item.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub set_name: Option<String>,
+    /// File a record in a folder, tri-state like `set_parent`.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_set_parent_tristate"
+    )]
+    pub set_link: Option<Option<ItemId>>,
 
     /// Mark item tombstoned (permanent delete).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -705,14 +714,97 @@ where
     Ok(Some(inner))
 }
 
-/// Fields for creating a new item structurally.
+/// Fields for creating an item. A name makes it a tree item; without one it is
+/// a record, which may have a key and a link. The form is the item's class.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CreateItem {
     pub item_type: ItemType,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_folder_id: Option<ItemId>,
-    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<ItemId>,
+}
+
+const TREE_ITEM_TYPES: &[&str] = &["FILE", "FOLDER", "FEDERATED_MOUNT"];
+/// Whether a known item type is a record, not a tree item.
+pub fn is_record_type(item_type: &str) -> bool {
+    RECORD_ITEM_TYPES.contains(&item_type)
+}
+
+const RECORD_ITEM_TYPES: &[&str] = &[
+    "EMAIL",
+    "TASK_LIST",
+    "TASK",
+    "CHAT",
+    "LOCAL_COMPANION",
+    "CALENDAR",
+    "CALENDAR_EVENT",
+    "CALL",
+    "POST",
+    "DATABASE",
+    "TABLE",
+    "TIME_SETTINGS",
+    "TIME_BOOK",
+    "TIME_ENTRY",
+    "PROFILE",
+    "CONTACT",
+    "USER_STATE",
+    "FEDERATION_SCOPE",
+];
+
+impl CreateItem {
+    pub fn tree(item_type: impl Into<String>, parent: Option<ItemId>, name: impl Into<String>) -> Self {
+        Self {
+            item_type: item_type.into(),
+            parent_folder_id: parent,
+            name: Some(name.into()),
+            key: None,
+            link: None,
+        }
+    }
+
+    pub fn record(item_type: impl Into<String>, key: Option<String>, link: Option<ItemId>) -> Self {
+        Self {
+            item_type: item_type.into(),
+            parent_folder_id: None,
+            name: None,
+            key,
+            link,
+        }
+    }
+
+    /// Reject a form its item type does not use. An unknown type may use either.
+    pub fn validate(&self) -> Result<(), CoreError> {
+        crate::limits::validate_item_type(&self.item_type)?;
+        let invalid = |detail: &str| Err(CoreError::InvalidProposal(detail.to_string()));
+        if self.name.is_some() {
+            if self.key.is_some() || self.link.is_some() {
+                return invalid("a tree item has no key or link");
+            }
+            if RECORD_ITEM_TYPES.contains(&self.item_type.as_str()) {
+                return invalid("a record type requires the record form");
+            }
+        } else {
+            if self.parent_folder_id.is_some() {
+                return invalid("a record has no parent");
+            }
+            if TREE_ITEM_TYPES.contains(&self.item_type.as_str()) {
+                return invalid("a tree item type requires a name");
+            }
+        }
+        if let Some(key) = &self.key {
+            if key.is_empty() {
+                return invalid("a record key must not be empty");
+            }
+            crate::limits::check_bytes("record key", key.len(), crate::limits::MAX_RECORD_KEY_BYTES)?;
+        }
+        Ok(())
+    }
 }
 
 /// Commit proposal for local append operations.
@@ -842,106 +934,58 @@ pub struct IngestedDomainCommit {
 // --- Canonical commit encoding ---
 
 use crate::errors::CoreError;
-use num_bigint::BigInt;
 use serde_json_canonicalizer::to_vec as canonical_json_to_vec;
 use sha2::{Digest, Sha256};
 
 const MAX_SAFE_JSON_INTEGER: i64 = 9_007_199_254_740_991;
 
 // Convert an RFC 8785 number spelling to its exact integer value.
-fn decimal_integer(value: &[u8]) -> Option<BigInt> {
-    let value = std::str::from_utf8(value).ok()?;
-    let (negative, unsigned) = match value.strip_prefix('-') {
-        Some(unsigned) => (true, unsigned),
-        None => (false, value),
-    };
-    let (mantissa, exponent) = match unsigned
-        .bytes()
-        .position(|byte| matches!(byte, b'e' | b'E'))
-    {
-        Some(index) => (
-            &unsigned[..index],
-            unsigned[index + 1..].parse::<i64>().ok()?,
-        ),
-        None => (unsigned, 0),
-    };
-    let (whole, fraction) = mantissa.split_once('.').unwrap_or((mantissa, ""));
-    let mut digits = String::with_capacity(whole.len() + fraction.len());
-    digits.push_str(whole);
-    digits.push_str(fraction);
-
-    let scale = exponent.checked_sub(i64::try_from(fraction.len()).ok()?)?;
-    if scale >= 0 {
-        digits.push_str(&"0".repeat(usize::try_from(scale).ok()?));
-    } else {
-        let remove = usize::try_from(scale.checked_neg()?).ok()?;
-        let keep = digits.len().checked_sub(remove)?;
-        if digits.as_bytes()[keep..].iter().any(|byte| *byte != b'0') {
-            return None;
+/// Hashed JSON is a strict subset of RFC 8785: integers only, within
+/// +-(2^53 - 1), no U+0000, and at most 64 levels of arrays and objects.
+fn validate_hashed_json(value: &serde_json::Value, depth: usize) -> Result<(), CoreError> {
+    use serde_json::Value;
+    let invalid = |detail: String| Err(CoreError::InvalidProposal(detail));
+    let check_string = |text: &str| {
+        if text.contains('\0') {
+            return invalid("hashed JSON must not contain U+0000".to_string());
         }
-        digits.truncate(keep);
+        Ok(())
+    };
+    if matches!(value, Value::Array(_) | Value::Object(_)) && depth >= crate::limits::MAX_JSON_DEPTH {
+        return invalid("hashed JSON nests more than 64 levels".to_string());
     }
-
-    let integer = digits.parse::<BigInt>().ok()?;
-    Some(if negative { -integer } else { integer })
-}
-
-fn integer_is_lossless(value: &str, canonical: &[u8]) -> bool {
-    let exact = value
-        .parse::<BigInt>()
-        .expect("serde_json emitted a valid integer");
-    decimal_integer(canonical).as_ref() == Some(&exact)
-}
-
-fn validate_lossless_json_integers(value: &serde_json::Value) -> Result<(), CoreError> {
     match value {
-        serde_json::Value::Number(number) => {
-            let exact = if let Some(integer) = number.as_i64() {
-                if (-MAX_SAFE_JSON_INTEGER..=MAX_SAFE_JSON_INTEGER).contains(&integer) {
-                    return Ok(());
-                }
-                number.to_string()
-            } else if let Some(integer) = number.as_u64() {
-                if integer <= MAX_SAFE_JSON_INTEGER as u64 {
-                    return Ok(());
-                }
-                number.to_string()
-            } else {
-                let exact = number.to_string();
-                if exact.bytes().any(|byte| matches!(byte, b'.' | b'e' | b'E')) {
-                    return Ok(());
-                }
-                exact
-            };
-
-            let canonical = canonical_json_to_vec(number)
-                .map_err(|error| CoreError::InvalidProposal(error.to_string()))?;
-            if !integer_is_lossless(&exact, &canonical) {
-                return Err(CoreError::InvalidProposal(format!(
-                    "JSON integer {number} cannot be represented by RFC 8785 without changing its value; encode it as a string"
-                )));
+        Value::Number(number) => {
+            let exact = number
+                .as_i64()
+                .filter(|integer| integer.abs() <= MAX_SAFE_JSON_INTEGER)
+                .is_some_and(|integer| integer.to_string() == number.to_string());
+            if !exact {
+                return invalid(format!(
+                    "hashed JSON number {number} is not an integer within 2^53 - 1; encode it as a string"
+                ));
             }
         }
-        serde_json::Value::Array(values) => {
+        Value::String(text) => check_string(text)?,
+        Value::Array(values) => {
             for value in values {
-                validate_lossless_json_integers(value)?;
+                validate_hashed_json(value, depth + 1)?;
             }
         }
-        serde_json::Value::Object(fields) => {
-            for value in fields.values() {
-                validate_lossless_json_integers(value)?;
+        Value::Object(fields) => {
+            for (key, value) in fields {
+                check_string(key)?;
+                validate_hashed_json(value, depth + 1)?;
             }
         }
-        serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::String(_) => {}
+        Value::Null | Value::Bool(_) => {}
     }
-
     Ok(())
 }
 
-/// RFC 8785 bytes with the same lossless-integer admission used by Core events.
-/// Typed command digests must reject lossy numbers before receipt lookup too.
+/// RFC 8785 bytes of a value that satisfies the hashed JSON rules.
 pub fn canonical_json_bytes(value: &serde_json::Value) -> Result<Vec<u8>, CoreError> {
-    validate_lossless_json_integers(value)?;
+    validate_hashed_json(value, 0)?;
     canonical_json_to_vec(value).map_err(|error| CoreError::InvalidProposal(error.to_string()))
 }
 
@@ -1010,8 +1054,32 @@ fn sha256_id_to_digest_bytes(s: &str) -> [u8; 32] {
 /// Hard rule: the canonical payload is sparse: fields that are conceptually
 /// absent are omitted (not emitted as JSON `null`). `null` is only used where
 /// it has defined semantics (for example `set_parent: null` meaning “move to root”).
+impl EventProposal {
+    /// A subitem event adds objects to its item's closure, never to its snapshot.
+    pub fn replaces_content(&self) -> bool {
+        self.set_content.is_some() && self.event_type.matches("::").count() == 1
+    }
+}
+
 pub fn canonical_event_proposal_bytes(ev: &EventProposal) -> Result<Vec<u8>, CoreError> {
-    for name in ev.create_item.as_ref().map(|item| item.name.as_str()).into_iter()
+    crate::limits::validate_item_event_type(&ev.event_type)?;
+    if let Some(create) = &ev.create_item {
+        create.validate()?;
+        if ev.event_type.split("::").next() != Some(create.item_type.as_str()) {
+            return Err(CoreError::InvalidProposal(format!(
+                "`{}` cannot create a {}",
+                ev.event_type, create.item_type
+            )));
+        }
+        if create.item_type == "FILE"
+            && ev.set_content.as_ref().and_then(|content| content.get("bytes")).is_none()
+        {
+            return Err(CoreError::InvalidProposal(
+                "a FILE is created with its first bytes".to_string(),
+            ));
+        }
+    }
+    for name in ev.create_item.as_ref().and_then(|item| item.name.as_deref()).into_iter()
         .chain(ev.set_name.as_deref()) {
         crate::limits::check_bytes("name", name.len(), crate::limits::MAX_NAME_BYTES)?;
     }
@@ -1027,6 +1095,7 @@ pub fn canonical_event_proposal_bytes(ev: &EventProposal) -> Result<Vec<u8>, Cor
 
 /// Canonicalize a narrow attached-ref proposal into RFC 8785 JSON bytes.
 pub fn canonical_ref_event_proposal_bytes(ev: &RefEventProposal) -> Result<Vec<u8>, CoreError> {
+    crate::limits::validate_event_type(&ev.event_type)?;
     let value = serde_json::to_value(ev).map_err(|e| {
         CoreError::InvalidProposal(format!(
             "serialize ref event proposal to json value failed: {e}"
@@ -1049,16 +1118,12 @@ pub fn canonical_commit_bytes_for_hash(
     committer_id: &CommitterId,
     occurred_at: Option<Timestamp>,
     message: Option<&str>,
-    import_job_id: Option<&str>,
     event_count: usize,
     events_digest: &Sha256Digest,
 ) -> Result<Vec<u8>, CoreError> {
     crate::limits::validate_commit_metadata(author_id, committer_id, message, None)?;
     if event_count == 0 {
         return Err(CoreError::EmptyCommit);
-    }
-    if let Some(id) = import_job_id {
-        validate_import_job_id(id)?;
     }
     if occurred_at.is_some_and(|time| time.timestamp_subsec_nanos() >= 1_000_000_000) {
         return Err(CoreError::InvalidProposal(
@@ -1072,23 +1137,10 @@ pub fn canonical_commit_bytes_for_hash(
         "committer_id": committer_id,
         "occurred_at": occurred_at.map(|time| time.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true)),
         "message": message,
-        "import_job_id": import_job_id,
         "event_count": event_count,
         "events_digest": events_digest.as_str(),
     });
     canonical_json_bytes(&value)
-}
-
-pub fn validate_import_job_id(import_job_id: &str) -> Result<(), CoreError> {
-    let parsed = Uuid::parse_str(import_job_id).map_err(|_| {
-        CoreError::InvalidProposal("import_job_id must be canonical UUIDv4".to_string())
-    })?;
-    if parsed.get_version_num() != 4 || parsed.to_string() != import_job_id {
-        return Err(CoreError::InvalidProposal(
-            "import_job_id must be canonical UUIDv4".to_string(),
-        ));
-    }
-    Ok(())
 }
 
 /// Reject every previous format rather than guessing an interpretation.
@@ -1098,7 +1150,6 @@ pub fn canonical_stored_commit_bytes_for_hash(
     committer_id: &CommitterId,
     occurred_at: Option<Timestamp>,
     message: Option<&str>,
-    import_job_id: Option<&str>,
     event_count: usize,
     events_digest: &Sha256Digest,
 ) -> Result<Vec<u8>, CoreError> {
@@ -1112,7 +1163,6 @@ pub fn canonical_stored_commit_bytes_for_hash(
         committer_id,
         occurred_at,
         message,
-        import_job_id,
         event_count,
         events_digest,
     )
@@ -1210,9 +1260,9 @@ mod tests {
 
     #[test]
     fn canonical_event_proposal_bytes_are_utf8_json() {
-        let ev = EventProposal {
+        let ev = EventProposal { set_link: None,
             item_id: Some(ItemId::parse("01890c6c-1111-7777-8888-aaaaaaaaaaaa").unwrap()),
-            event_type: "ITEM_CREATE".to_string(),
+            event_type: "ITEM::NOTE".to_string(),
             set_metadata: None,
             set_content: None,
             create_item: None,
@@ -1230,18 +1280,12 @@ mod tests {
     }
 
     #[test]
-    fn canonical_event_accepts_lossless_integers_and_floats() {
-        let ev = EventProposal {
+    fn canonical_event_accepts_integers_at_the_limit() {
+        let ev = EventProposal { set_link: None,
             item_id: Some(ItemId::parse("01890c6c-1111-7777-8888-aaaaaaaaaaaa").unwrap()),
-            event_type: "TEST".to_string(),
+            event_type: "ITEM::NOTE".to_string(),
             set_metadata: Some(crate::metadata::MetadataRef::new(serde_json::json!({
-                "integers": [
-                    -MAX_SAFE_JSON_INTEGER,
-                    MAX_SAFE_JSON_INTEGER,
-                    MAX_SAFE_JSON_INTEGER + 1,
-                    57_946_832_445_233_864_i64
-                ],
-                "floating_point": 1e30
+                "integers": [-MAX_SAFE_JSON_INTEGER, MAX_SAFE_JSON_INTEGER],
             })).unwrap()),
             set_content: None,
             create_item: None,
@@ -1255,35 +1299,23 @@ mod tests {
         };
 
         let bytes =
-            canonical_event_proposal_bytes(&ev).expect("lossless JSON numbers must be accepted");
+            canonical_event_proposal_bytes(&ev).expect("integers at the limit must be accepted");
         let parsed: EventProposal =
             serde_json::from_slice(&bytes).expect("canonical event must deserialize");
         assert_eq!(
             canonical_event_proposal_bytes(&parsed).unwrap(),
             bytes,
-            "accepted large numbers must remain valid after canonical round trip"
+            "accepted numbers must remain valid after canonical round trip"
         );
     }
 
     #[test]
-    fn canonical_metadata_rejects_lossy_integers() {
-        for integer in ["9007199254740993", "-9007199254740993", "18446744073709551615", "18446744073709551616", "-9223372036854775809"] {
+    fn canonical_metadata_rejects_numbers_outside_the_integer_range() {
+        for integer in ["9007199254740992", "-9007199254740992", "18446744073709551615", "1000000000000000000000", "1.5", "1e3"] {
             let value: serde_json::Value = serde_json::from_str(&format!(r#"{{"outer":{{"inner":[{integer}]}}}}"#)).unwrap();
             let error = canonical_json_bytes(&value).unwrap_err();
-            assert!(matches!(error, CoreError::InvalidProposal(ref message) if message.contains("cannot be represented")));
+            assert!(matches!(error, CoreError::InvalidProposal(ref message) if message.contains("not an integer within")));
             assert!(MetadataRef::new(value).is_err());
-        }
-    }
-
-    #[test]
-    fn canonical_metadata_accepts_exact_exponent_integers() {
-        for (integer, expected) in [("1000000000000000000000", "1e+21"), ("-1000000000000000000000", "-1e+21")] {
-            let value: serde_json::Value = serde_json::from_str(&format!(r#"{{"integer":{integer}}}"#)).unwrap();
-            let metadata = Metadata::new(value).unwrap();
-            let bytes = &metadata.payload()[crate::object::HEADER_BYTES..];
-            assert!(std::str::from_utf8(bytes).unwrap().contains(expected));
-            let replay = Metadata::verify(&metadata.id(), metadata.payload().to_vec()).unwrap();
-            assert_eq!(replay.payload(), metadata.payload());
         }
     }
 
@@ -1343,9 +1375,9 @@ mod tests {
         let item_id = ItemId::parse("01890c6c-1111-7777-8888-aaaaaaaaaaaa").unwrap();
 
         // No change => set_parent is absent.
-        let no_change = EventProposal {
+        let no_change = EventProposal { set_link: None,
             item_id: Some(item_id.clone()),
-            event_type: "SET_PARENT".to_string(),
+            event_type: "FILE::SET_PARENT".to_string(),
             set_metadata: None,
             set_content: None,
             create_item: None,

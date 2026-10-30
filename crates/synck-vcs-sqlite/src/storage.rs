@@ -45,6 +45,7 @@ pub(crate) const STATE_SCHEMA: &str = include_str!("state-schema.sql");
 #[derive(Clone, Debug)]
 pub struct SqliteStorage {
     path: PathBuf,
+    encrypted: bool,
     #[cfg(test)]
     append_metrics: Arc<Mutex<AppendMetrics>>,
 }
@@ -56,6 +57,7 @@ impl SqliteStorage {
             .map_err(map_sqlite_error)?;
         Ok(SqliteTxn {
             conn: Some(conn),
+            encrypted: self.encrypted,
             acceptance_timestamp: None,
             active: true,
             #[cfg(test)]
@@ -66,9 +68,20 @@ impl SqliteStorage {
     pub fn new(path: impl Into<PathBuf>) -> Self {
         Self {
             path: path.into(),
+            encrypted: false,
             #[cfg(test)]
             append_metrics: Arc::new(Mutex::new(AppendMetrics::default())),
         }
+    }
+
+    /// Set from the repository's configuration, which owns this value.
+    pub fn with_encrypted(mut self, encrypted: bool) -> Self {
+        self.encrypted = encrypted;
+        self
+    }
+
+    pub fn encrypted(&self) -> bool {
+        self.encrypted
     }
 
     pub fn path(&self) -> &Path {
@@ -119,7 +132,6 @@ impl SqliteStorage {
                 && existing.repo_seq == commit.repo_seq
                 && existing_operation_id == commit.operation_id
                 && existing.format_version == commit.format_version
-                && existing.import_job_id == commit.import_job_id
                 && existing.author_id == commit.author_id
                 && existing.committer_id == commit.committer_id
                 && existing.message == commit.message
@@ -580,9 +592,13 @@ fn parse_time_row(value: String, column: usize) -> rusqlite::Result<Timestamp> {
 }
 
 fn item_from_row(row: &Row<'_>) -> rusqlite::Result<ItemRow> {
-    let name: String = row.get(4)?;
-    synck_vcs::limits::check_bytes("name", name.len(), synck_vcs::limits::MAX_NAME_BYTES)
-        .map_err(|e| decode_error(4, e.to_string()))?;
+    let name: Option<String> = row.get(4)?;
+    synck_vcs::limits::check_bytes(
+        "name",
+        name.as_ref().map_or(0, String::len),
+        synck_vcs::limits::MAX_NAME_BYTES,
+    )
+    .map_err(|e| decode_error(4, e.to_string()))?;
     let lifecycle = match row.get::<_, String>(8)?.as_str() {
         "LIVE" => LifecycleState::Live,
         "TRASH" => LifecycleState::Trash,
@@ -617,34 +633,38 @@ fn item_from_row(row: &Row<'_>) -> rusqlite::Result<ItemRow> {
         created_by: row.get(10)?,
         sequencing_mode: sequencing,
         federation_stream_id: row.get(12)?,
+        record_key: row.get(13)?,
+        link_folder_id: row
+            .get::<_, Option<String>>(14)?
+            .map(|value| parse_item(value, 14))
+            .transpose()?,
     })
 }
 
 fn commit_from_row(row: &Row<'_>) -> rusqlite::Result<CommitRow> {
-    let author: String = row.get(5)?;
-    let committer: String = row.get(6)?;
-    let message: Option<String> = row.get(7)?;
-    let operation: Option<String> = row.get(12)?;
+    let author: String = row.get(4)?;
+    let committer: String = row.get(5)?;
+    let message: Option<String> = row.get(6)?;
+    let operation: Option<String> = row.get(11)?;
     synck_vcs::limits::validate_commit_metadata(
         &author, &committer, message.as_deref(), operation.as_deref(),
-    ).map_err(|e| decode_error(5, e.to_string()))?;
+    ).map_err(|e| decode_error(4, e.to_string()))?;
     let occurred_at = row
-        .get::<_, Option<String>>(8)?
-        .map(|value| parse_time_row(value, 8))
+        .get::<_, Option<String>>(7)?
+        .map(|value| parse_time_row(value, 7))
         .transpose()?;
     Ok(CommitRow {
         repo_id: parse_repo(row.get(0)?, 0)?,
         commit_id: parse_commit(row.get(1)?, 1)?,
         repo_seq: row.get(2)?,
         format_version: row.get(3)?,
-        import_job_id: row.get(4)?,
         author_id: author,
         committer_id: committer,
         message,
         occurred_at,
-        created_at: parse_time_row(row.get(9)?, 9)?,
-        event_count: row.get(10)?,
-        events_digest: parse_digest(row.get(11)?, 11)?,
+        created_at: parse_time_row(row.get(8)?, 8)?,
+        event_count: row.get(9)?,
+        events_digest: parse_digest(row.get(10)?, 10)?,
     })
 }
 
@@ -661,7 +681,7 @@ fn metadata_from_row(row: &Row<'_>, event_column: usize, metadata_column: usize)
     let event: serde_json::Value = serde_json::from_slice(&payload).map_err(|e| decode_error(event_column, e.to_string()))?;
     let id = event.get("metadata_id").and_then(serde_json::Value::as_str).ok_or_else(|| decode_error(event_column, "missing metadata ID"))?;
     let id = synck_vcs::types::ObjectId::parse(id).map_err(|e| decode_error(event_column, e.to_string()))?;
-    synck_vcs::metadata::Metadata::verify(&id, bytes).map(Some).map_err(|e| decode_error(metadata_column, e.to_string()))
+    synck_vcs::metadata::Metadata::verify_any(&id, bytes).map_err(|e| decode_error(metadata_column, e.to_string()))
 }
 
 fn event_from_row(row: &Row<'_>) -> rusqlite::Result<EventRow> {
@@ -754,8 +774,8 @@ fn commit_event_from_row(row: &Row<'_>) -> rusqlite::Result<CommitEventRow> {
     }
 }
 
-const ITEM_COLUMNS: &str = "repo_id, item_id, item_type, parent_folder_id, name, name_key, head_seq, ref_head_seq, lifecycle_state, created_at, created_by, sequencing_mode, federation_stream_id";
-const COMMIT_COLUMNS: &str = "repo_id, commit_id, repo_seq, format_version, import_job_id, author_id, committer_id, message, occurred_at, created_at, event_count, events_digest, operation_id";
+const ITEM_COLUMNS: &str = "repo_id, item_id, item_type, parent_folder_id, name, name_key, head_seq, ref_head_seq, lifecycle_state, created_at, created_by, sequencing_mode, federation_stream_id, record_key, link_folder_id";
+const COMMIT_COLUMNS: &str = "repo_id, commit_id, repo_seq, format_version, author_id, committer_id, message, occurred_at, created_at, event_count, events_digest, operation_id";
 const EVENT_COLUMNS: &str = "e.repo_id, e.item_id, e.item_seq, e.event_type, c.commit_id, e.commit_event_idx, c.repo_seq, e.payload, e.event_payload_digest, e.created_at, e.parent_folder_id, e.parent_folder_id_before, (SELECT m.payload FROM vcs_metadata_objects m WHERE m.repo_id=e.repo_id AND m.object_id=unhex(substr(json_extract(CAST(e.payload AS TEXT), '$.metadata_id'),8)))";
 const REF_EVENT_COLUMNS: &str = "r.repo_id, r.owner_item_id, r.ref_seq, r.event_type, c.commit_id, r.commit_event_idx, c.repo_seq, r.payload, r.event_payload_digest, r.created_at, (SELECT m.payload FROM vcs_metadata_objects m WHERE m.repo_id=r.repo_id AND m.object_id=unhex(substr(json_extract(CAST(r.payload AS TEXT), '$.metadata_id'),8)))";
 
@@ -1239,6 +1259,7 @@ fn sequencing_text(value: SequencingMode) -> &'static str {
 }
 
 pub(crate) struct SqliteTxn {
+    encrypted: bool,
     conn: Option<Connection>,
     acceptance_timestamp: Option<Timestamp>,
     active: bool,
@@ -1319,6 +1340,24 @@ impl StorageTxn for SqliteTxn {
             .item_batches
             .push((item_ids.len(), rows.len()));
         Ok(rows)
+    }
+
+    async fn list_records_linked_to(
+        &mut self,
+        repo_id: &RepoId,
+        folder_id: &ItemId,
+    ) -> Result<Vec<ItemRow>, StorageError> {
+        let conn = self.conn()?;
+        let mut statement = conn
+            .prepare_cached(&format!(
+                "SELECT {ITEM_COLUMNS} FROM vcs_items WHERE repo_id = ?1 AND link_folder_id = ?2 AND lifecycle_state <> 'TOMBSTONED'"
+            ))
+            .map_err(map_sqlite_error)?;
+        statement
+            .query_map(params![repo_id.as_str(), folder_id.as_str()], item_from_row)
+            .map_err(map_sqlite_error)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(map_sqlite_error)
     }
 
     async fn has_live_descendants(
@@ -1435,7 +1474,7 @@ impl StorageTxn for SqliteTxn {
     async fn put_item(&mut self, item: &ItemRow) -> Result<(), StorageError> {
         self.conn()?
             .execute(
-                "INSERT INTO vcs_items (repo_id, item_id, item_type, parent_folder_id, name, name_key, head_seq, ref_head_seq, lifecycle_state, created_at, created_by, sequencing_mode, federation_stream_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13) ON CONFLICT(repo_id, item_id) DO UPDATE SET item_type = excluded.item_type, parent_folder_id = excluded.parent_folder_id, name = excluded.name, name_key = excluded.name_key, head_seq = excluded.head_seq, ref_head_seq = excluded.ref_head_seq, lifecycle_state = excluded.lifecycle_state, created_at = excluded.created_at, created_by = excluded.created_by, sequencing_mode = excluded.sequencing_mode, federation_stream_id = excluded.federation_stream_id",
+                "INSERT INTO vcs_items (repo_id, item_id, item_type, parent_folder_id, name, name_key, head_seq, ref_head_seq, lifecycle_state, created_at, created_by, sequencing_mode, federation_stream_id, record_key, link_folder_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15) ON CONFLICT(repo_id, item_id) DO UPDATE SET item_type = excluded.item_type, parent_folder_id = excluded.parent_folder_id, name = excluded.name, name_key = excluded.name_key, record_key = excluded.record_key, link_folder_id = excluded.link_folder_id, head_seq = excluded.head_seq, ref_head_seq = excluded.ref_head_seq, lifecycle_state = excluded.lifecycle_state, created_at = excluded.created_at, created_by = excluded.created_by, sequencing_mode = excluded.sequencing_mode, federation_stream_id = excluded.federation_stream_id",
                 params![
                     item.repo_id.as_str(),
                     item.item_id.as_str(),
@@ -1450,6 +1489,8 @@ impl StorageTxn for SqliteTxn {
                     item.created_by,
                     sequencing_text(item.sequencing_mode),
                     item.federation_stream_id,
+                    item.record_key,
+                    item.link_folder_id.as_ref().map(ItemId::as_str),
                 ],
             )
             .map_err(map_sqlite_error)?;
@@ -1598,7 +1639,8 @@ impl StorageTxn for SqliteTxn {
                     params![repo_id.as_str(), commit_pk, repo_seq],
                 )
                 .map_err(map_sqlite_error)?;
-            publish_checkpoint(self.conn()?, repo_id, commit_pk)?;
+            let encrypted = self.encrypted;
+            publish_checkpoint(self.conn()?, repo_id, commit_pk, encrypted)?;
         }
         if !commit_pks.is_empty() {
             let count = i64::try_from(commit_pks.len()).map_err(|_| StorageError::Other {
@@ -1624,7 +1666,6 @@ impl StorageTxn for SqliteTxn {
         repo_seq: Option<i64>,
         operation_id: Option<&str>,
         format_version: i32,
-        import_job_id: Option<&str>,
         author_id: &str,
         committer_id: &str,
         message: Option<&str>,
@@ -1633,14 +1674,13 @@ impl StorageTxn for SqliteTxn {
     ) -> Result<(), StorageError> {
         self.conn()?
             .execute(
-                "INSERT INTO vcs_commits (repo_id, commit_pk, commit_id, repo_seq, operation_id, format_version, import_job_id, author_id, committer_id, message, occurred_at, created_at, event_count, events_digest) VALUES (?1, ?2, NULL, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, NULL, NULL)",
+                "INSERT INTO vcs_commits (repo_id, commit_pk, commit_id, repo_seq, operation_id, format_version, author_id, committer_id, message, occurred_at, created_at, event_count, events_digest) VALUES (?1, ?2, NULL, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, NULL, NULL)",
                 params![
                     repo_id.as_str(),
                     commit_pk.as_str(),
                     repo_seq,
                     operation_id,
                     format_version,
-                    import_job_id,
                     author_id,
                     committer_id,
                     message,
@@ -1726,7 +1766,8 @@ impl StorageTxn for SqliteTxn {
                 detail: format!("missing commit during seal: {commit_pk}"),
             });
         }
-        publish_checkpoint(self.conn()?, repo_id, commit_pk.as_str())?;
+        let encrypted = self.encrypted;
+        publish_checkpoint(self.conn()?, repo_id, commit_pk.as_str(), encrypted)?;
         Ok(())
     }
 
@@ -1913,7 +1954,7 @@ mod checked_append_work_tests {
                 message: None,
                 occurred_at: None,
                 operation_id: Some("measured".to_string()),
-                events: vec![EventProposal {
+                events: vec![EventProposal { set_link: None,
                     item_id: Some(file_id),
                     event_type: event_type.to_string(),
                     set_metadata: None,
@@ -1942,15 +1983,16 @@ mod checked_append_work_tests {
         parent_folder_id: Option<ItemId>,
         name: &str,
     ) -> EventProposal {
-        EventProposal {
+        EventProposal { set_link: None,
             item_id: Some(item_id),
             event_type: format!("{item_type}::CREATE"),
             set_metadata: None,
-            set_content: None,
-            create_item: Some(CreateItem {
+            set_content: (item_type == "FILE")
+                .then(|| synck_vcs::content::EventContent::bytes(synck_vcs::types::ObjectId::from_digest([7; 32]))),
+            create_item: Some(CreateItem { key: None, link: None,
                 item_type: item_type.to_string(),
                 parent_folder_id,
-                name: name.to_string(),
+                name: Some(name.to_string()),
             }),
             set_parent: None,
             set_name: None,
@@ -2043,6 +2085,7 @@ fn publish_checkpoint(
     conn: &Connection,
     repo_id: &RepoId,
     commit_pk: &str,
+    encrypted: bool,
 ) -> Result<(), StorageError> {
     let (position, commit, created): (Option<i64>, Vec<u8>, String) = conn.query_row(
         "SELECT repo_seq,commit_id,created_at FROM vcs_commits WHERE repo_id=?1 AND commit_pk=?2",
@@ -2058,7 +2101,7 @@ fn publish_checkpoint(
         [repo_id.as_str()], |row| Ok((row.get(0)?, row.get(1)?)),
     ).optional().map_err(map_sqlite_error)?;
     let previous = match previous {
-        None if position == 1 => synck_vcs::checkpoint::GENESIS,
+        None if position == 1 => repository_genesis(conn, repo_id, encrypted)?,
         Some((seq, bytes)) if seq.checked_add(1) == Some(position) => {
             bytes.try_into().map_err(|_| StorageError::Other {
                 detail: "invalid checkpoint digest length".into(),
@@ -2092,7 +2135,7 @@ impl SqliteStorage {
     pub fn verify_checkpoints(&self, repo_id: &RepoId) -> Result<(), StorageError> {
         let conn = self.open_readonly()?;
         conn.execute_batch("BEGIN").map_err(map_sqlite_error)?;
-        verify_checkpoints_in(&conn, repo_id)
+        verify_checkpoints_in(&conn, repo_id, self.encrypted)
     }
 
     /// Repair only the derived counter, after verifying published history.
@@ -2106,7 +2149,7 @@ impl SqliteStorage {
         if next == 1 {
             ensure_history_generation(&txn, repo_id)?;
         }
-        verify_checkpoints_in(&txn, repo_id)?;
+        verify_checkpoints_in(&txn, repo_id, self.encrypted)?;
         txn.execute(
             "INSERT INTO vcs_repo_activity_heads (repo_id,next_repo_seq,updated_at) VALUES (?1,?2,?3)
              ON CONFLICT(repo_id) DO UPDATE SET next_repo_seq=excluded.next_repo_seq,updated_at=excluded.updated_at",
@@ -2116,7 +2159,11 @@ impl SqliteStorage {
     }
 }
 
-fn verify_checkpoints_in(conn: &Connection, repo_id: &RepoId) -> Result<(), StorageError> {
+fn repository_genesis(
+    conn: &Connection,
+    repo_id: &RepoId,
+    encrypted: bool,
+) -> Result<[u8; 32], StorageError> {
     let generation: String = conn
         .query_row(
             "SELECT generation FROM vcs_history_generations WHERE repo_id=?1",
@@ -2124,14 +2171,27 @@ fn verify_checkpoints_in(conn: &Connection, repo_id: &RepoId) -> Result<(), Stor
             |row| row.get(0),
         )
         .map_err(map_sqlite_error)?;
-    CommitPk::parse(generation).map_err(|error| StorageError::Other {
+    CommitPk::parse(generation.clone()).map_err(|error| StorageError::Other {
         detail: format!("invalid history generation: {error}"),
     })?;
+    synck_vcs::checkpoint::genesis(repo_id, &generation, encrypted).map_err(|error| {
+        StorageError::Other {
+            detail: error.to_string(),
+        }
+    })
+}
+
+fn verify_checkpoints_in(
+    conn: &Connection,
+    repo_id: &RepoId,
+    encrypted: bool,
+) -> Result<(), StorageError> {
+    let genesis = repository_genesis(conn, repo_id, encrypted)?;
     let mut query = conn.prepare(
         "SELECT c.repo_seq,c.commit_id,c.created_at,p.commit_id,p.checkpoint FROM vcs_commits c LEFT JOIN vcs_checkpoints p ON p.repo_id=c.repo_id AND p.repo_seq=c.repo_seq WHERE c.repo_id=?1 AND c.repo_seq IS NOT NULL ORDER BY c.repo_seq",
     ).map_err(map_sqlite_error)?;
     let mut rows = query.query([repo_id.as_str()]).map_err(map_sqlite_error)?;
-    let mut previous = synck_vcs::checkpoint::GENESIS;
+    let mut previous = genesis;
     let mut last = 0i64;
     let mut count = 0i64;
     while let Some(row) = rows.next().map_err(map_sqlite_error)? {

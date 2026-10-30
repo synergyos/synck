@@ -18,7 +18,7 @@ struct Case {
 fn portable_names_match_language_neutral_vectors() {
     let vectors: Vectors =
         serde_json::from_str(include_str!("../../../docs/spec/vectors/names.json")).unwrap();
-    assert_eq!(vectors.unicode_version, "17.0.0");
+    assert_eq!(vectors.unicode_version, "18.0.0");
     for case in vectors.cases {
         let result = compute_name_key(&case.name);
         assert_eq!(result.is_ok(), case.valid, "{:?}", case.name);

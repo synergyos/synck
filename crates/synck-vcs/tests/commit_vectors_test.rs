@@ -29,7 +29,6 @@ fn commit_headers_and_tagged_events_match_independent_vectors() {
             &committer,
             occurred,
             header["message"].as_str(),
-            header["import_job_id"].as_str(),
             header["event_count"].as_u64().unwrap() as usize,
             &digest,
         )
@@ -39,7 +38,7 @@ fn commit_headers_and_tagged_events_match_independent_vectors() {
         for version in [0, 1, 2, 3, 4, 5, 7] {
             assert!(
                 canonical_stored_commit_bytes_for_hash(
-                    version, &author, &committer, occurred, None, None, 1, &digest
+                    version, &author, &committer, occurred, None, 1, &digest
                 )
                 .is_err()
             );

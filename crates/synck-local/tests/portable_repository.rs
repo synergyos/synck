@@ -5,7 +5,9 @@ use std::sync::Arc;
 
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use synck_vcs::object::{Object, Codec};
+use synck_vcs::bundle::BundleReader;
+use synck_vcs::metadata::MetadataRef;
+use synck_vcs::object::{Object, plain_id};
 use synck_local::portable::{
     Authority, BundleSnapshot, PortableRepository, import_repository, materialize_repository,
 };
@@ -43,7 +45,7 @@ fn proposal(events: Vec<EventProposal>) -> CommitProposal {
 }
 
 fn creation(id: &ItemId, kind: &str, parent: Option<ItemId>, name: &str) -> EventProposal {
-    EventProposal::from_fields(json!({"item_id":id,"event_type":format!("{kind}::CREATE"),"create_item":CreateItem {item_type:kind.into(),parent_folder_id:parent,name:name.into()}})).unwrap()
+    EventProposal::from_fields(json!({"item_id":id,"event_type":format!("{kind}::CREATE"),"create_item":CreateItem::tree(kind, parent, name)})).unwrap()
 }
 
 async fn fixture() -> Fixture {
@@ -64,12 +66,23 @@ async fn fixture() -> Fixture {
         Storage::new(Arc::new(storage.clone())),
         CoreConfig::default(),
     );
+    let empty = plain_id(b"");
+    fs::write(metadata.join("objects").join(hex::encode(empty.as_bytes())), b"").unwrap();
+    let mut file_creation = creation(&file, "FILE", Some(folder.clone()), "original.txt");
+    file_creation.set_content = Some(EventContent::bytes(empty));
+    file_creation.set_metadata = Some(MetadataRef::new(json!({"content":{"size":0}})).unwrap());
+    let chat_creation: EventProposal = EventProposal::from_fields(json!({
+        "item_id":chat,"event_type":"CHAT::CREATE",
+        "create_item":CreateItem::record("CHAT", None, None),
+        "set_metadata":{"title":"discussion"}
+    }))
+    .unwrap();
     core.append(
         repo_id.clone(),
         proposal(vec![
             creation(&folder, "FOLDER", None, "documents"),
-            creation(&file, "FILE", Some(folder.clone()), "original.txt"),
-            creation(&chat, "CHAT", None, "discussion"),
+            file_creation,
+            chat_creation,
         ]),
     )
     .await
@@ -78,13 +91,12 @@ async fn fixture() -> Fixture {
         .await
         .unwrap();
     let primary = b"first version\n";
-    let body = Object::new(Codec::Utf8, "original body\0🦀".as_bytes()).unwrap();
+    let body = Object::new("original body\0🦀".as_bytes()).unwrap();
     // Body bytes also exercise exact-object transfer.
     let body_bytes = body.payload();
-    let primary_object = Object::new(Codec::Raw, primary).unwrap();
-    let primary_blob = primary_object.id().to_string();
+    let primary_blob = plain_id(primary).to_string();
     let body_blob = format!("sha256:{}", hex::encode(Sha256::digest(body_bytes)));
-    fs::write(metadata.join("objects").join(&primary_blob[7..]), primary_object.payload()).unwrap();
+    fs::write(metadata.join("objects").join(&primary_blob[7..]), primary).unwrap();
     fs::write(metadata.join("objects").join(&body_blob[7..]), body_bytes).unwrap();
     fs::write(
         metadata
@@ -137,7 +149,7 @@ async fn complete_mixed_repository_reads_offline_and_keeps_exact_history_and_bod
     let report = repository.verify().await.unwrap();
     assert_eq!(
         (report.commits, report.items, report.objects, report.metadata),
-        (2, 3, 2, 1)
+        (2, 3, 3, 3)
     );
     assert_eq!(
         repository.read_body(fixture.body.id()).unwrap().payload(),
@@ -194,13 +206,13 @@ async fn complete_mixed_repository_reads_offline_and_keeps_exact_history_and_bod
             .list_items(None, after.as_ref(), 1)
             .await
             .unwrap();
-        names.extend(page.items.into_iter().map(|item| item.name));
+        names.extend(page.items.into_iter().filter_map(|item| item.name));
         after = page.next_cursor;
         if after.is_none() {
             break;
         }
     }
-    assert_eq!(names, vec!["discussion", "documents"]);
+    assert_eq!(names, vec!["documents"]);
     let exported = fixture.root.join("exported-primary.txt");
     let result = Command::new(env!("CARGO_BIN_EXE_synck"))
         .args(["item", "export"])
@@ -233,7 +245,7 @@ async fn complete_mixed_repository_reads_offline_and_keeps_exact_history_and_bod
         fs::read_dir(archived.join(".synck/objects"))
             .unwrap()
             .count(),
-        2
+        3
     );
     for name in [&fixture.primary_blob[7..], &fixture.body_blob[7..]] {
         assert_eq!(
@@ -363,12 +375,22 @@ async fn invalid_materialization_missing_body_and_extra_objects_never_publish() 
     let source = fixture.root.join("empty-bundle");
     fs::create_dir_all(source.join("objects")).unwrap();
     let repo_id = RepoId::new();
+    let generation = uuid::Uuid::now_v7();
     let mut bytes = serde_json::to_vec(&json!({
         "type": "synck_vcs_bundle_header", "bundle_format_version": 5,
-        "repo_id": repo_id, "history_generation": uuid::Uuid::now_v7().to_string(),
+        "repo_id": repo_id, "history_generation": generation.to_string(), "encrypted": false,
         "exported_at": "2026-01-02T00:00:00Z", "commit_format_version": 6,
         "schema": {"subsystem":"synck_vcs_sqlite", "schema_id":"core-v7"}
     })).unwrap();
+    bytes.push(b'\n');
+    let mut header_bytes = bytes.as_slice();
+    let header = BundleReader::new(&mut header_bytes).read_header().unwrap();
+    let end = serde_json::to_vec(&json!({
+        "type": "synck_vcs_bundle_end", "record_count": 1,
+        "checkpoint": format!("sha256:{}", hex::encode(header.genesis().unwrap())),
+        "digest": format!("sha256:{}", hex::encode(Sha256::digest(&bytes))),
+    })).unwrap();
+    bytes.extend_from_slice(&end);
     bytes.push(b'\n');
     fs::write(source.join("history.ndjson"), &bytes).unwrap();
     let snapshot = BundleSnapshot {
@@ -903,7 +925,7 @@ async fn complete_checkout_preserves_file_ids_through_filesystem_moves() {
 }
 
 #[tokio::test]
-async fn complete_checkout_rejects_hidden_mixed_descendant_deletion() {
+async fn checkout_folder_deletion_leaves_linked_records_in_place() {
     use synck_local::Repository;
     let fixture = fixture().await;
     let storage = SqliteStorage::new(fixture.source.join(".synck/repository.sqlite3"));
@@ -914,12 +936,13 @@ async fn complete_checkout_rejects_hidden_mixed_descendant_deletion() {
     let hidden = ItemId::new();
     core.append(
         fixture.repo_id.clone(),
-        proposal(vec![creation(
-            &hidden,
-            "CHAT",
-            Some(fixture.folder.clone()),
-            "hidden-chat",
-        )]),
+        proposal(vec![
+            EventProposal::from_fields(json!({
+                "item_id":hidden,"event_type":"CHAT::CREATE",
+                "create_item":CreateItem::record("CHAT", None, Some(fixture.folder.clone())),
+            }))
+            .unwrap(),
+        ]),
     )
     .await
     .unwrap();
@@ -943,17 +966,10 @@ async fn complete_checkout_rejects_hidden_mixed_descendant_deletion() {
         .unwrap();
     let repository = Repository::discover(&destination).await.unwrap();
     fs::remove_dir_all(destination.join("documents")).unwrap();
-    assert!(
-        repository
-            .commit("delete folder")
-            .await
-            .unwrap_err()
-            .to_string()
-            .contains("non-filesystem")
-    );
+    repository.commit("delete folder").await.unwrap();
     drop(repository);
     let portable = PortableRepository::open(&destination).unwrap();
-    assert_eq!(portable.verify().await.unwrap().commits, 3);
+    assert_eq!(portable.verify().await.unwrap().commits, 4);
     assert_eq!(
         portable
             .show_item(&hidden, None)
@@ -1008,46 +1024,6 @@ async fn complete_checkout_fences_other_openers_and_refuses_initial_collisions()
 }
 
 #[tokio::test]
-async fn complete_checkout_initial_reserved_path_fails_before_activation() {
-    let fixture = fixture().await;
-    let storage = SqliteStorage::new(fixture.source.join(".synck/repository.sqlite3"));
-    let core = Repo::new(
-        Storage::new(Arc::new(storage.clone())),
-        CoreConfig::default(),
-    );
-    core.append(
-        fixture.repo_id.clone(),
-        proposal(vec![creation(&ItemId::new(), "FOLDER", None, ".synck")]),
-    )
-    .await
-    .unwrap();
-    core.sequence_repo_activity(fixture.repo_id.clone(), 100)
-        .await
-        .unwrap();
-    storage
-        .project_imported_history(&fixture.repo_id)
-        .await
-        .unwrap();
-    let destination = fixture.root.join("reserved");
-    PortableRepository::open(&fixture.source)
-        .unwrap()
-        .archive(&destination)
-        .await
-        .unwrap();
-    let mut portable = PortableRepository::open(&destination).unwrap();
-    assert!(portable.enable_checkout("editor", &[]).await.is_err());
-    assert!(portable.checkout_paths().is_none());
-    portable
-        .archive(&fixture.root.join("still-copyable"))
-        .await
-        .unwrap();
-    portable
-        .enable_checkout("editor", &["documents".into()])
-        .await
-        .unwrap();
-}
-
-#[tokio::test]
 async fn complete_checkout_sparse_move_requires_widening_before_commit() {
     let fixture = fixture().await;
     PortableRepository::open(&fixture.transfer)
@@ -1088,9 +1064,12 @@ async fn complete_checkout_recovery_refuses_changed_source_and_bare_open_stays_r
         .unwrap();
     let metadata = fixture.transfer.join(".synck");
     let path = metadata.join("config.json");
-    let mut config: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-    config["checkout"] =
-        json!({"paths":[],"pending":{"previous_paths":["documents/original.txt"]}});
+    let config: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    fs::write(
+        metadata.join("checkout.json"),
+        serde_json::to_vec(&json!({"paths":[],"pending":{"previous_paths":["documents/original.txt"]}})).unwrap(),
+    )
+    .unwrap();
     fs::write(metadata.join("checkout-source.json"),serde_json::to_vec(&json!([
         {"path":"documents","item_id":null,"item_type":"FOLDER","plain_digest":null,"size":null},
         {"path":"documents/original.txt","item_id":null,"item_type":"FILE","plain_digest":hex::encode(Sha256::digest(b"first version\n")),"size":14}
@@ -1152,7 +1131,7 @@ async fn local_email_import_preserves_source_and_materializes_one_atomic_email()
         .unwrap();
     let item = repository.show_item(&id, None).await.unwrap();
     assert_eq!(item.item.projection.item_type, "EMAIL");
-    assert_eq!(item.item.projection.name, "source");
+    assert_eq!(item.item.projection.name, "Imported fixture ✓");
     let metadata = &item.item.projection.metadata_json["mailcal"];
     assert_eq!(metadata["source"]["filename"], "source.EML");
     let rendered = repository.render_email(&id, None).await.unwrap();
@@ -1163,7 +1142,7 @@ async fn local_email_import_preserves_source_and_materializes_one_atomic_email()
     assert_eq!(fs::read(&source).unwrap(), bytes);
     let source_blob = &item.item.projection.content_roles["source"];
     let stored = fs::read(fixture.source.join(".synck/objects").join(&source_blob.as_str()[7..])).unwrap();
-    assert_eq!(Object::verify(source_blob, stored).unwrap().bytes(), bytes);
+    assert_eq!(stored, bytes);
     assert!(
         item.item.subitems.len() >= 2,
         "all MIME attachments must remain durable"
@@ -1234,20 +1213,17 @@ async fn complete_checkout_imports_email_additions_without_file_fallback_or_reim
     drop(repository);
     let portable = PortableRepository::open(&fixture.source).unwrap();
     portable.verify().await.unwrap();
+    let records = portable.list_records(Some(&fixture.folder), None, 100).await.unwrap();
+    assert!(records.iter().any(|item| item.item_type == "EMAIL"));
     let page = portable
         .list_items(Some(&fixture.folder), None, 100)
         .await
         .unwrap();
     assert!(
-        page.items
-            .iter()
-            .any(|item| item.item_type == "EMAIL" && item.name == "new")
-    );
-    assert!(
         !page
             .items
             .iter()
-            .any(|item| item.item_type == "FILE" && item.name == "new.EML")
+            .any(|item| item.item_type == "FILE" && item.name == Some("new.EML".to_string()))
     );
 }
 
@@ -1298,15 +1274,7 @@ async fn email_complete_init_preserves_existing_files_and_supports_default_commi
     let portable = PortableRepository::open(&root).unwrap();
     portable.verify().await.unwrap();
     assert_eq!(
-        portable
-            .list_items(None, None, 10)
-            .await
-            .unwrap()
-            .items
-            .into_iter()
-            .find(|item| item.item_type == "EMAIL")
-            .unwrap()
-            .item_type,
+        portable.list_records(None, None, 10).await.unwrap()[0].item_type,
         "EMAIL"
     );
     assert!(
@@ -1428,8 +1396,9 @@ async fn email_import_keeps_email_and_file_in_one_atomic_commit() {
     let portable = PortableRepository::open(&root).unwrap();
     portable.verify().await.unwrap();
     let items = portable.list_items(None, None, 10).await.unwrap().items;
-    assert!(items.iter().any(|item| item.item_type == "EMAIL"));
     assert!(items.iter().any(|item| item.item_type == "FILE"));
+    let records = portable.list_records(None, None, 10).await.unwrap();
+    assert_eq!(records[0].item_type, "EMAIL");
 }
 
 #[tokio::test]
@@ -1726,8 +1695,7 @@ async fn email_import_failed_object_write_can_retry_without_corrupt_publication(
         .unwrap();
     let source_id = repository.show_item(&id, None).await.unwrap().item.projection.content_roles["source"].clone();
     let object_path = objects.join(hex::encode(source_id.as_bytes()));
-    let stored = synck_vcs::object::Object::verify(&source_id, fs::read(&object_path).unwrap()).unwrap();
-    assert_eq!(stored.bytes(), bytes);
+    assert_eq!(fs::read(&object_path).unwrap(), bytes);
     let exported = temporary.path().join("original.eml");
     repository.export_file(&id, &exported, None).await.unwrap();
     assert_eq!(fs::read(exported).unwrap(), bytes);
@@ -1770,10 +1738,10 @@ async fn email_checkout_selection_preserves_sources_and_required_directories() {
     // Simulate a crash after materialization completed but before the checkout
     // transition was cleared. Its source manifest still describes the old view.
     let metadata = root.join(".synck");
-    let config_path = metadata.join("config.json");
-    let mut config: serde_json::Value =
-        serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
-    config["checkout"]["pending"] = json!({"previous_paths":[]});
+    let checkout_path = metadata.join("checkout.json");
+    let mut checkout: serde_json::Value =
+        serde_json::from_slice(&fs::read(&checkout_path).unwrap()).unwrap();
+    checkout["pending"] = json!({"previous_paths":[]});
     let original_tree: [(&str, Option<&[u8]>); 8] = [
         ("a", None),
         ("a/nested", None),
@@ -1798,7 +1766,7 @@ async fn email_checkout_selection_preserves_sources_and_required_directories() {
         serde_json::to_vec(&manifest).unwrap(),
     )
     .unwrap();
-    fs::write(&config_path, serde_json::to_vec(&config).unwrap()).unwrap();
+    fs::write(&checkout_path, serde_json::to_vec(&checkout).unwrap()).unwrap();
     let mut repository = synck_local::Repository::discover(&root).await.unwrap();
     assert!(!metadata.join("checkout-source.json").exists());
     let changed = b"From: sender@example.test\r\nSubject: Changed\r\n\r\nchanged";
@@ -2190,9 +2158,9 @@ async fn chunked_append_stores_only_the_changed_tail_and_keeps_old_version() {
         disk_growth <= 512 * 1024,
         "object database grew by {disk_growth} bytes"
     );
-    assert!((2..=3).contains(&(after.0 - before.0)));
-    assert!(after.1 - before.1 <= 256 * 1024 + 100 + 49);
-    assert!(after.2 - before.2 <= 256 * 1024 + 100 + 49);
+    assert!((1..=2).contains(&(after.0 - before.0)));
+    assert!(after.1 - before.1 <= 256 * 1024 + 100);
+    assert!(after.2 - before.2 <= 256 * 1024 + 100);
     eprintln!(
         "10 MiB + 100 bytes: added {} chunks, {} raw bytes, {} stored payload bytes; database grew {disk_growth} bytes",
         after.0 - before.0,

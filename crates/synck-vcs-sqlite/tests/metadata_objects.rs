@@ -59,7 +59,7 @@ async fn accepted_event_keeps_only_metadata_id_and_reads_without_payload() {
     let item = ItemId::new();
     let event = EventProposal::from_fields(serde_json::json!({
         "item_id": item, "event_type":"CHAT::CREATE",
-        "create_item":{"item_type":"CHAT","name":"room"},
+        "create_item":{"item_type":"CHAT"},
         "set_metadata":{"private_note":"erasable value"},
     }))
     .unwrap();

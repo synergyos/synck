@@ -1,51 +1,106 @@
 use sha2::{Digest, Sha256};
-use synck_vcs::object::{Codec, HEADER_BYTES, Header, Object, PREFIX};
-use synck_vcs::types::ObjectId;
+use synck_vcs::object::{
+    EncryptedFrame, Form, HEADER_BYTES, Header, Object, PREFIX, content_form, encrypted_aad,
+    plain_id, verify_encrypted_frame, verify_stored,
+};
+use synck_vcs::types::{ItemId, ObjectId, RepoId};
+
+fn vectors(name: &str) -> Vec<serde_json::Value> {
+    let path = format!("{}/../../docs/spec/vectors/{name}", env!("CARGO_MANIFEST_DIR"));
+    serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
+}
 
 #[test]
 fn external_object_vectors() {
-    let vectors: serde_json::Value =
-        serde_json::from_str(include_str!("../../../docs/spec/vectors/objects.json")).unwrap();
-    for vector in vectors.as_array().unwrap() {
+    for vector in vectors("objects.json") {
+        let name = vector["name"].as_str().unwrap();
         let payload = hex::decode(vector["payload_hex"].as_str().unwrap()).unwrap();
         let id = ObjectId::parse(vector["id"].as_str().unwrap()).unwrap();
-        let object = Object::verify(&id, payload.clone()).unwrap();
-        assert_eq!(hex::encode(object.bytes()), vector["bytes_hex"]);
-        assert_eq!(
-            hex::encode(&payload[PREFIX.len() + 1..HEADER_BYTES]),
-            vector["salt_hex"]
-        );
-        assert_eq!(
-            object.codec(),
-            if vector["codec"] == "RAW" {
-                Codec::Raw
-            } else {
-                Codec::Utf8
+        let form = match vector["form"].as_str().unwrap() {
+            "PLAIN" => Form::Plain,
+            "SALTED" => Form::Salted,
+            other => panic!("{name}: unknown form {other}"),
+        };
+        assert_eq!(ObjectId::from_digest(Sha256::digest(&payload).into()), id, "{name}");
+        let result = verify_stored(&id, form, &payload);
+        assert_eq!(result.is_ok(), vector["valid"].as_bool().unwrap(), "{name}");
+        if result.is_err() {
+            continue;
+        }
+        let bytes = hex::decode(vector["bytes_hex"].as_str().unwrap()).unwrap();
+        match form {
+            Form::Plain => {
+                assert_eq!(payload, bytes, "{name}");
+                assert_eq!(plain_id(&bytes), id, "{name}");
             }
-        );
-        assert_eq!(object.utf8().is_ok(), object.codec() == Codec::Utf8);
-        assert_eq!(ObjectId::from_digest(Sha256::digest(payload).into()), id);
+            _ => {
+                let object = Object::verify(&id, payload.clone()).unwrap();
+                assert_eq!(object.bytes(), bytes, "{name}");
+                assert_eq!(
+                    hex::encode(&payload[PREFIX.len() + 1..HEADER_BYTES]),
+                    vector["salt_hex"],
+                    "{name}"
+                );
+            }
+        }
     }
 }
 
 #[test]
-fn salts_and_codec_are_bound_to_exact_bytes() {
-    for codec in [Codec::Raw, Codec::Utf8] {
-        let first = Object::new(codec, b"same bytes\0\r\n").unwrap();
-        let second = Object::new(codec, first.bytes()).unwrap();
-        assert_ne!(first.id(), second.id());
-        assert_eq!(first.bytes(), second.bytes());
-        let mut changed = first.payload().to_vec();
-        changed[HEADER_BYTES - 1] ^= 1;
-        assert!(Object::verify(&first.id(), changed).is_err());
+fn external_encrypted_frame_and_aad_vectors() {
+    for vector in vectors("encrypted.json") {
+        let name = vector["name"].as_str().unwrap();
+        let stored = hex::decode(vector["payload_hex"].as_str().unwrap()).unwrap();
+        let id = ObjectId::parse(vector["id"].as_str().unwrap()).unwrap();
+        assert_eq!(ObjectId::from_digest(Sha256::digest(&stored).into()), id, "{name}");
+        assert_eq!(
+            verify_encrypted_frame(&stored).is_ok(),
+            vector["frame_valid"].as_bool().unwrap(),
+            "{name}"
+        );
+        if let Some(aad) = vector["aad_hex"].as_str() {
+            let frame = EncryptedFrame::parse(&stored).unwrap();
+            let repo_id = RepoId::parse(vector["repo_id"].as_str().unwrap()).unwrap();
+            let item_id = ItemId::parse(vector["item_id"].as_str().unwrap()).unwrap();
+            let computed = encrypted_aad(
+                frame.scheme,
+                frame.key_epoch,
+                &repo_id,
+                &item_id,
+                vector["role"].as_str().unwrap(),
+            )
+            .unwrap();
+            assert_eq!(hex::encode(computed), aad, "{name}");
+        }
     }
-    assert!(Object::new(Codec::Raw, &[255]).is_ok());
-    assert!(Object::new(Codec::Utf8, &[255]).is_err());
+}
+
+#[test]
+fn salts_are_bound_to_exact_bytes() {
+    let first = Object::new(b"same bytes\0\r\n").unwrap();
+    let second = Object::new(first.bytes()).unwrap();
+    assert_ne!(first.id(), second.id());
+    assert_eq!(first.bytes(), second.bytes());
+    let mut changed = first.payload().to_vec();
+    changed[HEADER_BYTES - 1] ^= 1;
+    assert!(Object::verify(&first.id(), changed).is_err());
+    assert!(Object::new(&[255]).is_err());
+}
+
+#[test]
+fn the_role_selects_the_form() {
+    assert_eq!(content_form(false, "FILE", "bytes"), Form::Plain);
+    assert_eq!(content_form(false, "EMAIL", "source"), Form::Plain);
+    assert_eq!(content_form(false, "CHAT", "source"), Form::Plain);
+    assert_eq!(content_form(false, "CHAT", "body"), Form::Salted);
+    assert_eq!(content_form(true, "FILE", "bytes"), Form::Encrypted);
+    assert_eq!(content_form(true, "FILE", "sealed_key"), Form::Opaque);
+    assert_eq!(content_form(false, "FILE", "sealed_key"), Form::Opaque);
 }
 
 #[test]
 fn malformed_objects_fail_even_with_matching_digests() {
-    let object = Object::new(Codec::Utf8, b"x").unwrap();
+    let object = Object::new(b"x").unwrap();
     for offset in [0, PREFIX.len(), HEADER_BYTES] {
         let mut payload = object.payload().to_vec();
         payload[offset] = 255;

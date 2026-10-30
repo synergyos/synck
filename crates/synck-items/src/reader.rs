@@ -456,7 +456,7 @@ impl ItemReader {
         }
         if matches!(
             event.event_type.as_str(),
-            "FOLDER::WORKFLOW_RUNTIME" | "FILE::REVISION_SUPPRESS" | "FILE::REVISION_UNSUPPRESS"
+            "FILE::REVISION_SUPPRESS" | "FILE::REVISION_UNSUPPRESS"
         ) {
             self.ancillary_events.push(AncillaryEvent {
                 item_seq: _ctx.item_seq,
@@ -492,42 +492,9 @@ impl ItemReader {
                         chat.participants.insert(key, participant);
                     }
                 }
-                "CHAT::MAKE_NON_TREE" => {
-                    crate::chat::validate_non_tree_transition(event).map_err(invalid)?;
-                    projection.name = meta
-                        .get("chat_title")
-                        .and_then(Value::as_str)
-                        .ok_or_else(|| invalid("missing chat_title"))?
-                        .into();
-                    projection.metadata_json = meta
-                        .get("chat_metadata")
-                        .cloned()
-                        .ok_or_else(|| invalid("missing chat_metadata"))?;
-                    projection.lifecycle_state = parse_core_lifecycle(
-                        meta.get("chat_lifecycle")
-                            .and_then(Value::as_str)
-                            .unwrap_or("LIVE"),
-                    )?;
-                    chat.title = Some(projection.name.clone());
-                }
-                "CHAT::SET_TITLE" => {
-                    let title = meta
-                        .get("title")
-                        .and_then(Value::as_str)
-                        .ok_or_else(|| invalid("missing CHAT title"))?;
-                    chat.title = Some(title.into());
-                    projection.name = title.into();
-                }
-                _ => {
-                    require_generic_owner_event(kind, event)?;
-                    chat.title = Some(
-                        meta.get("chat_title")
-                            .and_then(Value::as_str)
-                            .unwrap_or(&projection.name)
-                            .into(),
-                    );
-                }
+                _ => require_generic_owner_event(kind, event)?,
             }
+            chat.title = (!projection.name.is_empty()).then(|| projection.name.clone());
             self.chat = Some(chat);
             return Ok(());
         }
@@ -809,6 +776,8 @@ fn require_generic_owner_event(kind: &str, event: &EventProposal) -> Result<(), 
             "CREATE"
                 | "SET_NAME"
                 | "SET_PARENT"
+                | "SET_LINK"
+                | "SET_TITLE"
                 | "SET_METADATA"
                 | "TRASH"
                 | "RESTORE"
@@ -1056,13 +1025,3 @@ fn update_subitem(
 
 #[cfg(test)]
 mod tests;
-
-fn parse_core_lifecycle(value: &str) -> Result<synck_vcs::types::LifecycleState, ReadError> {
-    use synck_vcs::types::LifecycleState;
-    match value {
-        "LIVE" => Ok(LifecycleState::Live),
-        "TRASH" => Ok(LifecycleState::Trash),
-        "TOMBSTONED" => Ok(LifecycleState::Tombstoned),
-        _ => Err(invalid("invalid core lifecycle")),
-    }
-}

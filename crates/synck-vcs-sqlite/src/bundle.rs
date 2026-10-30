@@ -7,9 +7,8 @@ use std::sync::Arc;
 
 use rusqlite::params;
 use synck_vcs::bundle::{
-    BundleCommitRecord, BundleHeader, BundleRecord, BundleSchema, ImportFailure,
-    bounded_commit_payload_bytes, parse_rfc3339_utc, read_header, read_record,
-    validate_bundle_event_payload_json_and_digest,
+    BundleCommitRecord, BundleHeader, BundleReader, BundleRecord, BundleSchema, ImportFailure,
+    bounded_commit_payload_bytes, parse_rfc3339_utc, validate_bundle_event_payload_json_and_digest,
     validate_bundle_ref_event_payload_json_and_digest, validate_import_repo_seq,
 };
 use synck_vcs::config::CoreConfig;
@@ -18,7 +17,7 @@ use synck_vcs::state::catch_up_state_index;
 use synck_vcs::storage::{SealedCommitInsert, Storage, StorageBackend, StorageTxn};
 use synck_vcs::types::{
     CommitId, CommitPk, EventInsertRow, ItemId, ItemRow, RefEventInsertRow, RepoId, Sha256Digest,
-    Timestamp,
+    Timestamp, sha256_prefixed_hex_from_digest_bytes,
 };
 use synck_vcs::verify::{
     SemanticVerifier, VerifyCommit, VerifyCommitEvent, VerifyEvent, VerifyItem, VerifyRefEvent,
@@ -72,7 +71,6 @@ impl PendingCommit {
                 repo_seq: Some(record.repo_seq),
                 operation_id: record.operation_id,
                 format_version: record.format_version,
-                import_job_id: record.import_job_id,
                 author_id: record.author_id,
                 committer_id: record.committer_id,
                 message: record.message,
@@ -97,10 +95,12 @@ impl PendingCommit {
         commit_id: &str,
         repo_seq: i64,
         index: i32,
+        created_at: Timestamp,
         bytes: usize,
     ) -> Result<(), String> {
         if self.row.commit_id.as_str() != commit_id
             || self.row.repo_seq != Some(repo_seq)
+            || self.row.created_at != created_at
             || usize::try_from(index).ok() != Some(self.events.len())
         {
             return Err("bundle event commit identity/index mismatch".into());
@@ -120,7 +120,6 @@ impl PendingCommit {
             commit_id: Some(row.commit_id.clone()),
             repo_seq: row.repo_seq,
             format_version: row.format_version,
-            import_job_id: row.import_job_id.clone(),
             committer_id: row.committer_id.clone(),
             occurred_at: row.occurred_at,
             author_id: row.author_id.clone(),
@@ -219,14 +218,20 @@ impl SqliteStorage {
         &self,
         reader: &mut dyn BufRead,
     ) -> Result<BundleImportReport, ImportFailure> {
-        let header = read_header(reader).map_err(ImportFailure::BeforeCommit)?;
+        let mut reader = BundleReader::new(reader);
+        let header = reader.read_header().map_err(ImportFailure::BeforeCommit)?;
+        if header.encrypted() != self.encrypted() {
+            return Err(ImportFailure::BeforeCommit(
+                "bundle and target repository disagree on encryption".to_string(),
+            ));
+        }
         self.init_schema()
             .await
             .map_err(|error| ImportFailure::BeforeCommit(detail(error)))?;
         let mut txn = self
             .begin_sqlite_txn()
             .map_err(|error| ImportFailure::BeforeCommit(detail(error)))?;
-        let report = install(&mut txn, &header, reader)
+        let report = install(&mut txn, &header, &mut reader)
             .await
             .map_err(ImportFailure::BeforeCommit)?;
         Box::new(txn)
@@ -261,7 +266,7 @@ impl SqliteStorage {
 async fn install(
     txn: &mut SqliteTxn,
     header: &BundleHeader,
-    reader: &mut dyn BufRead,
+    reader: &mut BundleReader<'_>,
 ) -> Result<BundleImportReport, String> {
     let repo_id = header.repo_id();
     for table in [
@@ -291,7 +296,8 @@ async fn install(
         "INSERT INTO vcs_history_generations(repo_id,generation) VALUES (?1,?2) ON CONFLICT(repo_id) DO UPDATE SET generation=excluded.generation",
         params![repo_id.as_str(), header.history_generation()],
     ).map_err(detail)?;
-    let mut verifier = SemanticVerifier::new();
+    let mut verifier = SemanticVerifier::new(header.encrypted());
+    let mut tip = sha256_prefixed_hex_from_digest_bytes(header.genesis().map_err(detail)?);
     let mut pending: Option<PendingCommit> = None;
     let mut last_repo_seq = None;
     let mut items = Vec::new();
@@ -299,7 +305,7 @@ async fn install(
     let mut items_started = false;
     let mut domains_started = false;
     let mut metadata_ids = std::collections::HashSet::new();
-    while let Some(record) = read_record(reader, header.bundle_format_version())? {
+    while let Some(record) = reader.read_record()? {
         match record {
             BundleRecord::Metadata(record) => {
                 if last_repo_seq.is_some() || items_started || domains_started || pending.is_some() {
@@ -308,27 +314,32 @@ async fn install(
                 if !metadata_ids.insert(record.object_id.clone()) {
                     return Err("duplicate metadata object".into());
                 }
-                if record.payload_hex.len() > 2 * (synck_vcs::object::HEADER_BYTES + synck_vcs::metadata::MAX_METADATA_BYTES)
-                    || !record.payload_hex.bytes().all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f')) {
+                if !record.payload_hex.bytes().all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f')) {
                     return Err("invalid metadata payload hex".into());
                 }
                 let bytes = hex::decode(record.payload_hex).map_err(detail)?;
-                let metadata = synck_vcs::metadata::Metadata::verify(&record.object_id, bytes).map_err(detail)?;
-                crate::metadata::insert(txn.conn().map_err(detail)?, repo_id, &metadata).map_err(detail)?;
+                if bytes.starts_with(synck_vcs::object::ENCRYPTED_PREFIX) != header.encrypted() {
+                    return Err("metadata object has the wrong form for this repository".into());
+                }
+                synck_vcs::metadata::Metadata::verify_any(&record.object_id, bytes.clone()).map_err(detail)?;
+                crate::metadata::insert_payload(txn.conn().map_err(detail)?, repo_id, &record.object_id, &bytes).map_err(detail)?;
             }
             BundleRecord::Commit(record) => {
                 if items_started || domains_started || pending.is_some() {
                     return Err("commit after items/domains or incomplete commit".into());
                 }
                 last_repo_seq = Some(validate_import_repo_seq(last_repo_seq, record.repo_seq)?);
+                tip = record.checkpoint.as_str().to_string();
                 pending = Some(PendingCommit::new(record)?);
             }
             BundleRecord::Event(record) => {
                 let current = pending.as_mut().ok_or("event without preceding commit")?;
+                let created_at = parse_rfc3339_utc(&record.created_at)?;
                 current.check_event(
                     &record.commit_id,
                     record.repo_seq,
                     record.commit_event_idx,
+                    created_at,
                     record.payload_json.len(),
                 )?;
                 let hash = validate_bundle_event_payload_json_and_digest(
@@ -346,17 +357,19 @@ async fn install(
                         parent_folder_id: optional_item_id(record.parent_folder_id)?,
                         parent_folder_id_before: optional_item_id(record.parent_folder_id_before)?,
                     },
-                    parse_rfc3339_utc(&record.created_at)?,
+                    created_at,
                 ));
             }
             BundleRecord::RefEvent(record) => {
                 let current = pending
                     .as_mut()
                     .ok_or("ref event without preceding commit")?;
+                let created_at = parse_rfc3339_utc(&record.created_at)?;
                 current.check_event(
                     &record.commit_id,
                     record.repo_seq,
                     record.commit_event_idx,
+                    created_at,
                     record.payload_json.len(),
                 )?;
                 let hash = validate_bundle_ref_event_payload_json_and_digest(
@@ -372,7 +385,7 @@ async fn install(
                         payload: record.payload_json.into_bytes(),
                         event_payload_digest: hash.to_vec(),
                     },
-                    parse_rfc3339_utc(&record.created_at)?,
+                    created_at,
                 ));
             }
             BundleRecord::Item(record) => {
@@ -387,6 +400,8 @@ async fn install(
                     parent_folder_id: optional_item_id(record.parent_folder_id)?,
                     name: record.name,
                     name_key: record.name_key,
+                    record_key: record.record_key,
+                    link_folder_id: optional_item_id(record.link_folder_id)?,
                     head_seq: record.head_seq,
                     ref_head_seq: record.ref_head_seq,
                     lifecycle_state: serde_json::from_value(serde_json::json!(
@@ -416,6 +431,8 @@ async fn install(
                     parent_folder_id: item.parent_folder_id,
                     name: item.name,
                     name_key: item.name_key,
+                    record_key: item.record_key,
+                    link_folder_id: item.link_folder_id,
                     head_seq: item.head_seq,
                     ref_head_seq: item.ref_head_seq,
                     lifecycle_state: item.lifecycle_state,
@@ -450,6 +467,9 @@ async fn install(
     }
     if pending.is_some() {
         return Err("bundle ended with an incomplete commit".into());
+    }
+    if reader.checkpoint().map(Sha256Digest::as_str) != Some(tip.as_str()) {
+        return Err("bundle end checkpoint mismatch".into());
     }
     let item_count = items.len();
     if let Some(finding) = verifier.finish(&items).into_iter().next() {

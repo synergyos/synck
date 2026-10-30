@@ -9,6 +9,8 @@ use std::fmt;
 
 use unicode_normalization::UnicodeNormalization;
 
+use crate::assigned::is_assigned;
+
 /// Maximum allowed UTF-8 byte length for a single name segment.
 pub use crate::limits::MAX_NAME_BYTES;
 
@@ -26,8 +28,12 @@ pub enum NameErrorKind {
     DotOrDotDot,
     /// Name ends with ASCII space or dot.
     EndsWithDotOrSpace,
-    /// Contains an ASCII control character U+0000–U+001F or U+007F.
+    /// Contains a control, separator or bidirectional control code point.
     ContainsControl(char),
+    /// Contains a code point unassigned in the format's Unicode version.
+    Unassigned(char),
+    /// Is the control directory, or an alias of it on some file system.
+    ReservedControlName,
     /// Display names in canonical history must already be NFC.
     NotNormalized,
     /// Contains a forbidden path / shell character.
@@ -49,6 +55,12 @@ impl fmt::Display for NameError {
             NameErrorKind::ContainsControl(ch) => {
                 write!(f, "name contains control character U+{:04X}", *ch as u32)
             }
+            NameErrorKind::Unassigned(ch) => {
+                write!(f, "name contains unassigned code point U+{:04X}", *ch as u32)
+            }
+            NameErrorKind::ReservedControlName => {
+                write!(f, "name is reserved for the control directory")
+            }
             NameErrorKind::NotNormalized => write!(f, "name must be NFC-normalized"),
             NameErrorKind::ContainsForbiddenChar(ch) => {
                 write!(f, "name contains forbidden character {:?}", ch)
@@ -65,28 +77,8 @@ impl fmt::Display for NameError {
 
 impl Error for NameError {}
 
-/// Validate a display name without changing it.
-///
-/// This enforces:
-/// - non-empty, not just whitespace;
-/// - not "." or ".." after trimming;
-/// - no ASCII control chars U+0000–U+001F or U+007F;
-/// - NFC-normalized UTF-8, at most 255 bytes;
-/// - no '/', '\\', '<', '>', ':', '\"', '|', '?', '*';
-/// - no trailing ASCII space or dot;
-/// - no Windows reserved device names (case-insensitive) including names with extensions.
+/// Validate a tree-item name without changing it, per the format's name rules.
 pub fn validate_display_name(name: &str) -> Result<(), NameError> {
-    validate_display_name_inner(name, false)
-}
-
-/// Validate a display name while allowing a trailing '.'.
-///
-/// This is intended for non-item display strings (e.g. tenant names like "Acme Inc.").
-pub fn validate_display_name_allow_trailing_dot(name: &str) -> Result<(), NameError> {
-    validate_display_name_inner(name, true)
-}
-
-fn validate_display_name_inner(name: &str, allow_trailing_dot: bool) -> Result<(), NameError> {
     if name.is_empty() {
         return Err(NameError {
             kind: NameErrorKind::Empty,
@@ -101,34 +93,27 @@ fn validate_display_name_inner(name: &str, allow_trailing_dot: bool) -> Result<(
 
     // Per-character checks on the raw name.
     for ch in name.chars() {
-        let code = ch as u32;
-        if (code <= 0x1F) || code == 0x7F {
+        if is_control(ch) {
             return Err(NameError {
                 kind: NameErrorKind::ContainsControl(ch),
             });
         }
-
-        match ch {
-            '/' | '\\' | '<' | '>' | ':' | '"' | '|' | '?' | '*' => {
-                return Err(NameError {
-                    kind: NameErrorKind::ContainsForbiddenChar(ch),
-                });
-            }
-            _ => {}
+        if is_forbidden(ch) {
+            return Err(NameError {
+                kind: NameErrorKind::ContainsForbiddenChar(ch),
+            });
+        }
+        if !is_assigned(ch) {
+            return Err(NameError {
+                kind: NameErrorKind::Unassigned(ch),
+            });
         }
     }
 
-    if let Some(last) = name.chars().last() {
-        if last == ' ' {
-            return Err(NameError {
-                kind: NameErrorKind::EndsWithDotOrSpace,
-            });
-        }
-        if last == '.' && !allow_trailing_dot {
-            return Err(NameError {
-                kind: NameErrorKind::EndsWithDotOrSpace,
-            });
-        }
+    if name.ends_with([' ', '.']) {
+        return Err(NameError {
+            kind: NameErrorKind::EndsWithDotOrSpace,
+        });
     }
 
     if !unicode_normalization::is_nfc(name) {
@@ -150,6 +135,11 @@ fn validate_display_name_inner(name: &str, allow_trailing_dot: bool) -> Result<(
             kind: NameErrorKind::ReservedDeviceName {
                 raw: name.to_string(),
             },
+        });
+    }
+    if is_reserved_control_name(name) {
+        return Err(NameError {
+            kind: NameErrorKind::ReservedControlName,
         });
     }
 
@@ -180,33 +170,27 @@ pub fn compute_name_key(name: &str) -> Result<String, NameError> {
     Ok(crate::case_folding::fold(&nfc))
 }
 
-/// Compute a canonical key for non-item display strings.
-///
-/// This matches `compute_name_key` except it allows a trailing '.' in the display name.
-pub fn compute_display_name_key(name: &str) -> Result<String, NameError> {
-    validate_display_name_allow_trailing_dot(name)?;
-
-    let nfc: String = name.nfc().collect();
-    let bytes = nfc.len();
-    if bytes > MAX_NAME_BYTES {
-        return Err(NameError {
-            kind: NameErrorKind::TooLong {
-                bytes,
-                max: MAX_NAME_BYTES,
-            },
-        });
-    }
-
-    Ok(crate::case_folding::fold(&nfc))
+fn is_control(ch: char) -> bool {
+    matches!(ch as u32, 0..=0x1F | 0x7F..=0x9F | 0x2028..=0x202E | 0x2066..=0x2069)
 }
 
-/// Legacy helper for backfilling existing rows.
-///
-/// This deliberately skips validation and length checks and just applies
-/// NFC + default case-folding in a deterministic way.
-pub fn compute_name_key_legacy(name: &str) -> String {
-    let nfc: String = name.nfc().collect();
-    crate::case_folding::fold(&nfc)
+fn is_forbidden(ch: char) -> bool {
+    matches!(ch, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*')
+}
+
+/// HFS+ ignores these code points when it compares names, so `.sy\u{200c}nck`
+/// would reach the control directory there.
+fn is_ignored_by_hfs(ch: char) -> bool {
+    matches!(ch as u32, 0x200C..=0x200F | 0x206A..=0x206F | 0xFEFF)
+}
+
+/// `.synck` is the control directory, and `synck~1` its NTFS short name.
+fn is_reserved_control_name(name: &str) -> bool {
+    let key: String = crate::case_folding::fold(name)
+        .chars()
+        .filter(|ch| !is_ignored_by_hfs(*ch))
+        .collect();
+    matches!(key.as_str(), ".synck" | "synck~1")
 }
 
 fn is_reserved_device_name(upper: &str) -> bool {
@@ -232,10 +216,7 @@ pub fn portable_name(name: &str) -> String {
     let mut fixed: String = name
         .nfc()
         .map(|ch| {
-            if ch <= '\u{1f}'
-                || ch == '\u{7f}'
-                || matches!(ch, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*')
-            {
+            if is_control(ch) || is_forbidden(ch) || !is_assigned(ch) {
                 '_'
             } else {
                 ch
@@ -246,7 +227,7 @@ pub fn portable_name(name: &str) -> String {
     if fixed.is_empty() {
         fixed.push('_');
     }
-    if is_reserved_device_name(&fixed.to_ascii_uppercase()) {
+    if is_reserved_device_name(&fixed.to_ascii_uppercase()) || is_reserved_control_name(&fixed) {
         fixed.insert(0, '_');
     }
     truncate_name(&mut fixed, MAX_NAME_BYTES);
@@ -360,16 +341,5 @@ mod tests {
             err.kind,
             NameErrorKind::TooLong { bytes, max } if bytes == MAX_NAME_BYTES + 1 && max == MAX_NAME_BYTES
         ));
-    }
-
-    #[test]
-    fn allows_trailing_dot_for_display_names() {
-        assert!(
-            validate_display_name("Acme Inc.").is_err(),
-            "item display name validation must reject trailing dot"
-        );
-        validate_display_name_allow_trailing_dot("Acme Inc.")
-            .expect("display name allows trailing dot");
-        compute_display_name_key("Acme Inc.").expect("compute display name key");
     }
 }

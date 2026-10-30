@@ -271,7 +271,6 @@ async fn project_commit_inner<S: StateProjectorStore>(
         commit_id: Some(commit.commit_id.clone()),
         repo_seq: commit.repo_seq,
         format_version: commit.format_version,
-        import_job_id: commit.import_job_id.clone(),
         committer_id: commit.committer_id.clone(),
         occurred_at: commit.occurred_at,
         author_id: commit.author_id.clone(),
@@ -478,7 +477,7 @@ async fn apply_projected_event<S: StateProjectorStore>(
                 commit.repo_seq, event.commit_event_idx
             ));
         }
-        let content = if proposal.set_content.is_some() {
+        let content = if proposal.replaces_content() {
             Some(ContentPointer {
                 item_seq: event.item_seq,
                 event_digest: sha256_digest_to_digest_bytes(&event.event_payload_digest),
@@ -495,6 +494,8 @@ async fn apply_projected_event<S: StateProjectorStore>(
             parent_folder_id: state.parent_folder_id,
             name: state.name,
             name_key: state.name_key,
+            record_key: state.record_key,
+            link_folder_id: state.link_folder_id,
             head_seq: event.item_seq,
             ref_head_seq: staged
                 .current
@@ -646,11 +647,13 @@ async fn stage_namespace_changes<S: StateProjectorStore>(store: &mut S) -> Resul
 
 fn live_namespace(item: Option<&ItemValue>) -> Option<NamespaceKey> {
     item.filter(|item| item.lifecycle_state == LifecycleState::Live)
-        .map(item_namespace)
+        .and_then(item_namespace)
 }
 
-fn item_namespace(item: &ItemValue) -> NamespaceKey {
-    NamespaceKey::new(item.parent_folder_id.clone(), item.name_key.clone())
+/// A record has no name, so the namespace holds only tree items.
+pub fn item_namespace(item: &ItemValue) -> Option<NamespaceKey> {
+    let name_key = item.name_key.clone()?;
+    Some(NamespaceKey::new(item.parent_folder_id.clone(), name_key))
 }
 
 async fn validate_candidate_item<S: StateNodeStore>(
@@ -672,7 +675,9 @@ async fn validate_candidate_item<S: StateNodeStore>(
         )));
     }
 
-    let current_key = item_namespace(current);
+    let Some(current_key) = item_namespace(current) else {
+        return Ok(());
+    };
     let current_owner = StateTree::new(&mut *store)
         .get_namespace(namespace_root, &current_key)
         .await?;
@@ -810,12 +815,12 @@ mod tests {
     };
 
     fn item(head_seq: i64) -> ItemValue {
-        ItemValue {
+        ItemValue { link_folder_id: None, record_key: None,
             item_id: ItemId::parse("01890f2a-7c00-7000-8000-000000000002").unwrap(),
             item_type: "FILE".to_string(),
             parent_folder_id: None,
-            name: "report.txt".to_string(),
-            name_key: "report.txt".to_string(),
+            name: Some("report.txt".to_string()),
+            name_key: Some("report.txt".to_string()),
             head_seq,
             ref_head_seq: 0,
             lifecycle_state: LifecycleState::Live,
@@ -857,7 +862,7 @@ mod tests {
             .apply_namespace_mutations(
                 namespace_root,
                 [NamespaceMutation::Put(
-                    item_namespace(&value),
+                    item_namespace(&value).unwrap(),
                     item_id.clone(),
                 )],
             )
@@ -1189,15 +1194,15 @@ mod tests {
     fn one_create_commit() -> (RepoId, OneCommitSource) {
         let repo_id = RepoId::new();
         let item_id = ItemId::new();
-        let proposal = EventProposal {
+        let proposal = EventProposal { set_link: None,
             item_id: Some(item_id.clone()),
             event_type: "FILE::CREATE".to_string(),
             set_metadata: None,
-            set_content: None,
-            create_item: Some(CreateItem {
+            set_content: Some(crate::content::EventContent::bytes(crate::types::ObjectId::from_digest([7; 32]))),
+            create_item: Some(CreateItem { key: None, link: None,
                 item_type: "FILE".to_string(),
                 parent_folder_id: None,
-                name: "report.txt".to_string(),
+                name: Some("report.txt".to_string()),
             }),
             set_parent: None,
             set_name: None,
@@ -1215,7 +1220,7 @@ mod tests {
         .unwrap();
         let author = "alice".to_string();
         let commit_bytes =
-            canonical_commit_bytes_for_hash(&author, &author, None, None, None, 1, &events_digest)
+            canonical_commit_bytes_for_hash(&author, &author, None, None, 1, &events_digest)
                 .unwrap();
         let commit_id = compute_commit_id(&commit_bytes);
         let created_at = Utc.timestamp_opt(1_688_169_600, 0).unwrap();
@@ -1224,7 +1229,6 @@ mod tests {
             commit_id: commit_id.clone(),
             repo_seq: Some(1),
             format_version: COMMIT_FORMAT_VERSION,
-            import_job_id: None,
             author_id: author.clone(),
             committer_id: author,
             message: None,

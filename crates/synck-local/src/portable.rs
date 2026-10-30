@@ -19,10 +19,10 @@ use sha2::{Digest, Sha256};
 use synck_file_folder::{
     BlobRef, CurrentItem, Intent, IntentProposal, Location, ProfileLifecycleState,
 };
-use synck_vcs::object::{Codec, Object, HEADER_BYTES};
+use synck_vcs::object::{Form, HEADER_BYTES, Object, VerifyingWriter, content_form, verify_stored};
 use synck_items::reader::{ItemReader, ReadContext, ReadableItem, RefReadContext};
 use synck_vcs::bundle::{
-    validate_bundle_event_payload_json_and_digest,
+    BundleReader, validate_bundle_event_payload_json_and_digest,
     validate_bundle_ref_event_payload_json_and_digest,
 };
 use synck_vcs::config::CoreConfig;
@@ -63,6 +63,21 @@ pub(crate) fn unsupported_format(version: Option<u64>) -> LocalError {
 
 const PAGE: usize = 512;
 
+/// Enough of a stored object to parse an encrypted frame without loading it.
+#[derive(Default)]
+struct FrameStart(Vec<u8>);
+
+impl Write for FrameStart {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        let count = bytes.len().min(66usize.saturating_sub(self.0.len()));
+        self.0.extend_from_slice(&bytes[..count]);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum Authority {
@@ -82,7 +97,11 @@ struct Config {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     author: Option<String>,
     authority: Authority,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Fixed at creation. The CLI verifies an encrypted repository but holds no key.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    encrypted: bool,
+    /// Stored apart, in `checkout.json`.
+    #[serde(skip)]
     checkout: Option<crate::checkout::Checkout>,
 }
 
@@ -156,6 +175,7 @@ pub struct VerificationReport {
     pub metadata: usize,
     pub missing_objects: Vec<ObjectId>,
     pub missing_metadata: Vec<ObjectId>,
+    pub state_digest: String,
 }
 
 /// The OS lock excludes other opens. Canonical writers require exclusive
@@ -404,7 +424,8 @@ impl PortableRepository {
         if version != Some(u64::from(FORMAT_VERSION)) {
             return Err(unsupported_format(version));
         }
-        let config: Config = serde_json::from_value(value)?;
+        let mut config: Config = serde_json::from_value(value)?;
+        config.checkout = crate::checkout::read_checkout(&root.join(".synck"))?;
         if let Some(author) = &config.author {
             author_valid(author)?;
         } else if config.authority != Authority::Follower {
@@ -421,7 +442,8 @@ impl PortableRepository {
             "repository.sqlite3",
             &root.join(".synck/repository.sqlite3"),
         )?;
-        let storage = SqliteStorage::new(root.join(".synck/repository.sqlite3"));
+        let storage = SqliteStorage::new(root.join(".synck/repository.sqlite3"))
+            .with_encrypted(config.encrypted);
         storage.open_readonly().map_err(corrupt)?;
         if config.storage_mode == StorageMode::Chunked {
             drop(
@@ -553,13 +575,15 @@ impl PortableRepository {
     pub async fn gc(&mut self) -> Result<crate::GcReport> {
         if entries(&self.metadata)?
             .iter()
-            .any(|name| name.ends_with(".json") && name != "config.json")
+            .any(|name| name.ends_with(".json") && !matches!(name.as_str(), "config.json" | "checkout.json"))
         {
             return Err(invalid(
                 "finish checkout recovery before garbage collection",
             ));
         }
         self.verify().await?;
+        // The repository lock is held from here through removal, and every writer
+        // holds it from reusing an object through its commit.
         let (referenced, _) = self.references().await?;
         if self.storage_mode() == StorageMode::Chunked {
             self.object_store().recover_incomplete()?;
@@ -643,17 +667,8 @@ impl PortableRepository {
         }
         store.verify_all()?;
         store.checkpoint()?;
-        let mut updated = self.config.clone();
-        updated.storage_mode = StorageMode::Chunked;
-        let path = self
-            .root
-            .join(".synck")
-            .join(format!("config-{}.json", Uuid::new_v4()));
-        write_new(&path, &serde_json::to_vec(&updated)?)?;
-        replace_file(&path, &self.root.join(".synck/config.json"))
-            .at("publish storage mode", &path)?;
-        self.config = updated;
-        sync_open_directory(&self.metadata, &self.root.join(".synck"))?;
+        self.config.storage_mode = StorageMode::Chunked;
+        self.write_config()?;
         self.remove_whole_file_objects()?;
         Ok(true)
     }
@@ -744,9 +759,10 @@ impl PortableRepository {
         working.recover_current().await?;
         working.validate_checkout_selection().await?;
         working.write_checkout_source(&[])?;
-        working.publish_checkout_config()?;
         self.config.author = Some(author.to_string());
         self.config.authority = Authority::IndependentLocal;
+        self.write_config()?;
+        working.publish_checkout_config()?;
         self.config.checkout = Some(checkout);
         working.finish_checkout_transition().await?;
         self.config.checkout = working.config().checkout.clone();
@@ -770,30 +786,37 @@ impl PortableRepository {
         }
         author_valid(author)?;
         self.verify().await?;
-        let updated = Config {
-            format_version: FORMAT_VERSION,
-            storage_mode: self.storage_mode(),
-            repo_id: self.config.repo_id.clone(),
-            author: Some(author.into()),
-            authority: Authority::Local,
-            checkout: self.config.checkout.clone(),
-        };
-        let name = format!("config-{}.json", Uuid::new_v4());
-        let path = self.root.join(".synck").join(&name);
-        write_new(&path, &serde_json::to_vec(&updated)?)?;
+        self.config.author = Some(author.into());
+        self.config.authority = Authority::Local;
+        self.write_config()
+    }
+
+    fn write_config(&self) -> Result<()> {
+        let path = self
+            .root
+            .join(".synck")
+            .join(format!("config-{}.json", Uuid::new_v4()));
+        write_new(&path, &serde_json::to_vec(&self.config)?)?;
         replace_file(&path, &self.root.join(".synck/config.json"))
-            .at("activate portable repository", &path)?;
-        self.config = updated;
+            .at("publish repository config", &path)?;
         sync_open_directory(&self.metadata, &self.root.join(".synck"))
     }
 
     fn core(&self) -> Repo {
         Repo::new(
             Storage::new(Arc::new(self.storage.clone())),
-            CoreConfig::default(),
+            CoreConfig {
+                encrypted: self.config.encrypted,
+                ..CoreConfig::default()
+            },
         )
     }
     fn writable(&self) -> Result<()> {
+        if self.config.encrypted {
+            return Err(invalid(
+                "this repository is encrypted, and this client holds no key: it can only verify it",
+            ));
+        }
         if self.config.format_version != FORMAT_VERSION
             || self.config.authority == Authority::Follower
         {
@@ -857,7 +880,7 @@ impl PortableRepository {
             }
         }
         let connection = self.storage.open_readonly().map_err(corrupt)?;
-        let mut query=connection.prepare("SELECT item_id FROM vcs_items WHERE repo_id=?1 AND parent_folder_id IS ?2 AND lifecycle_state='LIVE' AND item_type<>'CHAT_ORGANIZATION' AND (?3 IS NULL OR (name_key,item_id)>(?3,?4)) ORDER BY name_key,item_id LIMIT ?5")?;
+        let mut query=connection.prepare("SELECT item_id FROM vcs_items WHERE repo_id=?1 AND parent_folder_id IS ?2 AND lifecycle_state='LIVE' AND name_key IS NOT NULL AND (?3 IS NULL OR (name_key,item_id)>(?3,?4)) ORDER BY name_key,item_id LIMIT ?5")?;
         let ids = query
             .query_map(
                 params![
@@ -897,7 +920,7 @@ impl PortableRepository {
                 repo_id: self.repo_id().clone(),
                 parent_item_id: parent.cloned(),
                 through_repo_seq: None,
-                name_key: item.name_key.clone(),
+                name_key: item.name_key.clone().expect("a listed item has a name"),
                 item_id: item.item_id.clone(),
             })
         } else {
@@ -907,6 +930,44 @@ impl PortableRepository {
     }
 
     /// Stable historical namespace page, rebuilding the disposable cache as needed.
+    /// Live records in item ID order, after `after`. With `link`, only those
+    /// filed in that folder. Records have no path, so a namespace listing omits them.
+    pub async fn list_records(
+        &self,
+        link: Option<&ItemId>,
+        after: Option<&ItemId>,
+        limit: usize,
+    ) -> Result<Vec<ItemRow>> {
+        if !(1..=512).contains(&limit) {
+            return Err(invalid("record page limit must be 1..=512"));
+        }
+        let connection = self.storage.open_readonly().map_err(corrupt)?;
+        let mut query = connection.prepare(
+            "SELECT item_id FROM vcs_items WHERE repo_id=?1 AND name_key IS NULL \
+             AND lifecycle_state='LIVE' AND (?2 IS NULL OR link_folder_id=?2) \
+             AND (?3 IS NULL OR item_id>?3) ORDER BY item_id LIMIT ?4",
+        )?;
+        let ids = query
+            .query_map(
+                params![
+                    self.repo_id().as_str(),
+                    link.map(ItemId::as_str),
+                    after.map(ItemId::as_str),
+                    limit as i64
+                ],
+                |row| row.get::<_, String>(0),
+            )?
+            .map(|id| ItemId::parse(id?).map_err(corrupt))
+            .collect::<Result<Vec<_>>>()?;
+        let mut items = self
+            .storage
+            .get_items_readonly(self.repo_id(), &ids)
+            .await
+            .map_err(corrupt)?;
+        items.sort_by(|left, right| left.item_id.as_str().cmp(right.item_id.as_str()));
+        Ok(items)
+    }
+
     pub async fn list_historical_items(
         &self,
         through: i64,
@@ -960,11 +1021,7 @@ impl PortableRepository {
                 )
                 .await
                 .map_err(corrupt)?;
-            entries.extend(
-                page.entries
-                    .into_iter()
-                    .filter(|(_, item)| item.item_type != "CHAT_ORGANIZATION"),
-            );
+            entries.extend(page.entries);
             if entries.len() > limit || page.next_cursor.is_none() {
                 break;
             }
@@ -981,6 +1038,8 @@ impl PortableRepository {
                 parent_folder_id: item.parent_folder_id,
                 name: item.name,
                 name_key: item.name_key,
+                record_key: item.record_key,
+                link_folder_id: item.link_folder_id,
                 head_seq: item.head_seq,
                 ref_head_seq: item.ref_head_seq,
                 lifecycle_state: item.lifecycle_state,
@@ -995,7 +1054,7 @@ impl PortableRepository {
                 repo_id: self.repo_id().clone(),
                 parent_item_id: parent.cloned(),
                 through_repo_seq: Some(through),
-                name_key: item.name_key.clone(),
+                name_key: item.name_key.clone().expect("a listed item has a name"),
                 item_id: item.item_id.clone(),
             })
         } else {
@@ -1174,16 +1233,15 @@ impl PortableRepository {
             )?
         };
         let object = Object::verify(&id, bytes).map_err(corrupt)?;
-        object.utf8().map_err(corrupt)?;
         Ok(object)
     }
 
     /// Stream exact blob bytes. On error the caller must discard any partial
     /// output; publish extracted files only after this returns success.
     pub fn copy_blob(&self, id: &ObjectId, out: &mut dyn Write) -> Result<u64> {
-        let mut decoder = synck_vcs::object::Decoder::new(id.clone(), out);
-        self.copy_stored_object(id, &mut decoder)?;
-        decoder.finish().map(|(size, _)| size).map_err(corrupt)
+        let mut writer = VerifyingWriter::new(id.clone(), out);
+        self.copy_stored_object(id, &mut writer)?;
+        writer.finish().map_err(corrupt)
     }
 
     pub(crate) fn copy_stored_object(&self, id: &ObjectId, mut out: &mut dyn Write) -> Result<u64> {
@@ -1505,7 +1563,9 @@ impl PortableRepository {
             ));
         }
         let mut expected_heads = HashMap::new();
-        let mut verifier = SemanticVerifier::new();
+        let mut verifier = SemanticVerifier::new(self.config.encrypted);
+        let mut item_types = HashMap::new();
+        let mut forms = BTreeMap::new();
         let mut from = 1;
         let mut count = 0;
         let mut terminal = 0;
@@ -1532,7 +1592,7 @@ impl PortableRepository {
                 if self.config.checkout.is_some() {
                     for row in &rows {
                         if let CommitEventRow::Item(event) = row {
-                            if event.event_type == "FILE::SET_CONTENT" {
+                            if synck_file_folder::is_file_content_event(&event.event_type) {
                                 let proposal: EventProposal =
                                     event.proposal()?;
                                 let (blob, size) = crate::event_profile::parse_content(&proposal)
@@ -1545,13 +1605,33 @@ impl PortableRepository {
                         }
                     }
                 }
+                for row in &rows {
+                    let CommitEventRow::Item(event) = row else {
+                        continue;
+                    };
+                    let proposal: EventProposal = event.proposal()?;
+                    if let Some(create) = &proposal.create_item {
+                        item_types.insert(event.item_id.clone(), create.item_type.clone());
+                    }
+                    let (Some(content), Some(item_type)) =
+                        (&proposal.set_content, item_types.get(&event.item_id))
+                    else {
+                        continue;
+                    };
+                    for (role, id) in content.roles() {
+                        let form = content_form(self.config.encrypted, item_type, role);
+                        forms
+                            .entry(id.as_str()[7..].to_string())
+                            .or_insert_with(BTreeSet::new)
+                            .insert(form);
+                    }
+                }
                 let owned = rows.into_iter().map(VerifyOwned::from).collect::<Vec<_>>();
                 let findings = verifier.verify_commit_events(
                     &VerifyCommit {
                         commit_id: Some(commit.commit_id.clone()),
                         repo_seq: commit.repo_seq,
                         format_version: commit.format_version,
-                        import_job_id: commit.import_job_id,
                         committer_id: commit.committer_id,
                         occurred_at: commit.occurred_at,
                         author_id: commit.author_id,
@@ -1611,6 +1691,8 @@ impl PortableRepository {
                     parent_folder_id: item.parent_folder_id,
                     name: item.name,
                     name_key: item.name_key,
+                    record_key: item.record_key,
+                    link_folder_id: item.link_folder_id,
                     head_seq: item.head_seq,
                     ref_head_seq: item.ref_head_seq,
                     lifecycle_state: item.lifecycle_state,
@@ -1623,6 +1705,7 @@ impl PortableRepository {
             }
         }
         let item_count = items.len() as u64;
+        let state_digest = verifier.state_digest().map_err(corrupt)?;
         if let Some(finding) = verifier.finish(&items).into_iter().next() {
             return Err(corrupt(finding));
         }
@@ -1652,22 +1735,26 @@ impl PortableRepository {
                 },
             };
             if !present { missing_objects.push(id); continue; }
-            // ChunkStore::verify_all already checked the frame and every chunk.
-            if inventory.is_none() {
-                self.copy_blob(&id, &mut std::io::sink())?;
+            match forms.get(name) {
+                Some(forms) => {
+                    for form in forms {
+                        self.verify_object(&id, *form, inventory.is_none())?;
+                    }
+                }
+                None => self.verify_object(&id, Form::Opaque, inventory.is_none())?,
             }
         }
         let mut missing_metadata = Vec::new();
         for name in &metadata {
             let id = ObjectId::parse(format!("sha256:{name}")).map_err(corrupt)?;
-            if self.storage.get_metadata(self.repo_id(), &id).map_err(corrupt)?.is_none() {
+            if !self.storage.has_metadata(self.repo_id(), &id).map_err(corrupt)? {
                 missing_metadata.push(id);
             }
         }
         Ok(VerificationReport {
             repo_id: self.repo_id().clone(), terminal_repo_seq: terminal,
             commits: count, items: item_count, objects: objects.len(), metadata: metadata.len(),
-            missing_objects, missing_metadata,
+            missing_objects, missing_metadata, state_digest,
         })
     }
 
@@ -1772,7 +1859,7 @@ impl PortableRepository {
                     create.item_id.as_ref() == Some(id)
                         && create.create_item.as_ref().is_some_and(|created| {
                             created.item_type == "FILE"
-                                && created.name == location.name
+                                && created.name.as_ref() == Some(&location.name)
                                 && created.parent_folder_id == location.parent_item_id
                         })
                 }),
@@ -1791,6 +1878,25 @@ impl PortableRepository {
             None => Err(invalid(
                 "operation ID was already used for a different write",
             )),
+        }
+    }
+
+    /// Check a present object against its ID and form. `ChunkStore::verify_all`
+    /// has already hashed every object in a chunked store.
+    fn verify_object(&self, id: &ObjectId, form: Form, unhashed: bool) -> Result<()> {
+        match form {
+            Form::Plain | Form::Opaque if unhashed => self.copy_blob(id, &mut std::io::sink()).map(|_| ()),
+            Form::Plain | Form::Opaque => Ok(()),
+            Form::Salted => {
+                let mut stored = Vec::new();
+                self.copy_blob(id, &mut stored)?;
+                verify_stored(id, form, &stored).map_err(corrupt)
+            }
+            Form::Encrypted => {
+                let mut frame = FrameStart::default();
+                self.copy_blob(id, &mut frame)?;
+                synck_vcs::object::verify_encrypted_frame(&frame.0).map_err(corrupt)
+            }
         }
     }
 
@@ -1868,8 +1974,8 @@ impl PortableRepository {
                     item_id: item.item_id,
                     item_type: item.item_type,
                     parent_item_id: item.parent_folder_id,
-                    name: item.name,
-                    name_key: item.name_key,
+                    name: item.name.ok_or_else(|| corrupt("a tree item has no name"))?,
+                    name_key: item.name_key.ok_or_else(|| corrupt("a tree item has no name key"))?,
                     head_seq: item.head_seq,
                     lifecycle_state: match item.lifecycle_state {
                         LifecycleState::Live => ProfileLifecycleState::Live,
@@ -1902,7 +2008,7 @@ impl PortableRepository {
             .is_some_and(|checkout| checkout.pending.is_some())
             || entries(&self.metadata)?
                 .iter()
-                .any(|name| name.ends_with(".json") && name != "config.json")
+                .any(|name| name.ends_with(".json") && !matches!(name.as_str(), "config.json" | "checkout.json"))
         {
             return Err(invalid(
                 "finish checkout recovery with synck status before writing files",
@@ -2141,18 +2247,6 @@ impl PortableRepository {
             requested_name,
             source,
         )?;
-        let name = &prepared.events[0]
-            .create_item
-            .as_ref()
-            .expect("prepared EMAIL creation")
-            .name;
-        let key = synck_vcs::naming::compute_name_key(name).map_err(invalid)?;
-        let occupied: bool=self.storage.open_readonly().map_err(corrupt)?.query_row(
-            "SELECT EXISTS(SELECT 1 FROM vcs_items WHERE repo_id=?1 AND parent_folder_id IS ?2 AND name_key=?3 AND lifecycle_state='LIVE')",
-            params![self.repo_id().as_str(),parent.as_ref().map(ItemId::as_str),key],|row|row.get(0))?;
-        if occupied {
-            return Err(invalid("an item already occupies the requested email name"));
-        }
         for (_, bytes) in prepared.objects {
             self.store_bytes(&bytes)?;
         }
@@ -2197,7 +2291,8 @@ impl PortableRepository {
             return Ok(commit);
         }
         let item = self.local_owner(id, "FILE").await?;
-        crate::email_import::reject_file_email_update(&item.name)?;
+        let name = item.name.as_deref().ok_or_else(|| corrupt("a FILE has no name"))?;
+        crate::email_import::reject_file_email_update(name)?;
         let readable = self.show_item(id, None).await?;
         let head = match (
             readable.item.projection.content_blob_id,
@@ -2225,7 +2320,7 @@ impl PortableRepository {
         }
         if self.config.checkout.is_some() {
             return self
-                .write_checkout_file(Some(id), None, &item.name, &content, options)
+                .write_checkout_file(Some(id), None, name, &content, options)
                 .await
                 .map(|(_, commit)| commit);
         }
@@ -2266,7 +2361,7 @@ impl PortableRepository {
         synck_items::subitems::parse_chat_profile_event(&profile).map_err(invalid)?;
         let events = vec![
             EventProposal::from_fields(
-                json!({"item_id":id,"event_type":"CHAT::CREATE","create_item":{"item_type":"CHAT","name":format!("chat-{id}"),"parent_folder_id":null},"set_metadata":{"non_tree":true,"chat_title":title}}),
+                json!({"item_id":id,"event_type":"CHAT::CREATE","create_item":{"item_type":"CHAT"},"set_metadata":{"title":title}}),
             )?,
             EventProposal::from_fields(
                 json!({"item_id":id,"event_type":"CHAT::SET_PROFILE","set_metadata":profile}),
@@ -2292,7 +2387,7 @@ impl PortableRepository {
     ) -> Result<CommitId> {
         let owner = self.local_owner(chat, "CHAT").await?;
         synck_items::body_events::validate_body("CHAT::MESSAGE::CREATE", body).map_err(invalid)?;
-        let object = Object::new(Codec::Utf8, body.as_bytes()).map_err(invalid)?;
+        let object = Object::new(body.as_bytes()).map_err(invalid)?;
         let content_id = object.id();
         self.store_bytes(object.payload())?;
         let event: EventProposal = EventProposal::from_fields(
@@ -2370,7 +2465,7 @@ impl PortableRepository {
                 &database,
                 None,
             )?;
-            let storage = SqliteStorage::new(database.clone());
+            let storage = SqliteStorage::new(database.clone()).with_encrypted(self.config.encrypted);
             // Establish the ordinary local WAL profile on the private copy.
             drop(storage.open_writable().map_err(corrupt)?);
             let preserve_chunks =
@@ -2387,6 +2482,7 @@ impl PortableRepository {
                     repo_id: self.repo_id().clone(),
                     author: None,
                     authority: Authority::Follower,
+                    encrypted: self.config.encrypted,
                     checkout: None,
                 })?,
             )?;
@@ -2643,8 +2739,10 @@ pub async fn materialize_repository(
                 "history size or SHA-256 differs from complete bundle snapshot",
             ));
         }
+        let mut header = BufReader::new(open_regular_file_nofollow(&private_history)?);
+        let encrypted = BundleReader::new(&mut header).read_header().map_err(corrupt)?.encrypted();
         let history = open_regular_file_nofollow(&private_history)?;
-        let storage = SqliteStorage::new(metadata.join("repository.sqlite3"));
+        let storage = SqliteStorage::new(metadata.join("repository.sqlite3")).with_encrypted(encrypted);
         let report = storage
             .import_bundle(&mut BufReader::new(history))
             .await
@@ -2665,6 +2763,7 @@ pub async fn materialize_repository(
                 repo_id: report.repo_id,
                 author: None,
                 authority: Authority::Follower,
+                encrypted,
                 checkout: None,
             })?,
         )?;
@@ -2821,12 +2920,17 @@ pub async fn init_repository_with_name_repair(
                 repo_id: repo_id.clone(),
                 author: Some(author.into()),
                 authority: Authority::IndependentLocal,
-                checkout: Some(crate::checkout::Checkout {
-                    hidden_files: Default::default(),
-                    paths: Vec::new(),
-                    pending: None,
-                }),
+                encrypted: false,
+                checkout: None,
             })?,
+        )?;
+        crate::checkout::write_checkout(
+            &metadata,
+            &crate::checkout::Checkout {
+                hidden_files: Default::default(),
+                paths: Vec::new(),
+                pending: None,
+            },
         )?;
         if storage_mode == StorageMode::Chunked {
             ChunkStore::create(&metadata.join(OBJECT_STORE_FILE), &repo_id)?;

@@ -375,10 +375,25 @@ impl ChunkStore {
 
     /// Replace a private staging key with the streamed digest. The object stays
     /// incomplete until the caller has validated its source and byte count.
-    pub(crate) fn address_staged_blob(&self, staging: &[u8;32], digest: &[u8;32], size: u64) -> Result<()> {
-        if staging == digest { return Ok(()); }
+    /// Give staged bytes their digest. Identical bytes have one ID, so this returns
+    /// false, and drops the staging, when that object is already complete.
+    pub(crate) fn address_staged_blob(&self, staging: &[u8;32], digest: &[u8;32], size: u64) -> Result<bool> {
+        if staging == digest { return Ok(true); }
         let mut connection = self.open_writable()?;
         let transaction = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let complete: Option<bool> = transaction
+            .query_row("SELECT complete FROM blobs WHERE digest=?1", [digest.as_slice()], |row| row.get(0))
+            .optional()?;
+        if complete == Some(true) {
+            transaction.execute("DELETE FROM blob_chunks WHERE blob_digest=?1", [staging.as_slice()])?;
+            transaction.execute("DELETE FROM blobs WHERE digest=?1", [staging.as_slice()])?;
+            transaction.commit()?;
+            return Ok(false);
+        }
+        if complete.is_some() {
+            transaction.execute("DELETE FROM blob_chunks WHERE blob_digest=?1", [digest.as_slice()])?;
+            transaction.execute("DELETE FROM blobs WHERE digest=?1", [digest.as_slice()])?;
+        }
         let changed = transaction.execute(
             "INSERT INTO blobs(digest,size_bytes,complete) SELECT ?1,size_bytes,0 FROM blobs WHERE digest=?2 AND size_bytes=?3 AND complete=0",
             params![digest.as_slice(), staging.as_slice(), i64::try_from(size).map_err(|_| LocalError::Invalid("object too large".into()))?],
@@ -387,7 +402,7 @@ impl ChunkStore {
         transaction.execute("UPDATE blob_chunks SET blob_digest=?1 WHERE blob_digest=?2", params![digest.as_slice(),staging.as_slice()])?;
         transaction.execute("DELETE FROM blobs WHERE digest=?1", [staging.as_slice()])?;
         transaction.commit()?;
-        Ok(())
+        Ok(true)
     }
 
     pub(crate) fn complete_blob(&self, digest: &[u8; 32], size: u64) -> Result<()> {
@@ -533,7 +548,7 @@ impl ChunkStore {
         Ok(hex::encode(digest))
     }
 
-    /// Repack exact framed bytes; salts and object IDs never change.
+    /// Repack exact stored bytes; object IDs never change.
     pub(crate) fn store_object_file(&self, source: &Path) -> Result<(String, u64)> {
         let mut file = crate::repository::open_regular_file_nofollow(source)?;
         let mut hasher = Sha256::new();
@@ -561,20 +576,12 @@ impl ChunkStore {
         file.rewind()
             .map_err(|e| LocalError::Invalid(e.to_string()))?;
         use crate::ooxml::{OoxmlKind, chunk_region_lengths_at};
-        use synck_vcs::object::{Codec, Header, HEADER_BYTES};
-        let mut header_bytes = [0;HEADER_BYTES];
-        file.read_exact(&mut header_bytes).map_err(|e| LocalError::Integrity(e.to_string()))?;
-        let header = Header::parse(&header_bytes).map_err(|e| LocalError::Integrity(e.to_string()))?;
-        let application_size = size.checked_sub(HEADER_BYTES as u64).ok_or_else(|| LocalError::Integrity("truncated object".into()))?;
         let mut regions = None;
-        if header.codec() == Codec::Raw {
-            for kind in [OoxmlKind::Docx, OoxmlKind::Xlsx, OoxmlKind::Pptx] {
-                regions = chunk_region_lengths_at(file.try_clone().map_err(|e| LocalError::Invalid(e.to_string()))?, application_size, kind, HEADER_BYTES as u64);
-                if regions.is_some() { break; }
-            }
+        for kind in [OoxmlKind::Docx, OoxmlKind::Xlsx, OoxmlKind::Pptx] {
+            regions = chunk_region_lengths_at(file.try_clone().map_err(|e| LocalError::Invalid(e.to_string()))?, size, kind, 0);
+            if regions.is_some() { break; }
         }
-        let mut boundaries = vec![HEADER_BYTES as u64];
-        if application_size > 0 { boundaries.extend(regions.unwrap_or_else(|| vec![application_size])); }
+        let boundaries = if size > 0 { regions.unwrap_or_else(|| vec![size]) } else { Vec::new() };
         // Office inspection may move the shared file offset.
         file.rewind()
             .map_err(|e| LocalError::Invalid(e.to_string()))?;
@@ -650,9 +657,9 @@ impl ChunkStore {
         for (digest, size) in &inventory {
             let blob_id = ObjectId::parse(format!("sha256:{digest}"))
                 .map_err(|error| LocalError::Integrity(error.to_string()))?;
-            let mut decoder = synck_vcs::object::Decoder::new(blob_id.clone(), std::io::sink());
-            self.copy_blob_from(connection, &blob_id, *size, &mut decoder)?;
-            decoder
+            let mut writer = synck_vcs::object::VerifyingWriter::new(blob_id.clone(), std::io::sink());
+            self.copy_blob_from(connection, &blob_id, *size, &mut writer)?;
+            writer
                 .finish()
                 .map_err(|error| LocalError::Integrity(error.to_string()))?;
         }
@@ -1233,11 +1240,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn verify_all_checks_framing_even_with_matching_physical_digests() {
-        use synck_vcs::object::{Codec, Header};
-        let valid = [Header::new(Codec::Raw).unwrap().as_bytes().as_slice(), b"payload"].concat();
-        let invalid_utf8 = [Header::new(Codec::Utf8).unwrap().as_bytes().as_slice(), &[0xff]].concat();
-        for bytes in [valid.clone(), b"unframed".to_vec(), invalid_utf8] {
+    fn verify_all_checks_each_object_against_its_id() {
+        for bytes in [b"payload".to_vec(), Vec::new()] {
             let temporary = tempfile::tempdir().unwrap();
             let path = temporary.path().join("objects.sqlite3");
             let repo_id = RepoId::new();
@@ -1246,7 +1250,7 @@ mod tests {
             let digest = Sha256::digest(&bytes).into();
             store.stage_blob(digest, bytes.len() as u64, Cursor::new(&bytes)).unwrap();
             store.complete_blob(&digest, bytes.len() as u64).unwrap();
-            assert_eq!(store.verify_all().is_ok(), bytes == valid);
+            assert!(store.verify_all().is_ok());
         }
     }
 

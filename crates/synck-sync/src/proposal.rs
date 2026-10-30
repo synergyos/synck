@@ -39,7 +39,6 @@ pub fn validate_submit(request: &SubmitRequest) -> Result<ValidatedProposal, Pro
         &metadata.committer_id,
         metadata.occurred_at,
         metadata.message.as_deref(),
-        metadata.import_job_id.as_deref(),
         request.event_count as usize,
         &request.events_digest,
     )?);

@@ -62,19 +62,29 @@ pub struct Cursor {
     pub checkpoint: Sha256Digest,
 }
 impl Cursor {
-    pub fn genesis(repository: RepositoryIdentity) -> Self {
-        Self {
+    pub fn genesis(repository: RepositoryIdentity, encrypted: bool) -> Result<Self, ProtocolError> {
+        let genesis = synck_vcs::checkpoint::genesis(
+            &repository.repo_id,
+            &repository.generation.to_string(),
+            encrypted,
+        )?;
+        Ok(Self {
             repository,
             repo_seq: 0,
-            checkpoint: digest_id(synck_vcs::checkpoint::GENESIS),
-        }
+            checkpoint: digest_id(genesis),
+        })
     }
     pub fn validate(&self) -> Result<(), ProtocolError> {
         self.repository.validate()?;
         if self.repo_seq > i64::MAX as u64 {
             return Err(invalid("repository sequence overflow"));
         }
-        if self.repo_seq == 0 && self.checkpoint != digest_id(synck_vcs::checkpoint::GENESIS) {
+        // A cursor alone cannot say whether its repository is encrypted. The first
+        // commit's checkpoint binds that choice, and `Capabilities` states it.
+        if self.repo_seq == 0
+            && Self::genesis(self.repository.clone(), false)?.checkpoint != self.checkpoint
+            && Self::genesis(self.repository.clone(), true)?.checkpoint != self.checkpoint
+        {
             return Err(ProtocolError::Checkpoint);
         }
         Ok(())
@@ -86,6 +96,7 @@ impl Cursor {
 pub struct Capabilities {
     pub protocol_version: u16,
     pub repository: RepositoryIdentity,
+    pub encrypted: bool,
     pub latest: Cursor,
     /// None for every field is the reference server's unrestricted policy.
     pub policy: ServerPolicy,
@@ -99,6 +110,11 @@ impl Capabilities {
         }
         if self.latest.repository != self.repository {
             return Err(ProtocolError::Generation);
+        }
+        if self.latest.repo_seq == 0
+            && self.latest != Cursor::genesis(self.repository.clone(), self.encrypted)?
+        {
+            return Err(ProtocolError::Checkpoint);
         }
         Ok(())
     }
@@ -118,7 +134,6 @@ pub struct CommitMetadata {
     pub committer_id: String,
     pub message: Option<String>,
     pub occurred_at: Option<Timestamp>,
-    pub import_job_id: Option<String>,
 }
 
 /// Ordinary events, then ref events, then sorted unique head guards. Guards are

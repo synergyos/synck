@@ -7,7 +7,7 @@ pub fn event_policy(event_type: &str) -> Option<MutationPolicy> {
 
     if !rest.contains("::") {
         return match rest {
-            "CREATE" | "SET_NAME" | "SET_PARENT" | "SET_METADATA" | "FEDERATE" | "TRASH"
+            "CREATE" | "SET_TITLE" | "SET_LINK" | "SET_METADATA" | "FEDERATE" | "TRASH"
             | "RESTORE" | "TOMBSTONE" => Some(MutationPolicy::Optimistic),
             _ => None,
         };

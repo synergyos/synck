@@ -9,6 +9,11 @@ fn repository() -> RepositoryIdentity {
         generation: Uuid::parse_str("019a2900-0000-7000-8000-000000000002").unwrap(),
     }
 }
+fn genesis_value() -> [u8; 32] {
+    let repository = repository();
+    synck_vcs::checkpoint::genesis(&repository.repo_id, &repository.generation.to_string(), false)
+        .unwrap()
+}
 fn now() -> Timestamp {
     Utc.timestamp_opt(1_793_145_600, 123_456_789).unwrap()
 }
@@ -90,7 +95,7 @@ fn published(request: &SubmitRequest, records: &[ProposalRecord]) -> PublishedCo
         .collect();
     let checkpoint = digest(
         synck_vcs::checkpoint::digest(
-            &synck_vcs::checkpoint::GENESIS,
+            &genesis_value(),
             1,
             &validated.commit_id,
             now(),
@@ -103,7 +108,6 @@ fn published(request: &SubmitRequest, records: &[ProposalRecord]) -> PublishedCo
             commit_id: validated.commit_id,
             repo_seq: Some(1),
             format_version: COMMIT_FORMAT_VERSION,
-            import_job_id: request.metadata.import_job_id.clone(),
             author_id: request.metadata.author_id.clone(),
             committer_id: request.metadata.committer_id.clone(),
             message: request.metadata.message.clone(),
@@ -194,7 +198,7 @@ fn large_import_vector_pages_more_than_ten_thousand_events_atomically() {
     }
     let published = published(&request, &records);
     verify_published_commit(&published, &repository()).unwrap();
-    let genesis = Cursor::genesis(repository());
+    let genesis = Cursor::genesis(repository(), false).unwrap();
     let mut state = HistoryVerifier::new(genesis.clone()).unwrap();
     let mut installed = 0;
     for (i, events) in published.events.chunks(317).enumerate() {
@@ -226,12 +230,6 @@ fn large_import_vector_pages_more_than_ten_thousand_events_atomically() {
     }
     assert_eq!(installed, 1);
     assert!(state.position().pending.is_none());
-    let mut without_job = request.clone();
-    without_job.metadata.import_job_id = None;
-    assert_ne!(
-        validate_submit(&without_job).unwrap().commit_id,
-        published.commit.commit_id
-    );
 }
 
 #[test]
@@ -332,7 +330,7 @@ fn refs_and_guards_span_pages_and_bind_the_request() {
 fn history_tampering_replay_and_partial_terminal_pages_leave_cursor_unchanged() {
     let request = request();
     let published = published(&request, &records());
-    let mut state = HistoryVerifier::new(Cursor::genesis(repository())).unwrap();
+    let mut state = HistoryVerifier::new(Cursor::genesis(repository(), false).unwrap()).unwrap();
     let original = state.position().clone();
     let valid = page(
         &published,
@@ -462,10 +460,10 @@ fn transfer_bounds_and_unknown_fields_are_rejected() {
     let mut wire = serde_json::to_value(&request).unwrap();
     wire["extension"] = true.into();
     assert!(serde_json::from_value::<SubmitRequest>(wire).is_err());
-    let caps = Capabilities {
+    let caps = Capabilities { encrypted: false,
         protocol_version: PROTOCOL_VERSION,
         repository: repository(),
-        latest: Cursor::genesis(repository()),
+        latest: Cursor::genesis(repository(), false).unwrap(),
         policy: ServerPolicy::default(),
     };
     caps.validate().unwrap();
@@ -476,10 +474,10 @@ fn maximum_format_event_fits_both_transfers_without_relaxing_page_bounds() {
     let initial = request();
     let mut record = records().remove(0);
     if let ProposalRecord::Item(event) = &mut record {
-        let overhead =
-            canonical_event_proposal_bytes(event).unwrap().len() - event.event_type.len();
-        event.event_type = "FILE::".to_owned()
-            + &"X".repeat(synck_vcs::limits::MAX_EVENT_PAYLOAD_BYTES - overhead - 6);
+        event.set_federation_stream_id = Some(String::new());
+        let overhead = canonical_event_proposal_bytes(event).unwrap().len();
+        event.set_federation_stream_id =
+            Some("X".repeat(synck_vcs::limits::MAX_EVENT_PAYLOAD_BYTES - overhead));
         assert_eq!(
             canonical_event_proposal_bytes(event).unwrap().len(),
             synck_vcs::limits::MAX_EVENT_PAYLOAD_BYTES
@@ -489,7 +487,7 @@ fn maximum_format_event_fits_both_transfers_without_relaxing_page_bounds() {
     let request = state.request(initial.metadata.clone()).unwrap();
     state.finish(&request, now()).unwrap();
     let published = published(&request, &[record.clone()]);
-    let mut history = HistoryVerifier::new(Cursor::genesis(repository())).unwrap();
+    let mut history = HistoryVerifier::new(Cursor::genesis(repository(), false).unwrap()).unwrap();
     assert!(
         history
             .push(&page(
@@ -501,7 +499,7 @@ fn maximum_format_event_fits_both_transfers_without_relaxing_page_bounds() {
             .unwrap()
             .is_some()
     );
-    let mut history = HistoryVerifier::new(Cursor::genesis(repository())).unwrap();
+    let mut history = HistoryVerifier::new(Cursor::genesis(repository(), false).unwrap()).unwrap();
     let oversized = HistoryPage {
         after: history.position().clone(),
         fragments: vec![
@@ -520,7 +518,7 @@ fn maximum_format_event_fits_both_transfers_without_relaxing_page_bounds() {
         history.push(&oversized),
         Err(ProtocolError::Limit("page bytes"))
     ));
-    assert_eq!(history.position().completed, Cursor::genesis(repository()));
+    assert_eq!(history.position().completed, Cursor::genesis(repository(), false).unwrap());
     let mut state = verifier(&initial);
     assert!(matches!(
         state.push(
@@ -552,7 +550,7 @@ fn history_continuation_keeps_partial_item_and_ref_events_private() {
         .request(initial.metadata)
         .unwrap();
     let published = published(&request, &records);
-    let genesis = Cursor::genesis(repository());
+    let genesis = Cursor::genesis(repository(), false).unwrap();
     let mut state = HistoryVerifier::new(genesis.clone()).unwrap();
     let mut first = page(
         &published,
@@ -601,7 +599,7 @@ fn history_vector(name: &str) -> (serde_json::Value, Vec<PublishedCommit>) {
         vector["accepted_at"]
     );
     let case = vector[name].clone();
-    let mut previous = synck_vcs::checkpoint::GENESIS;
+    let mut previous = genesis_value();
     let mut ordinal = 0;
     let commits = case["event_counts"]
         .as_array()
@@ -689,7 +687,7 @@ fn vector_history_page(
 #[test]
 fn many_small_commits_share_one_page_and_roll_back_on_late_corruption() {
     let (vector, commits) = history_vector("many_small_commits");
-    let mut state = HistoryVerifier::new(Cursor::genesis(repository())).unwrap();
+    let mut state = HistoryVerifier::new(Cursor::genesis(repository(), false).unwrap()).unwrap();
     let original = state.position().clone();
     let page = vector_history_page(&vector["pages"][0], &commits, original.clone(), false);
     assert_eq!(page.fragments.len(), 128);
@@ -723,7 +721,7 @@ fn many_small_commits_share_one_page_and_roll_back_on_late_corruption() {
 #[test]
 fn history_page_can_start_and_end_mid_commit_with_complete_commits_between() {
     let (vector, commits) = history_vector("starts_and_ends_mid_commit");
-    let mut state = HistoryVerifier::new(Cursor::genesis(repository())).unwrap();
+    let mut state = HistoryVerifier::new(Cursor::genesis(repository(), false).unwrap()).unwrap();
     let pages = vector["pages"].as_array().unwrap();
     for (index, spec) in pages.iter().enumerate() {
         let page = vector_history_page(
@@ -789,7 +787,7 @@ fn history_page_can_start_and_end_mid_commit_with_complete_commits_between() {
 #[test]
 fn history_rejects_a_sequence_gap_even_with_a_matching_checkpoint() {
     let (vector, commits) = history_vector("many_small_commits");
-    let mut state = HistoryVerifier::new(Cursor::genesis(repository())).unwrap();
+    let mut state = HistoryVerifier::new(Cursor::genesis(repository(), false).unwrap()).unwrap();
     let original = state.position().clone();
     let mut page = vector_history_page(&vector["pages"][0], &commits, original.clone(), false);
     page.fragments.truncate(2);

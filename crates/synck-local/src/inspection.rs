@@ -312,7 +312,9 @@ impl Repository {
             )));
         }
         drop(store);
-        let file_name = item.name.clone();
+        let file_name = item.name.clone().ok_or_else(|| {
+            LocalError::Integrity(format!("historical FILE {item_id} has no name"))
+        })?;
         let mut items = BTreeMap::new();
         items.insert(item_id.clone(), item);
         let (blob_id, size) = self
@@ -575,9 +577,12 @@ fn historical_item(item: synck_vcs::state::ItemValue) -> Result<HistoricalItem> 
             )));
         }
     };
+    let name = item.name.ok_or_else(|| {
+        LocalError::Integrity(format!("historical item {} has no name", item.item_id))
+    })?;
     Ok(HistoricalItem {
         item_id: item.item_id.to_string(),
-        name: item.name,
+        name,
         kind,
         item_seq: item.head_seq,
     })

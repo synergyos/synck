@@ -376,7 +376,7 @@ async fn historical_folder_export_does_not_read_unselected_file_content() {
              WHERE item_id = (
                  SELECT item_id FROM vcs_items
                  WHERE repo_id = vcs_events.repo_id AND name = 'unread.bin'
-             ) AND event_type = 'FILE::SET_CONTENT'",
+             ) AND event_type = 'FILE::CREATE'",
             [],
         )
         .unwrap();
@@ -424,10 +424,8 @@ async fn object_digests(repository: &Repository, root: &Path, path: &str) -> Vec
 }
 
 fn install_unreachable_object(root: &Path, bytes: &[u8]) -> String {
-    let object = synck_vcs::object::Object::new(synck_vcs::object::Codec::Raw, bytes).unwrap();
-    let digest = object.id().as_str().strip_prefix("sha256:").unwrap().to_string();
+    let digest = hex::encode(synck_vcs::object::plain_id(bytes).as_bytes());
     let digest_bytes = hex::decode(&digest).unwrap();
-    let bytes = object.payload();
     let connection = rusqlite::Connection::open(root.join(".synck/object-store.sqlite3")).unwrap();
     connection
         .execute_batch("PRAGMA foreign_keys = ON; BEGIN IMMEDIATE")
@@ -589,8 +587,8 @@ async fn fresh_storage_is_chunked_deduplicated_and_compressed() {
     let chunks: i64 = connection
         .query_row("SELECT count(*) FROM chunks", [], |row| row.get(0))
         .unwrap();
-    // .synckignore plus one salted object per file; chunks still deduplicate.
-    assert_eq!(blobs, 3);
+    // .synckignore plus one object for the two files with identical bytes.
+    assert_eq!(blobs, 2);
     assert!(zstd_chunks > 0);
     assert!(chunks < mappings);
     assert!(repository.fsck().await.unwrap().is_empty());
@@ -1293,11 +1291,11 @@ async fn local_repository_round_trip() {
         .await
         .unwrap();
     assert_eq!(versions.len(), 2);
-    assert_eq!(versions[0].item_seq, 2);
-    assert_eq!(versions[1].item_seq, 3);
+    assert_eq!(versions[0].item_seq, 1);
+    assert_eq!(versions[1].item_seq, 2);
 
     repository
-        .restore(&root, Path::new("folder/file.txt"), Some(2))
+        .restore(&root, Path::new("folder/file.txt"), Some(1))
         .await
         .unwrap();
     assert_eq!(fs::read(root.join("folder/file.txt")).unwrap(), b"first");
@@ -1314,7 +1312,7 @@ async fn local_repository_round_trip() {
 
     let committed = object_digests(&repository, &root, "folder/file.txt").await;
     fs::write(root.join("folder/file.txt"), b"uncommitted-only").unwrap();
-    let uncommitted = synck_vcs::object::Object::new(synck_vcs::object::Codec::Raw, b"uncommitted-only").unwrap();
+    let uncommitted = synck_vcs::object::plain_id(b"uncommitted-only");
     let archive = temporary.path().join("archive");
     repository.archive(&archive).await.unwrap();
     let archived = synck_local::portable::PortableRepository::open(&archive).unwrap();
@@ -1325,7 +1323,7 @@ async fn local_repository_round_trip() {
         archived.copy_blob(&id, &mut actual).unwrap();
         assert_eq!(actual, bytes);
     }
-    assert!(archived.copy_blob(&uncommitted.id(), &mut Vec::new()).is_err());
+    assert!(archived.copy_blob(&uncommitted, &mut Vec::new()).is_err());
 }
 
 #[tokio::test]
@@ -1751,7 +1749,7 @@ async fn binary_and_empty_versions_restore_exact_bytes() {
     repository.commit("empty").await.unwrap();
 
     repository
-        .restore(temporary.path(), Path::new("binary"), Some(2))
+        .restore(temporary.path(), Path::new("binary"), Some(1))
         .await
         .unwrap();
     assert_eq!(fs::read(&path).unwrap(), binary);
@@ -1897,7 +1895,7 @@ async fn gc_converges_after_a_subset_was_already_deleted() {
 
     let removed = repository.gc().await.unwrap();
     assert_eq!(removed.removed_objects, 1);
-    assert_eq!(removed.removed_bytes, (synck_vcs::object::HEADER_BYTES + 13) as u64);
+    assert_eq!(removed.removed_bytes, 13);
     assert_eq!(
         repository
             .storage_report()
@@ -2853,11 +2851,9 @@ async fn shared_profile_rejects_a_case_variant_nested_control_component() {
         .unwrap();
     fs::create_dir(temporary.path().join("parent/.SYNCK")).unwrap();
 
-    let status = repository.status().await.unwrap();
-    assert!(status.iter().any(|change| change.path == "parent/.SYNCK"));
     let accepted_before = repository.log(None).await.unwrap().len();
     let error = repository.commit("reserved path").await.unwrap_err();
-    assert!(error.to_string().contains("RESERVED_WORKTREE_PATH"));
+    assert!(error.to_string().contains("reserved for the control directory"));
     assert_eq!(repository.log(None).await.unwrap().len(), accepted_before);
 }
 
@@ -2945,13 +2941,14 @@ async fn commit_never_reuses_a_corrupt_existing_object() {
     let first_digest = object_digests(&repository, temporary.path(), "file").await.remove(0);
     corrupt_blob(temporary.path(), &first_digest);
     fs::write(&file, b"first").unwrap();
-    // Every capture writes a freshly salted object, so equal bytes never
-    // resolve to the corrupt stored object.
-    repository.commit("same bytes again").await.unwrap();
+    // Equal bytes share an ID, so the writer checks the stored object first.
+    repository.commit("same bytes again").await.unwrap_err();
+    fs::write(&file, b"third").unwrap();
+    repository.commit("third").await.unwrap();
     let digests = object_digests(&repository, temporary.path(), "file").await;
     assert_eq!(digests.len(), 3);
     assert_ne!(digests[2], first_digest);
-    assert_eq!(fs::read(&file).unwrap(), b"first");
+    assert_eq!(fs::read(&file).unwrap(), b"third");
 }
 
 #[tokio::test]
@@ -2977,7 +2974,7 @@ async fn new_files_receive_hidden_initial_named_versions_in_the_same_commit() {
         assert_eq!(versions.len(), 1);
         assert_eq!(versions[0].label.as_deref(), Some("0.01"));
         assert_eq!(versions[0].kind, "MINOR");
-        assert_eq!(versions[0].source_item_seq, 2);
+        assert_eq!(versions[0].source_item_seq, 1);
         assert_eq!(versions[0].lifecycle_state, "LIVE");
         assert_eq!(
             repository
@@ -3148,7 +3145,7 @@ async fn atomic_commit_exceeds_old_event_cap_and_includes_a_rename() {
     let repository = Repository::discover(&root).await.unwrap();
     repository.commit("before").await.unwrap();
     fs::rename(root.join("before.txt"), root.join("after.txt")).unwrap();
-    for index in 0..3334 {
+    for index in 0..5001 {
         fs::write(root.join(format!("file-{index:04}.txt")), b"data").unwrap();
     }
     repository.commit("one atomic large change").await.unwrap();

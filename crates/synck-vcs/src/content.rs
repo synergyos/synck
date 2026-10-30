@@ -70,7 +70,8 @@ impl EventContent {
 }
 
 fn valid_role(role: &str) -> bool {
-    !role.is_empty()
+    role != crate::object::METADATA_ROLE
+        && !role.is_empty()
         && role.len() <= MAX_ROLE_BYTES
         && role.as_bytes()[0].is_ascii_lowercase()
         && role

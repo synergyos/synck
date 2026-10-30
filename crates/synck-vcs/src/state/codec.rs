@@ -3,7 +3,7 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use super::{
-    ContentPointer, FORMAT_VERSION, ItemValue, LEGACY_FORMAT_VERSION, MAX_ENTRIES,
+    ContentPointer, FORMAT_VERSION, ItemValue, MAX_ENTRIES,
     MAX_INDEX_NODE_BYTES, NamespaceKey, RootHeader, StateError, StateNode, StateNodeId,
     item_id_bytes,
 };
@@ -67,8 +67,7 @@ pub fn encode_node(node: &StateNode) -> Result<Vec<u8>, StateError> {
 
 pub fn decode_node(bytes: &[u8]) -> Result<StateNode, StateError> {
     let mut decoder = Decoder::new(bytes);
-    let format_version = decoder.u8()?;
-    if !matches!(format_version, LEGACY_FORMAT_VERSION | FORMAT_VERSION) {
+    if decoder.u8()? != FORMAT_VERSION {
         return Err(invalid("unsupported format version"));
     }
     let kind = decoder.u8()?;
@@ -80,7 +79,7 @@ pub fn decode_node(bytes: &[u8]) -> Result<StateNode, StateError> {
         return Err(invalid("index node exceeds 65536 bytes"));
     }
     let node = match kind {
-        ITEM_VALUE => StateNode::ItemValue(decode_item_value(&mut decoder, format_version)?),
+        ITEM_VALUE => StateNode::ItemValue(decode_item_value(&mut decoder)?),
         ITEM_LEAF => StateNode::ItemLeaf(decode_item_entries(&mut decoder)?),
         ITEM_INTERNAL => StateNode::ItemInternal(decode_item_entries(&mut decoder)?),
         NAMESPACE_LEAF => StateNode::NamespaceLeaf(decode_namespace_leaf(&mut decoder)?),
@@ -99,8 +98,10 @@ fn encode_item_value(output: &mut Vec<u8>, value: &ItemValue) -> Result<(), Stat
     output.extend_from_slice(&item_id_bytes(&value.item_id));
     encode_string(output, &value.item_type)?;
     encode_optional_item_id(output, value.parent_folder_id.as_ref());
-    encode_string(output, &value.name)?;
-    encode_string(output, &value.name_key)?;
+    encode_optional_string(output, value.name.as_deref())?;
+    encode_optional_string(output, value.name_key.as_deref())?;
+    encode_optional_string(output, value.record_key.as_deref())?;
+    encode_optional_item_id(output, value.link_folder_id.as_ref());
     encode_positive_i64(output, value.head_seq, "head sequence")?;
     encode_non_negative_i64(output, value.ref_head_seq, "ref head sequence")?;
     output.push(match value.lifecycle_state {
@@ -133,21 +134,16 @@ fn encode_item_value(output: &mut Vec<u8>, value: &ItemValue) -> Result<(), Stat
     Ok(())
 }
 
-fn decode_item_value(
-    decoder: &mut Decoder<'_>,
-    format_version: u8,
-) -> Result<ItemValue, StateError> {
+fn decode_item_value(decoder: &mut Decoder<'_>) -> Result<ItemValue, StateError> {
     let item_id = decoder.item_id()?;
     let item_type = decoder.string_u64()?;
     let parent_folder_id = decoder.optional_item_id()?;
-    let name = decoder.string_u64()?;
-    let name_key = decoder.string_u64()?;
+    let name = decoder.optional_string()?;
+    let name_key = decoder.optional_string()?;
+    let record_key = decoder.optional_string()?;
+    let link_folder_id = decoder.optional_item_id()?;
     let head_seq = decoder.positive_i64("head sequence")?;
-    let ref_head_seq = if format_version == LEGACY_FORMAT_VERSION {
-        0
-    } else {
-        decoder.non_negative_i64("ref head sequence")?
-    };
+    let ref_head_seq = decoder.non_negative_i64("ref head sequence")?;
     let lifecycle_state = match decoder.u8()? {
         1 => LifecycleState::Live,
         2 => LifecycleState::Trash,
@@ -186,6 +182,8 @@ fn decode_item_value(
         parent_folder_id,
         name,
         name_key,
+        record_key,
+        link_folder_id,
         head_seq,
         ref_head_seq,
         lifecycle_state,
@@ -200,10 +198,23 @@ fn decode_item_value(
 }
 
 fn validate_item_value(value: &ItemValue) -> Result<(), StateError> {
-    let computed_name_key = compute_name_key(&value.name)
-        .map_err(|error| invalid(format!("invalid item name: {error}")))?;
-    if computed_name_key != value.name_key {
-        return Err(invalid("item name key does not match its display name"));
+    match (&value.name, &value.name_key) {
+        (Some(name), Some(name_key)) => {
+            let computed_name_key = compute_name_key(name)
+                .map_err(|error| invalid(format!("invalid item name: {error}")))?;
+            if computed_name_key != *name_key {
+                return Err(invalid("item name key does not match its display name"));
+            }
+            if value.record_key.is_some() || value.link_folder_id.is_some() {
+                return Err(invalid("a tree item has no record key or link"));
+            }
+        }
+        (None, None) => {
+            if value.parent_folder_id.is_some() {
+                return Err(invalid("a record has no parent"));
+            }
+        }
+        _ => return Err(invalid("item name and name key disagree")),
     }
     match (value.sequencing_mode, value.federation_stream_id.as_deref()) {
         (SequencingMode::Local, None) => {}
@@ -391,6 +402,17 @@ fn encode_string(output: &mut Vec<u8>, value: &str) -> Result<(), StateError> {
     Ok(())
 }
 
+fn encode_optional_string(output: &mut Vec<u8>, value: Option<&str>) -> Result<(), StateError> {
+    match value {
+        None => output.push(0),
+        Some(value) => {
+            output.push(1);
+            encode_string(output, value)?;
+        }
+    }
+    Ok(())
+}
+
 fn encode_optional_item_id(output: &mut Vec<u8>, value: Option<&ItemId>) {
     match value {
         None => output.push(0),
@@ -523,6 +545,14 @@ impl<'a> Decoder<'a> {
             0 => Ok(None),
             1 => Ok(Some(self.item_id()?)),
             _ => Err(invalid("unknown item option tag")),
+        }
+    }
+
+    fn optional_string(&mut self) -> Result<Option<String>, StateError> {
+        match self.u8()? {
+            0 => Ok(None),
+            1 => Ok(Some(self.string_u64()?)),
+            _ => Err(invalid("unknown string option tag")),
         }
     }
 

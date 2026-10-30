@@ -1689,7 +1689,7 @@
     ]
   },
   {
-    "name": "clear content",
+    "name": "a FILE always has bytes",
     "commits": [
       {
         "events": [
@@ -1717,8 +1717,590 @@
             "set_content": {}
           }
         ],
+        "valid": false,
+        "reason": "a FILE's content is exactly its bytes"
+      }
+    ]
+  },
+  {
+    "name": "a FILE has no other role",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "FILE::CREATE",
+            "create_item": {
+              "item_type": "FILE",
+              "name": "a"
+            },
+            "set_content": {
+              "bytes": "sha256:abababababababababababababababababababababababababababababababab"
+            }
+          }
+        ],
         "valid": true,
-        "state_digest": "sha256:cf7618b5455482432b14772ce256d4bb8239b9dc3fd089e631c12d7b7564ddad"
+        "state_digest": "sha256:cc90d9f1d64c45443dfe38f25868552af339d38361ed73498fbd2eec602d2041"
+      },
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "base_seq": 1,
+            "event_type": "FILE::SET_CONTENT",
+            "set_content": {
+              "body": "sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
+            }
+          }
+        ],
+        "valid": false,
+        "reason": "a FILE's content is exactly its bytes"
+      }
+    ]
+  },
+  {
+    "name": "a FOLDER has no content",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000200",
+            "event_type": "FOLDER::CREATE",
+            "create_item": {
+              "item_type": "FOLDER",
+              "name": "F"
+            }
+          }
+        ],
+        "valid": true,
+        "state_digest": "sha256:d4321809e4ba55af045f69db2dd3a2743b06eeadc6319e0b876e28c3f3642e5b"
+      },
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000200",
+            "base_seq": 1,
+            "event_type": "ITEM::NOTE",
+            "set_content": {
+              "body": "sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
+            }
+          }
+        ],
+        "valid": false,
+        "reason": "a FOLDER has no content"
+      }
+    ]
+  },
+  {
+    "name": "a subitem does not replace the content",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "EMAIL::CREATE",
+            "create_item": {
+              "item_type": "EMAIL"
+            },
+            "set_content": {
+              "source": "sha256:abababababababababababababababababababababababababababababababab"
+            }
+          }
+        ],
+        "valid": true,
+        "state_digest": "sha256:56909965d25c3e9e2a99c1c9dd08feec9996dec3504c9ed7c90e98028ed735c5"
+      },
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "base_seq": 1,
+            "event_type": "EMAIL::ATTACHMENT::CREATE",
+            "set_content": {
+              "source": "sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
+            }
+          }
+        ],
+        "valid": true,
+        "state_digest": "sha256:30bedbc2e133a129252690f8110c8d2bad0ea1699d543a90e315667cac1b22a0"
+      }
+    ]
+  },
+  {
+    "name": "a two-segment event replaces the whole content",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "TASK::CREATE",
+            "create_item": {
+              "item_type": "TASK"
+            },
+            "set_content": {
+              "body": "sha256:abababababababababababababababababababababababababababababababab"
+            }
+          }
+        ],
+        "valid": true,
+        "state_digest": "sha256:f730df05ad3680449d3236e287bdea58487b08025a71c6f6cc5cf60ef1a95c65"
+      },
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "base_seq": 1,
+            "event_type": "TASK::SET_CONTENT",
+            "set_content": {
+              "notes": "sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
+            }
+          }
+        ],
+        "valid": true,
+        "state_digest": "sha256:9142d5801455eb89aece76b7fb3456adab397613c783cf9e9eedfbea948367bb"
+      }
+    ]
+  },
+  {
+    "name": "a tombstone keeps name, parent and content",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000200",
+            "event_type": "FOLDER::CREATE",
+            "create_item": {
+              "item_type": "FOLDER",
+              "name": "F"
+            }
+          },
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "FILE::CREATE",
+            "create_item": {
+              "item_type": "FILE",
+              "name": "a"
+            },
+            "set_content": {
+              "bytes": "sha256:abababababababababababababababababababababababababababababababab"
+            }
+          }
+        ],
+        "valid": true,
+        "state_digest": "sha256:8f92dd2c91dae326ce58c17c0401baa40b4d56ce68606b303fb9eac29150a15c"
+      },
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "base_seq": 1,
+            "event_type": "FILE::SET_PARENT",
+            "set_parent": "019a2900-0000-7000-8000-000000000200"
+          }
+        ],
+        "valid": true,
+        "state_digest": "sha256:5e60bf8d28b1d4fa06d356f3e48ad4355ab9047b609067ddad183ccd4d9c6a67"
+      },
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "base_seq": 2,
+            "event_type": "FILE::TOMBSTONE",
+            "set_tombstoned": true
+          }
+        ],
+        "valid": true,
+        "state_digest": "sha256:e5f550f76a7b99711f0a2a0ba1956e732381830f303020bef02c42dd1a431501"
+      }
+    ]
+  },
+  {
+    "name": "a tombstone is permanent",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "TASK::CREATE",
+            "create_item": {
+              "item_type": "TASK"
+            }
+          }
+        ],
+        "valid": true,
+        "state_digest": "sha256:5e2a625412af6fe1edec988009c74853470e8fa9589902901634355b15e9c0af"
+      },
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "base_seq": 1,
+            "event_type": "ITEM::NOTE",
+            "set_tombstoned": false
+          }
+        ],
+        "valid": false,
+        "reason": "a tombstone is permanent"
+      }
+    ]
+  },
+  {
+    "name": "no event follows a tombstone in one commit",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "TASK::CREATE",
+            "create_item": {
+              "item_type": "TASK"
+            }
+          }
+        ],
+        "valid": true,
+        "state_digest": "sha256:5e2a625412af6fe1edec988009c74853470e8fa9589902901634355b15e9c0af"
+      },
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "base_seq": 1,
+            "event_type": "TASK::TOMBSTONE",
+            "set_tombstoned": true
+          },
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "base_seq": 1,
+            "event_type": "TASK::SET_METADATA"
+          }
+        ],
+        "valid": false,
+        "reason": "event after tombstone"
+      }
+    ]
+  },
+  {
+    "name": "no ref event on a tombstoned owner",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "FILE::CREATE",
+            "create_item": {
+              "item_type": "FILE",
+              "name": "a"
+            },
+            "set_content": {
+              "bytes": "sha256:abababababababababababababababababababababababababababababababab"
+            }
+          }
+        ],
+        "valid": true,
+        "state_digest": "sha256:cc90d9f1d64c45443dfe38f25868552af339d38361ed73498fbd2eec602d2041"
+      },
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "base_seq": 1,
+            "event_type": "FILE::TOMBSTONE",
+            "set_tombstoned": true
+          }
+        ],
+        "valid": true,
+        "state_digest": "sha256:0608e35ce028c1ad7600e3e24f62114e164787b3e6240295b7276f8b1b8125b2"
+      },
+      {
+        "events": [],
+        "ref_events": [
+          {
+            "owner_item_id": "019a2900-0000-7000-8000-000000000202",
+            "base_ref_seq": 0,
+            "event_type": "FILE_VERSION::CREATE"
+          }
+        ],
+        "valid": false,
+        "reason": "ref on a tombstoned owner"
+      }
+    ]
+  },
+  {
+    "name": "trash and restore change nothing when already there",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "TASK::CREATE",
+            "create_item": {
+              "item_type": "TASK"
+            }
+          }
+        ],
+        "valid": true,
+        "state_digest": "sha256:5e2a625412af6fe1edec988009c74853470e8fa9589902901634355b15e9c0af"
+      },
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "base_seq": 1,
+            "event_type": "TASK::RESTORE",
+            "set_in_trash": false
+          }
+        ],
+        "valid": true,
+        "state_digest": "sha256:8d88f640667e895a77a1d18dc96149d81ff85f20cce8a08246660eb9a213d9ab"
+      },
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "base_seq": 2,
+            "event_type": "TASK::TRASH",
+            "set_in_trash": true
+          }
+        ],
+        "valid": true,
+        "state_digest": "sha256:86ab9901e7645b0a95c1e623cb24cb802783d865a76927767b16820c9a4cf950"
+      },
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "base_seq": 3,
+            "event_type": "TASK::TRASH",
+            "set_in_trash": true
+          }
+        ],
+        "valid": true,
+        "state_digest": "sha256:48072cc203306d3675f60eac0ec8505ec83957200a3435f385c00d1a02935310"
+      }
+    ]
+  },
+  {
+    "name": "a folder in the trash may hold a live child",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000200",
+            "event_type": "FOLDER::CREATE",
+            "create_item": {
+              "item_type": "FOLDER",
+              "name": "F"
+            }
+          },
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "FOLDER::CREATE",
+            "create_item": {
+              "item_type": "FOLDER",
+              "name": "a",
+              "parent_folder_id": "019a2900-0000-7000-8000-000000000200"
+            }
+          }
+        ],
+        "valid": true,
+        "state_digest": "sha256:a4fed65ce220332c112f7f603f99bafb715dc6e83977f617654eed22ede41ca7"
+      },
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000200",
+            "base_seq": 1,
+            "event_type": "FOLDER::TRASH",
+            "set_in_trash": true
+          }
+        ],
+        "valid": true,
+        "state_digest": "sha256:72760370545bfe2e5c29a441b7961b4865268206bdbd3719967ebc1914f89201"
+      }
+    ]
+  },
+  {
+    "name": "a child may precede its parent in one commit",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "FOLDER::CREATE",
+            "create_item": {
+              "item_type": "FOLDER",
+              "name": "a",
+              "parent_folder_id": "019a2900-0000-7000-8000-000000000200"
+            }
+          },
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000200",
+            "event_type": "FOLDER::CREATE",
+            "create_item": {
+              "item_type": "FOLDER",
+              "name": "F"
+            }
+          }
+        ],
+        "valid": true,
+        "state_digest": "sha256:a4fed65ce220332c112f7f603f99bafb715dc6e83977f617654eed22ede41ca7"
+      }
+    ]
+  },
+  {
+    "name": "parent is a record",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "TASK::CREATE",
+            "create_item": {
+              "item_type": "TASK"
+            }
+          },
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000203",
+            "event_type": "FOLDER::CREATE",
+            "create_item": {
+              "item_type": "FOLDER",
+              "name": "a",
+              "parent_folder_id": "019a2900-0000-7000-8000-000000000202"
+            }
+          }
+        ],
+        "valid": false,
+        "reason": "parent is not a folder"
+      }
+    ]
+  },
+  {
+    "name": "parent is missing",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "FOLDER::CREATE",
+            "create_item": {
+              "item_type": "FOLDER",
+              "name": "a",
+              "parent_folder_id": "019a2900-0000-7000-8000-000000000200"
+            }
+          }
+        ],
+        "valid": false,
+        "reason": "parent is not a folder"
+      }
+    ]
+  },
+  {
+    "name": "ledger names are not item types",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "FILE_VERSION::CREATE",
+            "create_item": {
+              "item_type": "FILE_VERSION"
+            }
+          }
+        ],
+        "valid": false,
+        "reason": "invalid item type"
+      }
+    ]
+  },
+  {
+    "name": "create with an event of its family",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "TASK::IMPORT",
+            "create_item": {
+              "item_type": "TASK"
+            }
+          }
+        ],
+        "valid": true,
+        "state_digest": "sha256:5e2a625412af6fe1edec988009c74853470e8fa9589902901634355b15e9c0af"
+      }
+    ]
+  },
+  {
+    "name": "ITEM events do not create",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "ITEM::NOTE",
+            "create_item": {
+              "item_type": "TASK"
+            }
+          }
+        ],
+        "valid": false,
+        "reason": "an ITEM event does not create"
+      }
+    ]
+  },
+  {
+    "name": "federated bootstrap",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "TASK::CREATE",
+            "create_item": {
+              "item_type": "TASK"
+            },
+            "set_is_federated": true,
+            "set_federation_stream_id": "stream-1"
+          },
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "TASK::FEDERATE",
+            "set_is_federated": true,
+            "set_federation_stream_id": "stream-1"
+          }
+        ],
+        "valid": true,
+        "state_digest": "sha256:1698315bda1bef2f939988acc03b55d1b00b234c1f8363aab271b944cfb2f461"
+      }
+    ]
+  },
+  {
+    "name": "two items on one stream",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "TASK::CREATE",
+            "create_item": {
+              "item_type": "TASK"
+            },
+            "set_is_federated": true,
+            "set_federation_stream_id": "stream-1"
+          },
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000203",
+            "event_type": "TASK::CREATE",
+            "create_item": {
+              "item_type": "TASK"
+            },
+            "set_is_federated": true,
+            "set_federation_stream_id": "stream-1"
+          }
+        ],
+        "valid": false,
+        "reason": "federation stream conflict"
       }
     ]
   }

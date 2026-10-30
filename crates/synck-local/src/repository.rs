@@ -103,7 +103,7 @@ fn reject_bare_complete_repository(metadata_path: &Path) -> Result<()> {
         return Ok(());
     };
     match config.get("format_version").and_then(serde_json::Value::as_i64) {
-        Some(version) if version == i64::from(FORMAT_VERSION) && config.get("checkout").is_none() => Err(LocalError::Invalid(
+        Some(version) if version == i64::from(FORMAT_VERSION) && !metadata_path.join("checkout.json").exists() => Err(LocalError::Invalid(
             "this is a complete repository without a checkout; read it with synck item and synck repository commands (synck repository log lists its history), or enable file editing with synck repository checkout".to_string(),
         )),
         _ => Ok(()),
@@ -120,7 +120,11 @@ pub(crate) struct Config {
     author: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     authority: Option<crate::portable::Authority>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// A checkout needs keys this client does not hold, so only false is opened.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    encrypted: bool,
+    /// Stored apart, in `checkout.json`.
+    #[serde(skip)]
     pub(crate) checkout: Option<crate::checkout::Checkout>,
 }
 
@@ -138,6 +142,7 @@ impl Config {
             repo_id,
             author,
             authority: Some(authority),
+            encrypted: false,
             checkout: Some(checkout),
         }
     }
@@ -241,11 +246,13 @@ impl Repository {
         std::io::Read::read_to_end(&mut config_file, &mut config_bytes).at("read", &config_path)?;
         // Close the reader before recovery replaces config.json on Windows.
         drop(config_file);
-        let config: Config = serde_json::from_slice(&config_bytes)?;
+        let mut config: Config = serde_json::from_slice(&config_bytes)?;
+        config.checkout = crate::checkout::read_checkout(&metadata_path)?;
         if config.format_version != FORMAT_VERSION {
             return Err(crate::portable::unsupported_format(Some(u64::from(config.format_version))));
         }
         if config.checkout.is_none()
+            || config.encrypted
             || !config
                 .authority
                 .is_some_and(|authority| authority != crate::portable::Authority::Follower)
@@ -385,25 +392,10 @@ impl Repository {
     }
 
     pub(crate) fn publish_checkout_config(&self) -> Result<()> {
-        let bytes = serde_json::to_vec(&self.config)?;
-        if bytes.len() > 64 * 1024 {
-            return Err(LocalError::Invalid(
-                "checkout selection exceeds config size limit".into(),
-            ));
-        }
-        let path = self
-            .metadata_path
-            .join(format!("config-{}.json", Uuid::new_v4()));
-        let mut file = OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&path)
-            .at("create checkout config", &path)?;
-        file.write_all(&bytes).at("write checkout config", &path)?;
-        file.sync_all().at("sync checkout config", &path)?;
-        replace_file(&path, &self.metadata_path.join("config.json"))
-            .at("publish checkout config", &path)?;
-        sync_directory(&self.metadata_path)
+        crate::checkout::write_checkout(
+            &self.metadata_path,
+            self.config.checkout.as_ref().expect("checkout adapter"),
+        )
     }
 
     pub(crate) fn root_path(&self) -> &Path {
@@ -1046,7 +1038,7 @@ impl Repository {
             if event.event_type == "EMAIL::CREATE" {
                 crate::email_import::project_source_observation(transaction, event)?;
             }
-            if event.event_type != "FILE::SET_CONTENT" {
+            if !synck_file_folder::is_file_content_event(&event.event_type) {
                 continue;
             }
             let proposal: synck_vcs::types::EventProposal = event.proposal()?;
@@ -2086,15 +2078,15 @@ mod tests {
         let creates = item_ids
             .iter()
             .enumerate()
-            .map(|(index, item_id)| EventProposal {
+            .map(|(index, item_id)| EventProposal { set_link: None,
                 item_id: Some(item_id.clone()),
                 event_type: "FOLDER::CREATE".to_string(),
                 set_metadata: None,
                 set_content: None,
-                create_item: Some(CreateItem {
+                create_item: Some(CreateItem { key: None, link: None,
                     item_type: "FOLDER".to_string(),
                     parent_folder_id: None,
-                    name: format!("folder-{index}"),
+                    name: Some(format!("folder-{index}")),
                 }),
                 set_parent: None,
                 set_name: None,
@@ -2126,7 +2118,7 @@ mod tests {
         let renames = item_ids
             .iter()
             .enumerate()
-            .map(|(index, item_id)| EventProposal {
+            .map(|(index, item_id)| EventProposal { set_link: None,
                 item_id: Some(item_id.clone()),
                 event_type: "FOLDER::SET_NAME".to_string(),
                 set_metadata: None,
@@ -2197,15 +2189,15 @@ mod tests {
         init(temporary.path(), "author").await.unwrap();
         let repository = Repository::discover(temporary.path()).await.unwrap();
         let events = (0..10_001)
-            .map(|index| EventProposal {
+            .map(|index| EventProposal { set_link: None,
                 item_id: Some(synck_vcs::types::ItemId::new()),
                 event_type: "FOLDER::CREATE".to_string(),
                 set_metadata: None,
                 set_content: None,
-                create_item: Some(CreateItem {
+                create_item: Some(CreateItem { key: None, link: None,
                     item_type: "FOLDER".to_string(),
                     parent_folder_id: None,
-                    name: format!("folder-{index}"),
+                    name: Some(format!("folder-{index}")),
                 }),
                 set_parent: None,
                 set_name: None,
@@ -2250,15 +2242,15 @@ mod tests {
                     message: Some("create".to_string()),
                     occurred_at: None,
                     operation_id: Some(Uuid::new_v4().to_string()),
-                    events: vec![EventProposal {
+                    events: vec![EventProposal { set_link: None,
                         item_id: Some(item_id.clone()),
                         event_type: "FOLDER::CREATE".to_string(),
                         set_metadata: None,
                         set_content: None,
-                        create_item: Some(CreateItem {
+                        create_item: Some(CreateItem { key: None, link: None,
                             item_type: "FOLDER".to_string(),
                             parent_folder_id: None,
-                            name: "before".to_string(),
+                            name: Some("before".to_string()),
                         }),
                         set_parent: None,
                         set_name: None,
@@ -2283,7 +2275,7 @@ mod tests {
                     message: Some("move".to_string()),
                     occurred_at: None,
                     operation_id: Some(Uuid::new_v4().to_string()),
-                    events: vec![EventProposal {
+                    events: vec![EventProposal { set_link: None,
                         item_id: Some(item_id),
                         event_type: "FOLDER::MOVE".to_string(),
                         set_metadata: None,
@@ -2308,30 +2300,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fsck_rejects_a_live_reserved_component_but_permits_it_in_trash() {
+    async fn reserved_control_names_never_enter_history() {
         let temporary = tempfile::tempdir().unwrap();
         init(temporary.path(), "author").await.unwrap();
         let repository = Repository::discover(temporary.path()).await.unwrap();
-        let item_id = ItemId::new();
-        repository
+        let error = repository
             .core()
             .append(
                 repository.config().repo_id().clone(),
                 CommitProposal {
                     author_id: "author".to_string(),
                     committer_id: "author".to_string(),
-                    message: Some("corrupt reserved name".to_string()),
+                    message: Some("reserved name".to_string()),
                     occurred_at: None,
                     operation_id: Some(Uuid::new_v4().to_string()),
-                    events: vec![EventProposal {
-                        item_id: Some(item_id.clone()),
+                    events: vec![EventProposal { set_link: None,
+                        item_id: Some(ItemId::new()),
                         event_type: "FOLDER::CREATE".to_string(),
                         set_metadata: None,
                         set_content: None,
-                        create_item: Some(CreateItem {
+                        create_item: Some(CreateItem { key: None, link: None,
                             item_type: "FOLDER".to_string(),
                             parent_folder_id: None,
-                            name: ".SyNcK".to_string(),
+                            name: Some(".SyNcK".to_string()),
                         }),
                         set_parent: None,
                         set_name: None,
@@ -2344,48 +2335,8 @@ mod tests {
                 },
             )
             .await
-            .unwrap();
-        repository.recover().await.unwrap();
-        let report = repository.fsck().await.unwrap();
-        assert!(
-            report
-                .iter()
-                .any(|finding| finding.contains("invalid checkout subtree")),
-            "{report:?}"
-        );
-
-        repository
-            .core()
-            .append_file_folder_checked(
-                repository.config().repo_id().clone(),
-                CommitProposal {
-                    author_id: "author".to_string(),
-                    committer_id: "author".to_string(),
-                    message: Some("trash corrupt item".to_string()),
-                    occurred_at: None,
-                    operation_id: Some(Uuid::new_v4().to_string()),
-                    events: vec![EventProposal {
-                        item_id: Some(item_id),
-                        event_type: "FOLDER::TRASH".to_string(),
-                        set_metadata: None,
-                        set_content: None,
-                        create_item: None,
-                        set_parent: None,
-                        set_name: None,
-                        set_tombstoned: None,
-                        set_in_trash: Some(true),
-                        set_is_federated: None,
-                        set_federation_stream_id: None,
-                        base_seq: Some(1),
-                    }],
-                },
-                &[],
-                &[],
-            )
-            .await
-            .unwrap();
-        repository.recover().await.unwrap();
-        assert!(repository.fsck().await.unwrap().is_empty());
+            .unwrap_err();
+        assert!(error.to_string().contains("reserved"), "{error}");
     }
 }
 

@@ -13,6 +13,7 @@ use synck_vcs::types::{
 pub(crate) enum LocalEvent {
     Create {
         item_type: &'static str,
+        content: Option<(ObjectId, i64)>,
     },
     Trash {
         item_type: &'static str,
@@ -229,7 +230,11 @@ fn classify_projected_event(event: &EventProposal) -> std::result::Result<LocalE
         _ => return Err(format!("unsupported projected event {}", event.event_type)),
     };
     match event.event_type.as_str() {
-        "FOLDER::CREATE" | "FILE::CREATE" => Ok(LocalEvent::Create { item_type }),
+        "FOLDER::CREATE" => Ok(LocalEvent::Create { item_type, content: None }),
+        "FILE::CREATE" => Ok(LocalEvent::Create {
+            item_type,
+            content: Some(parse_content(event)?),
+        }),
         "FOLDER::SET_PARENT" | "FILE::SET_PARENT" => Ok(LocalEvent::SetParent {
             item_type,
             parent_item_id: event
@@ -264,7 +269,6 @@ pub(crate) fn parse_content(event: &EventProposal) -> std::result::Result<(Objec
     let content = event
         .set_metadata.as_ref().and_then(synck_vcs::metadata::MetadataRef::value)
         .and_then(|value| value.as_object())
-        .filter(|object| object.len() == 1)
         .and_then(|object| object.get("content"))
         .and_then(|value| value.as_object())
         .filter(|object| object.len() == 1);

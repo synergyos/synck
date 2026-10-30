@@ -19,7 +19,7 @@ use synck_file_folder::{
 };
 use synck_vcs::naming::compute_name_key;
 use synck_vcs::state::{
-    ItemValue, NamespaceKey, RootHeader, StateIndexStore, StateProjectorStore, StateRootId, StateTree,
+    ItemValue, NamespaceKey, item_namespace, RootHeader, StateIndexStore, StateProjectorStore, StateRootId, StateTree,
 };
 use synck_vcs::types::{
     ObjectId, COMMIT_EVENT_FAMILY_ITEM, COMMIT_EVENT_FAMILY_REF, CommitEventRow, CommitId,
@@ -520,7 +520,7 @@ impl Repository {
                 filename,
                 &self.root_path().join(display_to_path(&change.path)),
             )?;
-            self.reject_recorded_email_name(&change.path, &email.events[0])?;
+            self.reject_recorded_email_path(&change.path)?;
             if Some(email.source_plain_digest.as_str()) != working[&change.path].digest_hex.as_deref() {
                 return Err(LocalError::Invalid(format!(
                     "email source changed while parsing: {}",
@@ -551,41 +551,24 @@ impl Repository {
         Ok(prepared)
     }
 
-    /// A source edited after it was recorded parses as a new email with the
-    /// same derived name. Say what to do instead of reporting a raw conflict.
-    fn reject_recorded_email_name(&self, path: &str, create: &EventProposal) -> Result<()> {
-        let Some(item) = create.create_item.as_ref() else {
-            return Ok(());
-        };
-        let name_key = synck_vcs::naming::compute_name_key(&item.name)
-            .map_err(|error| LocalError::Invalid(error.to_string()))?;
-        let parent = item
-            .parent_folder_id
-            .as_ref()
-            .map(|id| id.as_str().to_string());
-        let connection = self
-            .storage()
-            .open_readonly()
+    /// A recorded email never changes, so a changed source at its path is a
+    /// mistake, not a second message. Say what to do instead.
+    fn reject_recorded_email_path(&self, path: &str) -> Result<()> {
+        let connection = crate::local_database::open_readonly(self.storage())
             .map_err(|error| LocalError::Integrity(error.to_string()))?;
-        let existing: Option<String> = connection
-            .query_row(
-                "SELECT item_type FROM vcs_items WHERE repo_id = ?1 AND parent_folder_id IS ?2 \
-                 AND name_key = ?3 AND lifecycle_state = 'LIVE'",
-                params![self.config().repo_id().as_str(), parent, name_key],
-                |row| row.get(0),
-            )
-            .optional()?;
-        match existing.as_deref() {
-            Some("EMAIL") => Err(LocalError::Invalid(format!(
-                "{path}: an email named \"{}\" is already recorded in this folder; a recorded email never changes, so save the changed message under a new file name or put the original file back",
-                item.name
-            ))),
-            Some(_) => Err(LocalError::Invalid(format!(
-                "{path}: this folder already has an item named \"{}\"; rename the message file before committing it",
-                item.name
-            ))),
-            None => Ok(()),
+        let recorded: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM local_email_import_sources s \
+             JOIN vcs_items i ON i.repo_id = s.repo_id AND i.item_id = s.item_id \
+             WHERE s.repo_id = ?1 AND s.path = ?2 AND i.lifecycle_state = 'LIVE')",
+            params![self.config().repo_id().as_str(), path],
+            |row| row.get(0),
+        )?;
+        if recorded {
+            return Err(LocalError::Invalid(format!(
+                "{path}: an email is already recorded from this file; a recorded email never changes, so save the changed message under a new file name or put the original file back"
+            )));
         }
+        Ok(())
     }
 
     pub async fn revert(&self, revision: &str, message: &str) -> Result<String> {
@@ -935,6 +918,9 @@ impl Repository {
                         parent.as_deref().unwrap_or(".")
                     ))
                 })?;
+                if parent.is_none() && existing_name == ".synck" {
+                    continue;
+                }
                 let existing_key = compute_name_key(existing_name).map_err(|error| {
                     LocalError::Invalid(format!(
                         "invalid filesystem name {existing_name:?} beside revert target: {error}"
@@ -2366,13 +2352,13 @@ impl Repository {
                 })?;
             if item.lifecycle_state != LifecycleState::Live
                 || item.parent_folder_id != key.parent_folder_id
-                || item.name_key != key.name_key
+                || item.name_key.as_ref() != Some(&key.name_key)
             {
                 return Err(LocalError::Integrity(format!(
                     "historical namespace disagrees for item {item_id}"
                 )));
             }
-            if item.name != *component {
+            if item.name.as_deref() != Some(component) {
                 return Err(LocalError::Invalid(format!(
                     "historical folder does not exist at {}: {selected}",
                     commit.commit_id
@@ -2423,10 +2409,11 @@ impl Repository {
                             item.item_type, item.item_id
                         )));
                     }
+                    let name = tree_name(&item)?;
                     let path = if folder_path.is_empty() {
-                        item.name.clone()
+                        name.to_string()
                     } else {
-                        format!("{folder_path}/{}", item.name)
+                        format!("{folder_path}/{name}")
                     };
                     let item_id = item.item_id.clone();
                     if items.contains_key(&item_id) {
@@ -2556,6 +2543,8 @@ impl Repository {
     }
 
     fn retain_checkout_filesystem_view(&self, items: &mut BTreeMap<ItemId, ItemValue>) {
+        // Records have no path.
+        items.retain(|_, item| item.name.is_some());
         if self.checkout_paths().is_none() {
             return;
         }
@@ -2686,7 +2675,10 @@ impl Repository {
             else {
                 continue;
             };
-            if selected_item.lifecycle_state != LifecycleState::Live {
+            // A record has no path.
+            if selected_item.lifecycle_state != LifecycleState::Live
+                || selected_item.name.is_none()
+            {
                 continue;
             }
 
@@ -2711,8 +2703,7 @@ impl Repository {
                         item.item_id
                     )));
                 }
-                let namespace =
-                    NamespaceKey::new(item.parent_folder_id.clone(), item.name_key.clone());
+                let namespace = tree_namespace(&item)?;
                 let namespace_item = state
                     .get_namespace(root.namespace_root, &namespace)
                     .await
@@ -2894,11 +2885,12 @@ impl Repository {
                         (None, None)
                     }
                 };
+                let name = tree_name(&item)?.to_string();
                 Ok((
                     item_id,
                     HistoryNode {
                         parent_id: item.parent_folder_id,
-                        name: item.name,
+                        name,
                         kind,
                         live: item.lifecycle_state == LifecycleState::Live,
                         head_seq: item.head_seq,
@@ -3286,8 +3278,7 @@ impl Repository {
                     current.item_id
                 )));
             }
-            let namespace =
-                NamespaceKey::new(current.parent_folder_id.clone(), current.name_key.clone());
+            let namespace = tree_namespace(&current)?;
             let namespace_item = state
                 .get_namespace(root.namespace_root, &namespace)
                 .await
@@ -3304,7 +3295,7 @@ impl Repository {
                     current.item_id
                 )));
             }
-            components.push(current.name.clone());
+            components.push(tree_name(&current)?.to_string());
             let Some(parent_id) = current.parent_folder_id.clone() else {
                 break;
             };
@@ -3808,7 +3799,7 @@ impl Repository {
                 break;
             }
             for event in &events {
-                if event.event_type == "FILE::SET_CONTENT" {
+                if synck_file_folder::is_file_content_event(&event.event_type) {
                     let proposal = parse_event(event)?;
                     if proposal.set_content.is_none() {
                         from_seq = event.item_seq + 1;
@@ -4107,7 +4098,7 @@ impl Repository {
                             "item sequence {item_seq} does not exist for {display}"
                         ))
                     })?;
-                if event.event_type != "FILE::SET_CONTENT" {
+                if !synck_file_folder::is_file_content_event(&event.event_type) {
                     return Err(LocalError::Invalid(format!(
                         "item sequence {item_seq} is not a file content version"
                     )));
@@ -5484,7 +5475,6 @@ fn expected_revert_commit_id(intent: &RevertIntent, author: &str) -> Result<Comm
         &author.to_string(),
         None,
         Some(&intent.message),
-        None,
         intent.events.len(),
         &events_digest,
     )?;
@@ -6090,7 +6080,7 @@ async fn commit_event_presentation<S: StateIndexStore>(
     let item_name_before = proposal
         .set_name
         .as_ref()
-        .and(before_item.as_ref().map(|value| value.name.clone()));
+        .and(before_item.as_ref().map(display_name));
     let parent_folder_id_before = before_item
         .as_ref()
         .and_then(|value| value.parent_folder_id.clone());
@@ -6098,10 +6088,11 @@ async fn commit_event_presentation<S: StateIndexStore>(
         (Some(previous), parent_id) => historical_parent_name(store, previous, parent_id).await?,
         (None, _) => None,
     };
+    let item_name = display_name(&item);
     Ok(CommitEventPresentation {
         item_id,
         item_type: item.item_type,
-        item_name: item.name,
+        item_name,
         item_name_before,
         parent_folder_id: item.parent_folder_id,
         parent_folder_name,
@@ -6150,11 +6141,12 @@ async fn ref_commit_event_presentation<S: StateIndexStore>(
         }
         None => None,
     };
+    let item_name = display_name(&item);
     Ok(CommitEventPresentation {
         item_id: proposal.owner_item_id.clone(),
         item_type: item.item_type,
-        item_name: item.name,
-        item_name_before: before.map(|before| before.name),
+        item_name,
+        item_name_before: before.as_ref().map(display_name),
         parent_folder_id: item.parent_folder_id,
         parent_folder_name,
         parent_folder_id_before,
@@ -6183,7 +6175,7 @@ async fn historical_parent_name<S: StateIndexStore>(
                 "commit event display parent {parent_id} is missing from its historical root"
             ))
         })?;
-    Ok(Some(parent.name))
+    Ok(parent.name)
 }
 
 pub(crate) fn checked_commit_event_count(event_count: i32, commit_id: &CommitId) -> Result<usize> {
@@ -6214,12 +6206,8 @@ fn validate_historical_namespace_delta(
 ) -> Result<()> {
     let mut expected = BTreeSet::new();
     for item_id in changed_items {
-        let from_key = from
-            .get(item_id)
-            .map(|item| NamespaceKey::new(item.parent_folder_id.clone(), item.name_key.clone()));
-        let to_key = to
-            .get(item_id)
-            .map(|item| NamespaceKey::new(item.parent_folder_id.clone(), item.name_key.clone()));
+        let from_key = from.get(item_id).and_then(item_namespace);
+        let to_key = to.get(item_id).and_then(item_namespace);
         if from_key != to_key {
             expected.extend(from_key);
             expected.extend(to_key);
@@ -6238,8 +6226,7 @@ fn initial_historical_changes(items: BTreeMap<ItemId, ItemValue>) -> Result<Vec<
     let mut visiting = HashSet::new();
     let mut changes = Vec::new();
     for (item_id, item) in &items {
-        if item.lifecycle_state != LifecycleState::Live
-        {
+        if item.lifecycle_state != LifecycleState::Live || item.name.is_none() {
             continue;
         }
         if item.item_type != "FILE" && item.item_type != "FOLDER" {
@@ -6281,8 +6268,9 @@ fn historical_state_path(
             "cannot build a path for non-live historical item {item_id}"
         )));
     }
+    let name = tree_name(item)?;
     let path = match item.parent_folder_id.as_ref() {
-        None => item.name.clone(),
+        None => name.to_string(),
         Some(parent_id) => {
             let parent = items.get(parent_id).ok_or_else(|| {
                 LocalError::Integrity(format!(
@@ -6297,7 +6285,7 @@ fn historical_state_path(
             format!(
                 "{}/{}",
                 historical_state_path(parent_id, items, paths, visiting)?,
-                item.name
+                name
             )
         }
     };
@@ -6351,7 +6339,7 @@ fn apply_history_event(
 ) -> Result<()> {
     let item_id = &event.item_id;
     match profile {
-        LocalEvent::Create { item_type } => {
+        LocalEvent::Create { item_type, content } => {
             let create = proposal
                 .create_item
                 .as_ref()
@@ -6363,12 +6351,14 @@ fn apply_history_event(
                     item_id.clone(),
                     HistoryNode {
                         parent_id: create.parent_folder_id.clone(),
-                        name: create.name.clone(),
+                        name: create.name.clone().ok_or_else(|| {
+                            LocalError::Integrity(format!("tree item {item_id} has no name"))
+                        })?,
                         kind,
                         live: true,
                         head_seq: event.item_seq,
-                        blob_id: None,
-                        size: None,
+                        blob_id: content.as_ref().map(|(blob_id, _)| blob_id.clone()),
+                        size: content.as_ref().map(|(_, size)| *size),
                         deletion: None,
                     },
                 )
@@ -6464,6 +6454,24 @@ fn apply_history_event(
         }
     }
     Ok(())
+}
+
+fn tree_name(item: &ItemValue) -> Result<&str> {
+    item.name
+        .as_deref()
+        .ok_or_else(|| LocalError::Integrity(format!("tree item {} has no name", item.item_id)))
+}
+
+fn tree_namespace(item: &ItemValue) -> Result<NamespaceKey> {
+    item_namespace(item)
+        .ok_or_else(|| LocalError::Integrity(format!("tree item {} has no name", item.item_id)))
+}
+
+/// A record has no name of its own: its title belongs to its family.
+fn display_name(item: &ItemValue) -> String {
+    item.name
+        .clone()
+        .unwrap_or_else(|| item.item_id.to_string())
 }
 
 fn history_kind(item_type: &str) -> NodeKind {
@@ -7136,8 +7144,7 @@ pub(crate) fn materialize_events(
     let mut events = Vec::new();
     let mut ref_events = Vec::new();
     for proposal in materialized.events {
-        let initial_file =
-            proposal.event_type == "FILE::SET_CONTENT" && proposal.base_seq.is_none();
+        let initial_file = proposal.event_type == "FILE::CREATE";
         let file_id = proposal.item_id.clone();
         events.push(proposal);
         if initial_file {
@@ -7151,7 +7158,7 @@ pub(crate) fn materialize_events(
                     &file_id,
                     &version_id,
                     0,
-                    2,
+                    1,
                     source_commit_event_idx,
                 )
                 .map_err(LocalError::Invalid)?,
@@ -7499,7 +7506,6 @@ mod tests {
                 &"test".to_string(),
                 None,
                 message,
-                None,
                 events.len(),
                 &events_digest,
             )
@@ -7514,7 +7520,6 @@ mod tests {
                 commit_id,
                 repo_seq: Some(1),
                 format_version: COMMIT_FORMAT_VERSION,
-                import_job_id: None,
                 author_id: "test".to_string(),
                 committer_id: "test".to_string(),
                 message: message.map(str::to_string),
@@ -7530,7 +7535,6 @@ mod tests {
     #[test]
     fn local_adapter_matches_shared_conformance_corpus() {
         let fixture: ConformanceFixture = serde_json::from_str(CONFORMANCE_FIXTURE).unwrap();
-        assert_eq!(synck_file_folder::WORKTREE_CONTROL_NAME_KEY, ".synck");
         for case in fixture.cases {
             let current: BTreeMap<_, _> = case
                 .current
@@ -8187,7 +8191,7 @@ mod tests {
         assert_eq!(large, empty);
         assert_eq!(large[0], 1);
         assert_eq!(large[2], 1);
-        assert_eq!(large[3], 4);
+        assert_eq!(large[3], 3);
     }
 
     #[tokio::test]
@@ -8219,7 +8223,7 @@ mod tests {
         connection
             .execute(
                 "UPDATE vcs_events SET payload = x'7b7d'
-                 WHERE repo_id = ?1 AND item_id = ?2 AND event_type = 'FILE::SET_CONTENT'",
+                 WHERE repo_id = ?1 AND item_id = ?2 AND event_type = 'FILE::CREATE'",
                 rusqlite::params![repository.config().repo_id().as_str(), item_id.as_str()],
             )
             .unwrap();
@@ -8272,7 +8276,7 @@ mod tests {
             .iter()
             .filter(|event| event.item_name == "book.xlsx")
             .collect::<Vec<_>>();
-        assert_eq!(file_events.len(), 3);
+        assert_eq!(file_events.len(), 2);
         assert!(file_events.iter().all(|event| event.item_type == "FILE"));
         assert!(
             file_events

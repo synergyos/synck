@@ -93,7 +93,7 @@ fn gen_string(rng: &mut XorShift64, max_len: usize) -> String {
                 4 => '"',
                 5 => '\\',
                 6 => '/',
-                7 => '\u{0000}',
+                7 => '\u{0001}',
                 8 => '\u{001f}',
                 _ => '\u{007f}',
             },
@@ -108,17 +108,10 @@ fn gen_string(rng: &mut XorShift64, max_len: usize) -> String {
 fn gen_json_number(rng: &mut XorShift64) -> serde_json::Number {
     const MAX_SAFE_JSON_INTEGER: u64 = (1_u64 << 53) - 1;
 
-    match rng.gen_usize(3) {
-        0 => serde_json::Number::from(rng.next_u32() as i64 - (i32::MAX as i64)),
-        1 => serde_json::Number::from(rng.next_u64() % (MAX_SAFE_JSON_INTEGER + 1)),
-        _ => {
-            let sign = if rng.next_bool() { 1.0 } else { -1.0 };
-            let num = (rng.next_u32() % 1_000_000) as f64;
-            let den = ((rng.next_u32() % 10_000) + 1) as f64;
-            let exp = (rng.next_u32() % 81) as i32 - 40;
-            let v = sign * (num / den) * 10f64.powi(exp);
-            serde_json::Number::from_f64(v).unwrap_or_else(|| serde_json::Number::from(0))
-        }
+    if rng.next_bool() {
+        serde_json::Number::from(rng.next_u32() as i64 - (i32::MAX as i64))
+    } else {
+        serde_json::Number::from(rng.next_u64() % (MAX_SAFE_JSON_INTEGER + 1))
     }
 }
 
@@ -164,26 +157,22 @@ fn gen_event_content(rng: &mut XorShift64) -> EventContent {
 fn gen_event_proposal(rng: &mut XorShift64) -> EventProposal {
     let item_id = gen_item_id(rng);
     let create_item = if rng.next_bool() {
-        Some(CreateItem {
-            item_type: if rng.next_bool() {
-                "FILE".to_string()
-            } else {
-                "FOLDER".to_string()
-            },
+        Some(CreateItem { key: None, link: None,
+            item_type: "FOLDER".to_string(),
             parent_folder_id: if rng.next_bool() {
                 Some(gen_item_id(rng))
             } else {
                 None
             },
-            name: gen_string(rng, 64),
+            name: Some(format!("folder-{}", rng.next_u32())),
         })
     } else {
         None
     };
 
-    EventProposal {
+    EventProposal { set_link: None,
         item_id: Some(item_id),
-        event_type: gen_string(rng, 32),
+        event_type: if create_item.is_some() { "FOLDER::CREATE" } else { "ITEM::NOTE" }.to_string(),
         set_metadata: if rng.next_bool() {
             Some(synck_vcs::metadata::MetadataRef::new(serde_json::json!({"value":gen_json_value(rng, 3)})).unwrap())
         } else {
@@ -256,7 +245,7 @@ fn canonical_commit_bytes_are_canonical_json() {
         // Author IDs are nonempty and at most 256 bytes.
         let author_id = format!("a{}", gen_string(&mut rng, 32));
         let message = if rng.next_bool() {
-            Some(gen_string(&mut rng, 128))
+            Some(gen_string(&mut rng, 128)).filter(|message| !message.is_empty())
         } else {
             None
         };
@@ -270,7 +259,6 @@ fn canonical_commit_bytes_are_canonical_json() {
             &author_id,
             None,
             message.as_deref(),
-            None,
             event_count,
             &events_digest,
         )

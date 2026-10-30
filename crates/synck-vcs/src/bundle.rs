@@ -3,13 +3,16 @@
 //! The source schema in a header is provenance, not a target schema instruction.
 //! Only the current bundle encoding is accepted.
 use crate::limits::MAX_EVENT_PAYLOAD_BYTES;
+use crate::errors::CoreError;
 use crate::types::{
     COMMIT_FORMAT_VERSION, EventProposal, RefEventProposal, RepoId, Sha256Digest,
     canonical_event_proposal_bytes, canonical_ref_event_proposal_bytes,
     compute_sha256_digest_bytes, sha256_digest_to_digest_bytes,
+    sha256_prefixed_hex_from_digest_bytes,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::io::BufRead;
 
 /// Canonical commit outcome shared by offline bundle command wrappers.
@@ -50,6 +53,7 @@ pub struct BundleHeaderRecord {
     pub bundle_format_version: u32,
     pub repo_id: String,
     pub history_generation: String,
+    pub encrypted: bool,
     pub exported_at: String,
     pub schema: BundleSchema,
     pub commit_format_version: i32,
@@ -64,7 +68,6 @@ pub struct BundleCommitRecord {
     pub checkpoint: Sha256Digest,
     pub repo_seq: i64,
     pub operation_id: Option<String>,
-    pub import_job_id: Option<String>,
     pub format_version: i32,
     pub author_id: String,
     pub committer_id: String,
@@ -117,8 +120,10 @@ pub struct BundleItemRecord {
     pub item_id: String,
     pub item_type: String,
     pub parent_folder_id: Option<String>,
-    pub name: String,
-    pub name_key: String,
+    pub name: Option<String>,
+    pub name_key: Option<String>,
+    pub record_key: Option<String>,
+    pub link_folder_id: Option<String>,
     pub head_seq: i64,
     #[serde(default, skip_serializing_if = "is_zero")]
     pub ref_head_seq: i64,
@@ -153,20 +158,28 @@ pub struct BundleMetadataRecord {
     pub payload_hex: String,
 }
 
-fn decode_commit_record(
-    value: serde_json::Value,
-    bundle_format_version: u32,
-) -> Result<BundleCommitRecord, String> {
-    if bundle_format_version != BUNDLE_FORMAT_VERSION {
-        return Err(format!(
-            "unsupported bundle_format_version: {bundle_format_version}"
-        ));
-    }
-    for field in ["operation_id", "import_job_id"] {
+/// The last record of a bundle. It covers every byte before it.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BundleEndRecord {
+    #[serde(rename = "type")]
+    pub r#type: String,
+    pub record_count: u64,
+    pub checkpoint: Sha256Digest,
+    pub digest: Sha256Digest,
+}
+
+fn require_fields(value: &serde_json::Value, kind: &str, fields: &[&str]) -> Result<(), String> {
+    for field in fields {
         if value.get(field).is_none() {
-            return Err(format!("commit requires {field}"));
+            return Err(format!("{kind} requires {field}"));
         }
     }
+    Ok(())
+}
+
+fn decode_commit_record(value: serde_json::Value) -> Result<BundleCommitRecord, String> {
+    require_fields(&value, "commit", &["operation_id", "message", "occurred_at"])?;
     let record: BundleCommitRecord =
         serde_json::from_value(value).map_err(|error| format!("decode commit: {error}"))?;
     if record
@@ -192,59 +205,146 @@ pub enum BundleRecord {
     FederationDomain(BundleFederationDomainRecord),
 }
 
-/// Read one body record, preserving the existing blank-line and strict-field rules.
-pub fn read_record(reader: &mut dyn BufRead, version: u32) -> Result<Option<BundleRecord>, String> {
-    if version != BUNDLE_FORMAT_VERSION {
-        return Err(format!("unsupported bundle_format_version: {version}"));
+/// Reads a bundle in order and checks its end record. Only `read_record` returning
+/// `None` proves the reader saw the whole bundle.
+pub struct BundleReader<'a> {
+    reader: &'a mut dyn BufRead,
+    hasher: Sha256,
+    record_count: u64,
+    checkpoint: Option<Sha256Digest>,
+}
+
+impl<'a> BundleReader<'a> {
+    pub fn new(reader: &'a mut dyn BufRead) -> Self {
+        Self {
+            reader,
+            hasher: Sha256::new(),
+            record_count: 0,
+            checkpoint: None,
+        }
     }
-    let mut line = String::new();
-    loop {
-        line.clear();
-        if reader
+
+    /// The end record's checkpoint, once `read_record` has returned `None`.
+    pub fn checkpoint(&self) -> Option<&Sha256Digest> {
+        self.checkpoint.as_ref()
+    }
+
+    /// Read one line, which every record ends with. `None` is end of input.
+    fn line(&mut self) -> Result<Option<String>, String> {
+        let mut line = String::new();
+        if self
+            .reader
             .read_line(&mut line)
             .map_err(|error| format!("read: {error}"))?
             == 0
         {
             return Ok(None);
         }
-        if !line.trim_end().is_empty() {
-            break;
+        if !line.ends_with('\n') {
+            return Err("bundle record has no final line feed".to_string());
         }
+        Ok(Some(line))
     }
-    let value: serde_json::Value =
-        serde_json::from_str(line.trim_end()).map_err(|error| format!("parse json: {error}"))?;
-    let kind = value
-        .get("type")
-        .and_then(|value| value.as_str())
-        .ok_or_else(|| "record missing string field: type".to_string())?;
-    let record = match kind {
+
+    fn accept(&mut self, line: &str) {
+        self.hasher.update(line.as_bytes());
+        self.record_count += 1;
+    }
+
+    fn finish(&mut self, value: serde_json::Value) -> Result<(), String> {
+        let end: BundleEndRecord =
+            serde_json::from_value(value).map_err(|error| format!("decode end: {error}"))?;
+        if end.record_count != self.record_count {
+            return Err("bundle record count mismatch".to_string());
+        }
+        let digest: [u8; 32] = std::mem::take(&mut self.hasher).finalize().into();
+        if end.digest.as_str() != sha256_prefixed_hex_from_digest_bytes(digest) {
+            return Err("bundle digest mismatch".to_string());
+        }
+        if self.line().map_err(|_| "bytes after the end record")?.is_some() {
+            return Err("bytes after the end record".to_string());
+        }
+        self.checkpoint = Some(end.checkpoint);
+        Ok(())
+    }
+
+    /// Read one body record. Blank lines are skipped, and hashed.
+    pub fn read_record(&mut self) -> Result<Option<BundleRecord>, String> {
+        let line = loop {
+            let Some(line) = self.line()? else {
+                return Err("bundle has no end record".to_string());
+            };
+            if !line.trim_end().is_empty() {
+                break line;
+            }
+            self.hasher.update(line.as_bytes());
+        };
+        let value: serde_json::Value = serde_json::from_str(line.trim_end())
+            .map_err(|error| format!("parse json: {error}"))?;
+        let kind = value
+            .get("type")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| "record missing string field: type".to_string())?;
+        if kind == "synck_vcs_bundle_end" {
+            self.finish(value)?;
+            return Ok(None);
+        }
+        self.accept(&line);
+        decode_record(kind, value.clone()).map(Some)
+    }
+
+    /// Read and validate the header before acquiring repository authority.
+    pub fn read_header(&mut self) -> Result<BundleHeader, String> {
+        let Some(line) = self.line()? else {
+            return Err("empty input".to_string());
+        };
+        self.accept(&line);
+        decode_header(&line)
+    }
+}
+
+fn decode_record(kind: &str, value: serde_json::Value) -> Result<BundleRecord, String> {
+    Ok(match kind {
         "metadata" => BundleRecord::Metadata(
             serde_json::from_value(value).map_err(|error| format!("decode metadata: {error}"))?,
         ),
-        "commit" => BundleRecord::Commit(decode_commit_record(value, version)?),
+        "commit" => BundleRecord::Commit(decode_commit_record(value)?),
         "event" => BundleRecord::Event(
             serde_json::from_value(value).map_err(|error| format!("decode event: {error}"))?,
         ),
         "ref_event" => BundleRecord::RefEvent(
             serde_json::from_value(value).map_err(|error| format!("decode ref_event: {error}"))?,
         ),
-        "item" => BundleRecord::Item(
-            serde_json::from_value(value).map_err(|error| format!("decode item: {error}"))?,
-        ),
+        "item" => {
+            require_fields(
+                &value,
+                "item",
+                &[
+                    "parent_folder_id",
+                    "name",
+                    "name_key",
+                    "record_key",
+                    "link_folder_id",
+                    "federation_stream_id",
+                ],
+            )?;
+            BundleRecord::Item(
+                serde_json::from_value(value).map_err(|error| format!("decode item: {error}"))?,
+            )
+        }
         "federation_domain" => BundleRecord::FederationDomain(
             serde_json::from_value(value)
                 .map_err(|error| format!("decode federation_domain: {error}"))?,
         ),
         other => return Err(format!("unknown record type: {other}")),
-    };
-    Ok(Some(record))
+    })
 }
 
 /// A validated bundle header. The reader is positioned at the first body record.
 pub struct BundleHeader {
     repo_id: RepoId,
     history_generation: String,
-    bundle_format_version: u32,
+    encrypted: bool,
     source_schema: BundleSchema,
 }
 
@@ -256,8 +356,13 @@ impl BundleHeader {
         &self.repo_id
     }
 
-    pub fn bundle_format_version(&self) -> u32 {
-        self.bundle_format_version
+    pub fn encrypted(&self) -> bool {
+        self.encrypted
+    }
+
+    /// The checkpoint an empty history ends on, and the first commit extends.
+    pub fn genesis(&self) -> Result<[u8; 32], CoreError> {
+        crate::checkpoint::genesis(&self.repo_id, &self.history_generation, self.encrypted)
     }
 
     /// Physical source schema provenance; never applied to a target adapter.
@@ -266,16 +371,7 @@ impl BundleHeader {
     }
 }
 
-/// Read and validate the header before acquiring repository authority.
-pub fn read_header(reader: &mut dyn BufRead) -> Result<BundleHeader, String> {
-    let mut line = String::new();
-    if reader
-        .read_line(&mut line)
-        .map_err(|e| format!("read header: {e}"))?
-        == 0
-    {
-        return Err("empty input".to_string());
-    }
+fn decode_header(line: &str) -> Result<BundleHeader, String> {
     let value: serde_json::Value =
         serde_json::from_str(line.trim_end()).map_err(|e| format!("parse header json: {e}"))?;
     let kind = value
@@ -322,7 +418,7 @@ pub fn read_header(reader: &mut dyn BufRead) -> Result<BundleHeader, String> {
     }
     Ok(BundleHeader {
         repo_id: RepoId::parse(&header.repo_id).map_err(|e| e.to_string())?,
-        bundle_format_version: header.bundle_format_version,
+        encrypted: header.encrypted,
         source_schema: header.schema,
         history_generation: header.history_generation,
     })
@@ -428,7 +524,6 @@ mod bundle_tests {
             "commit_id": format!("sha256:{}", "a".repeat(64)),
             "checkpoint": format!("sha256:{}", "c".repeat(64)),
             "operation_id": null,
-            "import_job_id": null,
             "repo_seq": 1,
             "format_version": COMMIT_FORMAT_VERSION,
             "author_id": "author",
@@ -462,25 +557,22 @@ mod bundle_tests {
     #[test]
     fn bundle_commit_requires_explicit_optional_fields_and_current_version() {
         let value = commit_json();
-        assert!(decode_commit_record(value.clone(), BUNDLE_FORMAT_VERSION).is_ok());
-        for version in 1..BUNDLE_FORMAT_VERSION {
-            assert!(decode_commit_record(value.clone(), version).is_err());
-        }
-        for field in ["operation_id", "import_job_id"] {
+        assert!(decode_commit_record(value.clone()).is_ok());
+        for field in ["operation_id"] {
             let mut missing = value.clone();
             missing.as_object_mut().unwrap().remove(field);
-            assert!(decode_commit_record(missing, BUNDLE_FORMAT_VERSION).is_err());
+            assert!(decode_commit_record(missing).is_err());
         }
         let mut blank = value;
         blank["operation_id"] = serde_json::json!(" ");
-        assert!(decode_commit_record(blank, BUNDLE_FORMAT_VERSION).is_err());
+        assert!(decode_commit_record(blank).is_err());
     }
 
     #[test]
     fn non_canonical_payload_json_is_detected_by_roundtrip() {
         let item_id = crate::types::ItemId::new();
         let payload_json = format!(
-            r#"{{"event_type":"x","item_id":"{}","base_seq":1}}"#,
+            r#"{{"event_type":"ITEM::NOTE","item_id":"{}","base_seq":1}}"#,
             item_id.as_str()
         );
 
@@ -492,9 +584,9 @@ mod bundle_tests {
     #[test]
     fn canonical_payload_json_digest_matches() {
         let item_id = crate::types::ItemId::new();
-        let ev = EventProposal {
+        let ev = EventProposal { set_link: None,
             item_id: Some(item_id),
-            event_type: "x".to_string(),
+            event_type: "ITEM::NOTE".to_string(),
             set_metadata: None,
             set_content: None,
             create_item: None,
@@ -583,7 +675,7 @@ mod bundle_tests {
                         4 => '"',
                         5 => '\\',
                         6 => '/',
-                        _ => '\u{0000}',
+                        _ => '\u{0001}',
                     },
                     4 => UNICODE[rng.gen_usize(UNICODE.len())],
                     _ => '-',
@@ -594,9 +686,9 @@ mod bundle_tests {
         }
 
         fn gen_event_proposal(rng: &mut XorShift64) -> EventProposal {
-            EventProposal {
+            EventProposal { set_link: None,
                 item_id: Some(gen_item_id(rng)),
-                event_type: gen_string(rng, 16),
+                event_type: "ITEM::NOTE".to_string(),
                 set_metadata: if rng.next_bool() {
                     Some(crate::metadata::MetadataRef::new(serde_json::json!({
                         "k": gen_string(rng, 16),
@@ -610,23 +702,7 @@ mod bundle_tests {
                 } else {
                     None
                 },
-                create_item: if rng.next_bool() {
-                    Some(CreateItem {
-                        item_type: if rng.next_bool() {
-                            "FILE".to_string()
-                        } else {
-                            "FOLDER".to_string()
-                        },
-                        parent_folder_id: if rng.next_bool() {
-                            Some(gen_item_id(rng))
-                        } else {
-                            None
-                        },
-                        name: gen_string(rng, 32),
-                    })
-                } else {
-                    None
-                },
+                create_item: None,
                 set_parent: match rng.gen_usize(3) {
                     0 => None,
                     1 => Some(None),

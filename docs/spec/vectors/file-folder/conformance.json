@@ -9,7 +9,10 @@
           {
             "kind": "create_folder",
             "item_id": "0198e901-d208-7670-ae29-000000000001",
-            "location": {"parent_item_id": null, "name": "Folder"}
+            "location": {
+              "parent_item_id": null,
+              "name": "Folder"
+            }
           },
           {
             "kind": "create_file",
@@ -166,7 +169,10 @@
                 "base_seq": 7
               }
             ],
-            "location": {"parent_item_id": null, "name": "Restored"}
+            "location": {
+              "parent_item_id": null,
+              "name": "Restored"
+            }
           }
         ]
       },
@@ -237,66 +243,7 @@
           "lifecycle_state": "LIVE"
         }
       ],
-      "expected_error": "RESERVED_WORKTREE_PATH"
-    },
-    {
-      "name": "reserved_trashed_root_cannot_be_exposed",
-      "proposal": {
-        "intents": [
-          {
-            "kind": "restore",
-            "root": {
-              "item_id": "0198e901-d208-7670-ae29-000000000050",
-              "base_seq": 4
-            },
-            "trash_commit_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "descendants": []
-          }
-        ]
-      },
-      "current": [
-        {
-          "item_id": "0198e901-d208-7670-ae29-000000000050",
-          "item_type": "FOLDER",
-          "parent_item_id": null,
-          "name": ".synck",
-          "name_key": ".synck",
-          "head_seq": 4,
-          "lifecycle_state": "TRASH",
-          "trash_commit_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-        }
-      ],
-      "expected_error": "RESERVED_WORKTREE_PATH"
-    },
-    {
-      "name": "reserved_trashed_root_can_be_renamed_on_restore",
-      "proposal": {
-        "intents": [
-          {
-            "kind": "restore",
-            "root": {
-              "item_id": "0198e901-d208-7670-ae29-000000000050",
-              "base_seq": 4
-            },
-            "trash_commit_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "descendants": [],
-            "location": {"parent_item_id": null, "name": "Recovered"}
-          }
-        ]
-      },
-      "current": [
-        {
-          "item_id": "0198e901-d208-7670-ae29-000000000050",
-          "item_type": "FOLDER",
-          "parent_item_id": null,
-          "name": ".synck",
-          "name_key": ".synck",
-          "head_seq": 4,
-          "lifecycle_state": "TRASH",
-          "trash_commit_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-        }
-      ],
-      "expected_error": null
+      "expected_error": "INVALID_NAME"
     }
   ]
 }

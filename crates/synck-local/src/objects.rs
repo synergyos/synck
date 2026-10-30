@@ -290,7 +290,7 @@ mod tests {
                 )
                 .unwrap();
 
-            assert_eq!(&mapping_digests(&repository, &id.as_bytes())[1..], expected, "{name}");
+            assert_eq!(mapping_digests(&repository, &id.as_bytes()), expected, "{name}");
             differs_from_generic |= expected != generic;
             repository
                 .verify_blob(
@@ -334,7 +334,7 @@ mod tests {
                 )
                 .unwrap();
                 assert_eq!(
-                    &mapping_digests(&repository, &digest)[1..],
+                    mapping_digests(&repository, &digest),
                     chunk_digests(&bytes, &regions)
                 );
             }
@@ -414,7 +414,7 @@ mod tests {
             .unwrap();
         let generic_mapping = mapping_digests(&repository, &first.as_bytes());
         assert_eq!(
-            &generic_mapping[1..],
+            generic_mapping,
             chunk_digests(&office, &[office.len() as u64])
         );
 
@@ -427,7 +427,7 @@ mod tests {
                 office.len() as u64,
             )
             .unwrap();
-        assert_ne!(first, second);
+        assert_eq!(first, second);
         assert_eq!(
             mapping_digests(&repository, &first.as_bytes()),
             generic_mapping
@@ -447,7 +447,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(
-            &mapping_digests(&repository, &invalid_id.as_bytes())[1..],
+            mapping_digests(&repository, &invalid_id.as_bytes()),
             chunk_digests(&invalid, &[invalid.len() as u64])
         );
     }
@@ -488,14 +488,14 @@ mod tests {
                 referenced_objects: baseline.referenced_objects,
                 referenced_bytes: baseline.referenced_bytes,
                 unreachable_objects: 1,
-                unreachable_bytes: 60,
+                unreachable_bytes: 11,
             }
         );
         assert_eq!(
             repository.gc().await.unwrap(),
             GcReport {
                 removed_objects: 1,
-                removed_bytes: 60,
+                removed_bytes: 11,
             }
         );
         assert_eq!(

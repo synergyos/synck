@@ -70,6 +70,14 @@ pub enum CoreError {
         name: String,
     },
 
+    /// Another live record of this type holds the key.
+    #[error("record key conflict: repo={repo_id}, item_type={item_type}, key={key}")]
+    RecordKeyConflict {
+        repo_id: RepoId,
+        item_type: String,
+        key: String,
+    },
+
     /// Name is syntactically invalid according to core naming rules.
     #[error("invalid name: repo={repo_id}, item={item_id:?}, name={name}, reason={reason}")]
     NameInvalid {

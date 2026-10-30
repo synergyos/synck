@@ -525,6 +525,9 @@ enum ItemCommand {
         /// Read as of this sealed repository sequence.
         #[arg(long)]
         through: Option<i64>,
+        /// List records instead: all of them, or those filed in --parent.
+        #[arg(long, conflicts_with = "through")]
+        records: bool,
         /// Items per page, from 1 to 512.
         #[arg(long, default_value_t = 100)]
         limit: usize,
@@ -1897,10 +1900,25 @@ async fn run_portable_item(command: &ItemCommand, tokens: &[String]) -> synck_lo
             parent,
             after,
             through,
+            records,
             limit,
         } => async {
             let repository = PortableRepository::open(path)?;
             let parent = parent.as_deref().map(portable_item_id).transpose()?;
+            if *records {
+                let after = after.as_deref().map(portable_item_id).transpose()?;
+                let items = repository
+                    .list_records(parent.as_ref(), after.as_ref(), *limit)
+                    .await?;
+                let next_cursor = (items.len() == *limit)
+                    .then(|| items.last().map(|item| item.item_id.clone()))
+                    .flatten();
+                println!(
+                    "{}",
+                    serde_json::json!({"items": items, "next_cursor": next_cursor})
+                );
+                return Ok(());
+            }
             let after = after
                 .as_deref()
                 .map(|cursor| {

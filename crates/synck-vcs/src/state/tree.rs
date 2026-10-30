@@ -633,7 +633,7 @@ impl<'a, S: StateNodeStore> StateTree<'a, S> {
             };
             if value.lifecycle_state != LifecycleState::Live
                 || value.parent_folder_id != key.parent_folder_id
-                || value.name_key != key.name_key
+                || value.name_key.as_ref() != Some(&key.name_key)
             {
                 return Err(StateError::InvalidTree(
                     "namespace entry disagrees with item state".to_string(),
@@ -676,8 +676,10 @@ impl<'a, S: StateNodeStore> StateTree<'a, S> {
         let namespace = self.all_namespace(namespace_root).await?;
         let mut expected = BTreeMap::new();
         for value in items.values() {
-            if value.lifecycle_state == LifecycleState::Live {
-                let key = NamespaceKey::new(value.parent_folder_id.clone(), value.name_key.clone());
+            if value.lifecycle_state == LifecycleState::Live
+                && let Some(name_key) = &value.name_key
+            {
+                let key = NamespaceKey::new(value.parent_folder_id.clone(), name_key.clone());
                 if expected.insert(key, value.item_id.clone()).is_some() {
                     return Err(StateError::InvalidTree(
                         "duplicate live namespace key".to_string(),

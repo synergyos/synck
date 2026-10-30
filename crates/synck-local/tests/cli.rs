@@ -934,11 +934,6 @@ fn cli_log_and_show_events_expose_complete_authoritative_rows() {
             .iter()
             .any(|event| event["event_type"] == "FILE::CREATE")
     );
-    assert!(
-        events
-            .iter()
-            .any(|event| event["event_type"] == "FILE::SET_CONTENT")
-    );
 
     let commit_id = event_commit["commit_id"].as_str().unwrap();
     let shown = json_stdout(root, &["show", commit_id, "--events", "--json"]);
@@ -968,7 +963,7 @@ fn cli_log_and_show_events_expose_complete_authoritative_rows() {
 
     let shown_human = String::from_utf8(synck(root, &["show", "HEAD", "--events"]).stdout).unwrap();
     assert!(shown_human.contains(&format!("    commit {commit_id}\n")));
-    assert!(shown_human.contains(" | FILE::SET_CONTENT | item "));
+    assert!(shown_human.contains(" | FILE::CREATE | item "));
 
     let conflict = synck(root, &["log", "--oneline", "--events"]);
     assert_eq!(conflict.status.code(), Some(2));
@@ -1001,7 +996,9 @@ fn cli_log_and_show_events_expose_complete_authoritative_rows() {
     assert_eq!(tampered.status.code(), Some(1));
     assert!(
         String::from_utf8_lossy(&tampered.stderr)
-            .contains("events digest disagrees with its ordered event payloads")
+            .contains("digest disagrees"),
+        "{}",
+        String::from_utf8_lossy(&tampered.stderr)
     );
 
     let connection = rusqlite::Connection::open(root.join(".synck/repository.sqlite3")).unwrap();
@@ -1025,11 +1022,10 @@ fn cli_log_and_show_events_expose_complete_authoritative_rows() {
     let incomplete = synck(root, &["show", "HEAD", "--events"]);
     assert_eq!(incomplete.status.code(), Some(1));
     assert!(
-        String::from_utf8_lossy(&incomplete.stderr).contains("declares"),
+        String::from_utf8_lossy(&incomplete.stderr).contains("event is missing"),
         "{}",
         String::from_utf8_lossy(&incomplete.stderr)
     );
-    assert!(String::from_utf8_lossy(&incomplete.stderr).contains("but stores"));
 }
 
 fn counted_for_test(count: usize, singular: &str, plural: &str) -> String {
@@ -2420,8 +2416,6 @@ fn assert_fsck_integrity_failure(root: &std::path::Path, message: &str) {
 }
 
 fn install_unreachable_object(root: &std::path::Path, bytes: &[u8]) {
-    let object = synck_vcs::object::Object::new(synck_vcs::object::Codec::Raw, bytes).unwrap();
-    let bytes = object.payload();
     let digest = Sha256::digest(bytes).to_vec();
     let connection = rusqlite::Connection::open(root.join(".synck/object-store.sqlite3")).unwrap();
     connection
@@ -2476,8 +2470,7 @@ fn storage_and_gc_print_exact_object_totals() {
             .success()
     );
 
-    let ignore_size = fs::metadata(root.join(".synckignore")).unwrap().len()
-        + synck_vcs::object::HEADER_BYTES as u64;
+    let ignore_size = fs::metadata(root.join(".synckignore")).unwrap().len();
     let output = synck(root, &["storage"]);
     assert!(
         output.status.success(),
@@ -2503,11 +2496,11 @@ fn storage_and_gc_print_exact_object_totals() {
         String::from_utf8(output.stdout).unwrap(),
         format!(
             "referenced_objects 2\nreferenced_bytes {}\nunreachable_objects 0\nunreachable_bytes 0\n",
-            ignore_size + 7 + synck_vcs::object::HEADER_BYTES as u64
+            ignore_size + 7
         )
     );
 
-    let orphan_size = 6 + synck_vcs::object::HEADER_BYTES;
+    let orphan_size = 6;
     install_unreachable_object(root, b"orphan");
     let output = synck(root, &["storage"]);
     assert!(
@@ -2519,7 +2512,7 @@ fn storage_and_gc_print_exact_object_totals() {
         String::from_utf8(output.stdout).unwrap(),
         format!(
             "referenced_objects 2\nreferenced_bytes {}\nunreachable_objects 1\nunreachable_bytes {orphan_size}\n",
-            ignore_size + 7 + synck_vcs::object::HEADER_BYTES as u64
+            ignore_size + 7
         )
     );
 
@@ -2543,7 +2536,7 @@ fn storage_and_gc_print_exact_object_totals() {
         String::from_utf8(output.stdout).unwrap(),
         format!(
             "referenced_objects 2\nreferenced_bytes {}\nunreachable_objects 0\nunreachable_bytes 0\n",
-            ignore_size + 7 + synck_vcs::object::HEADER_BYTES as u64
+            ignore_size + 7
         )
     );
 }

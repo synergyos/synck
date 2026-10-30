@@ -33,7 +33,6 @@ fn external_event_and_commit_vectors() {
             &header["committer_id"].as_str().unwrap().to_owned(),
             None,
             header["message"].as_str(),
-            None,
             1,
             &digest,
         )

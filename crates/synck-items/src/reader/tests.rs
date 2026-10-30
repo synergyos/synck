@@ -31,16 +31,16 @@ fn create(kind: &str) -> (ItemReader, ItemId) {
     let id = ItemId::new();
     let mut reader = ItemReader::new(id.clone());
     let mut first = event(&id, &format!("{kind}::CREATE"), json!({}), None);
-    first.create_item = Some(CreateItem {
+    first.create_item = Some(CreateItem { key: None, link: None,
         item_type: kind.into(),
-        name: "Example".into(),
+        name: Some("Example".into()),
         parent_folder_id: None,
     });
     apply(&mut reader, &first, "alice");
     (reader, id)
 }
 fn json_body(body: &str) -> Option<EventContent> {
-    let object = synck_vcs::object::Object::new(synck_vcs::object::Codec::Utf8, body.as_bytes()).unwrap();
+    let object = synck_vcs::object::Object::new(body.as_bytes()).unwrap();
     let mut roles = EventContent::body(object.id());
     roles.resolve(object).unwrap();
     Some(roles)
@@ -285,9 +285,9 @@ fn hosted_only_native_domains_are_explicitly_unsupported() {
         let id = ItemId::new();
         let mut reader = ItemReader::new(id.clone());
         let mut first = event(&id, &format!("{kind}::CREATE"), json!({}), None);
-        first.create_item = Some(CreateItem {
+        first.create_item = Some(CreateItem { key: None, link: None,
             item_type: kind.into(),
-            name: "unsupported".into(),
+            name: Some("unsupported".into()),
             parent_folder_id: None,
         });
         let result = reader.apply(
@@ -344,7 +344,7 @@ fn errors_poison_only_the_typed_reader_and_do_not_modify_source_events() {
 }
 
 #[test]
-fn supplemental_links_and_workflow_annotations_do_not_hide_primary_content() {
+fn supplemental_links_do_not_hide_primary_content() {
     let (mut reader, id) = create("FILE");
     apply(
         &mut reader,
@@ -386,24 +386,6 @@ fn supplemental_links_and_workflow_annotations_do_not_hide_primary_content() {
         "alice",
     );
     assert!(reader.snapshot().unwrap().data_links.is_empty());
-    let (mut folder, id) = create("FOLDER");
-    apply(
-        &mut folder,
-        &event(
-            &id,
-            "FOLDER::WORKFLOW_RUNTIME",
-            json!({"kind":"RUN_LOG","retained":{"steps":[]}}),
-            None,
-        ),
-        "alice",
-    );
-    assert_eq!(
-        folder.snapshot().unwrap().ancillary_events[0]
-            .metadata
-            .as_ref()
-            .unwrap()["kind"],
-        json!("RUN_LOG")
-    );
 }
 
 #[test]

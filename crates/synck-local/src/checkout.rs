@@ -27,6 +27,38 @@ pub(crate) struct Transition {
     pub previous_paths: Option<Vec<String>>,
 }
 
+const CHECKOUT_FILE: &str = "checkout.json";
+
+/// A repository with no checkout state has no working tree.
+pub(crate) fn read_checkout(metadata: &Path) -> Result<Option<Checkout>> {
+    let path = metadata.join(CHECKOUT_FILE);
+    match crate::repository::open_regular_file_nofollow(&path) {
+        Ok(file) => Ok(Some(serde_json::from_reader(file)?)),
+        Err(LocalError::Io { source, .. }) if source.kind() == std::io::ErrorKind::NotFound => {
+            Ok(None)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+pub(crate) fn write_checkout(metadata: &Path, checkout: &Checkout) -> Result<()> {
+    use crate::error::IoContext;
+    let bytes = serde_json::to_vec(checkout)?;
+    if bytes.len() > 64 * 1024 {
+        return Err(LocalError::Invalid(
+            "checkout selection exceeds config size limit".into(),
+        ));
+    }
+    let path = metadata.join(format!("checkout-{}.tmp", uuid::Uuid::new_v4()));
+    std::fs::write(&path, &bytes).at("write checkout state", &path)?;
+    std::fs::File::open(&path)
+        .and_then(|file| file.sync_all())
+        .at("sync checkout state", &path)?;
+    crate::repository::replace_file(&path, &metadata.join(CHECKOUT_FILE))
+        .at("publish checkout state", &path)?;
+    crate::repository::sync_directory(metadata)
+}
+
 pub(crate) fn normalize_paths(paths: &[String]) -> Result<Vec<String>> {
     let mut normalized = BTreeSet::new();
     for path in paths {
@@ -324,7 +356,7 @@ impl Repository {
     ) -> Result<BTreeSet<ItemId>> {
         // This is used solely for rejecting lifecycle closures that include
         // omitted items. Namespace paths follow canonical parents.
-        let mut statement = connection.prepare("SELECT item_id,parent_folder_id,name,item_type FROM vcs_items WHERE repo_id=?1 AND lifecycle_state='LIVE'")?;
+        let mut statement = connection.prepare("SELECT item_id,parent_folder_id,name,item_type FROM vcs_items WHERE repo_id=?1 AND lifecycle_state='LIVE' AND name IS NOT NULL")?;
         let rows = statement.query_map([self.repository_id().as_str()], |r| {
             Ok((
                 r.get::<_, String>(0)?,

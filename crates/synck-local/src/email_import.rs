@@ -34,12 +34,15 @@ pub(crate) fn prepare(
         .ok_or_else(|| {
             LocalError::Invalid("EMAIL_IMPORT_INVALID_FORMAT: expected .eml or .msg".into())
         })?;
-    let name = if ImportedEmailFormat::from_name(requested_name).is_some() {
-        imported_email_item_name(requested_name).map_err(LocalError::Invalid)?
+    // An email's title is its subject unless the importer names it.
+    let title = if requested_name == filename {
+        None
+    } else if ImportedEmailFormat::from_name(requested_name).is_some() {
+        Some(imported_email_item_name(requested_name).map_err(LocalError::Invalid)?)
     } else {
         synck_vcs::naming::validate_display_name(requested_name)
             .map_err(|error| LocalError::Invalid(error.to_string()))?;
-        requested_name.to_string()
+        Some(requested_name.to_string())
     };
     let mut bytes = Vec::new();
     open_regular_file_nofollow(source)?
@@ -63,9 +66,8 @@ pub(crate) fn prepare(
         .map_err(|error| LocalError::Invalid(error.to_string()))?;
     let mut objects = Vec::new();
     let mut store = |bytes: Vec<u8>| -> Result<String> {
-        let object = synck_vcs::object::Object::new(synck_vcs::object::Codec::Raw, &bytes).map_err(|error| LocalError::Invalid(error.to_string()))?;
-        let id = object.id().to_string();
-        objects.push((id.clone(), object.payload().to_vec()));
+        let id = synck_vcs::object::plain_id(&bytes).to_string();
+        objects.push((id.clone(), bytes));
         Ok(id)
     };
     let source_plain_digest = hex::encode(Sha256::digest(&bytes));
@@ -86,7 +88,7 @@ pub(crate) fn prepare(
             "set_metadata":{"meta":meta},"set_content":{"source":blob}}),
         )?);
     }
-    let metadata = json!({"mailcal": {
+    let mut metadata = json!({"mailcal": {
         "v":2,"parser_version":IMPORTED_EMAIL_PARSER_VERSION,"parser_limits":limits,
         "origin":{"kind":"local_import"},
         "source":{"format":format.as_str(),"filename":filename,"mime_type":format.source_mime_type(),
@@ -98,9 +100,12 @@ pub(crate) fn prepare(
         "has_attachments":!attachments.is_empty(),"attachment_count":attachments.len(),
         "imported_at":chrono::Utc::now().to_rfc3339()
     }});
+    if let Some(title) = title {
+        metadata["title"] = json!(title);
+    }
     let mut events = vec![synck_vcs::types::EventProposal::from_fields(
         json!({"item_id":id,"event_type":"EMAIL::CREATE",
-        "create_item":{"item_type":"EMAIL","parent_folder_id":parent,"name":name},"set_metadata":metadata,"set_content":{"source":source_blob}}),
+        "create_item":{"item_type":"EMAIL","link":parent},"set_metadata":metadata,"set_content":{"source":source_blob}}),
     )?];
     events.extend(attachments);
     Ok(PreparedEmail { events, objects, source_plain_digest })
@@ -189,9 +194,8 @@ impl crate::repository::Repository {
             let connection = crate::local_database::open_readonly(self.storage())
                 .map_err(|error| LocalError::Integrity(error.to_string()))?;
             let mut statement = connection.prepare(
-                "SELECT s.path,s.source_blob_id,e.parent_folder_id FROM local_email_import_sources s \
+                "SELECT s.path,s.source_blob_id,i.link_folder_id FROM local_email_import_sources s \
                  JOIN vcs_items i ON i.repo_id=s.repo_id AND i.item_id=s.item_id \
-                 JOIN vcs_events e ON e.repo_id=i.repo_id AND e.item_id=i.item_id AND e.item_seq=1 AND e.event_type='EMAIL::CREATE' \
                  WHERE s.repo_id=?1 AND i.item_type='EMAIL' AND i.lifecycle_state='LIVE'",
             )?;
             statement

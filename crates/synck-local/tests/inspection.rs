@@ -219,8 +219,8 @@ async fn inspection_reports_repository_and_tracked_items() {
     assert_eq!(items.len(), 3);
     assert_eq!(items[0].path, ".synckignore");
     assert_eq!(items[0].kind, TrackedItemKind::File);
-    assert_eq!(items[0].item_seq, 2);
-    assert_eq!(items[0].content_item_seq, Some(2));
+    assert_eq!(items[0].item_seq, 1);
+    assert_eq!(items[0].content_item_seq, Some(1));
     assert_eq!(items[1].path, "folder");
     assert_eq!(items[1].kind, TrackedItemKind::Folder);
     assert_eq!(items[1].item_seq, 1);
@@ -228,16 +228,16 @@ async fn inspection_reports_repository_and_tracked_items() {
     assert_eq!(items[1].size, None);
     assert_eq!(items[2].path, "folder/file.txt");
     assert_eq!(items[2].kind, TrackedItemKind::File);
-    assert_eq!(items[2].item_seq, 2);
-    assert_eq!(items[2].content_item_seq, Some(2));
+    assert_eq!(items[2].item_seq, 1);
+    assert_eq!(items[2].content_item_seq, Some(1));
     assert_eq!(items[2].size, Some(7));
 
     let initial_modified_at = items[2].modified_at;
     fs::write(root.join("folder/file.txt"), b"updated").unwrap();
     repository.commit("update file").await.unwrap();
     let modified = repository.tracked_items().await.unwrap();
-    assert_eq!(modified[2].item_seq, 3);
-    assert_eq!(modified[2].content_item_seq, Some(3));
+    assert_eq!(modified[2].item_seq, 2);
+    assert_eq!(modified[2].content_item_seq, Some(2));
     assert_eq!(modified[2].size, Some(7));
     assert!(modified[2].modified_at >= initial_modified_at);
 
@@ -249,8 +249,8 @@ async fn inspection_reports_repository_and_tracked_items() {
     repository.commit("rename file").await.unwrap();
     let renamed = repository.tracked_items().await.unwrap();
     assert_eq!(renamed[2].path, "folder/renamed.txt");
-    assert_eq!(renamed[2].item_seq, 4);
-    assert_eq!(renamed[2].content_item_seq, Some(3));
+    assert_eq!(renamed[2].item_seq, 3);
+    assert_eq!(renamed[2].content_item_seq, Some(2));
     assert!(renamed[2].modified_at >= modified[2].modified_at);
 
     fs::remove_file(root.join("folder/renamed.txt")).unwrap();

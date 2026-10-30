@@ -124,7 +124,6 @@ fn header(header: &PublishedHeader, after: &Cursor) -> Result<(), ProtocolError>
         &commit.committer_id,
         commit.occurred_at,
         commit.message.as_deref(),
-        commit.import_job_id.as_deref(),
         commit.event_count as usize,
         &commit.events_digest,
     )?;
@@ -163,7 +162,6 @@ pub fn verify_published_commit(
         &commit.committer_id,
         commit.occurred_at,
         commit.message.as_deref(),
-        commit.import_job_id.as_deref(),
         commit.event_count as usize,
         &commit.events_digest,
     )?;

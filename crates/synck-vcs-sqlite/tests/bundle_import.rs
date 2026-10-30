@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use rusqlite::params;
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use synck_vcs::bundle::{
     BUNDLE_FORMAT_VERSION, BundleCommitRecord, BundleEventRecord, BundleFederationDomainRecord,
     BundleHeaderRecord, BundleItemRecord, BundleRefEventRecord, BundleSchema, ImportFailure,
@@ -30,10 +31,19 @@ fn proposal(events: Vec<EventProposal>, operation_id: &str) -> CommitProposal {
 }
 
 fn create(kind: &str) -> EventProposal {
-    EventProposal::from_fields(json!({
+    let create_item = match kind {
+        "FILE" | "FOLDER" => CreateItem::tree(kind, None, kind),
+        _ => CreateItem::record(kind, None, None),
+    };
+    let mut event = EventProposal::from_fields(json!({
         "item_id": ItemId::new(), "event_type": format!("{kind}::CREATE"),
-        "create_item": CreateItem { item_type: kind.into(), parent_folder_id: None, name: kind.into() }
-    })).unwrap()
+        "create_item": create_item
+    }))
+    .unwrap();
+    if kind == "FILE" {
+        event.set_content = Some(EventContent::bytes(synck_vcs::types::ObjectId::from_digest([7; 32])));
+    }
+    event
 }
 
 async fn fixture() -> (tempfile::TempDir, SqliteStorage, RepoId, Vec<Value>) {
@@ -109,7 +119,7 @@ async fn fixture() -> (tempfile::TempDir, SqliteStorage, RepoId, Vec<Value>) {
 
 // Serialize the existing public wire DTOs from independent source storage.
 async fn export_records(source: &SqliteStorage, repo_id: &RepoId) -> Vec<Value> {
-    let mut records = vec![json!(BundleHeaderRecord {
+    let mut records = vec![json!(BundleHeaderRecord { encrypted: false,
         r#type: "synck_vcs_bundle_header".into(),
         bundle_format_version: BUNDLE_FORMAT_VERSION,
         repo_id: repo_id.to_string(),
@@ -135,7 +145,7 @@ async fn export_records(source: &SqliteStorage, repo_id: &RepoId) -> Vec<Value> 
         let (digest, payload) = row.unwrap();
         records.push(json!({"type":"metadata", "object_id":format!("sha256:{}", hex::encode(digest)), "payload_hex":hex::encode(payload)}));
     }
-    let mut previous = synck_vcs::checkpoint::GENESIS;
+    let mut previous = genesis(&records[0]);
     for commit in source
         .list_commits_by_repo_seq_readonly(repo_id, 1, None, 100)
         .await
@@ -164,7 +174,6 @@ async fn export_records(source: &SqliteStorage, repo_id: &RepoId) -> Vec<Value> 
             checkpoint: synck_vcs::types::sha256_digest_from_digest_bytes(&previous).unwrap(),
             repo_seq: sequence,
             operation_id,
-            import_job_id: commit.import_job_id,
             format_version: commit.format_version,
             author_id: commit.author_id,
             committer_id: commit.committer_id,
@@ -215,6 +224,8 @@ async fn export_records(source: &SqliteStorage, repo_id: &RepoId) -> Vec<Value> 
         .unwrap()
     {
         records.push(json!(BundleItemRecord {
+            record_key: item.record_key,
+            link_folder_id: item.link_folder_id.map(|id| id.to_string()),
             r#type: "item".into(),
             item_id: item.item_id.to_string(),
             item_type: item.item_type,
@@ -248,14 +259,32 @@ async fn export_records(source: &SqliteStorage, repo_id: &RepoId) -> Vec<Value> 
     records
 }
 
-fn input(records: &[Value]) -> Cursor<Vec<u8>> {
-    Cursor::new(
-        records
-            .iter()
-            .map(|record| serde_json::to_string(record).unwrap() + "\n")
-            .collect::<String>()
-            .into_bytes(),
+fn genesis(header: &Value) -> [u8; 32] {
+    synck_vcs::checkpoint::genesis(
+        &RepoId::parse(header["repo_id"].as_str().unwrap()).unwrap(),
+        header["history_generation"].as_str().unwrap(),
+        false,
     )
+    .unwrap()
+}
+
+fn input(records: &[Value]) -> Cursor<Vec<u8>> {
+    let mut bytes = records
+        .iter()
+        .map(|record| serde_json::to_string(record).unwrap() + "\n")
+        .collect::<String>()
+        .into_bytes();
+    let checkpoint = records
+        .iter()
+        .rev()
+        .find(|record| record["type"] == "commit")
+        .map(|record| record["checkpoint"].clone())
+        .unwrap_or_else(|| json!(format!("sha256:{}", hex::encode(genesis(&records[0])))));
+    let end = json!({"type":"synck_vcs_bundle_end", "record_count":records.len(),
+        "checkpoint":checkpoint,
+        "digest":format!("sha256:{}", hex::encode(Sha256::digest(&bytes)))});
+    bytes.extend_from_slice((end.to_string() + "\n").as_bytes());
+    Cursor::new(bytes)
 }
 
 #[tokio::test]
@@ -348,7 +377,7 @@ async fn mixed_history_import_preserves_ids_ref_heads_and_next_append() {
         .unwrap();
     let chat = items.iter().find(|item| item.item_type == "CHAT").unwrap();
     let file = items.iter().find(|item| item.item_type == "FILE").unwrap();
-    let rename:EventProposal=EventProposal::from_fields(json!({"item_id":chat.item_id,"event_type":"CHAT::RENAME","base_seq":2,"set_name":"continued-chat"})).unwrap();
+    let rename:EventProposal=EventProposal::from_fields(json!({"item_id":chat.item_id,"event_type":"CHAT::RENAME","base_seq":2,"set_metadata":{"title":"continued-chat"}})).unwrap();
     let core = Repo::new(
         Storage::new(Arc::new(target.clone())),
         CoreConfig::default(),
@@ -500,7 +529,7 @@ async fn sequencer_rejects_gaps_without_publishing_partial_history() {
     let chat = items.iter().find(|item| item.item_type == "CHAT").unwrap();
     let event = EventProposal::from_fields(json!({
         "item_id":chat.item_id, "event_type":"CHAT::RENAME", "base_seq":chat.head_seq,
-        "set_name":"after-gap"
+        "set_metadata":{"title":"after-gap"}
     }))
     .unwrap();
     let accepted = core

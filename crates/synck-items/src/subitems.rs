@@ -320,7 +320,7 @@ pub fn reconstruct_subitem_content(
     let mut content = match set_content {
         None => serde_json::Value::Null,
         Some(roles) => {
-            if let Some(body) = roles.object("body").and_then(|object| object.utf8().ok()) {
+            if let Some(body) = roles.object("body").map(|object| object.utf8()) {
                 serde_json::json!({"body":body})
             } else if let Some(id) = roles.only("bytes").or_else(|| roles.only("source")) {
                 serde_json::json!({"blob_id":id})

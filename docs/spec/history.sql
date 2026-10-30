@@ -1,3 +1,5 @@
+-- Core SQLite database: UTF-8, PRAGMA application_id = 1398361675 (0x53594E4B),
+-- PRAGMA user_version = 7, PRAGMA journal_mode = WAL. See format.md.
 CREATE TABLE vcs_metadata_objects (
     repo_id TEXT NOT NULL,
     object_id BLOB NOT NULL CHECK (length(object_id) = 32),

@@ -116,8 +116,8 @@ boundaries do not affect these identities.
 must call `ProposalVerifier::finish` against the actual staged pages, then prove
 referenced objects durable and perform normal Core acceptance in one transaction.
 All item bases, ref bases, head guards, namespace and subtree constraints remain
-mandatory. Use checked FILE/FOLDER append paths and the existing import-job
-append API when applicable. A digest is not a substitute for these checks.
+mandatory. Use checked FILE/FOLDER append paths. A digest is not a substitute for
+these checks.
 No event becomes accepted before the entire commit is accepted atomically.
 
 The authority stores request digest and receipt atomically with accepted history.

@@ -2,19 +2,27 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
+use serde_json::{Value, json};
+
 use crate::envelope::{CommitEnvelopeValidator, EnvelopeItemState, EnvelopeRefState};
 pub use crate::envelope::{VerifyCommit, VerifyEvent, VerifyRefEvent};
 use crate::naming::compute_name_key;
 use crate::transition::{ItemState, apply_event as apply_item_event};
-use crate::types::{EventProposal, ItemId, LifecycleState, SequencingMode};
+use crate::content::EventContent;
+use crate::types::{
+    EventProposal, ItemId, LifecycleState, SequencingMode, canonical_json_bytes,
+    compute_sha256_digest_bytes, sha256_prefixed_hex_from_digest_bytes,
+};
 
 #[derive(Debug)]
 pub struct VerifyItem {
     pub item_id: ItemId,
     pub item_type: String,
     pub parent_folder_id: Option<ItemId>,
-    pub name: String,
-    pub name_key: String,
+    pub name: Option<String>,
+    pub name_key: Option<String>,
+    pub record_key: Option<String>,
+    pub link_folder_id: Option<ItemId>,
     pub head_seq: i64,
     pub ref_head_seq: i64,
     pub lifecycle_state: LifecycleState,
@@ -26,6 +34,7 @@ pub struct VerifyItem {
 struct ReplayedItem {
     state: ItemState,
     head_seq: i64,
+    content: Option<EventContent>,
 }
 
 pub struct SemanticVerifier {
@@ -34,16 +43,26 @@ pub struct SemanticVerifier {
     last_ref_seq: HashMap<ItemId, i64>,
     tombstoned: HashSet<ItemId>,
     replayed_items: HashMap<ItemId, ReplayedItem>,
+    encrypted: bool,
+    live_names: HashMap<(Option<ItemId>, String), ItemId>,
+    live_keys: HashMap<(String, String), ItemId>,
+    linked_records: HashMap<ItemId, HashSet<ItemId>>,
+    federation_streams: HashMap<String, ItemId>,
 }
 
 impl SemanticVerifier {
-    pub fn new() -> Self {
+    pub fn new(encrypted: bool) -> Self {
         Self {
             previous_repo_seq: None,
             last_item_seq: HashMap::new(),
             last_ref_seq: HashMap::new(),
             tombstoned: HashSet::new(),
             replayed_items: HashMap::new(),
+            encrypted,
+            live_names: HashMap::new(),
+            live_keys: HashMap::new(),
+            linked_records: HashMap::new(),
+            federation_streams: HashMap::new(),
         }
     }
 
@@ -63,6 +82,10 @@ impl SemanticVerifier {
             .map(|seq| format!("repo sequence {seq}"))
             .unwrap_or_else(|| "unsequenced commit".to_string());
         let mut replay_findings = Vec::new();
+        if self.encrypted && commit.message.is_some() {
+            replay_findings.push(format!("{label}: an encrypted repository has no messages"));
+        }
+        let mut touched: HashMap<ItemId, Option<ItemState>> = HashMap::new();
         let mut validator = CommitEnvelopeValidator::begin(commit, &mut self.previous_repo_seq);
         for event in events {
             match event {
@@ -83,6 +106,10 @@ impl SemanticVerifier {
                     });
                     if let Some(proposal) = validator.validate_event(event, item) {
                         let context = format!("{label} event {}", event.commit_event_idx);
+                        touched.entry(event.item_id.clone()).or_insert_with(|| {
+                            let replayed = self.replayed_items.get(&event.item_id);
+                            replayed.map(|item| item.state.clone())
+                        });
                         self.replay_event(event, &proposal, &context, &mut replay_findings);
                     }
                 }
@@ -118,6 +145,7 @@ impl SemanticVerifier {
         }
         let mut findings = validator.finish();
         findings.append(&mut replay_findings);
+        self.check_commit_end(&label, &touched, &mut findings);
         for (item_id, item) in heads {
             if let Some(head_seq) = item.head_seq {
                 self.last_item_seq.insert(item_id.clone(), head_seq);
@@ -154,6 +182,8 @@ impl SemanticVerifier {
                 parent_folder_id: replayed.state.parent_folder_id.clone(),
                 name: replayed.state.name.clone(),
                 name_key: replayed.state.name_key.clone(),
+                record_key: replayed.state.record_key.clone(),
+                link_folder_id: replayed.state.link_folder_id.clone(),
                 head_seq: replayed.head_seq,
                 ref_head_seq: self.last_ref_seq.get(item_id).copied().unwrap_or(0),
                 lifecycle_state: replayed.state.lifecycle_state,
@@ -193,6 +223,8 @@ impl SemanticVerifier {
                 || item.parent_folder_id != replayed.state.parent_folder_id
                 || item.name != replayed.state.name
                 || item.name_key != replayed.state.name_key
+                || item.record_key != replayed.state.record_key
+                || item.link_folder_id != replayed.state.link_folder_id
                 || item.head_seq != replayed.head_seq
                 || item.ref_head_seq != self.last_ref_seq.get(&item.item_id).copied().unwrap_or(0)
                 || item.lifecycle_state != replayed.state.lifecycle_state
@@ -210,10 +242,11 @@ impl SemanticVerifier {
             if self.last_ref_seq.get(&item.item_id).copied().unwrap_or(0) != item.ref_head_seq {
                 push(format!("item {}: ref head sequence mismatch", item.item_id));
             }
-            match compute_name_key(&item.name) {
-                Ok(key) if key == item.name_key => {}
-                Ok(_) => push(format!("item {}: name key mismatch", item.item_id)),
-                Err(error) => push(format!(
+            match item.name.as_deref().map(compute_name_key) {
+                None if item.name_key.is_none() => {}
+                Some(Ok(key)) if Some(&key) == item.name_key.as_ref() => {}
+                None | Some(Ok(_)) => push(format!("item {}: name key mismatch", item.item_id)),
+                Some(Err(error)) => push(format!(
                     "item {}: invalid name {:?}: {error}",
                     item.item_id, item.name
                 )),
@@ -231,7 +264,8 @@ impl SemanticVerifier {
         let mut live_names = HashSet::new();
         for item in items {
             if item.lifecycle_state == LifecycleState::Live
-                && !live_names.insert((item.parent_folder_id.clone(), item.name_key.clone()))
+                && let Some(name_key) = &item.name_key
+                && !live_names.insert((item.parent_folder_id.clone(), name_key.clone()))
             {
                 push(format!(
                     "item {}: duplicate live portable name",
@@ -255,6 +289,161 @@ impl SemanticVerifier {
         verify_acyclic(items, &materialized, &mut push);
     }
 
+    /// The digest of the structural state after the commits verified so far.
+    pub fn state_digest(&self) -> Result<String, crate::errors::CoreError> {
+        let mut item_ids: Vec<&ItemId> = self.replayed_items.keys().collect();
+        item_ids.sort_by_key(|item_id| item_id.as_str());
+        let mut data = b"synck-state-v1\n".to_vec();
+        for item_id in item_ids {
+            let item = &self.replayed_items[item_id];
+            let state = &item.state;
+            let content = item.content.as_ref().map_or_else(
+                || json!({}),
+                |content| serde_json::to_value(content.roles()).expect("role map is JSON"),
+            );
+            let value: Value = json!({
+                "item_id": item_id.as_str(),
+                "item_type": state.item_type,
+                "parent_folder_id": state.parent_folder_id.as_ref().map(ItemId::as_str),
+                "name": state.name,
+                "name_key": state.name_key,
+                "record_key": state.record_key,
+                "link_folder_id": state.link_folder_id.as_ref().map(ItemId::as_str),
+                "content": content,
+                "head_seq": item.head_seq,
+                "ref_head_seq": self.last_ref_seq.get(item_id).copied().unwrap_or(0),
+                "lifecycle_state": state.lifecycle_state,
+                "sequencing_mode": state.sequencing_mode,
+                "federation_stream_id": state.federation_stream_id,
+            });
+            data.extend_from_slice(&canonical_json_bytes(&value)?);
+            data.push(b'\n');
+        }
+        Ok(sha256_prefixed_hex_from_digest_bytes(
+            compute_sha256_digest_bytes(&data),
+        ))
+    }
+
+    /// Apply the rules on a commit's final state. `touched` maps each item the
+    /// commit changed to its state before the commit, so atomic swaps pass.
+    fn check_commit_end(
+        &mut self,
+        label: &str,
+        touched: &HashMap<ItemId, Option<ItemState>>,
+        findings: &mut Vec<String>,
+    ) {
+        for before in touched.values().flatten() {
+            if before.lifecycle_state == LifecycleState::Live {
+                if let Some(name_key) = &before.name_key {
+                    self.live_names
+                        .remove(&(before.parent_folder_id.clone(), name_key.clone()));
+                }
+                if let Some(key) = &before.record_key {
+                    self.live_keys
+                        .remove(&(before.item_type.clone(), key.clone()));
+                }
+            }
+        }
+        for before in touched.values().flatten() {
+            if let Some(stream) = &before.federation_stream_id {
+                self.federation_streams.remove(stream);
+            }
+        }
+        for (item_id, before) in touched {
+            if let Some(folder) = before.as_ref().and_then(|state| state.link_folder_id.as_ref())
+                && let Some(records) = self.linked_records.get_mut(folder)
+            {
+                records.remove(item_id);
+            }
+        }
+        for (item_id, before) in touched {
+            let Some(item) = self.replayed_items.get(item_id) else {
+                continue;
+            };
+            let state = item.state.clone();
+            let mut report = |rule: &str| findings.push(format!("{label}: item {item_id}: {rule}"));
+            if state.lifecycle_state == LifecycleState::Live {
+                if let Some(name_key) = &state.name_key {
+                    let slot = (state.parent_folder_id.clone(), name_key.clone());
+                    if self.live_names.insert(slot, item_id.clone()).is_some() {
+                        report("duplicate live name");
+                    }
+                }
+                if let Some(key) = &state.record_key {
+                    let slot = (state.item_type.clone(), key.clone());
+                    if self.live_keys.insert(slot, item_id.clone()).is_some() {
+                        report("duplicate live record key");
+                    }
+                }
+            }
+            if let Some(stream) = &state.federation_stream_id
+                && self.federation_streams.insert(stream.clone(), item_id.clone()).is_some()
+            {
+                report("duplicate federation stream");
+            }
+            if let Some(parent) = &state.parent_folder_id {
+                match self.replayed_items.get(parent) {
+                    Some(parent) if parent.state.item_type == "FOLDER" => {}
+                    _ => report("parent is not a folder in this repository"),
+                }
+                let mut seen = HashSet::from([item_id]);
+                let mut current = Some(parent);
+                while let Some(ancestor) = current {
+                    if !seen.insert(ancestor) {
+                        report("folder cycle");
+                        break;
+                    }
+                    current = self
+                        .replayed_items
+                        .get(ancestor)
+                        .and_then(|item| item.state.parent_folder_id.as_ref());
+                }
+            }
+            let Some(target) = &state.link_folder_id else {
+                continue;
+            };
+            if state.lifecycle_state == LifecycleState::Tombstoned {
+                continue;
+            }
+            self.linked_records
+                .entry(target.clone())
+                .or_default()
+                .insert(item_id.clone());
+            if state.sequencing_mode == SequencingMode::Federated {
+                report("a federated item has a link");
+            }
+            let unchanged = before
+                .as_ref()
+                .is_some_and(|before| before.link_folder_id.as_ref() == Some(target));
+            match self.replayed_items.get(target) {
+                Some(folder) if folder.state.item_type == "FOLDER" => {
+                    match folder.state.lifecycle_state {
+                        LifecycleState::Live => {}
+                        LifecycleState::Trash if unchanged => {}
+                        LifecycleState::Trash => report("link set to a folder in the trash"),
+                        LifecycleState::Tombstoned => report("link to a tombstoned folder"),
+                    }
+                }
+                _ => report("link target is not a folder in this repository"),
+            }
+        }
+        for item_id in touched.keys() {
+            let Some(item) = self.replayed_items.get(item_id) else {
+                continue;
+            };
+            if item.state.lifecycle_state == LifecycleState::Tombstoned
+                && self
+                    .linked_records
+                    .get(item_id)
+                    .is_some_and(|records| !records.is_empty())
+            {
+                findings.push(format!(
+                    "{label}: item {item_id}: tombstoned with records still linked"
+                ));
+            }
+        }
+    }
+
     fn replay_event(
         &mut self,
         event: &VerifyEvent,
@@ -275,7 +464,14 @@ impl SemanticVerifier {
                 }
             };
             self.replayed_items
-                .insert(event.item_id.clone(), ReplayedItem { state, head_seq: 0 });
+                .insert(
+                    event.item_id.clone(),
+                    ReplayedItem {
+                        state,
+                        head_seq: 0,
+                        content: None,
+                    },
+                );
         }
         let Some(item) = self.replayed_items.get_mut(&event.item_id) else {
             return;
@@ -283,7 +479,7 @@ impl SemanticVerifier {
         let transition = match apply_item_event(&mut item.state, proposal) {
             Ok(transition) => transition,
             Err(error) => {
-                findings.push(format!("{context}: invalid renamed name: {error}"));
+                findings.push(format!("{context}: {error}"));
                 return;
             }
         };
@@ -294,6 +490,9 @@ impl SemanticVerifier {
             findings.push(format!("{context}: resulting parent mismatch"));
         }
         item.head_seq = event.item_seq;
+        if proposal.replaces_content() {
+            item.content.clone_from(&proposal.set_content);
+        }
     }
 }
 
@@ -301,12 +500,6 @@ impl SemanticVerifier {
 pub enum VerifyCommitEvent<'a> {
     Item(&'a VerifyEvent),
     Ref(&'a VerifyRefEvent),
-}
-
-impl Default for SemanticVerifier {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 fn verify_acyclic(
@@ -370,15 +563,15 @@ mod tests {
 
     fn valid_history() -> (VerifyCommit, Vec<VerifyEvent>, VerifyItem) {
         let item_id = ItemId::new();
-        let proposal = EventProposal {
+        let proposal = EventProposal { set_link: None,
             item_id: Some(item_id.clone()),
             event_type: "FILE::CREATE".to_string(),
             set_metadata: None,
-            set_content: None,
-            create_item: Some(CreateItem {
+            set_content: Some(crate::content::EventContent::bytes(crate::types::ObjectId::from_digest([7; 32]))),
+            create_item: Some(CreateItem { key: None, link: None,
                 item_type: "FILE".to_string(),
                 parent_folder_id: None,
-                name: "file.txt".to_string(),
+                name: Some("file.txt".to_string()),
             }),
             set_parent: None,
             set_name: None,
@@ -401,7 +594,6 @@ mod tests {
             &author,
             None,
             Some("message"),
-            None,
             1,
             &events_digest,
         )
@@ -410,7 +602,6 @@ mod tests {
             commit_id: Some(compute_commit_id(&commit_bytes)),
             repo_seq: Some(1),
             format_version: COMMIT_FORMAT_VERSION,
-            import_job_id: None,
             committer_id: author.clone(),
             occurred_at: None,
             author_id: author,
@@ -428,12 +619,12 @@ mod tests {
             parent_folder_id: None,
             parent_folder_id_before: None,
         };
-        let item = VerifyItem {
+        let item = VerifyItem { link_folder_id: None, record_key: None,
             item_id,
             item_type: "FILE".to_string(),
             parent_folder_id: None,
-            name: "file.txt".to_string(),
-            name_key: "file.txt".to_string(),
+            name: Some("file.txt".to_string()),
+            name_key: Some("file.txt".to_string()),
             head_seq: 1,
             ref_head_seq: 0,
             lifecycle_state: LifecycleState::Live,
@@ -446,7 +637,7 @@ mod tests {
     #[test]
     fn valid_history_and_materialization_pass() {
         let (commit, events, item) = valid_history();
-        let mut verifier = SemanticVerifier::new();
+        let mut verifier = SemanticVerifier::new(false);
         assert!(verifier.verify_commit(&commit, &events).is_empty());
         assert!(verifier.finish(&[item]).is_empty());
     }
@@ -455,7 +646,7 @@ mod tests {
     fn payload_corruption_is_reported() {
         let (commit, mut events, item) = valid_history();
         events[0].event_payload_digest[0] ^= 0xff;
-        let mut verifier = SemanticVerifier::new();
+        let mut verifier = SemanticVerifier::new(false);
         let findings = verifier.verify_commit(&commit, &events);
         assert!(
             findings
@@ -473,7 +664,7 @@ mod tests {
         events[0].payload = canonical_event_proposal_bytes(&proposal).unwrap();
         events[0].event_payload_digest = compute_sha256_digest_bytes(&events[0].payload).to_vec();
 
-        let mut verifier = SemanticVerifier::new();
+        let mut verifier = SemanticVerifier::new(false);
         let findings = verifier.verify_commit(&commit, &events);
         assert!(
             findings
@@ -508,7 +699,6 @@ mod tests {
             &author,
             None,
             None,
-            None,
             event_count,
             &events_digest,
         )
@@ -517,7 +707,6 @@ mod tests {
             commit_id: Some(compute_commit_id(&commit_bytes)),
             repo_seq: Some(repo_seq),
             format_version: COMMIT_FORMAT_VERSION,
-            import_job_id: None,
             committer_id: author.clone(),
             occurred_at: None,
             author_id: author,
@@ -552,7 +741,7 @@ mod tests {
         let item_id = ItemId::new();
         let ref_event = verify_ref_event(item_id, 0);
         let commit = ref_commit(1, None, &ref_event);
-        let mut verifier = SemanticVerifier::new();
+        let mut verifier = SemanticVerifier::new(false);
         let findings = verifier.verify_commit_events(&commit, [VerifyCommitEvent::Ref(&ref_event)]);
         assert!(
             findings
@@ -565,7 +754,7 @@ mod tests {
     fn ref_after_owner_tombstone_is_rejected_at_event_position() {
         let (create_commit, create_events, _) = valid_history();
         let item_id = create_events[0].item_id.clone();
-        let tombstone = EventProposal {
+        let tombstone = EventProposal { set_link: None,
             item_id: Some(item_id.clone()),
             event_type: "FILE::TOMBSTONE".to_string(),
             set_metadata: None,
@@ -593,7 +782,7 @@ mod tests {
         };
         let ref_event = verify_ref_event(item_id, 1);
         let commit = ref_commit(2, Some(&item_event), &ref_event);
-        let mut verifier = SemanticVerifier::new();
+        let mut verifier = SemanticVerifier::new(false);
         assert!(
             verifier
                 .verify_commit(&create_commit, &create_events)
@@ -617,7 +806,7 @@ mod tests {
     fn item_event_after_ref_event_is_rejected() {
         let (create_commit, create_events, _) = valid_history();
         let item_id = create_events[0].item_id.clone();
-        let mut verifier = SemanticVerifier::new();
+        let mut verifier = SemanticVerifier::new(false);
         assert!(
             verifier
                 .verify_commit(&create_commit, &create_events)
@@ -625,7 +814,7 @@ mod tests {
         );
 
         let mut ref_event = verify_ref_event(item_id.clone(), 0);
-        let item_proposal = EventProposal {
+        let item_proposal = EventProposal { set_link: None,
             item_id: Some(item_id.clone()),
             event_type: "FILE::SET_METADATA".to_string(),
             set_metadata: Some(crate::metadata::MetadataRef::new(serde_json::json!({"key": "value"})).unwrap()),
@@ -669,7 +858,6 @@ mod tests {
             &author,
             None,
             None,
-            None,
             2,
             &events_digest,
         )
@@ -678,7 +866,6 @@ mod tests {
             commit_id: Some(compute_commit_id(&commit_bytes)),
             repo_seq: Some(2),
             format_version: COMMIT_FORMAT_VERSION,
-            import_job_id: None,
             committer_id: author.clone(),
             occurred_at: None,
             author_id: author,
@@ -718,7 +905,6 @@ mod tests {
             &author,
             None,
             None,
-            None,
             1,
             &events_digest,
         )
@@ -727,7 +913,6 @@ mod tests {
             commit_id: Some(compute_commit_id(&commit_bytes)),
             repo_seq: Some(1),
             format_version: COMMIT_FORMAT_VERSION,
-            import_job_id: None,
             committer_id: author.clone(),
             occurred_at: None,
             author_id: author,
@@ -735,12 +920,12 @@ mod tests {
             event_count: Some(1),
             events_digest: Some(events_digest),
         };
-        let mut verifier = SemanticVerifier::new();
+        let mut verifier = SemanticVerifier::new(false);
         let findings = verifier.verify_commit(&commit, &events);
         assert!(findings.is_empty(), "{findings:?}");
         let mut changed = commit.clone();
         changed.committer_id = "another committer".into();
-        let findings = SemanticVerifier::new().verify_commit(&changed, &events);
+        let findings = SemanticVerifier::new(false).verify_commit(&changed, &events);
         assert!(
             findings
                 .iter()
@@ -748,7 +933,7 @@ mod tests {
         );
         changed = commit;
         changed.occurred_at = Some("2026-10-28T12:00:00Z".parse().unwrap());
-        let findings = SemanticVerifier::new().verify_commit(&changed, &events);
+        let findings = SemanticVerifier::new(false).verify_commit(&changed, &events);
         assert!(
             findings
                 .iter()

@@ -27,9 +27,6 @@ pub use project::{
 /// Public profile identifier.
 pub const PROFILE_ID: &str = "synck-file-folder-v1";
 
-/// Canonical name key reserved for checkout control state.
-pub const WORKTREE_CONTROL_NAME_KEY: &str = ".synck";
-
 pub use synck_vcs::limits::{MAX_MESSAGE_BYTES, MAX_EVENT_PAYLOAD_BYTES};
 pub const MAX_SAFE_JSON_INTEGER: u64 = 9_007_199_254_740_991;
 
@@ -37,10 +34,15 @@ pub const MAX_SAFE_JSON_INTEGER: u64 = 9_007_199_254_740_991;
 ///
 /// Non-content profile events return `Ok(None)`. A malformed content event is
 /// rejected; callers must never guess a size from the blob store.
+/// Whether this FILE event states the file's bytes. A file is created with them.
+pub fn is_file_content_event(event_type: &str) -> bool {
+    matches!(event_type, "FILE::CREATE" | "FILE::SET_CONTENT")
+}
+
 pub fn file_blob_reference(
     event: &synck_vcs::types::EventProposal,
 ) -> Result<Option<BlobRef>, SemanticError> {
-    if event.event_type != "FILE::SET_CONTENT" {
+    if !is_file_content_event(&event.event_type) {
         return Ok(None);
     }
     let blob_id = event.set_content.as_ref().and_then(|content| content.only("bytes")).ok_or_else(|| {
@@ -80,8 +82,8 @@ pub fn file_blob_reference(
 
 /// Returns whether `event_type` is part of the public FILE/FOLDER event profile.
 ///
-/// Product-only events such as metadata, federation, revisions, and workflow
-/// runtime events are deliberately excluded. Tombstones are included because
+/// Product-only events such as metadata, federation and revisions are
+/// deliberately excluded. Tombstones are included because
 /// authorities may publish them even though v1 clients cannot request them.
 pub fn is_profile_event_type(kind: FileFolderKind, event_type: &str) -> bool {
     match kind {
@@ -139,7 +141,6 @@ mod tests {
             (FileFolderKind::File, "FILE::MOVE"),
             (FileFolderKind::File, "FILE::SET_METADATA"),
             (FileFolderKind::Folder, "FOLDER::MOVE"),
-            (FileFolderKind::Folder, "FOLDER::WORKFLOW_RUNTIME"),
             (FileFolderKind::Folder, "FILE::CREATE"),
         ] {
             assert!(!is_profile_event_type(kind, event_type));

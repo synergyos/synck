@@ -10,6 +10,7 @@ verification procedure are defined by the [format specification](spec/format.md)
 synck repository verify ./copy
 synck repository log ./copy
 synck item list --path ./copy
+synck item list --records --path ./copy
 synck item show ITEM_ID --path ./copy
 synck item export FILE_ID ./report.pdf --path ./copy
 ```

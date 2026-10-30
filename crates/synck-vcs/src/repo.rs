@@ -14,11 +14,11 @@ use crate::invariants::{
 use crate::naming::{NameError, NameErrorKind};
 use crate::sequencer::Sequencer;
 use crate::storage::{SealedCommitInsert, Storage, StorageTxn};
-use crate::transition::{ItemState, apply_event as apply_item_event};
+use crate::transition::{ItemState, TransitionError, apply_event as apply_item_event};
 use crate::types::{
     AcceptedCommit, COMMIT_EVENT_FAMILY_ITEM, COMMIT_EVENT_FAMILY_REF,
     COMMIT_FORMAT_VERSION, CommitEventRow, CommitPk, CommitProposal, CommitRow,
-    CreatedItemInfo, EventInsertRow, EventProposal, EventRow,
+    CreateItem, CreatedItemInfo, EventInsertRow, EventProposal, EventRow,
     FederatedDomainProposal, FederatedProposal,
     IngestedCommit, IngestedDomainCommit, ItemCursor, ItemId, ItemRow, LifecycleState,
     RefEventInsertRow, RefEventProposal, RepoEventCursor, RepoId, SequencingMode, Sha256Digest,
@@ -27,7 +27,7 @@ use crate::types::{
 use crate::types::{
     CommitId, canonical_commit_bytes_for_hash, canonical_event_proposal_bytes,
     canonical_ref_event_proposal_bytes, compute_commit_id, compute_sha256_digest_bytes, now,
-    sha256_prefixed_hex_from_digest_bytes, validate_import_job_id,
+    sha256_prefixed_hex_from_digest_bytes,
 };
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -95,7 +95,7 @@ async fn persist_items_with_live_parking<T: StorageTxn + ?Sized>(
             .get(&item_id)
             .expect("park target must exist in items map")
             .clone();
-        parked.name_key = parked_key;
+        parked.name_key = Some(parked_key);
         if let Err(err) = txn.put_item(&parked).await {
             return Err(CoreError::StorageError(err));
         }
@@ -170,7 +170,6 @@ enum AppendProfile<'a> {
     Generic,
     FileFolder {
         subtree_guards: &'a [SubtreeClosureGuard],
-        import_job_id: Option<&'a str>,
     },
 }
 
@@ -191,6 +190,15 @@ pub struct Repo {
 
 impl Repo {
     /// Construct a new repository handle.
+    fn require_message_form(&self, message: Option<&str>) -> Result<(), CoreError> {
+        if self.config.encrypted && message.is_some() {
+            return Err(CoreError::InvalidProposal(
+                "a commit in an encrypted repository has no message".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
     pub fn new(storage: Storage, config: CoreConfig) -> Self {
         Self {
             storage,
@@ -630,7 +638,6 @@ impl Repo {
             guards,
             AppendProfile::FileFolder {
                 subtree_guards,
-                import_job_id: None,
             },
         )
         .await
@@ -653,7 +660,6 @@ impl Repo {
             guards,
             AppendProfile::FileFolder {
                 subtree_guards,
-                import_job_id: None,
             },
         )
         .await
@@ -681,7 +687,6 @@ impl Repo {
             guards,
             AppendProfile::FileFolder {
                 subtree_guards,
-                import_job_id: None,
             },
             OperationKind::Append,
         )
@@ -820,34 +825,6 @@ impl Repo {
             event_item_seqs: Vec::new(),
             ref_event_seqs,
         }))
-    }
-
-    /// Append one checked FILE/FOLDER commit belonging to a bulk import job.
-    ///
-    /// This is the ordinary checked append transaction with a required
-    /// hash-bound UUIDv4 provenance field. No validation or limit is relaxed.
-    pub async fn append_file_folder_import_checked(
-        &self,
-        repo_id: RepoId,
-        proposal: CommitProposal,
-        ref_events: Vec<RefEventProposal>,
-        guards: &[(ItemId, i64)],
-        subtree_guards: &[SubtreeClosureGuard],
-        import_job_id: String,
-    ) -> Result<AcceptedCommit, CoreError> {
-        validate_import_job_id(&import_job_id)?;
-        self.append_with_base_seq_mode(
-            repo_id,
-            proposal,
-            ref_events,
-            AppendBaseSeqMode::RequirePresent,
-            guards,
-            AppendProfile::FileFolder {
-                subtree_guards,
-                import_job_id: Some(&import_job_id),
-            },
-        )
-        .await
     }
 
     /// Append a local commit proposal without requiring caller-supplied `base_seq` for existing items.
@@ -1062,12 +1039,9 @@ impl Repo {
     ) -> Result<AppendApplied, CoreError> {
         let mut proposal = proposal;
         let ref_events = ref_events;
-        let (subtree_guards, check_file_folder_parent_closure, import_job_id) = match profile {
-            AppendProfile::Generic => (&[][..], false, None),
-            AppendProfile::FileFolder {
-                subtree_guards,
-                import_job_id,
-            } => (subtree_guards, true, import_job_id),
+        let (subtree_guards, check_file_folder_parent_closure) = match profile {
+            AppendProfile::Generic => (&[][..], false),
+            AppendProfile::FileFolder { subtree_guards } => (subtree_guards, true),
         };
         let repo_seq: Option<i64> = None;
         let operation_id = proposal
@@ -1086,6 +1060,7 @@ impl Repo {
             proposal.message.as_deref(),
             Some(&operation_id),
         )?;
+        self.require_message_form(proposal.message.as_deref())?;
 
         let combined_event_count = proposal
             .events
@@ -1128,6 +1103,7 @@ impl Repo {
                 ev.create_item.is_some()
                     || ev.set_parent.is_some()
                     || ev.set_name.is_some()
+                    || ev.set_link.is_some()
                     || ev.set_tombstoned.is_some()
                     || ev.set_in_trash.is_some()
                     || ev.set_is_federated.is_some()
@@ -1150,6 +1126,7 @@ impl Repo {
             if ev.create_item.is_some()
                 && (ev.set_parent.is_some()
                     || ev.set_name.is_some()
+                    || ev.set_link.is_some()
                     || ev.set_tombstoned.is_some()
                     || ev.set_in_trash.is_some()
                     || ev.set_is_federated.is_some()
@@ -1347,6 +1324,7 @@ impl Repo {
             if let Some(Some(parent)) = ev.set_parent.as_ref() {
                 lock_item_ids.insert(parent.clone());
             }
+            lock_item_ids.extend(link_target(ev).cloned());
         }
 
         // Read the current namespace parent for every existing rename or
@@ -1526,22 +1504,14 @@ impl Repo {
 
                 let ci = ev.create_item.as_ref().expect("checked above");
                 let state = ItemState::from_create(ci, self.config.default_sequencing_mode, None)
-                    .map_err(|e| map_name_error(&repo_id, Some(item_id), &ci.name, e))?;
-                let row = ItemRow {
-                    repo_id: repo_id.clone(),
-                    item_id: item_id.clone(),
-                    item_type: state.item_type,
-                    parent_folder_id: state.parent_folder_id,
-                    name: state.name,
-                    name_key: state.name_key,
-                    head_seq: 0,
-                    ref_head_seq: 0,
-                    lifecycle_state: state.lifecycle_state,
-                    created_at: commit_created_at,
-                    created_by: proposal.author_id.clone(),
-                    sequencing_mode: state.sequencing_mode,
-                    federation_stream_id: state.federation_stream_id,
-                };
+                    .map_err(|e| map_create_error(&repo_id, item_id, ci, e))?;
+                let row = new_item_row(
+                    &repo_id,
+                    item_id.clone(),
+                    state,
+                    commit_created_at,
+                    proposal.author_id.clone(),
+                );
 
                 tombstone.check(&ctx, item_id, &row, &proposal.events[idx..=idx])?;
                 mode_rule.check(&ctx, item_id, &row, &proposal.events[idx..=idx])?;
@@ -1703,14 +1673,7 @@ impl Repo {
             }
 
             let mut state = ItemState::from(&*row);
-            let transition = apply_item_event(&mut state, ev).map_err(|error| {
-                map_name_error(
-                    &repo_id,
-                    Some(item_id),
-                    ev.set_name.as_deref().unwrap_or(&state.name),
-                    error,
-                )
-            })?;
+            let transition = apply_item_event(&mut state, ev).map_err(|error| map_transition_error(&repo_id, item_id, ev, error))?;
             state.write_to(row);
             event_parent_after.push(transition.parent_folder_id_after);
             event_parent_before.push(transition.parent_folder_id_before);
@@ -1751,31 +1714,14 @@ impl Repo {
             }
         }
 
-        if needs_name_uniqueness {
-            // Enforce name uniqueness on the in-commit view using canonical name_key.
-            // This mirrors the database unique index over (repo_id, parent_folder_id, name_key)
-            // for live items (lifecycle_state = LIVE).
-            let mut seen: BTreeSet<(Option<ItemId>, String)> = BTreeSet::new();
-            for item in items.values() {
-                if !matches!(item.lifecycle_state, LifecycleState::Live) {
-                    continue;
-                }
-                let key = (item.parent_folder_id.clone(), item.name_key.clone());
-                if !seen.insert(key.clone()) {
-                    return Err(CoreError::NameConflict {
-                        repo_id: repo_id.clone(),
-                        parent_folder_id: key.0,
-                        name: item.name.clone(),
-                    });
-                }
-            }
-        }
+        check_final_items(&ctx, txn, &items, needs_name_uniqueness).await?;
 
         let can_use_head_only_item_updates = created_items.is_empty()
             && proposal.events.iter().all(|ev| {
                 ev.create_item.is_none()
                     && ev.set_parent.is_none()
                     && ev.set_name.is_none()
+                    && ev.set_link.is_none()
                     && ev.set_tombstoned.is_none()
                     && ev.set_in_trash.is_none()
                     && ev.set_is_federated.is_none()
@@ -1868,7 +1814,6 @@ impl Repo {
             &proposal.committer_id,
             proposal.occurred_at,
             proposal.message.as_deref(),
-            import_job_id,
             combined_event_count,
             &events_digest,
         )?;
@@ -1881,7 +1826,6 @@ impl Repo {
                 repo_seq,
                 Some(operation_id.as_str()),
                 format_version,
-                import_job_id,
                 &proposal.author_id,
                 &proposal.committer_id,
                 proposal.message.as_deref(),
@@ -2023,6 +1967,7 @@ impl Repo {
             proposal.message.as_deref(),
             None,
         )?;
+        self.require_message_form(proposal.message.as_deref())?;
         if proposal.events.is_empty() {
             return Err(CoreError::EmptyCommit);
         }
@@ -2054,6 +1999,7 @@ impl Repo {
             if ev.create_item.is_some()
                 && (ev.set_parent.is_some()
                     || ev.set_name.is_some()
+                    || ev.set_link.is_some()
                     || ev.set_tombstoned.is_some()
                     || ev.set_in_trash.is_some())
             {
@@ -2221,7 +2167,7 @@ impl Repo {
                     SequencingMode::Federated,
                     Some(proposal.federation_stream_id.clone()),
                 )
-                .map_err(|e| map_name_error(&repo_id, Some(&item_id), &ci.name, e))?;
+                .map_err(|e| map_create_error(&repo_id, &item_id, ci, e))?;
 
                 let mut lock_item_ids: BTreeSet<ItemId> = BTreeSet::new();
                 lock_item_ids.insert(item_id.clone());
@@ -2232,6 +2178,7 @@ impl Repo {
                     if let Some(Some(parent)) = ev.set_parent.as_ref() {
                         lock_item_ids.insert(parent.clone());
                     }
+                    lock_item_ids.extend(link_target(ev).cloned());
                 }
 
                 let mut lock_keys: Vec<i64> = lock_item_ids
@@ -2244,21 +2191,13 @@ impl Repo {
                 item_lock_ms = item_lock_start.elapsed().as_millis() as u64;
                 commit_created_at = txn.acceptance_timestamp(&repo_id).await?;
 
-                ItemRow {
-                    repo_id: repo_id.clone(),
+                new_item_row(
+                    &repo_id,
                     item_id,
-                    item_type: state.item_type,
-                    parent_folder_id: state.parent_folder_id,
-                    name: state.name,
-                    name_key: state.name_key,
-                    head_seq: 0,
-                    ref_head_seq: 0,
-                    lifecycle_state: state.lifecycle_state,
-                    created_at: commit_created_at,
-                    created_by: proposal.author_id.clone(),
-                    sequencing_mode: state.sequencing_mode,
-                    federation_stream_id: state.federation_stream_id,
-                }
+                    state,
+                    commit_created_at,
+                    proposal.author_id.clone(),
+                )
             };
 
             let item_id = item_row.item_id.clone();
@@ -2359,6 +2298,7 @@ impl Repo {
                     ev.create_item.is_none()
                         && ev.set_parent.is_none()
                         && ev.set_name.is_none()
+                        && ev.set_link.is_none()
                         && ev.set_tombstoned.is_none()
                         && ev.set_in_trash.is_none()
                         && ev.set_is_federated.is_none()
@@ -2376,14 +2316,7 @@ impl Repo {
                 }
 
                 let mut state = ItemState::from(&item_row);
-                let transition = apply_item_event(&mut state, ev).map_err(|error| {
-                    map_name_error(
-                        &repo_id,
-                        Some(&item_id),
-                        ev.set_name.as_deref().unwrap_or(&state.name),
-                        error,
-                    )
-                })?;
+                let transition = apply_item_event(&mut state, ev).map_err(|error| map_transition_error(&repo_id, &item_id, ev, error))?;
                 state.write_to(&mut item_row);
                 event_parent_before.push(transition.parent_folder_id_before);
                 event_parent_after.push(transition.parent_folder_id_after);
@@ -2397,22 +2330,7 @@ impl Repo {
                 check_folder_acyclicity(&ctx, txn, &items_map).await?;
             }
 
-            if needs_name_uniqueness {
-                let mut seen: BTreeSet<(Option<ItemId>, String)> = BTreeSet::new();
-                for item in items_map.values() {
-                    if !matches!(item.lifecycle_state, LifecycleState::Live) {
-                        continue;
-                    }
-                    let key = (item.parent_folder_id.clone(), item.name_key.clone());
-                    if !seen.insert(key.clone()) {
-                        return Err(CoreError::NameConflict {
-                            repo_id: repo_id.clone(),
-                            parent_folder_id: key.0,
-                            name: item.name.clone(),
-                        });
-                    }
-                }
-            }
+            check_final_items(&ctx, txn, &items_map, needs_name_uniqueness).await?;
 
             // Assign item_seq for each event starting from proposal.item_seq.
             let build_rows_start = Instant::now();
@@ -2462,7 +2380,7 @@ impl Repo {
             ))
             .expect("internal sha256 digest construction must be valid");
 
-            let canonical_commit_bytes = canonical_commit_bytes_for_hash(&local_proposal.author_id, &local_proposal.committer_id, local_proposal.occurred_at, local_proposal.message.as_deref(), None, local_proposal.events.len(), &events_digest)?;
+            let canonical_commit_bytes = canonical_commit_bytes_for_hash(&local_proposal.author_id, &local_proposal.committer_id, local_proposal.occurred_at, local_proposal.message.as_deref(), local_proposal.events.len(), &events_digest)?;
             let commit_id = compute_commit_id(&canonical_commit_bytes);
             build_rows_ms = build_rows_start.elapsed().as_millis() as u64;
 
@@ -2474,7 +2392,6 @@ impl Repo {
                     repo_seq,
                     None,
                     COMMIT_FORMAT_VERSION,
-                    None,
                     &local_proposal.author_id,
                     &local_proposal.committer_id,
                     local_proposal.message.as_deref(),
@@ -2506,7 +2423,6 @@ impl Repo {
                 commit_id: commit_id.clone(),
                 repo_seq,
                 format_version: COMMIT_FORMAT_VERSION,
-                import_job_id: None,
                 author_id: proposal.author_id.clone(),
                 committer_id: proposal.committer_id.clone(),
                 message: proposal.message.clone(),
@@ -2524,7 +2440,7 @@ impl Repo {
                 item_row.head_seq = seq - 1;
 
                 let parent_folder_id = item_row.parent_folder_id.clone();
-                let name = item_row.name.clone();
+                let name = item_row.name.clone().unwrap_or_default();
                 if let Err(err) = txn.put_item(&item_row).await {
                     match err {
                         StorageError::UniqueViolation { detail, constraint } => {
@@ -2659,6 +2575,7 @@ impl Repo {
                 proposal.message.as_deref(),
                 None,
             )?;
+            self.require_message_form(proposal.message.as_deref())?;
         }
         let mut provided_batch_item_id: Option<ItemId> = None;
         for proposal in &proposals {
@@ -2802,7 +2719,6 @@ impl Repo {
                     &proposal.committer_id,
                     proposal.occurred_at,
                     proposal.message.as_deref(),
-                    None,
                     proposal.events.len(),
                     &events_digest,
                 )?;
@@ -2814,7 +2730,6 @@ impl Repo {
                     repo_seq,
                     operation_id: None,
                     format_version: COMMIT_FORMAT_VERSION,
-                    import_job_id: None,
                     author_id: proposal.author_id.clone(),
                     committer_id: proposal.committer_id.clone(),
                     message: proposal.message.clone(),
@@ -2850,7 +2765,6 @@ impl Repo {
                                     commit.repo_seq,
                                     commit.operation_id.as_deref(),
                                     commit.format_version,
-                                    commit.import_job_id.as_deref(),
                                     &commit.author_id,
                                     &commit.committer_id,
                                     commit.message.as_deref(),
@@ -2994,6 +2908,7 @@ impl Repo {
             proposal.message.as_deref(),
             Some(&operation_id),
         )?;
+        self.require_message_form(proposal.message.as_deref())?;
         if proposal.domain_seq < 1 {
             return Err(CoreError::InvalidProposal(
                 "domain_seq must be >= 1".to_string(),
@@ -3214,22 +3129,14 @@ impl Repo {
                         .expect("created item must have a corresponding event");
                     let ci = ev.create_item.as_ref().expect("checked above");
                     let state = ItemState::from_create(ci, SequencingMode::Local, None)
-                        .map_err(|e| map_name_error(&repo_id, Some(item_id), &ci.name, e))?;
-                    let row = ItemRow {
-                        repo_id: repo_id.clone(),
-                        item_id: item_id.clone(),
-                        item_type: state.item_type,
-                        parent_folder_id: state.parent_folder_id,
-                        name: state.name,
-                        name_key: state.name_key,
-                        head_seq: 0,
-                        ref_head_seq: 0,
-                        lifecycle_state: state.lifecycle_state,
-                        created_at: commit_created_at,
-                        created_by: local_proposal.author_id.clone(),
-                        sequencing_mode: state.sequencing_mode,
-                        federation_stream_id: state.federation_stream_id,
-                    };
+                        .map_err(|e| map_create_error(&repo_id, item_id, ci, e))?;
+                    let row = new_item_row(
+                        &repo_id,
+                        item_id.clone(),
+                        state,
+                        commit_created_at,
+                        local_proposal.author_id.clone(),
+                    );
                     tombstone.check(&ctx, item_id, &row, &local_proposal.events[idx..=idx])?;
                     mode_rule.check(&ctx, item_id, &row, &local_proposal.events[idx..=idx])?;
                     items.insert(item_id.clone(), row);
@@ -3318,6 +3225,7 @@ impl Repo {
                 ev.create_item.is_some()
                     || ev.set_parent.is_some()
                     || ev.set_name.is_some()
+                    || ev.set_link.is_some()
                     || ev.set_tombstoned.is_some()
                     || ev.set_in_trash.is_some()
             });
@@ -3334,14 +3242,7 @@ impl Repo {
                 }
 
                 let mut state = ItemState::from(&*row);
-                let transition = apply_item_event(&mut state, ev).map_err(|error| {
-                    map_name_error(
-                        &repo_id,
-                        Some(item_id),
-                        ev.set_name.as_deref().unwrap_or(&state.name),
-                        error,
-                    )
-                })?;
+                let transition = apply_item_event(&mut state, ev).map_err(|error| map_transition_error(&repo_id, item_id, ev, error))?;
                 state.write_to(row);
                 event_parent_before.push(transition.parent_folder_id_before);
                 event_parent_after.push(transition.parent_folder_id_after);
@@ -3352,22 +3253,7 @@ impl Repo {
                 check_folder_acyclicity(&ctx, txn, &items).await?;
             }
 
-            if needs_name_uniqueness {
-                let mut seen: BTreeSet<(Option<ItemId>, String)> = BTreeSet::new();
-                for item in items.values() {
-                    if !matches!(item.lifecycle_state, LifecycleState::Live) {
-                        continue;
-                    }
-                    let key = (item.parent_folder_id.clone(), item.name_key.clone());
-                    if !seen.insert(key.clone()) {
-                        return Err(CoreError::NameConflict {
-                            repo_id: repo_id.clone(),
-                            parent_folder_id: key.0,
-                            name: item.name.clone(),
-                        });
-                    }
-                }
-            }
+            check_final_items(&ctx, txn, &items, needs_name_uniqueness).await?;
 
             let item_seqs = Sequencer::assign_local_item_seqs(&mut items, &event_item_ids);
             let mut next_ref_seqs = ref_bases.clone();
@@ -3473,7 +3359,6 @@ impl Repo {
                 &local_proposal.committer_id,
                 local_proposal.occurred_at,
                 local_proposal.message.as_deref(),
-                None,
                 combined_event_count,
                 &events_digest,
             )?;
@@ -3486,7 +3371,6 @@ impl Repo {
                     repo_seq,
                     local_proposal.operation_id.as_deref(),
                     format_version,
-                    None,
                     &local_proposal.author_id,
                     &local_proposal.committer_id,
                     local_proposal.message.as_deref(),
@@ -3571,6 +3455,164 @@ fn map_name_error(
             reason: NameError { kind: other }.to_string(),
         },
     }
+}
+
+fn map_create_error(
+    repo_id: &RepoId,
+    item_id: &ItemId,
+    create: &CreateItem,
+    err: NameError,
+) -> CoreError {
+    map_name_error(repo_id, Some(item_id), create.name.as_deref().unwrap_or_default(), err)
+}
+
+fn map_transition_error(
+    repo_id: &RepoId,
+    item_id: &ItemId,
+    event: &EventProposal,
+    err: TransitionError,
+) -> CoreError {
+    match err {
+        TransitionError::Name(err) => map_name_error(
+            repo_id,
+            Some(item_id),
+            event.set_name.as_deref().unwrap_or_default(),
+            err,
+        ),
+        TransitionError::Invalid(detail) => CoreError::InvalidProposal(detail.to_string()),
+    }
+}
+
+fn new_item_row(
+    repo_id: &RepoId,
+    item_id: ItemId,
+    state: ItemState,
+    created_at: Timestamp,
+    created_by: String,
+) -> ItemRow {
+    ItemRow {
+        repo_id: repo_id.clone(),
+        item_id,
+        item_type: state.item_type,
+        parent_folder_id: state.parent_folder_id,
+        name: state.name,
+        name_key: state.name_key,
+        record_key: state.record_key,
+        link_folder_id: state.link_folder_id,
+        head_seq: 0,
+        ref_head_seq: 0,
+        lifecycle_state: state.lifecycle_state,
+        created_at,
+        created_by,
+        sequencing_mode: state.sequencing_mode,
+        federation_stream_id: state.federation_stream_id,
+    }
+}
+
+fn link_target(event: &EventProposal) -> Option<&ItemId> {
+    event
+        .create_item
+        .as_ref()
+        .and_then(|create| create.link.as_ref())
+        .or_else(|| event.set_link.as_ref().and_then(Option::as_ref))
+}
+
+/// The rules on a commit's final state, shared by every write path.
+///
+/// `items` holds every item the commit touched, after its events. Other items
+/// are read from storage. A unique index also holds record keys, so this checks
+/// them only within the commit.
+async fn check_final_items<T: StorageTxn + ?Sized>(
+    ctx: &InvariantContext<'_>,
+    txn: &mut T,
+    items: &HashMap<ItemId, ItemRow>,
+    check_names: bool,
+) -> Result<(), CoreError> {
+    let repo_id = ctx.repo_id;
+    let invalid = |detail: &str| Err(CoreError::InvalidProposal(detail.to_string()));
+    let live = || {
+        items
+            .values()
+            .filter(|item| matches!(item.lifecycle_state, LifecycleState::Live))
+    };
+
+    if check_names {
+        let mut seen = BTreeSet::new();
+        for item in live() {
+            let Some(name_key) = &item.name_key else {
+                continue;
+            };
+            if !seen.insert((&item.parent_folder_id, name_key)) {
+                return Err(CoreError::NameConflict {
+                    repo_id: repo_id.clone(),
+                    parent_folder_id: item.parent_folder_id.clone(),
+                    name: item.name.clone().unwrap_or_default(),
+                });
+            }
+        }
+    }
+
+    let mut keys = BTreeSet::new();
+    for item in live() {
+        if let Some(key) = &item.record_key
+            && !keys.insert((&item.item_type, key))
+        {
+            return Err(CoreError::RecordKeyConflict {
+                repo_id: repo_id.clone(),
+                item_type: item.item_type.clone(),
+                key: key.clone(),
+            });
+        }
+    }
+
+    for item in items.values() {
+        let Some(target) = &item.link_folder_id else {
+            continue;
+        };
+        if matches!(item.lifecycle_state, LifecycleState::Tombstoned) {
+            continue;
+        }
+        if matches!(item.sequencing_mode, SequencingMode::Federated) {
+            return invalid("a federated item has no link");
+        }
+        let folder = match items.get(target) {
+            Some(folder) => folder.clone(),
+            None => match txn.get_item(repo_id, target).await? {
+                Some(folder) => folder,
+                None => return invalid("link target does not exist"),
+            },
+        };
+        if folder.item_type != "FOLDER" {
+            return invalid("link target is not a FOLDER");
+        }
+        match folder.lifecycle_state {
+            LifecycleState::Live => {}
+            LifecycleState::Tombstoned => return invalid("link target is tombstoned"),
+            LifecycleState::Trash => {
+                let before = txn.get_item(repo_id, &item.item_id).await?;
+                if before.is_none_or(|row| row.link_folder_id.as_ref() != Some(target)) {
+                    return invalid("link set to a folder that is not live");
+                }
+            }
+        }
+    }
+
+    for folder in items.values() {
+        if folder.item_type != "FOLDER"
+            || !matches!(folder.lifecycle_state, LifecycleState::Tombstoned)
+        {
+            continue;
+        }
+        for row in txn.list_records_linked_to(repo_id, &folder.item_id).await? {
+            let record = items.get(&row.item_id).unwrap_or(&row);
+            if record.link_folder_id.as_ref() == Some(&folder.item_id)
+                && !matches!(record.lifecycle_state, LifecycleState::Tombstoned)
+            {
+                return invalid("tombstoning a folder requires clearing its links");
+            }
+        }
+    }
+    Ok(())
 }
 
 fn item_type_prefix_from_event_type(event_type: &str) -> Option<&str> {
@@ -3660,7 +3702,7 @@ async fn put_items_with_conflict_mapping<T: StorageTxn + ?Sized>(
     if rows.len() < ITEM_UPSERT_BATCH_MIN_ROWS {
         for row in rows {
             let parent_folder_id = row.parent_folder_id.clone();
-            let name = row.name.clone();
+            let name = row.name.clone().unwrap_or_default();
             if let Err(err) = txn.put_item(row).await {
                 match err {
                     StorageError::UniqueViolation { detail, constraint } => {
@@ -3688,7 +3730,7 @@ async fn put_items_with_conflict_mapping<T: StorageTxn + ?Sized>(
         Err(StorageError::UniqueViolation { detail, constraint }) => {
             for row in rows {
                 let parent_folder_id = row.parent_folder_id.clone();
-                let name = row.name.clone();
+                let name = row.name.clone().unwrap_or_default();
                 if let Err(err) = txn.put_item(row).await {
                     match err {
                         StorageError::UniqueViolation { detail, constraint } => {
@@ -3736,6 +3778,16 @@ async fn map_item_unique_violation<T: StorageTxn + ?Sized>(
             Ok(_) => {}
             Err(err) => return Err(CoreError::StorageError(err)),
         }
+    }
+
+    if matches!(row.lifecycle_state, LifecycleState::Live)
+        && let Some(key) = &row.record_key
+    {
+        return Ok(CoreError::RecordKeyConflict {
+            repo_id: repo_id.clone(),
+            item_type: row.item_type.clone(),
+            key: key.clone(),
+        });
     }
 
     if matches!(row.lifecycle_state, LifecycleState::Live) {

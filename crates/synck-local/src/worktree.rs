@@ -248,6 +248,8 @@ impl Repository {
             }
         }
 
+        // Records have no path.
+        items.retain(|item| item.name.is_some());
         if self.checkout_paths().is_some() {
             items.retain(|item| matches!(item.item_type.as_str(), "FILE" | "FOLDER"));
             // Files attached beneath non-folder application owners have no
@@ -1725,11 +1727,14 @@ fn build_item_path(
             item.item_id
         )));
     }
-    compute_name_key(&item.name).map_err(|error| {
-        LocalError::Integrity(format!("invalid stored item name {:?}: {error}", item.name))
+    let name = item.name.as_deref().ok_or_else(|| {
+        LocalError::Integrity(format!("tree item {} has no name", item.item_id))
+    })?;
+    compute_name_key(name).map_err(|error| {
+        LocalError::Integrity(format!("invalid stored item name {name:?}: {error}"))
     })?;
     let path = match item.parent_folder_id.as_ref() {
-        None => item.name.clone(),
+        None => name.to_string(),
         Some(parent_id) => {
             let parent = by_id.get(parent_id).ok_or_else(|| {
                 LocalError::Integrity(format!(
@@ -1746,7 +1751,7 @@ fn build_item_path(
             format!(
                 "{}/{}",
                 build_item_path(parent, by_id, paths, visiting)?,
-                item.name
+                name
             )
         }
     };

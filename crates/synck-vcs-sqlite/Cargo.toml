@@ -20,6 +20,7 @@ hex.workspace = true
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
 
 [dev-dependencies]
+sha2.workspace = true
 tokio.workspace = true
 tempfile = "3"
 

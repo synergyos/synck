@@ -24,7 +24,6 @@ const KNOWN_FILE_OMISSIONS: &[&str] = &[
 const KNOWN_FOLDER_OMISSIONS: &[&str] = &[
     "FOLDER::SET_METADATA",
     "FOLDER::FEDERATE",
-    "FOLDER::WORKFLOW_RUNTIME",
 ];
 const KNOWN_ITEM_OMISSIONS: &[&str] = &[
     "ITEM::DATA_LINK::PUT",
@@ -443,7 +442,6 @@ fn parse_and_verify_events<'a>(
         &commit.committer_id,
         commit.occurred_at,
         commit.message.as_deref(),
-        commit.import_job_id.as_deref(),
         events.len() + ref_events.len(),
         &commit.events_digest,
     )
@@ -618,7 +616,9 @@ fn classify_profile_event(
     {
         Some("CREATE") => {
             require_create_shape(proposal, kind)?;
-            normalized.set_metadata = None;
+            if kind == FileFolderKind::Folder {
+                normalized.set_metadata = None;
+            }
         }
         Some("SET_PARENT") => require_only(proposal, Modifier::Parent)?,
         Some("SET_NAME") => {
@@ -663,7 +663,6 @@ fn require_create_shape(
             .create_item
             .as_ref()
             .is_some_and(|create| create.item_type == kind.as_str())
-        && proposal.set_content.is_none()
         && proposal.set_parent.is_none()
         && proposal.set_name.is_none()
         && proposal.set_tombstoned.is_none()
@@ -671,15 +670,20 @@ fn require_create_shape(
         && proposal.set_is_federated.is_none()
         && proposal.set_federation_stream_id.is_none();
     require_shape(valid, "malformed CREATE event")?;
-    compute_name_key(&proposal.create_item.as_ref().expect("shape checked").name).map_err(
-        |failure| {
-            error(
-                SemanticErrorCode::MalformedProfileEvent,
-                format!("invalid profile create name: {failure}"),
-            )
-        },
-    )?;
-    Ok(())
+    let name = proposal.create_item.as_ref().and_then(|create| create.name.as_deref());
+    require_shape(name.is_some(), "malformed CREATE event")?;
+    compute_name_key(name.unwrap_or_default()).map_err(|failure| {
+        error(
+            SemanticErrorCode::MalformedProfileEvent,
+            format!("invalid profile create name: {failure}"),
+        )
+    })?;
+    match kind {
+        FileFolderKind::File => validate_file_bytes(proposal, false),
+        FileFolderKind::Folder => {
+            require_shape(proposal.set_content.is_none(), "malformed CREATE event")
+        }
+    }
 }
 
 fn require_only(proposal: &EventProposal, modifier: Modifier) -> Result<(), SemanticError> {
@@ -706,9 +710,16 @@ fn validate_content_event(proposal: &EventProposal) -> Result<(), SemanticError>
         && proposal.set_tombstoned.is_none()
         && proposal.set_in_trash.is_none()
         && proposal.set_is_federated.is_none()
-        && proposal.set_federation_stream_id.is_none()
-        && proposal.set_content.as_ref().is_some_and(|content| content.only("bytes").is_some());
+        && proposal.set_federation_stream_id.is_none();
     require_shape(valid_base, "malformed FILE::SET_CONTENT event")?;
+    validate_file_bytes(proposal, true)
+}
+
+/// `FILE::SET_CONTENT` metadata has a closed key set. `FILE::CREATE` does not.
+fn validate_file_bytes(proposal: &EventProposal, closed_keys: bool) -> Result<(), SemanticError> {
+    let has_bytes =
+        proposal.set_content.as_ref().is_some_and(|content| content.only("bytes").is_some());
+    require_shape(has_bytes, "FILE content event lacks exactly its bytes")?;
     let blob_id = proposal
         .set_content
         .as_ref()
@@ -727,10 +738,10 @@ fn validate_content_event(proposal: &EventProposal) -> Result<(), SemanticError>
         .ok_or_else(|| {
             error(
                 SemanticErrorCode::MalformedProfileEvent,
-                "FILE::SET_CONTENT metadata is missing",
+                "FILE content metadata is missing",
             )
         })?;
-    if metadata.keys().any(|key| {
+    if closed_keys && metadata.keys().any(|key| {
         !matches!(
             key.as_str(),
             "content" | "upload_intent_id" | "revision_origin" | "provenance"
@@ -751,7 +762,7 @@ fn validate_content_event(proposal: &EventProposal) -> Result<(), SemanticError>
         .ok_or_else(|| {
             error(
                 SemanticErrorCode::MalformedProfileEvent,
-                "FILE::SET_CONTENT has invalid content size metadata",
+                "FILE content event has invalid size metadata",
             )
         })?;
     if let Some(upload_intent_id) = metadata.get("upload_intent_id") {
@@ -982,7 +993,6 @@ mod tests {
             &author,
             None,
             None,
-            None,
             1,
             &events_digest,
         )
@@ -993,7 +1003,6 @@ mod tests {
             commit_id: commit_id.clone(),
             repo_seq: Some(1),
             format_version: COMMIT_FORMAT_VERSION,
-            import_job_id: None,
             author_id: author.clone(),
             committer_id: author,
             message: None,

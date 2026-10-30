@@ -33,11 +33,14 @@
         "name": "doc.txt"
       },
       "event_type": "FILE::CREATE",
-      "item_id": "01890c6c-1111-7777-8888-aaaaaaaaaaaa"
+      "item_id": "01890c6c-1111-7777-8888-aaaaaaaaaaaa",
+      "set_content": {
+        "bytes": "sha256:2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a"
+      }
     },
-    "canonical_event": "{\"create_item\":{\"item_type\":\"FILE\",\"name\":\"doc.txt\"},\"event_type\":\"FILE::CREATE\",\"item_id\":\"01890c6c-1111-7777-8888-aaaaaaaaaaaa\"}",
-    "event_digest": "sha256:bf5c158bdd12cb9286f5d6f59d440b58df632430f17dbd572b5b10e6e36d2d36",
-    "events_digest": "sha256:abf0c8409216194dd47ed91ac64a6f7d8c426cd7411da1e4693ec4c3542edbdb",
+    "canonical_event": "{\"create_item\":{\"item_type\":\"FILE\",\"name\":\"doc.txt\"},\"event_type\":\"FILE::CREATE\",\"item_id\":\"01890c6c-1111-7777-8888-aaaaaaaaaaaa\",\"set_content\":{\"bytes\":\"sha256:2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a\"}}",
+    "event_digest": "sha256:24b5348969d40171f06e37fbd4c46f83a7a201a00185b3558b97c2053fa502a2",
+    "events_digest": "sha256:3736f5035be1ce25f3158d383819b62f5c1af2e95aee3e1592505b2e1013879b",
     "commit": {
       "object_type": "vcs_commit",
       "format_version": 6,
@@ -46,10 +49,10 @@
       "occurred_at": null,
       "message": "first",
       "event_count": 1,
-      "events_digest": "sha256:abf0c8409216194dd47ed91ac64a6f7d8c426cd7411da1e4693ec4c3542edbdb"
+      "events_digest": "sha256:3736f5035be1ce25f3158d383819b62f5c1af2e95aee3e1592505b2e1013879b"
     },
-    "canonical_commit": "{\"author_id\":\"author-1\",\"committer_id\":\"author-1\",\"event_count\":1,\"events_digest\":\"sha256:abf0c8409216194dd47ed91ac64a6f7d8c426cd7411da1e4693ec4c3542edbdb\",\"format_version\":6,\"message\":\"first\",\"object_type\":\"vcs_commit\",\"occurred_at\":null}",
-    "commit_id": "sha256:965762afd83b5e3bafdcbd6c909e7cfce8ab0785f756cc80030a15b7e2c1bb0e"
+    "canonical_commit": "{\"author_id\":\"author-1\",\"committer_id\":\"author-1\",\"event_count\":1,\"events_digest\":\"sha256:3736f5035be1ce25f3158d383819b62f5c1af2e95aee3e1592505b2e1013879b\",\"format_version\":6,\"message\":\"first\",\"object_type\":\"vcs_commit\",\"occurred_at\":null}",
+    "commit_id": "sha256:02a91b7fbff8cf3043a3f06a348a011a91dd299ffeccb477f623c42b387f7e2a"
   },
   {
     "name": "canonical_vector_update_text",

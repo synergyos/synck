@@ -91,8 +91,6 @@ struct MonitorConfig {
     author: String,
     #[serde(default)]
     authority: Option<crate::portable::Authority>,
-    #[serde(default)]
-    checkout: Option<crate::checkout::Checkout>,
 }
 
 #[derive(Debug)]
@@ -444,7 +442,7 @@ pub fn run_monitor_server(root: &Path, expected_repo_id: &str) -> Result<()> {
     let config_file = crate::repository::open_regular_file_nofollow(&config_path)?;
     let config: MonitorConfig = serde_json::from_reader(config_file)?;
     let complete_checkout = config.format_version == crate::portable::FORMAT_VERSION
-        && config.checkout.is_some()
+        && crate::checkout::read_checkout(&metadata_path)?.is_some()
         && config
             .authority
             .is_some_and(|authority| authority != crate::portable::Authority::Follower);

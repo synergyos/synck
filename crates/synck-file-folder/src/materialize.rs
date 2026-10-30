@@ -17,7 +17,7 @@ use crate::model::{
 };
 use crate::operation::{compute_operation_id, normalize_intents};
 use crate::project::validate_projected_proposal;
-use crate::{MAX_EVENT_PAYLOAD_BYTES, MAX_MESSAGE_BYTES, WORKTREE_CONTROL_NAME_KEY};
+use crate::{MAX_EVENT_PAYLOAD_BYTES, MAX_MESSAGE_BYTES};
 
 #[derive(Clone, Debug)]
 pub struct MaterializedProposal {
@@ -134,8 +134,9 @@ pub fn validate_and_materialize_with_content_revisions(
                 record_blob(&mut blobs_by_id, content)?;
                 insert_created_final(&mut final_items, item_id, FileFolderKind::File, location)?;
                 exposed_items.insert(item_id.clone());
-                events.push(create_event(item_id, FileFolderKind::File, location));
-                events.push(content_event(item_id, None, content)?);
+                let mut event = create_event(item_id, FileFolderKind::File, location);
+                set_file_content(&mut event, content)?;
+                events.push(event);
             }
             Intent::UpdateFolder {
                 item_id,
@@ -186,7 +187,7 @@ pub fn validate_and_materialize_with_content_revisions(
                     record_blob(&mut blobs_by_id, content)?;
                     if item.content.as_ref() != Some(content) || content_revisions.contains(item_id)
                     {
-                        events.push(content_event(item_id, Some(*base_seq), content)?);
+                        events.push(content_event(item_id, *base_seq, content)?);
                         changed = true;
                     }
                 }
@@ -874,12 +875,6 @@ fn validate_live_path(
                 "final live path contains a non-live ancestor",
             ));
         }
-        if item.name_key == WORKTREE_CONTROL_NAME_KEY {
-            return Err(error(
-                SemanticErrorCode::ReservedWorktreePath,
-                "operation exposes the reserved worktree component",
-            ));
-        }
         states.insert(current.clone(), PathState::Visiting);
         path.push(current.clone());
         match &item.parent_item_id {
@@ -947,11 +942,11 @@ fn validate_event_limits(events: &[EventProposal]) -> Result<(), SemanticError> 
 
 fn create_event(item_id: &ItemId, kind: FileFolderKind, location: &Location) -> EventProposal {
     let mut proposal = base_event(item_id, kind, "CREATE", None);
-    proposal.create_item = Some(CreateItem {
-        item_type: kind.as_str().to_string(),
-        parent_folder_id: location.parent_item_id.clone(),
-        name: location.name.clone(),
-    });
+    proposal.create_item = Some(CreateItem::tree(
+        kind.as_str(),
+        location.parent_item_id.clone(),
+        location.name.clone(),
+    ));
     proposal
 }
 
@@ -977,11 +972,16 @@ fn set_name_event(
     proposal
 }
 
-fn content_event(item_id: &ItemId, base_seq: Option<i64>, content: &BlobRef) -> Result<EventProposal, SemanticError> {
-    let mut proposal = base_event(item_id, FileFolderKind::File, "SET_CONTENT", base_seq);
+fn content_event(item_id: &ItemId, base_seq: i64, content: &BlobRef) -> Result<EventProposal, SemanticError> {
+    let mut proposal = base_event(item_id, FileFolderKind::File, "SET_CONTENT", Some(base_seq));
+    set_file_content(&mut proposal, content)?;
+    Ok(proposal)
+}
+
+fn set_file_content(proposal: &mut EventProposal, content: &BlobRef) -> Result<(), SemanticError> {
     proposal.set_content = Some(EventContent::bytes(content.blob_id.clone()));
     proposal.set_metadata = Some(synck_vcs::metadata::MetadataRef::new(json!({"content": {"size": content.size}})).map_err(|e| error(SemanticErrorCode::InvalidContent, e.to_string()))?);
-    Ok(proposal)
+    Ok(())
 }
 
 fn lifecycle_event(
@@ -1014,6 +1014,7 @@ fn base_event(
         create_item: None,
         set_parent: None,
         set_name: None,
+        set_link: None,
         set_tombstoned: None,
         set_in_trash: None,
         set_is_federated: None,

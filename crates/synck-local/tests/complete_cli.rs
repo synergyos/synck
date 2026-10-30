@@ -202,16 +202,15 @@ async fn emails_chats_and_attachments_round_trip_with_identical_ids() {
 #[tokio::test]
 async fn garbage_collection_preserves_history_and_removes_unreachable_storage() {
     use synck_local::{StorageMode, portable::PortableRepository};
-    use synck_vcs::object::{Codec, Object};
+    use synck_vcs::object::plain_id;
     for mode in [StorageMode::WholeFile, StorageMode::Chunked] {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("repo");
         synck_local::portable::init_repository_with_mode(&root, "tester", mode)
             .await
             .unwrap();
-        let object = Object::new(Codec::Raw, b"unreachable bytes").unwrap();
-        let bytes = object.payload();
-        let digest = hex::decode(object.id().as_str().strip_prefix("sha256:").unwrap()).unwrap();
+        let bytes = b"unreachable bytes";
+        let digest = plain_id(bytes).as_bytes().to_vec();
         if mode == StorageMode::WholeFile {
             fs::write(
                 root.join(".synck/objects").join(hex::encode(&digest)),
@@ -541,7 +540,7 @@ fn an_edited_email_source_reports_how_to_keep_both_messages() {
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("an email named \"mail\" is already recorded"),
+        stderr.contains("an email is already recorded from this file"),
         "{stderr}"
     );
 
@@ -552,7 +551,7 @@ fn an_edited_email_source_reports_how_to_keep_both_messages() {
         run(root, &["status"]),
         "nothing to commit, working tree clean\n"
     );
-    let items = json(root, &["item", "list"]);
+    let items = json(root, &["item", "list", "--records"]);
     let emails = items["items"]
         .as_array()
         .unwrap()
@@ -630,7 +629,7 @@ async fn direct_file_writes_carry_attribution_base_checks_and_replay() {
             panic!("expected conflict, got {error}");
         };
         assert_eq!((blob_id.as_str(), *size), (first_id.as_str(), 5));
-        assert!(*head_seq >= 2);
+        assert!(*head_seq >= 1);
 
         let saved = repo
             .save_file_with(&id, &source, Some(&first_id), &options(2))
