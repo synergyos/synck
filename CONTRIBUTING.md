@@ -42,6 +42,24 @@ cargo test --locked -p synck-file-folder --test profile_v1
 cargo fmt -p synck-file-folder -- --check
 ```
 
+Two longer checks are worth running when a change touches what they cover:
+
+- A write path: the crash matrix kills a real `synck` at every filesystem
+  mutation, then checks that the repository verifies and the operation finishes.
+  It runs on macOS and Linux and takes minutes.
+
+  ```sh
+  cargo test --locked -p synck-local --test crash_points -- --ignored
+  ```
+
+- A parser of untrusted input: `cargo test -p synck-fuzz` runs a short fixed
+  mutation pass, `SYNCK_MUTATION_ROUNDS=30000` a long one, and
+  [fuzz/](fuzz/README.md) a coverage-guided search.
+
+A change to the format changes its [vectors](docs/spec/vectors/README.md), and a
+change to anything else must not. `python3 -I scripts/generate_vectors.py --check`
+says which. `cargo deny check` covers advisories, licenses and sources.
+
 Include the command output or result and any untested platforms in your pull
 request. For documentation-only changes, reviewing the diff is usually enough;
 say when no tests or builds were run. Report security vulnerabilities through
