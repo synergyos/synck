@@ -523,6 +523,56 @@ async fn checkout_file_writers_preserve_clean_state_identity_and_dirty_files() {
 }
 
 #[tokio::test]
+async fn a_file_write_refuses_a_rename_onto_its_path_and_a_merge_that_records_nothing() {
+    use synck_local::portable::{PortableRepository, WriteOptions, init_repository};
+    use synck_vcs::types::ItemRevision;
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("root");
+    init_repository(&root, "tester").await.unwrap();
+    let source = temp.path().join("source.txt");
+    fs::write(&source, b"same").unwrap();
+    let options = || WriteOptions { message: Some("m".into()), ..Default::default() };
+    let mut repo = PortableRepository::open(&root).unwrap();
+    let (first, _) = repo.create_file_with(None, "a.txt", &source, &options()).await.unwrap();
+    let (other, _) = repo.create_file_with(None, "b.txt", &source, &options()).await.unwrap();
+
+    let merge = WriteOptions {
+        merged_from: Some(ItemRevision { item_id: other.clone(), item_seq: 1 }),
+        ..options()
+    };
+    let error = repo.save_file_with(&first, &source, None, &merge).await.unwrap_err();
+    assert!(error.to_string().contains("records nothing"), "{error}");
+
+    drop(repo);
+    fs::rename(root.join("a.txt"), root.join("renamed.txt")).unwrap();
+    let mut repo = PortableRepository::open(&root).unwrap();
+    let error = repo
+        .create_file_with(None, "renamed.txt", &source, &options())
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("commit or restore"), "{error}");
+}
+
+#[test]
+fn a_recovery_journal_never_holds_what_acceptance_would_refuse() {
+    let temp = tempfile::tempdir().unwrap();
+    run(temp.path(), &["init", "--author", "tester"]);
+    fs::write(temp.path().join("file.txt"), b"content").unwrap();
+    run(temp.path(), &["commit", "-m", "add"]);
+    fs::remove_file(temp.path().join("file.txt")).unwrap();
+    run(temp.path(), &["commit", "-m", "remove"]);
+    let oversized = "m".repeat(17 * 1024);
+    let output = Command::new(env!("CARGO_BIN_EXE_synck"))
+        .current_dir(temp.path())
+        .args(["recover", "file.txt", "-m", &oversized])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(!temp.path().join(".synck/recover.json").exists());
+    run(temp.path(), &["status"]);
+}
+
+#[tokio::test]
 async fn gc_ignores_foreign_files_and_clears_staging_a_kill_left() {
     use synck_local::portable::PortableRepository;
     let temp = tempfile::tempdir().unwrap();

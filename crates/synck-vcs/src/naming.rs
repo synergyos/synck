@@ -185,7 +185,7 @@ fn is_ignored_by_hfs(ch: char) -> bool {
 }
 
 /// `.synck` is the control directory, and `synck~1` its NTFS short name.
-fn is_reserved_control_name(name: &str) -> bool {
+pub fn is_reserved_control_name(name: &str) -> bool {
     let key: String = crate::case_folding::fold(name)
         .chars()
         .filter(|ch| !is_ignored_by_hfs(*ch))

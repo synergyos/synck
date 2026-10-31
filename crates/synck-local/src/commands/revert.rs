@@ -1036,7 +1036,8 @@ impl Repository {
                         parent.as_deref().unwrap_or(".")
                     ))
                 })?;
-                if parent.is_none() && existing_name == ".synck" {
+                // A reserved name has no key, and no tracked name can equal it.
+                if synck_vcs::naming::is_reserved_control_name(existing_name) {
                     continue;
                 }
                 let existing_key = compute_name_key(existing_name).map_err(|error| {

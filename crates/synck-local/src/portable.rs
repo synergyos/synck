@@ -1840,7 +1840,12 @@ impl PortableRepository {
     }
 
     async fn accepted(&mut self, commit: AcceptedCommit) -> Result<CommitId> {
-        let id = commit.commit_id;
+        self.finished(commit.commit_id).await
+    }
+
+    /// A commit is durable once accepted. An error here says it needs recovery, and a
+    /// replay of an accepted operation comes through here for the kill it follows.
+    async fn finished(&mut self, id: CommitId) -> Result<CommitId> {
         self.finish_acceptance()
             .await
             .map_err(|error| LocalError::AcceptedNeedsRecovery {
@@ -2090,7 +2095,8 @@ impl PortableRepository {
             .is_ok();
         let changes = working.status().await?;
         if changes.iter().any(|change| {
-            (change.path == path && !written)
+            (change.path == path
+                && !(written && matches!(change.kind, crate::worktree::ChangeKind::Add | crate::worktree::ChangeKind::Modify)))
                 || change.source_path.as_deref() == Some(&path)
                 || path.starts_with(&format!("{}/", change.path))
         }) {
@@ -2128,6 +2134,12 @@ impl PortableRepository {
             .await?;
         let commit = match outcome {
             crate::CommitOutcome::Committed(id) => CommitId::parse(id).map_err(corrupt)?,
+            // Equal bytes add no history, so a requested merge would not be recorded.
+            crate::CommitOutcome::Clean if options.merged_from.is_some() => {
+                return Err(LocalError::Invalid(
+                    "a merge with no change to the bytes records nothing".into(),
+                ));
+            }
             crate::CommitOutcome::Clean => {
                 let head = working
                     .log(Some(1))
@@ -2220,7 +2232,8 @@ impl PortableRepository {
             .replayed_file_write(options.operation_id, None, Some(&location), &content)
             .await?
         {
-            return Ok(replayed);
+            let (item, commit) = replayed;
+            return Ok((item, self.finished(commit).await?));
         }
         if let Some(parent) = parent.as_ref() {
             self.local_owner(parent, "FOLDER").await?;
