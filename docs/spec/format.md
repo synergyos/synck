@@ -742,6 +742,8 @@ encrypted payload without its key. A writer uses a fresh salt even for identical
 A key's current value is found by walking back from the item's latest payload, among
 the events a family names for it: the first payload holding the key wins. An erased
 payload stops the walk and the key is unavailable, never an older value.
+A subitem edit whose metadata is erased no longer names its target, so a reader cannot
+hide the value it replaced.
 
 SQLite stores available payloads in
 `vcs_metadata_objects(repo_id TEXT, object_id BLOB, payload BLOB)`, with the first
