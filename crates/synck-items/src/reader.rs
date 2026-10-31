@@ -27,8 +27,6 @@ pub enum ReadError {
     },
     #[error("body {0} must be hydrated before reading")]
     NeedsContent(ObjectId),
-    #[error("metadata payload is not present: {0}")]
-    NeedsMetadata(ObjectId),
 }
 
 impl From<subitems::SubitemError> for ReadError {
@@ -273,8 +271,6 @@ impl ItemReader {
         event: &RefEventProposal,
         ctx: &RefReadContext<'_>,
     ) -> Result<(), ReadError> {
-        if let Some(reference) = &event.set_metadata
-            && reference.value().is_none() { return Err(ReadError::NeedsMetadata(reference.id())); }
         if event.owner_item_id != self.item_id {
             return Err(invalid("ref owner mismatch"));
         }
@@ -380,8 +376,6 @@ impl ItemReader {
         event: &EventProposal,
         context: ReadContext<'_>,
     ) -> Result<(), ReadError> {
-        if let Some(reference) = &event.set_metadata
-            && reference.value().is_none() { return Err(ReadError::NeedsMetadata(reference.id())); }
         if event.item_id.as_ref() != Some(&self.item_id)
             || context.item_seq != self.latest_item_seq() + 1
         {
@@ -763,20 +757,19 @@ fn require_generic_owner_event(kind: &str, event: &EventProposal) -> Result<(), 
     let Some((prefix, verb)) = event.event_type.split_once("::") else {
         return Err(unsupported(kind, &event.event_type));
     };
+    let tree_item = matches!(kind, "FILE" | "FOLDER");
     if prefix == kind
-        && matches!(
+        && (matches!(
             verb,
             "CREATE"
                 | "SET_NAME"
                 | "SET_PARENT"
-                | "SET_LINK"
-                | "SET_TITLE"
                 | "SET_METADATA"
                 | "TRASH"
                 | "RESTORE"
                 | "TOMBSTONE"
                 | "FEDERATE"
-        )
+        ) || (!tree_item && matches!(verb, "SET_LINK" | "SET_TITLE")))
     {
         return Ok(());
     }

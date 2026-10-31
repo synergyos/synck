@@ -127,10 +127,18 @@ pub fn apply_replica_item_event(
             proposal.event_type.split_once("::").map(|(_, verb)| verb),
             Some("CREATE" | "SET_METADATA")
         );
-    if item_level_metadata && let Some(metadata) = proposal.set_metadata.as_ref().and_then(synck_vcs::metadata::MetadataRef::value) {
-        item.metadata_json = metadata.clone();
-        item.item_subtype = item_subtype(metadata)?;
-        item.color_metadata = item_color_metadata_from_json(metadata);
+    if item_level_metadata && let Some(reference) = &proposal.set_metadata {
+        // A key's value is the latest payload holding it, and an erased payload
+        // stops that walk, so nothing older shows through.
+        match (reference.value(), &mut item.metadata_json) {
+            (Some(serde_json::Value::Object(keys)), serde_json::Value::Object(current)) => {
+                current.extend(keys.clone());
+            }
+            (Some(metadata), current) => *current = metadata.clone(),
+            (None, current) => *current = serde_json::json!({}),
+        }
+        item.item_subtype = item_subtype(&item.metadata_json)?;
+        item.color_metadata = item_color_metadata_from_json(&item.metadata_json);
     }
     if proposal.event_type == "CHAT::SET_PROFILE"
         && proposal
@@ -171,6 +179,13 @@ pub fn apply_replica_item_event(
             item.size = None;
         } else if explicit_size.is_some() {
             item.size = explicit_size;
+        }
+        if let Some(content) = proposal
+            .set_metadata.as_ref().and_then(synck_vcs::metadata::MetadataRef::value)
+            .and_then(|metadata| metadata.get("content"))
+            && let serde_json::Value::Object(current) = &mut item.metadata_json
+        {
+            current.insert("content".to_string(), content.clone());
         }
         item.content_blob_id = Some(blob_id.to_string());
         item.content_item_seq = Some(item_seq);
@@ -312,7 +327,42 @@ mod tests {
         let projected = apply_replica_item_event(Some(created), item_id, 2, &content, now, "actor")
             .expect("project content");
         assert_eq!(projected.size, Some(42));
+        assert_eq!(projected.metadata_json["content"]["size"], 42);
         assert_eq!(projected.content_item_seq, Some(2));
+    }
+
+    #[test]
+    fn metadata_keys_walk_back_until_an_erased_payload() {
+        let item_id = ItemId::new();
+        let now = Utc::now();
+        let event = |value: serde_json::Value| EventProposal::from_fields(value).unwrap();
+        let created = apply_replica_item_event(
+            None,
+            item_id.clone(),
+            1,
+            &event(serde_json::json!({
+                "item_id": item_id, "event_type": "EMAIL::CREATE",
+                "create_item": {"item_type": "EMAIL"},
+                "set_metadata": {"title": "first", "mailcal": {"format": "eml"}}
+            })),
+            now,
+            "actor",
+        )
+        .unwrap();
+        let mut later = event(serde_json::json!({
+            "item_id": item_id, "event_type": "EMAIL::SET_METADATA", "base_seq": 1,
+            "set_metadata": {"note": 1}
+        }));
+        let merged =
+            apply_replica_item_event(Some(created), item_id.clone(), 2, &later, now, "actor")
+                .unwrap();
+        assert_eq!(merged.metadata_json["mailcal"]["format"], "eml");
+        assert_eq!(merged.metadata_json["note"], 1);
+
+        later.set_metadata = Some(MetadataRef::Absent(ObjectId::from_digest([1; 32])));
+        let erased =
+            apply_replica_item_event(Some(merged), item_id, 3, &later, now, "actor").unwrap();
+        assert_eq!(erased.metadata_json, serde_json::json!({}));
     }
 
     #[test]

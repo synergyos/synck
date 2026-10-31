@@ -1760,6 +1760,9 @@ async fn history_verifies_with_absent_content_and_metadata_but_complete_export_r
     assert_eq!(after.missing_objects, vec![synck_vcs::types::ObjectId::parse(&fixture.primary_blob).unwrap()]);
     assert_eq!(after.missing_metadata.len(), before.metadata);
     assert!(!after.missing_metadata.is_empty());
+    // Erased metadata reads as missing, never as corruption.
+    repository.show_item(&fixture.chat, None).await.unwrap();
+    repository.show_item(&fixture.folder, None).await.unwrap();
     let export = fixture.root.join("incomplete-export");
     assert!(repository.archive(&export).await.unwrap_err().to_string().contains("complete export requires"));
 }

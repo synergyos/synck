@@ -344,6 +344,28 @@ fn errors_poison_only_the_typed_reader_and_do_not_modify_source_events() {
 }
 
 #[test]
+fn tree_items_have_no_title_or_link_events() {
+    for (kind, event_type) in [
+        ("FILE", "FILE::SET_TITLE"),
+        ("FILE", "FILE::SET_LINK"),
+        ("FOLDER", "FOLDER::SET_TITLE"),
+    ] {
+        let (mut reader, id) = create(kind);
+        let result = reader.apply(
+            &event(&id, event_type, json!({}), None),
+            ReadContext {
+                item_seq: reader.latest_item_seq() + 1,
+                created_at: now(),
+                occurred_at: None,
+                author: "alice",
+                committer: "alice",
+            },
+        );
+        assert!(matches!(result, Err(ReadError::Unsupported { .. })), "{event_type}");
+    }
+}
+
+#[test]
 fn supplemental_links_do_not_hide_primary_content() {
     let (mut reader, id) = create("FILE");
     apply(
