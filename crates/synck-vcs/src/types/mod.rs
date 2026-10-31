@@ -1020,7 +1020,7 @@ fn validate_hashed_json(value: &serde_json::Value, depth: usize) -> Result<(), C
         Value::Number(number) => {
             let exact = number
                 .as_i64()
-                .filter(|integer| integer.abs() <= MAX_SAFE_JSON_INTEGER)
+                .filter(|integer| (-MAX_SAFE_JSON_INTEGER..=MAX_SAFE_JSON_INTEGER).contains(integer))
                 .is_some_and(|integer| integer.to_string() == number.to_string());
             if !exact {
                 return invalid(format!(
@@ -1373,7 +1373,7 @@ mod tests {
 
     #[test]
     fn canonical_metadata_rejects_numbers_outside_the_integer_range() {
-        for integer in ["9007199254740992", "-9007199254740992", "18446744073709551615", "1000000000000000000000", "1.5", "1e3"] {
+        for integer in ["9007199254740992", "-9007199254740992", "-9223372036854775808", "9223372036854775807", "18446744073709551615", "1000000000000000000000", "1.5", "1e3"] {
             let value: serde_json::Value = serde_json::from_str(&format!(r#"{{"outer":{{"inner":[{integer}]}}}}"#)).unwrap();
             let error = canonical_json_bytes(&value).unwrap_err();
             assert!(matches!(error, CoreError::InvalidProposal(ref message) if message.contains("not an integer within")));
