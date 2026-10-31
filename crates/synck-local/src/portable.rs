@@ -780,15 +780,23 @@ impl PortableRepository {
         // goes last: a kill before it leaves a follower that can simply start again.
         // A writer reads checkout state, so its config has to be right first.
         let follower = self.config.authority == Authority::Follower;
+        let before = self.config.clone();
         self.config.author = Some(author.to_string());
         self.config.authority = Authority::IndependentLocal;
-        if !follower {
-            self.write_config()?;
-        }
-        working.write_checkout_source(&[])?;
-        working.publish_checkout_config()?;
-        if follower {
-            self.write_config()?;
+        let published: Result<()> = (|| {
+            if !follower {
+                self.write_config()?;
+            }
+            working.write_checkout_source(&[])?;
+            working.publish_checkout_config()?;
+            if follower {
+                self.write_config()?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = published {
+            self.config = before;
+            return Err(error);
         }
         self.config.checkout = Some(checkout);
         working.finish_checkout_transition().await?;
@@ -883,7 +891,11 @@ impl PortableRepository {
 
     /// A named journal is an operation that opening the checkout must finish.
     fn recovery_pending(&self) -> Result<bool> {
-        let present = |name: &str| self.metadata.try_exists(name).map_err(invalid);
+        let present = |name: &str| match self.metadata.symlink_metadata(name) {
+            Ok(_) => Ok(true),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(invalid(error)),
+        };
         if let Some(checkout) = &self.config.checkout
             && (checkout.pending.is_some() || present(crate::checkout::CHECKOUT_SOURCE_FILE)?)
         {
@@ -1013,7 +1025,9 @@ impl PortableRepository {
 
     /// Stable historical namespace page, rebuilding the disposable cache as needed.
     /// Live records in item ID order, after `after`. With `link`, only those
-    /// filed in that folder. Records have no path, so a namespace listing omits them.
+    /// filed in that folder; a tombstoned folder has none filed in it, even if a
+    /// federated tombstone left their links. Records have no path, so a namespace
+    /// listing omits them.
     pub async fn list_records(
         &self,
         link: Option<&ItemId>,
@@ -1026,7 +1040,9 @@ impl PortableRepository {
         let connection = self.storage.open_readonly().map_err(corrupt)?;
         let mut query = connection.prepare(
             "SELECT item_id FROM vcs_items WHERE repo_id=?1 AND name_key IS NULL \
-             AND lifecycle_state='LIVE' AND (?2 IS NULL OR link_folder_id=?2) \
+             AND lifecycle_state='LIVE' AND (?2 IS NULL OR (link_folder_id=?2 AND NOT EXISTS( \
+             SELECT 1 FROM vcs_items folder WHERE folder.repo_id=?1 AND folder.item_id=?2 \
+             AND folder.lifecycle_state='TOMBSTONED'))) \
              AND (?3 IS NULL OR item_id>?3) ORDER BY item_id LIMIT ?4",
         )?;
         let ids = query
@@ -1243,13 +1259,17 @@ impl PortableRepository {
                 )
                 .map_err(corrupt)?;
                 let mut event: EventProposal = row.proposal()?;
-                if let Some(content_id) = event.set_content.as_ref().and_then(|content| content.get("body")) {
-                    let objects = BTreeMap::from([(content_id.clone(), self.read_body(content_id.clone())?)]);
-                    synck_items::body_events::restore(
-                        std::slice::from_mut(&mut event),
-                        &objects,
-                    )
-                    .map_err(corrupt)?;
+                if let Some(content_id) = event.set_content.as_ref().and_then(|content| content.get("body")).cloned() {
+                    if self.object_held(&content_id)? {
+                        let objects = BTreeMap::from([(content_id.clone(), self.read_body(content_id)?)]);
+                        synck_items::body_events::restore(
+                            std::slice::from_mut(&mut event),
+                            &objects,
+                        )
+                        .map_err(corrupt)?;
+                    } else {
+                        event.set_content = None;
+                    }
                 }
                 let commit = self
                     .storage
@@ -1293,6 +1313,18 @@ impl PortableRepository {
             }
         }
         Ok(reader)
+    }
+
+    /// Whether this repository holds an object; erasure leaves only its reference.
+    fn object_held(&self, id: &ObjectId) -> Result<bool> {
+        if self.storage_mode() == StorageMode::Chunked {
+            return self.object_store().holds_blob(id);
+        }
+        match self.metadata.symlink_metadata(format!("objects/{}", &id.as_str()[7..])) {
+            Ok(_) => Ok(true),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(corrupt(error)),
+        }
     }
 
     pub fn read_body(&self, id: ObjectId) -> Result<Object> {
@@ -2388,14 +2420,14 @@ impl PortableRepository {
         let filename = source.file_name().and_then(|name| name.to_str()).ok_or_else(|| {
             invalid("EMAIL_IMPORT_INVALID_FORMAT: email source filename must be UTF-8")
         })?;
-        if let Some(link) = link.as_ref() {
-            self.local_owner(link, "FOLDER").await?;
-        }
         let id = ItemId::new();
-        let prepared = crate::email_import::prepare(&id, link, filename, title, source)?;
+        let prepared = crate::email_import::prepare(&id, link.clone(), filename, title, source)?;
         let create = prepared.events.first().ok_or_else(|| corrupt("an email import has no events"))?;
         if let Some((item, commit)) = self.replayed_email_import(options, create).await? {
             return Ok((item, self.finished(commit).await?));
+        }
+        if let Some(link) = link.as_ref() {
+            self.local_owner(link, "FOLDER").await?;
         }
         for (_, bytes) in prepared.objects {
             self.store_bytes(&bytes)?;

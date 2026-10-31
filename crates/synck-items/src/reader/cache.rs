@@ -21,6 +21,8 @@ struct ReaderState {
     projection: Option<replica_projection::ReplicaItemProjection>,
     chat: Option<ChatDetails>,
     subitems: Vec<ReadableSubitem>,
+    erased_subitem_creations: Vec<i64>,
+    erased_version_creation: bool,
 }
 fn digest(state: &ReaderState) -> Result<String, ReadError> {
     Ok(format!(
@@ -53,10 +55,12 @@ impl ItemReader {
             projection: self.projection.clone(),
             chat: self.chat.clone(),
             subitems: self.subitems.values().cloned().collect(),
+            erased_subitem_creations: self.erased_subitem_creations.iter().copied().collect(),
+            erased_version_creation: self.erased_version_creation,
         };
         let digest = digest(&state)?;
         serde_json::to_vec(&CachedReader {
-            version: 2,
+            version: 3,
             digest,
             state,
         })
@@ -70,7 +74,7 @@ impl ItemReader {
     /// input-size limits, confidentiality, checkpoint verification and authority.
     pub fn from_cache(expected_item_id: ItemId, bytes: &[u8]) -> Result<Self, ReadError> {
         let cache: CachedReader = serde_json::from_slice(bytes).map_err(invalid)?;
-        if cache.version != 2
+        if cache.version != 3
             || cache.state.item_id != expected_item_id
             || cache.digest != digest(&cache.state)?
         {
@@ -133,6 +137,8 @@ impl ItemReader {
         reader.ancillary_events = state.ancillary_events;
         reader.projection = state.projection;
         reader.chat = state.chat;
+        reader.erased_subitem_creations = state.erased_subitem_creations.into_iter().collect();
+        reader.erased_version_creation = state.erased_version_creation;
         Ok(reader)
     }
 }

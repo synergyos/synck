@@ -1471,8 +1471,12 @@ fn remove_entry(parent: &Dir, name: &std::ffi::OsStr, display: &Path) -> Result<
 #[cfg(unix)]
 fn flush_directory(directory: impl rustix::fd::AsFd) -> io::Result<()> {
     #[cfg(target_vendor = "apple")]
-    if rustix::fs::fcntl_fullfsync(&directory).is_ok() {
-        return Ok(());
+    match rustix::fs::fcntl_fullfsync(&directory) {
+        Ok(()) => return Ok(()),
+        Err(
+            rustix::io::Errno::NOTSUP | rustix::io::Errno::INVAL | rustix::io::Errno::NOTTY,
+        ) => {}
+        Err(error) => return Err(error.into()),
     }
     rustix::fs::fsync(directory).map_err(io::Error::from)
 }

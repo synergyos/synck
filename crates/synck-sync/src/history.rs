@@ -6,7 +6,8 @@ use sha2::{Digest, Sha256};
 use synck_vcs::types::{
     COMMIT_EVENT_FAMILY_ITEM, COMMIT_EVENT_FAMILY_REF, CommitEventRow, CommitRow, EventProposal,
     RefEventProposal, canonical_event_proposal_bytes, canonical_ref_event_proposal_bytes,
-    canonical_stored_commit_bytes_for_hash, compute_commit_id, sha256_digest_to_digest_bytes,
+    canonical_stored_commit_bytes_for_hash, compute_commit_id, empty_commit_events_digest,
+    sha256_digest_to_digest_bytes,
 };
 
 #[derive(Clone, Default)]
@@ -95,9 +96,11 @@ impl Events {
         Ok(())
     }
     fn finish(&self, commit: &CommitRow) -> Result<(), ProtocolError> {
-        if self.next != commit.event_count as usize
-            || digest_id(self.digest.clone().finalize().into()) != commit.events_digest
-        {
+        let digest = match commit.repo_seq {
+            Some(repo_seq) if self.next == 0 => empty_commit_events_digest(repo_seq),
+            _ => digest_id(self.digest.clone().finalize().into()),
+        };
+        if self.next != commit.event_count as usize || digest != commit.events_digest {
             return Err(invalid("commit event count or digest mismatch"));
         }
         Ok(())

@@ -523,6 +523,19 @@ impl ChunkStore {
         Ok(())
     }
 
+    pub(crate) fn holds_blob(&self, id: &ObjectId) -> Result<bool> {
+        let digest = blob_digest(id)?;
+        let held = self
+            .open_readonly()?
+            .query_row(
+                "SELECT 1 FROM blobs WHERE digest=?1 AND complete=1",
+                [digest.as_slice()],
+                |_| Ok(()),
+            )
+            .optional()?;
+        Ok(held.is_some())
+    }
+
     pub(crate) fn blob_size(&self, id: &ObjectId) -> Result<u64> {
         let digest = blob_digest(id)?;
         let size: i64 = self.open_readonly()?.query_row(

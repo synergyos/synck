@@ -287,7 +287,8 @@ A `CREATE` may carry `set_is_federated: true` and `set_federation_stream_id`, bo
 neither. That is federated bootstrap: the item starts FEDERATED, and one more
 `FEDERATE` with the same stream is allowed in that commit. Outside bootstrap,
 switching to federated is a local append and switching to local is a federated
-ingest. At most one mode change per item per commit is permitted.
+ingest. At most one mode change per item per commit is permitted, and an append
+does not tombstone an item it federates.
 
 ### Tree items and records
 
@@ -335,7 +336,8 @@ items. At the end of a commit:
   record in the trash. Tombstoning a folder must, in the same commit, clear or
   tombstone every record still linked to it. The exception is a FEDERATED folder:
   its tombstone comes from outside this repository and cannot touch local records,
-  so an existing link stays and the record reads as unfiled.
+  so an existing link stays and the record reads as unfiled: the link remains in
+  its state, and listing that folder finds nothing filed there.
 - No FEDERATED item has a link. A federated record's history is shared, so a
   local link cannot live on it. Federating a linked record clears the link in the
   same commit.
@@ -927,7 +929,9 @@ represented as `sha256:` followed by 64 lowercase hexadecimal digits.
 
 A writer never adds a commit with no events, which is an admission rule. A reader
 accepts one, because converting history can leave a commit whose position has to
-stay. Such a commit changes no state, and its `events_digest` hashes nothing.
+stay. Such a commit changes no state. With no events to tell it from another, its
+`events_digest` is SHA-256 of its `repo_seq` as eight big-endian bytes, so two of
+them never share a commit ID.
 
 Each event digest is SHA-256 of its canonical envelope bytes. The aggregate
 `events_digest` hashes the concatenation, in commit-event-index order, of one
@@ -1151,7 +1155,7 @@ its bundle is still a valid bundle.
 2. Parse every stored event/ref envelope with the strict shape and JCS rules;
    require exact canonical bytes and recompute its SHA-256. Match its row fields.
 3. For each commit, check contiguous combined indexes, item-before-ref ordering,
-   positive exact event count, tagged aggregate digest and canonical header hash.
+   exact event count, tagged aggregate digest and canonical header hash.
    Reject duplicate commit IDs, operation IDs or publication positions.
 4. Replay structure and item/ref bases, including final namespace uniqueness,
    record classes, key uniqueness, link rules, parent acyclicity and terminal

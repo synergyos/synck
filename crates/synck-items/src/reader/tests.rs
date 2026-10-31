@@ -376,6 +376,42 @@ fn an_erased_payload_reads_as_missing_in_a_chat_and_its_subitems() {
 }
 
 #[test]
+fn only_an_erased_creation_excuses_a_mutation_of_nothing() {
+    let (mut reader, id) = create("CHAT");
+    let mut erased = event(&id, "CHAT::MESSAGE::SET_CONTENT", json!({}), None);
+    erased.set_metadata =
+        Some(synck_vcs::metadata::MetadataRef::Absent(ObjectId::from_digest([1; 32])));
+    apply(&mut reader, &erased, "alice");
+    let result = reader.apply(
+        &event(&id, "CHAT::MESSAGE::SET_CONTENT", json!({"item_seq": 9999}), json_body("x")),
+        ReadContext {
+            item_seq: reader.latest_item_seq() + 1,
+            created_at: now(),
+            occurred_at: None,
+            author: "alice",
+            committer: "alice",
+        },
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn a_restored_reader_still_knows_what_was_erased() {
+    let (mut reader, id) = create("CHAT");
+    let mut erased = event(&id, "CHAT::MESSAGE::CREATE", json!({}), None);
+    erased.set_metadata =
+        Some(synck_vcs::metadata::MetadataRef::Absent(ObjectId::from_digest([1; 32])));
+    apply(&mut reader, &erased, "alice");
+    let target = reader.latest_item_seq();
+    let mut restored = ItemReader::from_cache(id.clone(), &reader.export_cache().unwrap()).unwrap();
+    apply(
+        &mut restored,
+        &event(&id, "CHAT::MESSAGE::SET_CONTENT", json!({"item_seq": target}), json_body("edited")),
+        "alice",
+    );
+}
+
+#[test]
 fn tree_items_have_no_title_or_link_events() {
     for (kind, event_type) in [
         ("FILE", "FILE::SET_TITLE"),

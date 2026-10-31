@@ -1748,6 +1748,19 @@ async fn whole_export_cli_import_verify_and_optimize() {
 }
 
 #[tokio::test]
+async fn a_chat_reads_after_a_message_body_is_erased() {
+    let fixture = fixture().await;
+    let repository = PortableRepository::open(&fixture.source).unwrap();
+    fs::remove_file(
+        fixture.source.join(".synck/objects").join(hex::encode(fixture.body.id().as_bytes())),
+    )
+    .unwrap();
+    assert!(repository.verify().await.unwrap().missing_objects.contains(&fixture.body.id()));
+    let shown = serde_json::to_string(&repository.show_item(&fixture.chat, None).await.unwrap()).unwrap();
+    assert!(shown.contains("CHAT::MESSAGE"), "{shown}");
+}
+
+#[tokio::test]
 async fn history_verifies_with_absent_content_and_metadata_but_complete_export_refuses() {
     let fixture = fixture().await;
     let repository = PortableRepository::open(&fixture.source).unwrap();
@@ -1766,3 +1779,92 @@ async fn history_verifies_with_absent_content_and_metadata_but_complete_export_r
     let export = fixture.root.join("incomplete-export");
     assert!(repository.archive(&export).await.unwrap_err().to_string().contains("complete export requires"));
 }
+
+#[tokio::test]
+async fn repeating_an_email_import_survives_its_folder_leaving() {
+    let fixture = fixture().await;
+    let folder = ItemId::new();
+    let core = Repo::new(
+        Storage::new(Arc::new(SqliteStorage::new(fixture.source.join(".synck/repository.sqlite3")))),
+        CoreConfig::default(),
+    );
+    core.append(fixture.repo_id.clone(), proposal(vec![creation(&folder, "FOLDER", None, "inbox")]))
+        .await
+        .unwrap();
+    core.sequence_repo_activity(fixture.repo_id.clone(), 100).await.unwrap();
+    let email = fixture.root.join("message.eml");
+    fs::write(&email, "From: a@example.com\r\nTo: b@example.com\r\nSubject: Hello\r\n\r\nBody\r\n").unwrap();
+    let options = WriteOptions { operation_id: Some(uuid::Uuid::now_v7()), ..WriteOptions::default() };
+    let mut repository = PortableRepository::open(&fixture.source).unwrap();
+    let first = repository
+        .import_email_with(Some(folder.clone()), &email, None, &options)
+        .await
+        .unwrap();
+    let trash: EventProposal = EventProposal::from_fields(json!({
+        "item_id": folder, "event_type": "FOLDER::TRASH", "base_seq": 1, "set_in_trash": true,
+    }))
+    .unwrap();
+    core.append(fixture.repo_id.clone(), proposal(vec![trash])).await.unwrap();
+    core.sequence_repo_activity(fixture.repo_id.clone(), 100).await.unwrap();
+    let repeated = repository
+        .import_email_with(Some(folder), &email, None, &options)
+        .await
+        .unwrap();
+    assert_eq!(repeated, first);
+}
+
+#[tokio::test]
+async fn a_folder_tombstoned_elsewhere_has_nothing_filed_in_it() {
+    let fixture = fixture().await;
+    let folder = ItemId::new();
+    let task = ItemId::new();
+    let core = Repo::new(
+        Storage::new(Arc::new(SqliteStorage::new(fixture.source.join(".synck/repository.sqlite3")))),
+        CoreConfig::default(),
+    );
+    let filed: EventProposal = EventProposal::from_fields(json!({
+        "item_id": task, "event_type": "TASK::CREATE",
+        "create_item": CreateItem::record("TASK", None, Some(folder.clone())),
+    }))
+    .unwrap();
+    core.append(
+        fixture.repo_id.clone(),
+        proposal(vec![creation(&folder, "FOLDER", None, "shared"), filed]),
+    )
+    .await
+    .unwrap();
+    let stream = "shared-folder".to_string();
+    let federate: EventProposal = EventProposal::from_fields(json!({
+        "item_id": folder, "event_type": "FOLDER::FEDERATE", "base_seq": 1,
+        "set_is_federated": true, "set_federation_stream_id": stream,
+    }))
+    .unwrap();
+    core.append(fixture.repo_id.clone(), proposal(vec![federate])).await.unwrap();
+    core.sequence_repo_activity(fixture.repo_id.clone(), 100).await.unwrap();
+    let repository = PortableRepository::open(&fixture.source).unwrap();
+    let listed = repository.list_records(Some(&folder), None, 10).await.unwrap();
+    assert_eq!(listed.len(), 1);
+
+    let tombstone: EventProposal = EventProposal::from_fields(json!({
+        "item_id": folder, "event_type": "FOLDER::TOMBSTONE", "set_tombstoned": true,
+    }))
+    .unwrap();
+    core.ingest(
+        fixture.repo_id.clone(),
+        synck_vcs::types::FederatedProposal {
+            federation_stream_id: stream,
+            item_seq: 3,
+            author_id: "remote".into(),
+            committer_id: "remote".into(),
+            message: None,
+            occurred_at: None,
+            events: vec![tombstone],
+        },
+    )
+    .await
+    .unwrap();
+    core.sequence_repo_activity(fixture.repo_id.clone(), 100).await.unwrap();
+    assert!(repository.list_records(Some(&folder), None, 10).await.unwrap().is_empty());
+    assert!(repository.list_records(None, None, 10).await.unwrap().iter().any(|row| row.item_id == task));
+}
+

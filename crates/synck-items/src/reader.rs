@@ -150,7 +150,8 @@ pub struct ItemReader {
     ancillary_events: Vec<AncillaryEvent>,
     poisoned: bool,
     /// A subitem's creation can be erased, leaving later events nothing to act on.
-    erased_subitems: bool,
+    erased_subitem_creations: BTreeSet<i64>,
+    erased_version_creation: bool,
     projection: Option<replica_projection::ReplicaItemProjection>,
     chat: Option<ChatDetails>,
     subitems: BTreeMap<(String, SubitemIdentity), ReadableSubitem>,
@@ -182,7 +183,8 @@ impl ItemReader {
             data_links: BTreeMap::new(),
             ancillary_events: Vec::new(),
             poisoned: false,
-            erased_subitems: false,
+            erased_subitem_creations: BTreeSet::new(),
+            erased_version_creation: false,
             projection: None,
             chat: None,
             subitems: BTreeMap::new(),
@@ -291,7 +293,7 @@ impl ItemReader {
         }
         if let Some(verb) = event.event_type.strip_prefix("FILE_VERSION::") {
             if is_erased(&event.set_metadata) {
-                self.erased_subitems = true;
+                self.erased_version_creation |= verb == "CREATE";
                 self.ref_seq = ctx.ref_seq;
                 return Ok(());
             }
@@ -563,7 +565,9 @@ impl ItemReader {
         ctx: &ReadContext<'_>,
     ) -> Result<(), ReadError> {
         if is_erased(&event.set_metadata) {
-            self.erased_subitems = true;
+            if verb == Verb::Create {
+                self.erased_subitem_creations.insert(ctx.item_seq);
+            }
             return Ok(());
         }
         let family = kind.event_type_create().strip_suffix("::CREATE").unwrap();
@@ -592,7 +596,7 @@ impl ItemReader {
             row
         } else {
             let Some(mut row) = previous.cloned() else {
-                return if self.erased_subitems {
+                return if self.erased_subitem_creations.contains(&target) {
                     Ok(())
                 } else {
                     Err(invalid("subitem mutation before creation"))
@@ -687,7 +691,7 @@ impl ItemReader {
             row
         } else {
             let Some(mut row) = self.subitems.get(&key).cloned() else {
-                return if self.erased_subitems {
+                return if self.erased_version_creation {
                     Ok(())
                 } else {
                     Err(invalid("named-version version before creation"))

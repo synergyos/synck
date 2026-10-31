@@ -1117,13 +1117,18 @@ impl Repo {
         }
 
         // Enforce at most one federation mode change per item within a commit.
+        // A federated item's tombstone comes from outside, so an append cannot
+        // federate an item and tombstone it in one commit.
         let mut mode_change_seen: HashMap<ItemId, ()> = HashMap::new();
         for (idx, ev) in proposal.events.iter().enumerate() {
-            if ev.set_is_federated.is_some() {
-                let item_id = &event_item_ids[idx];
-                if mode_change_seen.insert(item_id.clone(), ()).is_some() {
-                    return Err(CoreError::IllegalFederationTransition);
-                }
+            let item_id = &event_item_ids[idx];
+            if ev.set_tombstoned.is_some() && mode_change_seen.contains_key(item_id) {
+                return Err(CoreError::IllegalFederationTransition);
+            }
+            if ev.set_is_federated.is_some()
+                && mode_change_seen.insert(item_id.clone(), ()).is_some()
+            {
+                return Err(CoreError::IllegalFederationTransition);
             }
         }
 
@@ -2664,10 +2669,16 @@ async fn check_final_items<T: StorageTxn + ?Sized>(
     ctx: &InvariantContext<'_>,
     txn: &mut T,
     items: &HashMap<ItemId, ItemRow>,
+    events: &[EventProposal],
     check_names: bool,
 ) -> Result<(), CoreError> {
     let repo_id = ctx.repo_id;
     let invalid = |detail: &str| Err(CoreError::InvalidProposal(detail.to_string()));
+    let set_links: HashSet<&ItemId> = events
+        .iter()
+        .filter(|event| event.set_link.is_some())
+        .filter_map(|event| event.item_id.as_ref())
+        .collect();
     let live = || {
         items
             .values()
@@ -2723,22 +2734,22 @@ async fn check_final_items<T: StorageTxn + ?Sized>(
         if folder.item_type != "FOLDER" {
             return invalid("link target is not a FOLDER");
         }
+        if matches!(folder.lifecycle_state, LifecycleState::Live) {
+            continue;
+        }
+        let set_here = set_links.contains(&item.item_id)
+            || txn.get_item(repo_id, &item.item_id).await?.is_none();
         match folder.lifecycle_state {
             LifecycleState::Live => {}
             LifecycleState::Tombstoned => {
-                let before = txn.get_item(repo_id, &item.item_id).await?;
-                if folder.sequencing_mode != SequencingMode::Federated
-                    || before.is_none_or(|row| row.link_folder_id.as_ref() != Some(target))
-                {
+                if set_here || folder.sequencing_mode != SequencingMode::Federated {
                     return invalid("link target is tombstoned");
                 }
             }
-            LifecycleState::Trash => {
-                let before = txn.get_item(repo_id, &item.item_id).await?;
-                if before.is_none_or(|row| row.link_folder_id.as_ref() != Some(target)) {
-                    return invalid("link set to a folder that is not live");
-                }
+            LifecycleState::Trash if set_here => {
+                return invalid("link set to a folder that is not live");
             }
+            LifecycleState::Trash => {}
         }
     }
 

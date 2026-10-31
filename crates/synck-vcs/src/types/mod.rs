@@ -1121,6 +1121,16 @@ pub fn sha256_prefixed_hex_from_digest_bytes(bytes: [u8; 32]) -> String {
     format!("sha256:{hex}")
 }
 
+/// The `events_digest` of a commit with no events, which hashes the commit's
+/// sequence as eight big-endian bytes. Nothing else tells two such commits
+/// apart, and no run of 33-byte event records can equal these bytes.
+pub fn empty_commit_events_digest(repo_seq: i64) -> Sha256Digest {
+    Sha256Digest::parse(sha256_prefixed_hex_from_digest_bytes(compute_sha256_digest_bytes(
+        &repo_seq.to_be_bytes(),
+    )))
+    .expect("internal SHA-256 digest is valid")
+}
+
 /// Convert a `CommitId` into raw 32-byte digest bytes.
 pub fn commit_id_to_digest_bytes(id: &CommitId) -> [u8; 32] {
     sha256_id_to_digest_bytes(id.as_str())

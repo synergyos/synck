@@ -12,7 +12,7 @@ use crate::types::{
     EventProposal, ItemId, RefEventProposal, SequencingMode, Sha256Digest,
     canonical_event_proposal_bytes, canonical_ref_event_proposal_bytes,
     canonical_stored_commit_bytes_for_hash, compute_commit_id, compute_sha256_digest_bytes,
-    sha256_prefixed_hex_from_digest_bytes,
+    empty_commit_events_digest, sha256_prefixed_hex_from_digest_bytes,
 };
 
 #[derive(Clone, Debug)]
@@ -399,10 +399,14 @@ impl CommitEnvelopeValidator {
             self.findings
                 .push(format!("{}: event count mismatch", self.label));
         }
-        let digest_bytes: [u8; 32] = self.events_hasher.finalize().into();
-        let events_digest =
-            Sha256Digest::parse(sha256_prefixed_hex_from_digest_bytes(digest_bytes))
-                .expect("internal SHA-256 digest is valid");
+        let events_digest = match self.commit.repo_seq {
+            Some(repo_seq) if self.next_event_index == 0 => empty_commit_events_digest(repo_seq),
+            _ => {
+                let digest_bytes: [u8; 32] = self.events_hasher.finalize().into();
+                Sha256Digest::parse(sha256_prefixed_hex_from_digest_bytes(digest_bytes))
+                    .expect("internal SHA-256 digest is valid")
+            }
+        };
         if self.commit.events_digest.as_ref() != Some(&events_digest) {
             self.findings
                 .push(format!("{}: events digest mismatch", self.label));

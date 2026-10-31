@@ -25,9 +25,11 @@ Core SQLite schema 7. Repositories from 0.1 are refused. Copy files across with
 - History bundles end with a record count, tip and digest, so a truncated bundle is
   refused.
 - History may hold a commit with no events, which changes nothing and keeps its
-  position. No writer adds one.
+  position. Its digest hashes that position, so two of them never share a commit ID.
+  No writer adds one.
 - A FEDERATED folder's tombstone passes a local record's link, and the record reads
-  as unfiled.
+  as unfiled: listing that folder finds nothing. A link set in a commit must target
+  a LIVE folder, even if it names the folder the record already had.
 - Language-neutral vectors now cover names, JSON, objects, encryption, metadata,
   events, replay, state digests, checkpoints, bundles, labels, the sync wire and a
   whole repository, and an independent generator computes all of them.

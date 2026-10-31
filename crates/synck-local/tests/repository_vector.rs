@@ -28,6 +28,10 @@ fn build(root: &Path) {
         .unwrap();
 }
 
+fn plain(root: &Path, args: &[&str]) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_synck")).current_dir(root).args(args).output().unwrap()
+}
+
 fn synck(root: &Path, args: &[&str]) -> Value {
     let output = Command::new(env!("CARGO_BIN_EXE_synck"))
         .current_dir(root)
@@ -77,4 +81,20 @@ fn repository_vector_verifies_and_reads() {
     assert_eq!(std::fs::read(root.join("notes.txt")).unwrap(), b"two\n");
     assert!(root.join("docs").is_dir());
     assert!(!root.join("scratch.txt").exists());
+
+    // The vector's two empty commits differ only in position.
+    let empty = [commits[3]["commit_id"].as_str().unwrap(), commits[6]["commit_id"].as_str().unwrap()];
+    assert_ne!(empty[0], empty[1]);
+    synck(&root, &["fsck"]);
+    synck(&root, &["log", "--events"]);
+    for commit in empty {
+        let shown = synck(&root, &["show", commit, "--events"]);
+        assert_eq!(shown["commit"]["events"], serde_json::json!([]), "{shown}");
+        synck(&root, &["compare", empty[0], commit]);
+        let exported = plain(&root, &["export-tree", commit, temp.path().join(&commit[7..]).to_str().unwrap()]);
+        assert!(exported.status.success(), "{exported:?}");
+        assert!(temp.path().join(&commit[7..]).join("docs").is_dir());
+    }
+    assert!(plain(&root, &["diff", empty[0], empty[1]]).status.success());
+    assert!(!plain(&root, &["revert", empty[1], "-m", "undo nothing"]).status.success());
 }

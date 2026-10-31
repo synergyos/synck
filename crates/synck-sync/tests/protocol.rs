@@ -795,7 +795,7 @@ fn a_commit_with_no_events_is_a_fragment_of_none() {
     empty.events.clear();
     let commit = &mut empty.commit;
     commit.event_count = 0;
-    commit.events_digest = digest(compute_sha256_digest_bytes(b""));
+    commit.events_digest = synck_vcs::types::empty_commit_events_digest(1);
     commit.commit_id = compute_commit_id(
         &canonical_stored_commit_bytes_for_hash(
             commit.format_version,

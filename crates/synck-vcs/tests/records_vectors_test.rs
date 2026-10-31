@@ -3,7 +3,8 @@ use std::collections::HashMap;
 use sha2::{Digest, Sha256};
 use synck_vcs::types::{
     COMMIT_FORMAT_VERSION, ItemId, Sha256Digest, canonical_json_bytes,
-    canonical_stored_commit_bytes_for_hash, compute_commit_id, sha256_prefixed_hex_from_digest_bytes,
+    canonical_stored_commit_bytes_for_hash, compute_commit_id, empty_commit_events_digest,
+    sha256_prefixed_hex_from_digest_bytes,
 };
 use synck_vcs::verify::{
     SemanticVerifier, VerifyCommit, VerifyCommitEvent, VerifyEvent, VerifyRefEvent,
@@ -73,10 +74,12 @@ fn external_record_vectors() {
                 });
                 position += 1;
             }
-            let events_digest = Sha256Digest::parse(sha256_prefixed_hex_from_digest_bytes(
-                hasher.finalize().into(),
-            ))
-            .unwrap();
+            let events_digest = if position == 0 {
+                empty_commit_events_digest(index as i64 + 1)
+            } else {
+                Sha256Digest::parse(sha256_prefixed_hex_from_digest_bytes(hasher.finalize().into()))
+                    .unwrap()
+            };
             let author = "author".to_string();
             let message = commit["message"].as_str().map(str::to_string);
             let commit_id = canonical_stored_commit_bytes_for_hash(

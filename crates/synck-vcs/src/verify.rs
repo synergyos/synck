@@ -86,6 +86,7 @@ impl SemanticVerifier {
             replay_findings.push(format!("{label}: an encrypted repository has no messages"));
         }
         let mut touched: HashMap<ItemId, Option<ItemState>> = HashMap::new();
+        let mut set_links = HashSet::new();
         let mut validator = CommitEnvelopeValidator::begin(commit, &mut self.previous_repo_seq);
         for event in events {
             match event {
@@ -119,6 +120,9 @@ impl SemanticVerifier {
                             let replayed = self.replayed_items.get(&event.item_id);
                             replayed.map(|item| item.state.clone())
                         });
+                        if proposal.set_link.is_some() {
+                            set_links.insert(event.item_id.clone());
+                        }
                         self.replay_event(event, &proposal, &context, &mut replay_findings);
                     }
                 }
@@ -154,7 +158,7 @@ impl SemanticVerifier {
         }
         let mut findings = validator.finish();
         findings.append(&mut replay_findings);
-        self.check_commit_end(&label, &touched, &mut findings);
+        self.check_commit_end(&label, &touched, &set_links, &mut findings);
         for (item_id, item) in heads {
             if let Some(head_seq) = item.head_seq {
                 self.last_item_seq.insert(item_id.clone(), head_seq);
@@ -339,6 +343,7 @@ impl SemanticVerifier {
         &mut self,
         label: &str,
         touched: &HashMap<ItemId, Option<ItemState>>,
+        set_links: &HashSet<ItemId>,
         findings: &mut Vec<String>,
     ) {
         for before in touched.values().flatten() {
@@ -426,9 +431,7 @@ impl SemanticVerifier {
             if state.sequencing_mode == SequencingMode::Federated {
                 report("a federated item has a link");
             }
-            let unchanged = before
-                .as_ref()
-                .is_some_and(|before| before.link_folder_id.as_ref() == Some(target));
+            let unchanged = before.is_some() && !set_links.contains(item_id);
             match self.replayed_items.get(target) {
                 Some(folder) if folder.state.item_type == "FOLDER" => {
                     match folder.state.lifecycle_state {

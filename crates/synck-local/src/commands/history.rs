@@ -1060,6 +1060,11 @@ impl Repository {
         let (output, calculated_events_digest) = self
             .present_commit_event_rows_in(store, &parsed_commit_id, repo_seq, 0, rows, true)
             .await?;
+        let calculated_events_digest = if event_count == 0 {
+            Some(synck_vcs::types::empty_commit_events_digest(repo_seq).to_string())
+        } else {
+            calculated_events_digest
+        };
         if calculated_events_digest.as_deref() != Some(events_digest) {
             return Err(LocalError::Integrity(format!(
                 "commit {commit_id} events digest disagrees with its ordered event payloads"

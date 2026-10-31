@@ -338,7 +338,7 @@ pub(super) async fn check_final_state<T: StorageTxn + ?Sized>(
             || ev.set_tombstoned.is_some()
             || ev.set_in_trash.is_some()
     });
-    check_final_items(ctx, txn, items, check_names).await
+    check_final_items(ctx, txn, items, events, check_names).await
 }
 
 /// The folders an event's structure depends on, which writers must lock.
