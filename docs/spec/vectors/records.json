@@ -1410,6 +1410,111 @@
     ]
   },
   {
+    "name": "a record federated after its creation may repeat its stream once",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "CHAT::CREATE",
+            "create_item": {
+              "item_type": "CHAT"
+            }
+          },
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "CHAT::FEDERATE",
+            "set_is_federated": true,
+            "set_federation_stream_id": "s"
+          },
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "CHAT::FEDERATE",
+            "set_is_federated": true,
+            "set_federation_stream_id": "s"
+          }
+        ],
+        "valid": true,
+        "state_digest": "sha256:d37e98cd76df00447ab96b757f3a90c0e8c93cb7f52e9dddbf6056dcd4d07986"
+      }
+    ]
+  },
+  {
+    "name": "a bootstrap repeats its stream only once",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "CHAT::CREATE",
+            "create_item": {
+              "item_type": "CHAT"
+            },
+            "set_is_federated": true,
+            "set_federation_stream_id": "s"
+          },
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "CHAT::FEDERATE",
+            "set_is_federated": true,
+            "set_federation_stream_id": "s"
+          },
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "CHAT::FEDERATE",
+            "set_is_federated": true,
+            "set_federation_stream_id": "s"
+          }
+        ],
+        "valid": false,
+        "reason": "illegal federation transition"
+      }
+    ]
+  },
+  {
+    "name": "a record federates and returns across commits",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "CHAT::CREATE",
+            "create_item": {
+              "item_type": "CHAT"
+            }
+          }
+        ],
+        "valid": true,
+        "state_digest": "sha256:ff52f769678d620bdeba6b0566545cdd510afd59c266951aa49d4157e385372e"
+      },
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "base_seq": 1,
+            "event_type": "CHAT::FEDERATE",
+            "set_is_federated": true,
+            "set_federation_stream_id": "s"
+          }
+        ],
+        "valid": true,
+        "state_digest": "sha256:3b54897df617255e2f72cb4a888daccd9ec25a4f296f0a84ddca1afbda1c52a8"
+      },
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "base_seq": 2,
+            "event_type": "CHAT::FEDERATE",
+            "set_is_federated": false
+          }
+        ],
+        "valid": true,
+        "state_digest": "sha256:19fa81ce63e1c36c8333dd25ead73a4f4050abf39536ee58137f3cf8186a090b"
+      }
+    ]
+  },
+  {
     "name": "a bootstrap repeats its own stream",
     "commits": [
       {

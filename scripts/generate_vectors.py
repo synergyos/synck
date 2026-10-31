@@ -1485,6 +1485,26 @@ def new_records():
             ([update("r1", 2, "CHAT::FEDERATE", set_is_federated=True,
                      set_federation_stream_id="s2")], False),
         ]),
+        ("a record federated after its creation may repeat its stream once", [
+            ([record("r1", "CHAT"),
+              {"item_id": ids["r1"], "event_type": "CHAT::FEDERATE", "set_is_federated": True,
+               "set_federation_stream_id": "s"},
+              {"item_id": ids["r1"], "event_type": "CHAT::FEDERATE", "set_is_federated": True,
+               "set_federation_stream_id": "s"}], True),
+        ]),
+        ("a bootstrap repeats its stream only once", [
+            ([dict(record("r1", "CHAT"), set_is_federated=True, set_federation_stream_id="s"),
+              {"item_id": ids["r1"], "event_type": "CHAT::FEDERATE", "set_is_federated": True,
+               "set_federation_stream_id": "s"},
+              {"item_id": ids["r1"], "event_type": "CHAT::FEDERATE", "set_is_federated": True,
+               "set_federation_stream_id": "s"}], False),
+        ]),
+        ("a record federates and returns across commits", [
+            ([record("r1", "CHAT")], True),
+            ([update("r1", 1, "CHAT::FEDERATE", set_is_federated=True,
+                     set_federation_stream_id="s")], True),
+            ([update("r1", 2, "CHAT::FEDERATE", set_is_federated=False)], True),
+        ]),
         ("a bootstrap repeats its own stream", [
             ([dict(record("r1", "CHAT"), set_is_federated=True, set_federation_stream_id="s"),
               {"item_id": ids["r1"], "event_type": "CHAT::FEDERATE", "set_is_federated": True,

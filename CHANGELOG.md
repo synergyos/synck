@@ -30,7 +30,7 @@ Core SQLite schema 7. Repositories from 0.1 are refused. Copy files across with
 - A FOLDER never federates. A link set in a commit must target a LIVE folder, even if
   it names the folder the record already had.
 - A replica following a federation domain files through the domain: append refuses to
-  set a link there, so a local link cannot refuse a partner's folder tombstone.
+  set a link there, so a local write adds no link that refuses a partner's tombstone.
 - Language-neutral vectors now cover names, JSON, objects, encryption, metadata,
   events, replay, state digests, checkpoints, bundles, labels, the sync wire and a
   whole repository, and an independent generator computes all of them.

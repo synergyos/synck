@@ -284,14 +284,16 @@ accept append and FEDERATED items accept ingest. A transition to federated requi
 no stream field. A `federation_stream_id` is unique among FEDERATED items.
 
 A `CREATE` may carry `set_is_federated: true` and `set_federation_stream_id`, both or
-neither. That is federated bootstrap: the item starts FEDERATED, and one more
-`FEDERATE` with the same stream is allowed in that commit. Outside bootstrap,
+neither. That is federated bootstrap: the item starts FEDERATED. An item FEDERATED
+in the commit that created it may take one more `FEDERATE` with the same stream in
+that commit, however it became FEDERATED. Outside bootstrap,
 switching to federated is a local append and switching to local is a federated
 ingest. At most one mode change per item per commit is permitted. A FOLDER never
 federates: a shared tree replicates as a whole repository through a federation domain.
 A replica following a domain files through the domain, and append refuses to set a
 link, because a local link would refuse a tombstone arriving through the domain. A
-copy that follows nothing keeps the domain cursors as provenance and files locally.
+copy that left the domain keeps its cursors as provenance and, once writable, files
+locally.
 
 ### Tree items and records
 
