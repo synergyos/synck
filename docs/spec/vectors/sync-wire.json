@@ -16,7 +16,7 @@
             "generation": "019a2900-0000-7000-8000-000000000002"
           },
           "repo_seq": 1,
-          "checkpoint": "sha256:78d42b43a1f58c38dfd8760c99829ceca056f883afdb05828a48f54fe49dd2bd"
+          "checkpoint": "sha256:478e37b1379863936ab4c26caf7417b693d61e9bd7b66966eb55aaaa1202fa02"
         },
         "policy": {
           "max_events_per_commit": 500,
@@ -89,7 +89,7 @@
           "author_id": "owner",
           "committer_id": "device",
           "message": "Tidy",
-          "occurred_at": null
+          "occurred_at": "2026-10-28T09:00:00.000000000Z"
         },
         "event_count": 2,
         "events_digest": "sha256:344bdf25c487db429c8087b8b6180752f55e6a65015dd1bf9e80a45ac06ffaf0",
@@ -103,8 +103,8 @@
         "status": "accepted",
         "receipt": {
           "operation_id": "op:guarded",
-          "request_digest": "sha256:d58c77d84a60054cdd40d902b94f4e65a529e8c788657e61bb7833e959d9be2c",
-          "commit_id": "sha256:2408e41e4aa3b09cbbd42857653d9a7a13a810c442fc1c20af3d788979a260ff",
+          "request_digest": "sha256:aa8c92b30169bb089bbff8f3a7c05e7c94d2fedb05b0363bb3dc0f305b3bdd00",
+          "commit_id": "sha256:582a3af82f1f5108c49d7b3ab9f99a74872cc741e27847764a65d10473076571",
           "accepted_at": "2026-10-28T00:00:00.123456789Z",
           "published": {
             "repository": {
@@ -112,7 +112,7 @@
               "generation": "019a2900-0000-7000-8000-000000000002"
             },
             "repo_seq": 1,
-            "checkpoint": "sha256:78d42b43a1f58c38dfd8760c99829ceca056f883afdb05828a48f54fe49dd2bd"
+            "checkpoint": "sha256:478e37b1379863936ab4c26caf7417b693d61e9bd7b66966eb55aaaa1202fa02"
           }
         }
       }
@@ -146,8 +146,8 @@
       "type": "Receipt",
       "value": {
         "operation_id": "op:guarded",
-        "request_digest": "sha256:d58c77d84a60054cdd40d902b94f4e65a529e8c788657e61bb7833e959d9be2c",
-        "commit_id": "sha256:2408e41e4aa3b09cbbd42857653d9a7a13a810c442fc1c20af3d788979a260ff",
+        "request_digest": "sha256:aa8c92b30169bb089bbff8f3a7c05e7c94d2fedb05b0363bb3dc0f305b3bdd00",
+        "commit_id": "sha256:582a3af82f1f5108c49d7b3ab9f99a74872cc741e27847764a65d10473076571",
         "accepted_at": "2026-10-28T00:00:00.123456789Z",
         "published": null
       }
@@ -182,7 +182,7 @@
             "checkpoint": "sha256:84d3cd883cefdbec1867e506ea6ec1f046fdec7590c85c0cafa9baaae37c25b2"
           },
           "pending": {
-            "commit_id": "sha256:2408e41e4aa3b09cbbd42857653d9a7a13a810c442fc1c20af3d788979a260ff",
+            "commit_id": "sha256:582a3af82f1f5108c49d7b3ab9f99a74872cc741e27847764a65d10473076571",
             "next_event_index": 1
           }
         },
@@ -208,18 +208,18 @@
             "header": {
               "commit": {
                 "repo_id": "019a2900-0000-7000-8000-000000000001",
-                "commit_id": "sha256:2408e41e4aa3b09cbbd42857653d9a7a13a810c442fc1c20af3d788979a260ff",
+                "commit_id": "sha256:582a3af82f1f5108c49d7b3ab9f99a74872cc741e27847764a65d10473076571",
                 "repo_seq": 1,
                 "format_version": 6,
                 "author_id": "owner",
                 "committer_id": "device",
                 "message": "Tidy",
-                "occurred_at": null,
+                "occurred_at": "2026-10-28T09:00:00.000000000Z",
                 "created_at": "2026-10-28T00:00:00.123456789Z",
                 "event_count": 2,
                 "events_digest": "sha256:344bdf25c487db429c8087b8b6180752f55e6a65015dd1bf9e80a45ac06ffaf0"
               },
-              "checkpoint": "sha256:78d42b43a1f58c38dfd8760c99829ceca056f883afdb05828a48f54fe49dd2bd"
+              "checkpoint": "sha256:478e37b1379863936ab4c26caf7417b693d61e9bd7b66966eb55aaaa1202fa02"
             },
             "events": [
               {
@@ -228,7 +228,7 @@
                 "item_id": "019a2900-0000-7000-8000-000000000100",
                 "item_seq": 4,
                 "event_type": "FOLDER::SET_NAME",
-                "commit_id": "sha256:2408e41e4aa3b09cbbd42857653d9a7a13a810c442fc1c20af3d788979a260ff",
+                "commit_id": "sha256:582a3af82f1f5108c49d7b3ab9f99a74872cc741e27847764a65d10473076571",
                 "commit_event_idx": 0,
                 "repo_seq": 1,
                 "payload_json": "{\"base_seq\":3,\"event_type\":\"FOLDER::SET_NAME\",\"item_id\":\"019a2900-0000-7000-8000-000000000100\",\"set_name\":\"renamed\"}",
@@ -243,7 +243,7 @@
                 "owner_item_id": "019a2900-0000-7000-8000-000000000101",
                 "ref_seq": 3,
                 "event_type": "FILE_VERSION::TOMBSTONE",
-                "commit_id": "sha256:2408e41e4aa3b09cbbd42857653d9a7a13a810c442fc1c20af3d788979a260ff",
+                "commit_id": "sha256:582a3af82f1f5108c49d7b3ab9f99a74872cc741e27847764a65d10473076571",
                 "commit_event_idx": 1,
                 "repo_seq": 1,
                 "payload_json": "{\"base_ref_seq\":2,\"event_type\":\"FILE_VERSION::TOMBSTONE\",\"metadata_id\":\"sha256:4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d\",\"owner_item_id\":\"019a2900-0000-7000-8000-000000000101\"}",
@@ -273,7 +273,7 @@
             "generation": "019a2900-0000-7000-8000-000000000002"
           },
           "repo_seq": 1,
-          "checkpoint": "sha256:78d42b43a1f58c38dfd8760c99829ceca056f883afdb05828a48f54fe49dd2bd"
+          "checkpoint": "sha256:478e37b1379863936ab4c26caf7417b693d61e9bd7b66966eb55aaaa1202fa02"
         },
         "policy": {
           "max_events_per_commit": 500,
@@ -298,7 +298,7 @@
             "generation": "019a2900-0000-7000-8000-000000000002"
           },
           "repo_seq": 1,
-          "checkpoint": "sha256:78d42b43a1f58c38dfd8760c99829ceca056f883afdb05828a48f54fe49dd2bd"
+          "checkpoint": "sha256:478e37b1379863936ab4c26caf7417b693d61e9bd7b66966eb55aaaa1202fa02"
         },
         "policy": {
           "max_events_per_commit": 500,
@@ -370,7 +370,7 @@
           "author_id": "owner",
           "committer_id": "device",
           "message": "Tidy",
-          "occurred_at": null
+          "occurred_at": "2026-10-28T09:00:00.000000000Z"
         },
         "event_count": 2,
         "events_digest": "sha256:344bdf25c487db429c8087b8b6180752f55e6a65015dd1bf9e80a45ac06ffaf0",
@@ -454,18 +454,18 @@
             "header": {
               "commit": {
                 "repo_id": "019a2900-0000-7000-8000-000000000001",
-                "commit_id": "sha256:2408e41e4aa3b09cbbd42857653d9a7a13a810c442fc1c20af3d788979a260ff",
+                "commit_id": "sha256:582a3af82f1f5108c49d7b3ab9f99a74872cc741e27847764a65d10473076571",
                 "repo_seq": 1,
                 "format_version": 6,
                 "author_id": "owner",
                 "committer_id": "device",
                 "message": "Tidy",
-                "occurred_at": null,
+                "occurred_at": "2026-10-28T09:00:00.000000000Z",
                 "created_at": "2026-10-28T00:00:00.123456789Z",
                 "event_count": 2,
                 "events_digest": "sha256:344bdf25c487db429c8087b8b6180752f55e6a65015dd1bf9e80a45ac06ffaf0"
               },
-              "checkpoint": "sha256:78d42b43a1f58c38dfd8760c99829ceca056f883afdb05828a48f54fe49dd2bd"
+              "checkpoint": "sha256:478e37b1379863936ab4c26caf7417b693d61e9bd7b66966eb55aaaa1202fa02"
             },
             "events": [
               {
@@ -474,7 +474,7 @@
                 "item_id": "019a2900-0000-7000-8000-000000000100",
                 "item_seq": 4,
                 "event_type": "FOLDER::SET_NAME",
-                "commit_id": "sha256:2408e41e4aa3b09cbbd42857653d9a7a13a810c442fc1c20af3d788979a260ff",
+                "commit_id": "sha256:582a3af82f1f5108c49d7b3ab9f99a74872cc741e27847764a65d10473076571",
                 "commit_event_idx": 0,
                 "repo_seq": 1,
                 "payload_json": "{\"base_seq\":3,\"event_type\":\"FOLDER::SET_NAME\",\"item_id\":\"019a2900-0000-7000-8000-000000000100\",\"set_name\":\"renamed\"}",
@@ -490,7 +490,7 @@
                 "owner_item_id": "019a2900-0000-7000-8000-000000000101",
                 "ref_seq": 3,
                 "event_type": "FILE_VERSION::TOMBSTONE",
-                "commit_id": "sha256:2408e41e4aa3b09cbbd42857653d9a7a13a810c442fc1c20af3d788979a260ff",
+                "commit_id": "sha256:582a3af82f1f5108c49d7b3ab9f99a74872cc741e27847764a65d10473076571",
                 "commit_event_idx": 1,
                 "repo_seq": 1,
                 "payload_json": "{\"base_ref_seq\":2,\"event_type\":\"FILE_VERSION::TOMBSTONE\",\"metadata_id\":\"sha256:4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d\",\"owner_item_id\":\"019a2900-0000-7000-8000-000000000101\"}",
@@ -523,19 +523,19 @@
             "header": {
               "commit": {
                 "repo_id": "019a2900-0000-7000-8000-000000000001",
-                "commit_id": "sha256:2408e41e4aa3b09cbbd42857653d9a7a13a810c442fc1c20af3d788979a260ff",
+                "commit_id": "sha256:582a3af82f1f5108c49d7b3ab9f99a74872cc741e27847764a65d10473076571",
                 "repo_seq": 1,
                 "format_version": 6,
                 "author_id": "owner",
                 "committer_id": "device",
                 "message": "Tidy",
-                "occurred_at": null,
+                "occurred_at": "2026-10-28T09:00:00.000000000Z",
                 "created_at": "2026-10-28T00:00:00.123456789Z",
                 "event_count": 2,
                 "events_digest": "sha256:344bdf25c487db429c8087b8b6180752f55e6a65015dd1bf9e80a45ac06ffaf0",
                 "extension": 1
               },
-              "checkpoint": "sha256:78d42b43a1f58c38dfd8760c99829ceca056f883afdb05828a48f54fe49dd2bd"
+              "checkpoint": "sha256:478e37b1379863936ab4c26caf7417b693d61e9bd7b66966eb55aaaa1202fa02"
             },
             "events": [
               {
@@ -544,7 +544,7 @@
                 "item_id": "019a2900-0000-7000-8000-000000000100",
                 "item_seq": 4,
                 "event_type": "FOLDER::SET_NAME",
-                "commit_id": "sha256:2408e41e4aa3b09cbbd42857653d9a7a13a810c442fc1c20af3d788979a260ff",
+                "commit_id": "sha256:582a3af82f1f5108c49d7b3ab9f99a74872cc741e27847764a65d10473076571",
                 "commit_event_idx": 0,
                 "repo_seq": 1,
                 "payload_json": "{\"base_seq\":3,\"event_type\":\"FOLDER::SET_NAME\",\"item_id\":\"019a2900-0000-7000-8000-000000000100\",\"set_name\":\"renamed\"}",
@@ -559,7 +559,7 @@
                 "owner_item_id": "019a2900-0000-7000-8000-000000000101",
                 "ref_seq": 3,
                 "event_type": "FILE_VERSION::TOMBSTONE",
-                "commit_id": "sha256:2408e41e4aa3b09cbbd42857653d9a7a13a810c442fc1c20af3d788979a260ff",
+                "commit_id": "sha256:582a3af82f1f5108c49d7b3ab9f99a74872cc741e27847764a65d10473076571",
                 "commit_event_idx": 1,
                 "repo_seq": 1,
                 "payload_json": "{\"base_ref_seq\":2,\"event_type\":\"FILE_VERSION::TOMBSTONE\",\"metadata_id\":\"sha256:4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d\",\"owner_item_id\":\"019a2900-0000-7000-8000-000000000101\"}",
@@ -584,7 +584,7 @@
         "author_id": "owner",
         "committer_id": "device",
         "message": "Tidy",
-        "occurred_at": null
+        "occurred_at": "2026-10-28T09:00:00.000000000Z"
       },
       "event_count": 2,
       "events_digest": "sha256:344bdf25c487db429c8087b8b6180752f55e6a65015dd1bf9e80a45ac06ffaf0",
@@ -629,7 +629,7 @@
       "{\"base_seq\":3,\"event_type\":\"FOLDER::SET_NAME\",\"item_id\":\"019a2900-0000-7000-8000-000000000100\",\"set_name\":\"renamed\"}",
       "{\"base_ref_seq\":2,\"event_type\":\"FILE_VERSION::TOMBSTONE\",\"metadata_id\":\"sha256:4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d\",\"owner_item_id\":\"019a2900-0000-7000-8000-000000000101\"}"
     ],
-    "commit_id": "sha256:2408e41e4aa3b09cbbd42857653d9a7a13a810c442fc1c20af3d788979a260ff",
-    "request_digest": "sha256:d58c77d84a60054cdd40d902b94f4e65a529e8c788657e61bb7833e959d9be2c"
+    "commit_id": "sha256:582a3af82f1f5108c49d7b3ab9f99a74872cc741e27847764a65d10473076571",
+    "request_digest": "sha256:aa8c92b30169bb089bbff8f3a7c05e7c94d2fedb05b0363bb3dc0f305b3bdd00"
   }
 }

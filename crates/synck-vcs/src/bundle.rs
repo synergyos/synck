@@ -427,7 +427,11 @@ fn decode_header(line: &str) -> Result<BundleHeader, String> {
 pub fn parse_rfc3339_utc(s: &str) -> Result<DateTime<Utc>, String> {
     let dt =
         DateTime::parse_from_rfc3339(s).map_err(|e| format!("invalid rfc3339 timestamp: {e}"))?;
-    Ok(dt.with_timezone(&Utc))
+    let dt = dt.with_timezone(&Utc);
+    if !crate::types::timestamp_has_format_year(dt) {
+        return Err("timestamp UTC year must be 0000 through 9999".to_string());
+    }
+    Ok(dt)
 }
 
 pub fn validate_import_repo_seq(prev: Option<i64>, current: i64) -> Result<i64, String> {

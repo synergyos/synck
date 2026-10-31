@@ -285,6 +285,11 @@ def reserved(name):
     return "".join(c for c in fold(name) if c not in IGNORED) in (".synck", "synck~1")
 
 
+def ascii_upper(text):
+    """Python's upper() maps U+0131 to I, and the format folds ASCII only."""
+    return "".join(c.upper() if c.isascii() else c for c in text)
+
+
 def name_valid(name):
     if not name or len(name.encode("utf-8")) > 255 or name in (".", ".."):
         return False
@@ -296,7 +301,7 @@ def name_valid(name):
         return False
     if reserved(name):
         return False
-    return name.split(".")[0].rstrip(" ").upper() not in DEVICES
+    return ascii_upper(name.split(".")[0].rstrip(" ")) not in DEVICES
 
 
 # --- Vectors ---------------------------------------------------------------
@@ -747,16 +752,17 @@ def new_sync_wire():
     ref_payload = jcs_bytes(records[1]["value"])
     digest = events_digest([(0, sha(item_payload)), (1, sha(ref_payload))])
     guards = b"".join(sha(jcs_bytes(r["value"])) for r in records[2:])
+    occurred = "2026-10-28T09:00:00.000000000Z"
     metadata = {
         "author_id": "owner", "committer_id": "device", "message": "Tidy",
-        "occurred_at": None,
+        "occurred_at": occurred,
     }
     request = {
         "repository": identity, "operation_id": "op:guarded", "metadata": metadata,
         "event_count": 2, "events_digest": digest,
         "guard_count": 2, "guards_digest": sha_id(guards),
     }
-    commit_id = sha_id(jcs_bytes(header("owner", "device", None, "Tidy", 2, digest)))
+    commit_id = sha_id(jcs_bytes(header("owner", "device", occurred, "Tidy", 2, digest)))
     request_digest = sha_id(jcs_bytes(request))
 
     seconds, nanos = accepted_time(accepted)
@@ -766,7 +772,7 @@ def new_sync_wire():
     row = {
         "repo_id": identity["repo_id"], "commit_id": commit_id, "repo_seq": 1,
         "format_version": 6, "author_id": "owner", "committer_id": "device",
-        "message": "Tidy", "occurred_at": None, "created_at": accepted,
+        "message": "Tidy", "occurred_at": occurred, "created_at": accepted,
         "event_count": 2, "events_digest": digest,
     }
     item_row = {
@@ -1096,6 +1102,8 @@ def replay_commit(items, commit):
         source = event.get("merged_from") or (create or {}).get("derived_from")
         if create is not None and "merged_from" in event:
             raise Invalid("merged_from on a created item")
+        if create is not None and "set_link" in event:
+            raise Invalid("a creation carries its link in create_item")
         if source is not None:
             if set(source) != {"item_id", "item_seq"}:
                 raise Invalid("unknown source field")
@@ -1179,6 +1187,8 @@ def replay_commit(items, commit):
                 raise Invalid("a FOLDER has no content")
             item["content"] = event["set_content"]
         if event.get("set_is_federated") is True:
+            if item["type"] == "LOCAL_COMPANION":
+                raise Invalid("a LOCAL_COMPANION is never federated")
             item["mode"] = "FEDERATED"
             item["stream"] = event["set_federation_stream_id"]
         if event.get("set_is_federated") is False:
@@ -1414,6 +1424,14 @@ def new_records():
               update("r1", 1, "CHAT::FEDERATE", set_is_federated=True,
                      set_federation_stream_id="s"),
               record("c1", "LOCAL_COMPANION", key=ids["r1"], link=f1)], True),
+        ]),
+        ("a companion never federates", [
+            ([record("c1", "LOCAL_COMPANION", key=ids["r1"])], True),
+            ([update("c1", 1, "LOCAL_COMPANION::FEDERATE", set_is_federated=True,
+                     set_federation_stream_id="s")], False),
+        ]),
+        ("a creation carries its link in create_item", [
+            ([folder("F"), dict(record("r1", "CHAT"), set_link=f1)], False),
         ]),
         ("link a federated record", [
             ([folder("F"), record("r1", "CHAT")], True),

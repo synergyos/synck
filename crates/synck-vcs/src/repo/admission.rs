@@ -409,7 +409,7 @@ impl Repo {
         for (idx, (ev, payload)) in events.iter().zip(payloads.by_ref()).enumerate() {
             let item_id = &placement.item_ids[idx];
             let item = items.get(item_id).expect("event item id must exist in items map");
-            validate_event_type_matches_item(item_id, item.item_type.as_str(), ev.event_type.as_str())?;
+            validate_event_for_item(item_id, item.item_type.as_str(), ev)?;
             let event_hash = compute_sha256_digest_bytes(&payload);
             digest.update([COMMIT_EVENT_FAMILY_ITEM]);
             digest.update(event_hash);

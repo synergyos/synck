@@ -1198,6 +1198,65 @@
     ]
   },
   {
+    "name": "a companion never federates",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000205",
+            "event_type": "LOCAL_COMPANION::CREATE",
+            "create_item": {
+              "item_type": "LOCAL_COMPANION",
+              "key": "019a2900-0000-7000-8000-000000000202"
+            }
+          }
+        ],
+        "valid": true,
+        "state_digest": "sha256:400810d5e67d47188ec91c6274566ca6390a7c8007907fd006783ca284101ff4"
+      },
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000205",
+            "base_seq": 1,
+            "event_type": "LOCAL_COMPANION::FEDERATE",
+            "set_is_federated": true,
+            "set_federation_stream_id": "s"
+          }
+        ],
+        "valid": false,
+        "reason": "a LOCAL_COMPANION is never federated"
+      }
+    ]
+  },
+  {
+    "name": "a creation carries its link in create_item",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000200",
+            "event_type": "FOLDER::CREATE",
+            "create_item": {
+              "item_type": "FOLDER",
+              "name": "F"
+            }
+          },
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "CHAT::CREATE",
+            "create_item": {
+              "item_type": "CHAT"
+            },
+            "set_link": "019a2900-0000-7000-8000-000000000200"
+          }
+        ],
+        "valid": false,
+        "reason": "a creation carries its link in create_item"
+      }
+    ]
+  },
+  {
     "name": "link a federated record",
     "commits": [
       {

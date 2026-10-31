@@ -408,6 +408,11 @@ impl SemanticVerifier {
                         .and_then(|item| item.state.parent_folder_id.as_ref());
                 }
             }
+            if state.item_type == "LOCAL_COMPANION"
+                && state.sequencing_mode == SequencingMode::Federated
+            {
+                report("a LOCAL_COMPANION is federated");
+            }
             let Some(target) = &state.link_folder_id else {
                 continue;
             };

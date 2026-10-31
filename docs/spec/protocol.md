@@ -108,7 +108,8 @@ guard_count, guards_digest
 SHA-256 of its canonical payload, with all ordinary events before refs.
 `guards_digest` is SHA-256 of the concatenation of SHA-256 digests of each guard's
 canonical RFC 8785 JSON, in sorted order; an empty guard stream hashes empty
-bytes. `request_digest` hashes canonical RFC 8785 JSON of the final typed request.
+bytes. `request_digest` hashes canonical RFC 8785 JSON of the final typed request,
+with `occurred_at` in the format's one spelling.
 It binds generation, operation, metadata and both stream summaries. Page size or
 boundaries do not affect these identities.
 

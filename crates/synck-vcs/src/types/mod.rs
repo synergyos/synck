@@ -21,6 +21,31 @@ use crate::metadata::{Metadata, MetadataRef};
 /// canonical RFC 3339 UTC with a `Z` suffix.
 pub type Timestamp = DateTime<Utc>;
 
+/// The format's one spelling of a time: nine fractional digits and `Z`.
+pub mod format_time {
+    use super::Timestamp;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S: Serializer>(
+        time: &Option<Timestamp>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        time.map(|time| time.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true))
+            .serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<Timestamp>, D::Error> {
+        Option::<Timestamp>::deserialize(deserializer)
+    }
+}
+
+/// The time format has four year digits, so another year could never be read back.
+pub fn timestamp_has_format_year(time: Timestamp) -> bool {
+    (0..=9999).contains(&chrono::Datelike::year(&time))
+}
+
 /// Returns the current time in UTC.
 pub fn now() -> Timestamp {
     Utc::now()
@@ -572,6 +597,7 @@ pub struct CommitRow {
     pub committer_id: CommitterId,
     pub message: Option<String>,
     /// Optional origin/author timestamp ("author date") for history views.
+    #[serde(default, with = "format_time")]
     pub occurred_at: Option<Timestamp>,
     pub created_at: Timestamp,
     pub event_count: i32,
@@ -1192,6 +1218,11 @@ pub fn canonical_commit_bytes_for_hash(
             "leap seconds are not supported".into(),
         ));
     }
+    if occurred_at.is_some_and(|time| !timestamp_has_format_year(time)) {
+        return Err(CoreError::InvalidProposal(
+            "a time's UTC year must be 0000 through 9999".into(),
+        ));
+    }
     let value = serde_json::json!({
         "object_type": "vcs_commit",
         "format_version": COMMIT_FORMAT_VERSION,
@@ -1369,6 +1400,26 @@ mod tests {
             bytes,
             "accepted numbers must remain valid after canonical round trip"
         );
+    }
+
+    #[test]
+    fn commit_times_outside_the_format_years_are_refused() {
+        let digest = Sha256Digest::parse(format!("sha256:{}", "0".repeat(64))).unwrap();
+        let header = |time: &str| {
+            let time = DateTime::parse_from_rfc3339(time).unwrap().with_timezone(&Utc);
+            canonical_commit_bytes_for_hash(
+                &"a".to_string().into(),
+                &"b".to_string().into(),
+                Some(time),
+                None,
+                1,
+                &digest,
+            )
+        };
+        assert!(header("9999-12-31T23:59:59Z").is_ok());
+        assert!(header("0000-01-01T00:00:00Z").is_ok());
+        assert!(header("9999-12-31T23:59:59-23:59").is_err());
+        assert!(header("0000-01-01T00:00:00+23:59").is_err());
     }
 
     #[test]

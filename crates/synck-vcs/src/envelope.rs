@@ -234,12 +234,7 @@ impl CommitEnvelopeValidator {
             self.findings
                 .push(format!("{context}: item is created more than once"));
         }
-        if proposal.create_item.is_some()
-            && (proposal.set_parent.is_some()
-                || proposal.set_name.is_some()
-                || proposal.set_tombstoned.is_some()
-                || proposal.set_in_trash.is_some())
-        {
+        if proposal.create_item.is_some() && proposal.modifies_item() {
             self.findings.push(format!(
                 "{context}: creation is combined with structural modifiers"
             ));
@@ -313,12 +308,7 @@ impl CommitEnvelopeValidator {
                 None => {}
             }
         }
-        if (proposal.set_is_federated.is_some() || proposal.set_federation_stream_id.is_some())
-            && (proposal.set_parent.is_some()
-                || proposal.set_name.is_some()
-                || proposal.set_tombstoned.is_some()
-                || proposal.set_in_trash.is_some())
-        {
+        if proposal.changes_federation() && proposal.modifies_item() {
             self.findings.push(format!(
                 "{context}: federation transition is combined with structural modifiers"
             ));

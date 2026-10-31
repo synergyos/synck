@@ -1597,12 +1597,7 @@ impl Repo {
                 match ev.set_is_federated {
                     Some(false) => {
                         // Unfederate is allowed via ingest, but must be structurally pure.
-                        if ev.set_federation_stream_id.is_some()
-                            || ev.set_parent.is_some()
-                            || ev.set_name.is_some()
-                            || ev.set_tombstoned.is_some()
-                            || ev.set_in_trash.is_some()
-                        {
+                        if ev.set_federation_stream_id.is_some() || ev.modifies_item() {
                             return Err(CoreError::IllegalFederationTransition);
                         }
                         mode_change_count += 1;
@@ -1620,13 +1615,9 @@ impl Repo {
                             .set_federation_stream_id
                             .as_deref()
                             .is_some_and(|fid| fid == proposal.federation_stream_id);
-                        let structurally_pure = ev.set_parent.is_none()
-                            && ev.set_name.is_none()
-                            && ev.set_tombstoned.is_none()
-                            && ev.set_in_trash.is_none();
                         if !bootstrap_create
                             || !same_stream
-                            || !structurally_pure
+                            || ev.modifies_item()
                             || bootstrap_rebind_seen
                         {
                             return Err(CoreError::IllegalFederationTransition);
@@ -1793,6 +1784,9 @@ impl Repo {
                     return Err(CoreError::InvalidProposal(
                         "unknown federation_stream_id; first event must be create_item".to_string(),
                     ));
+                }
+                if item_row.item_type == "LOCAL_COMPANION" {
+                    return Err(CoreError::IllegalFederationTransition);
                 }
 
                 first.set_is_federated = Some(true);
@@ -2757,11 +2751,15 @@ fn event_type_matches_item_type(event_type: &str, item_type: &str) -> bool {
     }
 }
 
-fn validate_event_type_matches_item(
+fn validate_event_for_item(
     item_id: &ItemId,
     item_type: &str,
-    event_type: &str,
+    event: &EventProposal,
 ) -> Result<(), CoreError> {
+    if item_type == "LOCAL_COMPANION" && event.changes_federation() {
+        return Err(CoreError::IllegalFederationTransition);
+    }
+    let event_type = event.event_type.as_str();
     let Some(_) = item_type_prefix_from_event_type(event_type) else {
         return Err(CoreError::InvalidProposal(format!(
             "event_type must include item type prefix: `{event_type}`"
@@ -2781,7 +2779,7 @@ fn validate_event_types_match_item(
     events: &[EventProposal],
 ) -> Result<(), CoreError> {
     for ev in events {
-        validate_event_type_matches_item(item_id, item_type, ev.event_type.as_str())?;
+        validate_event_for_item(item_id, item_type, ev)?;
     }
     Ok(())
 }

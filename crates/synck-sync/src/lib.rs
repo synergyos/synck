@@ -136,6 +136,8 @@ pub struct CommitMetadata {
     pub author_id: String,
     pub committer_id: String,
     pub message: Option<String>,
+    /// The commit ID hashes one spelling, so the request digest uses it too.
+    #[serde(default, with = "synck_vcs::types::format_time")]
     pub occurred_at: Option<Timestamp>,
 }
 
