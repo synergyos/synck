@@ -1402,6 +1402,16 @@ impl Repo {
             &file_folder_parent_closure_item_ids,
         )
         .await?;
+        // A domain's tombstone cannot clear a local link, so filing goes through the domain.
+        let sets_link = proposal.events.iter().any(|event| {
+            matches!(event.set_link, Some(Some(_)))
+                || event.create_item.as_ref().is_some_and(|create| create.link.is_some())
+        });
+        if sets_link && txn.has_federation_domain(&repo_id).await? {
+            return Err(CoreError::InvalidProposal(
+                "a repository following a federation domain files through the domain".to_string(),
+            ));
+        }
 
         let can_use_head_only_item_updates =
             !proposal.events.iter().any(EventProposal::changes_structure);

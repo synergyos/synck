@@ -49,6 +49,15 @@ fn creation(id: &ItemId, kind: &str, parent: Option<ItemId>, name: &str) -> Even
 }
 
 async fn fixture() -> Fixture {
+    fixture_with_domain(true).await
+}
+
+/// A repository that follows no federation domain, so it accepts local links.
+async fn local_fixture() -> Fixture {
+    fixture_with_domain(false).await
+}
+
+async fn fixture_with_domain(domain: bool) -> Fixture {
     let temporary = tempfile::tempdir().unwrap();
     let root = temporary.path().to_path_buf();
     let source = root.join("source");
@@ -113,7 +122,9 @@ async fn fixture() -> Fixture {
     core.sequence_repo_activity(repo_id.clone(), 100)
         .await
         .unwrap();
-    storage.open_writable().unwrap().execute("INSERT INTO vcs_federation_domains VALUES (?1,'preserved-domain',9,'2026-01-01T00:00:00.000000000Z','2026-01-01T00:00:00.000000000Z')",[repo_id.as_str()]).unwrap();
+    if domain {
+        storage.open_writable().unwrap().execute("INSERT INTO vcs_federation_domains VALUES (?1,'preserved-domain',9,'2026-01-01T00:00:00.000000000Z','2026-01-01T00:00:00.000000000Z')",[repo_id.as_str()]).unwrap();
+    }
     storage.project_imported_history(&repo_id).await.unwrap();
     let transfer = root.join("transfer");
     PortableRepository::open(&source)
@@ -927,7 +938,7 @@ async fn complete_checkout_preserves_file_ids_through_filesystem_moves() {
 #[tokio::test]
 async fn checkout_folder_deletion_leaves_linked_records_in_place() {
     use synck_local::Repository;
-    let fixture = fixture().await;
+    let fixture = local_fixture().await;
     let storage = SqliteStorage::new(fixture.source.join(".synck/repository.sqlite3"));
     let core = Repo::new(
         Storage::new(Arc::new(storage.clone())),
@@ -1119,7 +1130,7 @@ async fn complete_checkout_recovery_refuses_changed_source_and_bare_open_stays_r
 
 #[tokio::test]
 async fn local_email_import_preserves_source_and_materializes_one_atomic_email() {
-    let fixture = fixture().await;
+    let fixture = local_fixture().await;
     let source = fixture.root.join("source.EML");
     let bytes =
         include_bytes!("../../synck-items/tests/fixtures/imported_email/representative.eml");
@@ -1783,7 +1794,7 @@ async fn history_verifies_with_absent_content_and_metadata_but_complete_export_r
 
 #[tokio::test]
 async fn repeating_an_email_import_survives_its_folder_leaving() {
-    let fixture = fixture().await;
+    let fixture = local_fixture().await;
     let folder = ItemId::new();
     let core = Repo::new(
         Storage::new(Arc::new(SqliteStorage::new(fixture.source.join(".synck/repository.sqlite3")))),
@@ -1816,7 +1827,7 @@ async fn repeating_an_email_import_survives_its_folder_leaving() {
 
 #[tokio::test]
 async fn listing_a_folder_finds_only_what_is_filed_there() {
-    let fixture = fixture().await;
+    let fixture = local_fixture().await;
     let (filed, other) = (ItemId::new(), ItemId::new());
     let (task, elsewhere) = (ItemId::new(), ItemId::new());
     let core = Repo::new(

@@ -361,6 +361,9 @@ pub trait StorageTxn: Send {
         domain_id: &str,
     ) -> Result<i64, StorageError>;
 
+    /// Whether this repository follows a federation domain.
+    async fn has_federation_domain(&mut self, repo_id: &RepoId) -> Result<bool, StorageError>;
+
     /// Update the federation domain cursor to the new last domain seq.
     async fn federation_domain_set_last_seq(
         &mut self,

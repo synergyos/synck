@@ -2815,3 +2815,56 @@ async fn a_folder_never_federates() {
         .unwrap_err();
     assert!(matches!(error, CoreError::IllegalFederationTransition), "{error}");
 }
+
+#[tokio::test]
+async fn filing_in_a_domain_repository_goes_through_the_domain() {
+    let (_dir, storage) = backend();
+    storage.init_schema().await.unwrap();
+    let repo_id = RepoId::new();
+    let repo = Repo::new(Storage::new(Arc::new(storage)), CoreConfig::default());
+    let (folder, shared, chat, companion) =
+        (ItemId::new(), ItemId::new(), ItemId::new(), ItemId::new());
+    let record = |id: &ItemId, kind: &str, key: Option<String>, link: Option<ItemId>| {
+        event_of(serde_json::json!({
+            "item_id": id, "event_type": format!("{kind}::CREATE"),
+            "create_item": CreateItem::record(kind, key, link),
+        }))
+    };
+    repo.ingest_domain(repo_id.clone(), domain(1, vec![
+        event_of(serde_json::json!({
+            "item_id": folder, "event_type": "FOLDER::CREATE",
+            "create_item": CreateItem::tree("FOLDER", None, "Contracts"),
+        })),
+        record(&chat, "CHAT", None, None),
+        record(&shared, "TASK", None, Some(folder.clone())),
+    ], vec![])).await.unwrap();
+
+    let error = repo
+        .append(repo_id.clone(), commit(vec![record(
+            &companion, "LOCAL_COMPANION", Some(chat.to_string()), Some(folder.clone()),
+        )]))
+        .await
+        .unwrap_err();
+    assert!(matches!(error, CoreError::InvalidProposal(_)), "{error}");
+    let error = repo
+        .append(repo_id.clone(), commit(vec![event_of(serde_json::json!({
+            "item_id": chat, "event_type": "CHAT::SET_LINK", "base_seq": 1, "set_link": folder,
+        }))]))
+        .await
+        .unwrap_err();
+    assert!(matches!(error, CoreError::InvalidProposal(_)), "{error}");
+
+    // A companion without a link stays local, and a domain tombstone still applies.
+    repo.append(repo_id.clone(), commit(vec![record(
+        &companion, "LOCAL_COMPANION", Some(chat.to_string()), None,
+    )])).await.unwrap();
+    let tombstone = |id: &ItemId, kind: &str| {
+        event_of(serde_json::json!({
+            "item_id": id, "event_type": format!("{kind}::TOMBSTONE"), "base_seq": 1,
+            "set_tombstoned": true,
+        }))
+    };
+    repo.ingest_domain(repo_id.clone(), domain(2, vec![
+        tombstone(&shared, "TASK"), tombstone(&folder, "FOLDER"),
+    ], vec![])).await.unwrap();
+}

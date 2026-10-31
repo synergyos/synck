@@ -289,6 +289,9 @@ neither. That is federated bootstrap: the item starts FEDERATED, and one more
 switching to federated is a local append and switching to local is a federated
 ingest. At most one mode change per item per commit is permitted. A FOLDER never
 federates: a shared tree replicates as a whole repository through a federation domain.
+Everything in that repository belongs to the domain. Filing there goes through the
+domain, and append refuses to set a link, because a tombstone arriving through the
+domain could not clear it.
 
 ### Tree items and records
 
@@ -348,7 +351,8 @@ it grants is product policy.
 A LOCAL_COMPANION record carries filing for a record this repository does not
 own. Its `key` is the target record's item ID, and its `link` is the folder. It is
 always LOCAL, and federation never carries it, so each repository keeps its own
-filing, as Git notes attach local data to objects you do not own.
+filing, as Git notes attach local data to objects you do not own. In a repository
+following a federation domain it has no link.
 
 `vectors/records.json` lists commit sequences with the expected result.
 

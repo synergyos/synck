@@ -1796,6 +1796,16 @@ impl StorageTxn for SqliteTxn {
             .map_err(map_sqlite_error)
     }
 
+    async fn has_federation_domain(&mut self, repo_id: &RepoId) -> Result<bool, StorageError> {
+        self.conn()?
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM vcs_federation_domains WHERE repo_id = ?1)",
+                params![repo_id.as_str()],
+                |row| row.get(0),
+            )
+            .map_err(map_sqlite_error)
+    }
+
     async fn federation_domain_set_last_seq(
         &mut self,
         repo_id: &RepoId,
