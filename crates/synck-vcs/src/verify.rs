@@ -413,14 +413,6 @@ impl SemanticVerifier {
                         .and_then(|item| item.state.parent_folder_id.as_ref());
                 }
             }
-            if state.item_type == "LOCAL_COMPANION"
-                && state.sequencing_mode == SequencingMode::Federated
-            {
-                report("a LOCAL_COMPANION is federated");
-            }
-            if state.item_type == "FOLDER" && state.sequencing_mode == SequencingMode::Federated {
-                report("a FOLDER is federated");
-            }
             let Some(target) = &state.link_folder_id else {
                 continue;
             };
@@ -496,6 +488,11 @@ impl SemanticVerifier {
         let Some(item) = self.replayed_items.get_mut(&event.item_id) else {
             return;
         };
+        if proposal.set_is_federated == Some(true)
+            && matches!(item.state.item_type.as_str(), "FOLDER" | "LOCAL_COMPANION")
+        {
+            findings.push(format!("{context}: this item type is never federated"));
+        }
         let transition = match apply_item_event(&mut item.state, proposal) {
             Ok(transition) => transition,
             Err(error) => {

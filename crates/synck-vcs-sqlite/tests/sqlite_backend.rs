@@ -2748,6 +2748,46 @@ async fn a_link_set_in_a_commit_needs_a_live_folder_whatever_it_was_before() {
 }
 
 #[tokio::test]
+async fn tombstoning_a_folder_clears_or_tombstones_what_is_filed_there() {
+    let (_dir, storage) = backend();
+    storage.init_schema().await.unwrap();
+    let repo_id = RepoId::new();
+    let repo = Repo::new(Storage::new(Arc::new(storage)), CoreConfig::default());
+    let (folder, cleared, gone) = (ItemId::new(), ItemId::new(), ItemId::new());
+    let task = |id: &ItemId| {
+        event_of(serde_json::json!({
+            "item_id": id, "event_type": "TASK::CREATE",
+            "create_item": CreateItem::record("TASK", None, Some(folder.clone())),
+        }))
+    };
+    repo.append(repo_id.clone(), commit(vec![
+        event_of(serde_json::json!({
+            "item_id": folder, "event_type": "FOLDER::CREATE",
+            "create_item": CreateItem::tree("FOLDER", None, "doomed"),
+        })),
+        task(&cleared), task(&gone),
+    ])).await.unwrap();
+    let tombstone = |id: &ItemId, kind: &str| {
+        event_of(serde_json::json!({
+            "item_id": id, "event_type": format!("{kind}::TOMBSTONE"), "base_seq": 1,
+            "set_tombstoned": true,
+        }))
+    };
+    let error = repo
+        .append(repo_id.clone(), commit(vec![tombstone(&folder, "FOLDER")]))
+        .await
+        .unwrap_err();
+    assert!(matches!(error, CoreError::InvalidProposal(_)), "{error}");
+    let mut clear = tombstone(&cleared, "TASK");
+    clear.event_type = "TASK::SET_LINK".to_string();
+    clear.set_tombstoned = None;
+    clear.set_link = Some(None);
+    repo.append(repo_id.clone(), commit(vec![
+        clear, tombstone(&gone, "TASK"), tombstone(&folder, "FOLDER"),
+    ])).await.unwrap();
+}
+
+#[tokio::test]
 async fn a_folder_never_federates() {
     let (_dir, storage) = backend();
     storage.init_schema().await.unwrap();
@@ -2762,6 +2802,14 @@ async fn a_folder_never_federates() {
         .append(repo_id.clone(), commit(vec![event_of(serde_json::json!({
             "item_id": id, "event_type": "FOLDER::FEDERATE", "base_seq": 1,
             "set_is_federated": true, "set_federation_stream_id": "shared-folder",
+        }))]))
+        .await
+        .unwrap_err();
+    assert!(matches!(error, CoreError::IllegalFederationTransition), "{error}");
+    let error = repo
+        .ingest(repo_id.clone(), federated("bootstrap", 1, vec![event_of(serde_json::json!({
+            "event_type": "FOLDER::CREATE",
+            "create_item": CreateItem::tree("FOLDER", None, "bootstrap"),
         }))]))
         .await
         .unwrap_err();

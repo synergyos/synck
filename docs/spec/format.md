@@ -328,16 +328,17 @@ folders a record type may use is product policy, not format. A link has no name
 and no path, and a checkout ignores it. It is structural and never encrypted, so
 any reader can find what is filed in a folder. `create_item.link` sets it and
 `set_link` changes or clears it. The core rejects `link` and `set_link` on tree
-items. At the end of a commit:
+items. At the end of a commit, for every record that is not tombstoned:
 
 - A link set in that commit targets a LIVE FOLDER. It may target a folder created
   in the same commit.
-- No record that is not tombstoned links to a TOMBSTONED folder, including a
-  record in the trash. Tombstoning a folder must, in the same commit, clear or
-  tombstone every record still linked to it.
-- No FEDERATED item has a link. A federated record's history is shared, so a
-  local link cannot live on it. Federating a linked record clears the link in the
-  same commit.
+- Its link does not target a TOMBSTONED folder, even from the trash. Tombstoning a
+  folder must, in the same commit, clear or tombstone every record still linked to
+  it.
+- A FEDERATED record has no link. Its history is shared, so a local link cannot
+  live on it. Federating a linked record clears the link in the same commit.
+
+A tombstone is final and keeps the record's link as it stood.
 
 Trash does not change links: a link may point to a folder in the trash, and
 restoring the folder finds its records in place. Trashing a folder together with

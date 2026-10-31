@@ -1289,6 +1289,57 @@
     ]
   },
   {
+    "name": "a folder never federates, even within one commit",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000200",
+            "event_type": "FOLDER::CREATE",
+            "create_item": {
+              "item_type": "FOLDER",
+              "name": "F"
+            },
+            "set_is_federated": true,
+            "set_federation_stream_id": "s"
+          },
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000200",
+            "event_type": "FOLDER::FEDERATE",
+            "set_is_federated": false
+          }
+        ],
+        "valid": false,
+        "reason": "this item type is never federated"
+      }
+    ]
+  },
+  {
+    "name": "a record may leave federation in the commit that created it",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "CHAT::CREATE",
+            "create_item": {
+              "item_type": "CHAT"
+            },
+            "set_is_federated": true,
+            "set_federation_stream_id": "s"
+          },
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "CHAT::FEDERATE",
+            "set_is_federated": false
+          }
+        ],
+        "valid": true,
+        "state_digest": "sha256:7add0cf383bbb38306497803848ca83bd61ffb9c0e3567784c27e3c60716a1c7"
+      }
+    ]
+  },
+  {
     "name": "a new link never targets a tombstoned folder",
     "commits": [
       {

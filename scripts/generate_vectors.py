@@ -1199,7 +1199,11 @@ def replay_commit(items, commit):
                 raise Invalid("this item type is never federated")
             item["mode"] = "FEDERATED"
             item["stream"] = event["set_federation_stream_id"]
+        if "set_federation_stream_id" in event and event.get("set_is_federated") is not True:
+            raise Invalid("a stream comes with a federation")
         if event.get("set_is_federated") is False:
+            if item["mode"] != "FEDERATED":
+                raise Invalid("only a federated item returns to local")
             item["mode"] = "LOCAL"
             item["stream"] = None
 
@@ -1445,6 +1449,14 @@ def new_records():
             ([folder("F")], True),
             ([update("f1", 1, "FOLDER::FEDERATE", set_is_federated=True,
                      set_federation_stream_id="s")], False),
+        ]),
+        ("a folder never federates, even within one commit", [
+            ([dict(folder("F"), set_is_federated=True, set_federation_stream_id="s"),
+              {"item_id": f1, "event_type": "FOLDER::FEDERATE", "set_is_federated": False}], False),
+        ]),
+        ("a record may leave federation in the commit that created it", [
+            ([dict(record("r1", "CHAT"), set_is_federated=True, set_federation_stream_id="s"),
+              {"item_id": ids["r1"], "event_type": "CHAT::FEDERATE", "set_is_federated": False}], True),
         ]),
         ("a new link never targets a tombstoned folder", [
             ([folder("F")], True),

@@ -1814,3 +1814,38 @@ async fn repeating_an_email_import_survives_its_folder_leaving() {
     assert_eq!(repeated, first);
 }
 
+#[tokio::test]
+async fn listing_a_folder_finds_only_what_is_filed_there() {
+    let fixture = fixture().await;
+    let (filed, other) = (ItemId::new(), ItemId::new());
+    let (task, elsewhere) = (ItemId::new(), ItemId::new());
+    let core = Repo::new(
+        Storage::new(Arc::new(SqliteStorage::new(fixture.source.join(".synck/repository.sqlite3")))),
+        CoreConfig::default(),
+    );
+    let linked = |id: &ItemId, link: &ItemId| -> EventProposal {
+        EventProposal::from_fields(json!({
+            "item_id": id, "event_type": "TASK::CREATE",
+            "create_item": CreateItem::record("TASK", None, Some(link.clone())),
+        }))
+        .unwrap()
+    };
+    core.append(
+        fixture.repo_id.clone(),
+        proposal(vec![
+            creation(&filed, "FOLDER", None, "filed"),
+            creation(&other, "FOLDER", None, "other"),
+            linked(&task, &filed),
+            linked(&elsewhere, &other),
+        ]),
+    )
+    .await
+    .unwrap();
+    core.sequence_repo_activity(fixture.repo_id.clone(), 100).await.unwrap();
+    let repository = PortableRepository::open(&fixture.source).unwrap();
+    let listed = repository.list_records(Some(&filed), None, 10).await.unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].item_id, task);
+    let all = repository.list_records(None, None, 10).await.unwrap();
+    assert!(all.iter().any(|row| row.item_id == elsewhere));
+}
