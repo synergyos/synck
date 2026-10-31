@@ -647,13 +647,50 @@ async fn a_follower_ignores_checkout_state_until_its_config_names_a_writer() {
     .unwrap();
     fs::write(follower.join(".synck/checkout-source.json"), b"[]").unwrap();
 
+    let copy_of = |name: &str| {
+        let copy = temp.path().join(name);
+        assert!(Command::new("cp").arg("-Rp").arg(&follower).arg(&copy).status().unwrap().success());
+        copy
+    };
+    // Nothing here is a checkout, so nothing here needs recovery.
+    let copy = copy_of("collected");
+    PortableRepository::open(&copy).unwrap().gc().await.unwrap();
+    assert!(!copy.join(".synck/checkout.json").exists());
+    assert!(!copy.join(".synck/checkout-source.json").exists());
+
+    // Activation makes a writer, which would read these files.
+    let copy = copy_of("activated");
+    run(&copy, &["repository", "activate", ".", "--author", "writer", "--source-retired"]);
+    assert!(!copy.join(".synck/checkout.json").exists());
+    assert!(!copy.join(".synck/checkout-source.json").exists());
+    run(&copy, &["repository", "verify", "."]);
+
     let mut repository = PortableRepository::open(&follower).unwrap();
     assert!(repository.checkout_paths().is_none());
     repository.enable_checkout("reader", &[]).await.unwrap();
     drop(repository);
-    assert_eq!(fs::read_to_string(follower.join(".synckignore")).is_ok(), true);
+    assert!(follower.join(".synckignore").is_file());
     assert!(!follower.join(".synck/checkout-source.json").exists());
     run(&follower, &["fsck"]);
+}
+
+#[test]
+fn a_move_refuses_an_oversized_message_before_it_journals() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    run(root, &["init", "--author", "tester"]);
+    fs::write(root.join("a.txt"), "a\n").unwrap();
+    run(root, &["commit", "-m", "first"]);
+    let message = "m".repeat(synck_file_folder::MAX_MESSAGE_BYTES + 1);
+    let output = Command::new(env!("CARGO_BIN_EXE_synck"))
+        .current_dir(root)
+        .args(["mv", "-m", &message, "a.txt", "b.txt"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(root.join("a.txt").exists());
+    run(root, &["status"]);
+    run(root, &["mv", "-m", "moved", "a.txt", "b.txt"]);
 }
 
 #[test]

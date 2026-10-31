@@ -344,6 +344,38 @@ fn errors_poison_only_the_typed_reader_and_do_not_modify_source_events() {
 }
 
 #[test]
+fn an_erased_payload_reads_as_missing_in_a_chat_and_its_subitems() {
+    let erased = || synck_vcs::metadata::MetadataRef::Absent(ObjectId::from_digest([1; 32]));
+    let (mut reader, id) = create("CHAT");
+    apply(
+        &mut reader,
+        &event(&id, "CHAT::MESSAGE::CREATE", json!({}), json_body("first")),
+        "alice",
+    );
+    for (event_type, metadata) in [
+        ("CHAT::SET_PROFILE", json!({})),
+        ("CHAT::ADD_ASSISTANT", json!({})),
+        ("CHAT::UPSERT_USER_PARTICIPANT", json!({})),
+        ("CHAT::MESSAGE::CREATE", json!({})),
+        ("CHAT::MESSAGE::SET_CONTENT", json!({})),
+    ] {
+        let mut erased_event = event(&id, event_type, metadata, None);
+        erased_event.set_metadata = Some(erased());
+        apply(&mut reader, &erased_event, "alice");
+    }
+    // A later event can name what the erased payload created.
+    let erased_message = reader.latest_item_seq() - 1;
+    apply(
+        &mut reader,
+        &event(&id, "CHAT::MESSAGE::SET_CONTENT", json!({"item_seq": erased_message}), json_body("edited")),
+        "alice",
+    );
+    let snapshot = reader.snapshot().unwrap();
+    assert_eq!(snapshot.subitems.len(), 1);
+    assert!(snapshot.chat.unwrap().profile.is_none());
+}
+
+#[test]
 fn tree_items_have_no_title_or_link_events() {
     for (kind, event_type) in [
         ("FILE", "FILE::SET_TITLE"),

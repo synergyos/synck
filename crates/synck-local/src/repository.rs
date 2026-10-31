@@ -1466,10 +1466,21 @@ fn remove_entry(parent: &Dir, name: &std::ffi::OsStr, display: &Path) -> Result<
     Ok(())
 }
 
+/// `fsync` leaves a rename in the drive's cache on Apple systems. Some filesystems have
+/// no full flush, and there `fsync` is all there is.
+#[cfg(unix)]
+fn flush_directory(directory: impl rustix::fd::AsFd) -> io::Result<()> {
+    #[cfg(target_vendor = "apple")]
+    if rustix::fs::fcntl_fullfsync(&directory).is_ok() {
+        return Ok(());
+    }
+    rustix::fs::fsync(directory).map_err(io::Error::from)
+}
+
 pub(crate) fn sync_directory(path: &Path) -> Result<()> {
     #[cfg(unix)]
     {
-        use rustix::fs::{CWD, Mode, OFlags, fsync, openat};
+        use rustix::fs::{CWD, Mode, OFlags, openat};
 
         let directory = openat(
             CWD,
@@ -1479,9 +1490,7 @@ pub(crate) fn sync_directory(path: &Path) -> Result<()> {
         )
         .map_err(std::io::Error::from)
         .at("open directory", path)?;
-        fsync(directory)
-            .map_err(std::io::Error::from)
-            .at("sync directory", path)
+        flush_directory(directory).at("sync directory", path)
     }
     #[cfg(windows)]
     {
@@ -1532,9 +1541,7 @@ pub(crate) fn sync_open_directory(directory: &Dir, display: &Path) -> Result<()>
         )
         .map_err(io::Error::from)
         .at("open directory for sync", display)?;
-        rustix::fs::fsync(handle)
-            .map_err(io::Error::from)
-            .at("sync directory", display)
+        flush_directory(handle).at("sync directory", display)
     }
     #[cfg(windows)]
     {

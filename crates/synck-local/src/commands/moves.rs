@@ -169,6 +169,7 @@ impl Repository {
                 "move message must not be empty".to_string(),
             ));
         }
+        validate_commit_message(Some(message))?;
         let (committed, working, changes, _) = self.changes().await?;
         if !changes.is_empty() {
             return Err(LocalError::Invalid(

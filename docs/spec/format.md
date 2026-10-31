@@ -112,10 +112,10 @@ zero. In hashed JSON they stop at 2^53 - 1, like every number. Event indexes sta
 at zero and event counts are positive; both fit signed 32-bit storage/API integers.
 There is no smaller policy cap.
 
-Time strings are RFC 3339 UTC. A writer uses one spelling: nine fractional digits
-and `Z`. A reader compares instants, not spellings, and decodes acceptance time to
-seconds and nanoseconds for checkpoint hashing. The commit's `occurred_at` is hashed,
-so there only the writer's spelling is valid.
+Time strings are RFC 3339 UTC, with years 0000 through 9999. A writer uses one
+spelling: nine fractional digits and `Z`. A reader compares instants, not spellings,
+and decodes acceptance time to seconds and nanoseconds for checkpoint hashing. The
+commit's `occurred_at` is hashed, so there only the writer's spelling is valid.
 
 ## Canonical JSON
 
@@ -230,7 +230,9 @@ the creation commit.
 Replay follows fields, not names. The core-event table is what writers emit and
 what families admit; a structural field on any event of the item's family applies
 with the same checks, so an unknown event type replays. The exceptions are the
-content rules below.
+content rules below, and two replay rules: an event that creates an item, and an
+event that changes `set_is_federated` or `set_federation_stream_id`, sets none of
+`set_parent`, `set_name`, `set_link`, `set_tombstoned` and `set_in_trash`.
 
 There are two kinds of rule. A replay rule depends only on structure, so any
 verifier applies it to any history, without metadata or family knowledge. An

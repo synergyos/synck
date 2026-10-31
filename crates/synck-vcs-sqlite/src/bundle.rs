@@ -16,6 +16,7 @@ use synck_vcs::repo::Repo;
 use synck_vcs::state::catch_up_state_index;
 use synck_vcs::storage::{SealedCommitInsert, Storage, StorageBackend, StorageTxn};
 use synck_vcs::types::{
+    parse_hashed_time,
     CommitId, CommitPk, EventInsertRow, ItemId, ItemRow, RefEventInsertRow, RepoId, Sha256Digest,
     Timestamp, sha256_prefixed_hex_from_digest_bytes,
 };
@@ -77,12 +78,11 @@ impl PendingCommit {
                 occurred_at: record
                     .occurred_at
                     .as_deref()
-                    .map(parse_rfc3339_utc)
+                    .map(parse_hashed_time)
                     .transpose()?,
                 created_at: parse_rfc3339_utc(&record.created_at)?,
-                commit_id: CommitId::parse(record.commit_id).map_err(|error| error.to_string())?,
-                events_digest: Sha256Digest::parse(record.events_digest)
-                    .map_err(|error| error.to_string())?,
+                commit_id: CommitId::parse_stored(&record.commit_id)?,
+                events_digest: Sha256Digest::parse_stored(&record.events_digest)?,
                 event_count: record.event_count,
             },
             events: Vec::new(),

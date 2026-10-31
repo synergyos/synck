@@ -339,6 +339,42 @@ fn checkout_survives_a_kill_at_every_mutation() {
     });
 }
 
+/// A writer reads checkout state, so a kill must not leave one under its old author.
+#[test]
+#[ignore = "kills a real process at every mutation"]
+fn checkout_of_a_writer_survives_a_kill_at_every_mutation() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("source");
+    base(&source);
+    let expected = tree(&source);
+    let writer = directory.path().join("writer");
+    ok(&source, &["repository", "import", ".", writer.to_str().unwrap()]);
+    ok(&writer, &["repository", "activate", ".", "--author", "before", "--source-retired"]);
+    let args = ["repository", "checkout", ".", "--author", "reader"];
+    each_kill(&writer, &args, |crashed, context| {
+        succeeds(crashed, &args, context);
+        assert_eq!(tree(crashed), expected, "{context}");
+        succeeds(crashed, &["fsck"], context);
+    });
+}
+
+/// A kill before enabling commits leaves a follower, and activating that makes a writer
+/// with nothing of the abandoned checkout.
+#[test]
+#[ignore = "kills a real process at every mutation"]
+fn activating_after_a_killed_checkout_leaves_a_working_repository() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("source");
+    base(&source);
+    let follower = directory.path().join("follower");
+    ok(&source, &["repository", "import", ".", follower.to_str().unwrap()]);
+    let args = ["repository", "checkout", ".", "--author", "reader"];
+    each_kill(&follower, &args, |crashed, context| {
+        succeeds(crashed, &["repository", "activate", ".", "--author", "writer", "--source-retired"], context);
+        succeeds(crashed, &["repository", "verify", "."], context);
+    });
+}
+
 const OPERATION: &str = "019a2900-0000-4000-8000-000000000001";
 
 #[test]
@@ -361,6 +397,24 @@ fn replaying_an_operation_finishes_a_killed_acceptance() {
     let source = directory.path().join("source.txt");
     fs::write(&source, "new\n").unwrap();
     let args = ["repository", "create-file", "new.txt", source.to_str().unwrap(), "-m", "add", "--operation-id", OPERATION];
+    each_kill(&prepared, &args, |crashed, context| {
+        succeeds(crashed, &args, context);
+        succeeds(crashed, &["fsck"], context);
+    });
+}
+
+#[test]
+#[ignore = "kills a real process at every mutation"]
+fn replaying_a_save_finishes_a_killed_acceptance() {
+    let directory = tempfile::tempdir().unwrap();
+    let prepared = directory.path().join("prepared");
+    base(&prepared);
+    let source = directory.path().join("source.txt");
+    fs::write(&source, "saved\n").unwrap();
+    let listed: serde_json::Value = serde_json::from_str(&ok(&prepared, &["item", "list"])).unwrap();
+    let entry = listed["items"].as_array().unwrap().iter().find(|i| i["name"] == "edit.txt");
+    let item = entry.unwrap()["item_id"].as_str().unwrap().to_string();
+    let args = ["repository", "save-file", &item, source.to_str().unwrap(), "-m", "save", "--operation-id", OPERATION];
     each_kill(&prepared, &args, |crashed, context| {
         succeeds(crashed, &args, context);
         succeeds(crashed, &["fsck"], context);

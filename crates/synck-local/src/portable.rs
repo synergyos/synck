@@ -19,7 +19,7 @@ use sha2::{Digest, Sha256};
 use synck_file_folder::{
     BlobRef, CurrentItem, Intent, IntentProposal, Location, ProfileLifecycleState,
 };
-use synck_vcs::object::{Form, HEADER_BYTES, Object, VerifyingWriter, content_form};
+use synck_vcs::object::{Form, HEADER_BYTES, Object, SaltedFrame, VerifyingWriter, content_form};
 use synck_items::reader::{ItemReader, ReadContext, ReadableItem, RefReadContext};
 use synck_vcs::bundle::{
     BundleReader, validate_bundle_event_payload_json_and_digest,
@@ -599,6 +599,7 @@ impl PortableRepository {
             ));
         }
         self.verify().await?;
+        self.remove_abandoned_checkout()?;
         // The repository lock is held, so nothing in staging belongs to a live writer.
         self.clear_staging()?;
         // The repository lock is held from here through removal, and every writer
@@ -775,13 +776,20 @@ impl PortableRepository {
         )?;
         working.recover_current().await?;
         working.validate_checkout_selection().await?;
-        working.write_checkout_source(&[])?;
-        // The config is the commit point: a follower ignores checkout state, so a
-        // kill before this rename leaves a follower that can simply start again.
-        working.publish_checkout_config()?;
+        // A follower ignores checkout state, so its config is the commit point and
+        // goes last: a kill before it leaves a follower that can simply start again.
+        // A writer reads checkout state, so its config has to be right first.
+        let follower = self.config.authority == Authority::Follower;
         self.config.author = Some(author.to_string());
         self.config.authority = Authority::IndependentLocal;
-        self.write_config()?;
+        if !follower {
+            self.write_config()?;
+        }
+        working.write_checkout_source(&[])?;
+        working.publish_checkout_config()?;
+        if follower {
+            self.write_config()?;
+        }
         self.config.checkout = Some(checkout);
         working.finish_checkout_transition().await?;
         self.config.checkout = working.config().checkout.clone();
@@ -806,9 +814,26 @@ impl PortableRepository {
         author_valid(author)?;
         self.holds_keys()?;
         self.verify().await?;
+        self.remove_abandoned_checkout()?;
         self.config.author = Some(author.into());
         self.config.authority = Authority::Local;
         self.write_config()
+    }
+
+    /// Checkout files with no checkout are what a kill during `enable_checkout` left.
+    /// A writer would read them, so a repository becoming one must not keep them.
+    fn remove_abandoned_checkout(&self) -> Result<()> {
+        if self.config.checkout.is_some() {
+            return Ok(());
+        }
+        for name in crate::checkout::CHECKOUT_FILES {
+            match self.metadata.remove_file(name) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(invalid(error)),
+            }
+        }
+        sync_open_directory(&self.metadata, &self.root.join(".synck"))
     }
 
     fn write_config(&self) -> Result<()> {
@@ -858,12 +883,18 @@ impl PortableRepository {
 
     /// A named journal is an operation that opening the checkout must finish.
     fn recovery_pending(&self) -> Result<bool> {
-        let present = entries(&self.metadata)?;
-        Ok(self.config.checkout.as_ref().is_some_and(|c| c.pending.is_some())
-            || present.contains(crate::checkout::CHECKOUT_SOURCE_FILE)
-            || crate::commands::INTENT_NAMES
-                .iter()
-                .any(|name| present.contains(*name)))
+        let present = |name: &str| self.metadata.try_exists(name).map_err(invalid);
+        if let Some(checkout) = &self.config.checkout
+            && (checkout.pending.is_some() || present(crate::checkout::CHECKOUT_SOURCE_FILE)?)
+        {
+            return Ok(true);
+        }
+        for name in crate::commands::INTENT_NAMES {
+            if present(name)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     fn writable(&self) -> Result<()> {
@@ -1950,8 +1981,11 @@ impl PortableRepository {
         match form {
             Form::Plain | Form::Opaque if unhashed => self.copy_blob(id, &mut std::io::sink()).map(|_| ()),
             Form::Plain | Form::Opaque => Ok(()),
-            // Bounded, and checks the ID and the frame.
-            Form::Salted => self.read_body(id.clone()).map(|_| ()),
+            Form::Salted => {
+                let mut frame = SaltedFrame::default();
+                self.copy_blob(id, &mut frame)?;
+                frame.finish().map_err(corrupt)
+            }
             Form::Encrypted => {
                 let mut frame = FrameStart::default();
                 self.copy_blob(id, &mut frame)?;
@@ -2353,7 +2387,7 @@ impl PortableRepository {
             .replayed_file_write(options, Some(id), None, &content)
             .await?
         {
-            return Ok(commit);
+            return self.finished(commit).await;
         }
         let item = self.local_owner(id, "FILE").await?;
         let name = item.name.as_deref().ok_or_else(|| corrupt("a FILE has no name"))?;

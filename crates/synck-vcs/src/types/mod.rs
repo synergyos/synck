@@ -24,7 +24,7 @@ pub type Timestamp = DateTime<Utc>;
 /// The format's one spelling of a time: nine fractional digits and `Z`.
 pub mod format_time {
     use super::Timestamp;
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 
     pub fn serialize<S: Serializer>(
         time: &Option<Timestamp>,
@@ -37,8 +37,21 @@ pub mod format_time {
     pub fn deserialize<'de, D: Deserializer<'de>>(
         deserializer: D,
     ) -> Result<Option<Timestamp>, D::Error> {
-        Option::<Timestamp>::deserialize(deserializer)
+        Option::<String>::deserialize(deserializer)?
+            .map(|time| super::parse_hashed_time(&time).map_err(D::Error::custom))
+            .transpose()
     }
+}
+
+/// Parse a time that is hashed, where only the writer's spelling is valid.
+pub fn parse_hashed_time(value: &str) -> Result<Timestamp, String> {
+    let time = DateTime::parse_from_rfc3339(value)
+        .map_err(|error| format!("invalid time: {error}"))?
+        .with_timezone(&Utc);
+    if time.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true) != value {
+        return Err("a hashed time has nine fractional digits and Z".to_string());
+    }
+    Ok(time)
 }
 
 /// The time format has four year digits, so another year could never be read back.
@@ -148,6 +161,15 @@ macro_rules! sha256_id {
 
         impl $name {
             /// Parses and validates a `sha256:<hex64>` identifier from a string.
+            /// Only people type uppercase. Stored and wire IDs have one spelling.
+            pub fn parse_stored(s: &str) -> Result<Self, String> {
+                let id = Self::parse(s).map_err(|error| error.to_string())?;
+                if id.as_str() != s {
+                    return Err("digest IDs are lowercase".to_string());
+                }
+                Ok(id)
+            }
+
             pub fn parse<S: AsRef<str>>(s: S) -> Result<Self, IdParseError> {
                 let s_ref = s.as_ref();
                 const PREFIX: &str = "sha256:";
@@ -194,13 +216,7 @@ macro_rules! sha256_id {
             where
                 D: Deserializer<'de>,
             {
-                let s = String::deserialize(deserializer)?;
-                let id = Self::parse(&s).map_err(D::Error::custom)?;
-                // Only people type uppercase. Stored and wire IDs have one spelling.
-                if id.as_str() != s {
-                    return Err(D::Error::custom("digest IDs are lowercase"));
-                }
-                Ok(id)
+                Self::parse_stored(&String::deserialize(deserializer)?).map_err(D::Error::custom)
             }
         }
 
@@ -1281,6 +1297,15 @@ mod tests {
     }
 
     #[test]
+    fn a_hashed_time_has_one_spelling() {
+        let time = "2026-10-28T12:00:00.000000000Z";
+        assert!(parse_hashed_time(time).is_ok());
+        for other in ["2026-10-28T12:00:00Z", "2026-10-28T13:00:00.000000000+01:00"] {
+            assert!(parse_hashed_time(other).is_err(), "{other}");
+        }
+    }
+
+    #[test]
     fn sha256_ids_round_trip_in_lowercase_hex() {
         let json = "\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"";
         let id: CommitId = serde_json::from_str(json).expect("deserialize CommitId");
@@ -1420,8 +1445,8 @@ mod tests {
         let header = |time: &str| {
             let time = DateTime::parse_from_rfc3339(time).unwrap().with_timezone(&Utc);
             canonical_commit_bytes_for_hash(
-                &"a".to_string().into(),
-                &"b".to_string().into(),
+                &"a".to_string(),
+                &"b".to_string(),
                 Some(time),
                 None,
                 1,

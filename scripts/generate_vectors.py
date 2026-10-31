@@ -1102,8 +1102,12 @@ def replay_commit(items, commit):
         source = event.get("merged_from") or (create or {}).get("derived_from")
         if create is not None and "merged_from" in event:
             raise Invalid("merged_from on a created item")
-        if create is not None and "set_link" in event:
-            raise Invalid("a creation carries its link in create_item")
+        modifies = any(field in event for field in (
+            "set_parent", "set_name", "set_link", "set_tombstoned", "set_in_trash"))
+        if create is not None and modifies:
+            raise Invalid("a creation carries its fields in create_item")
+        if modifies and ("set_is_federated" in event or "set_federation_stream_id" in event):
+            raise Invalid("a federation transition changes nothing else")
         if source is not None:
             if set(source) != {"item_id", "item_seq"}:
                 raise Invalid("unknown source field")
@@ -1433,6 +1437,14 @@ def new_records():
         ("a creation carries its link in create_item", [
             ([folder("F"), dict(record("r1", "CHAT"), set_link=f1)], False),
         ]),
+        ("a creation changes nothing else", [
+            ([dict(record("r1", "CHAT"), set_in_trash=True)], False),
+        ]),
+        ("a federation transition changes nothing else", [
+            ([record("r1", "CHAT")], True),
+            ([update("r1", 1, "CHAT::FEDERATE", set_is_federated=True,
+                     set_federation_stream_id="s", set_in_trash=True)], False),
+        ]),
         ("link a federated record", [
             ([folder("F"), record("r1", "CHAT")], True),
             ([update("r1", 1, "CHAT::FEDERATE", set_is_federated=True,
@@ -1660,11 +1672,14 @@ def bundle_line(record):
     return json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n"
 
 
+MAX_BUNDLE_RECORD = 8 * 1024 * 1024
+
+
 def bundle_end(lines, tip):
     body = "".join(lines)
     return bundle_line({
         "type": "synck_vcs_bundle_end",
-        "record_count": sum(1 for line in lines if line.strip()),
+        "record_count": sum(1 for line in lines if line != "\n"),
         "checkpoint": tip,
         "digest": sha_id(body.encode("utf-8")),
     })
@@ -1675,6 +1690,8 @@ def bundle_valid(text, genesis_value):
     if not text.endswith("\n"):
         return False
     lines = text.split("\n")[:-1]
+    if any(len(line.encode("utf-8")) >= MAX_BUNDLE_RECORD for line in lines):
+        return False
     try:
         end = json.loads(lines[-1])
     except ValueError:
@@ -1682,7 +1699,7 @@ def bundle_valid(text, genesis_value):
     if end.get("type") != "synck_vcs_bundle_end":
         return False
     body = text[: len(text) - len(lines[-1]) - 1]
-    records = [json.loads(line) for line in lines[:-1] if line.strip()]
+    records = [json.loads(line) for line in lines[:-1] if line]
     if any(record["type"] == "synck_vcs_bundle_end" for record in records):
         return False
     commits = [record for record in records if record["type"] == "commit"]

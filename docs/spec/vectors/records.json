@@ -1252,7 +1252,58 @@
           }
         ],
         "valid": false,
-        "reason": "a creation carries its link in create_item"
+        "reason": "a creation carries its fields in create_item"
+      }
+    ]
+  },
+  {
+    "name": "a creation changes nothing else",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "CHAT::CREATE",
+            "create_item": {
+              "item_type": "CHAT"
+            },
+            "set_in_trash": true
+          }
+        ],
+        "valid": false,
+        "reason": "a creation carries its fields in create_item"
+      }
+    ]
+  },
+  {
+    "name": "a federation transition changes nothing else",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "CHAT::CREATE",
+            "create_item": {
+              "item_type": "CHAT"
+            }
+          }
+        ],
+        "valid": true,
+        "state_digest": "sha256:ff52f769678d620bdeba6b0566545cdd510afd59c266951aa49d4157e385372e"
+      },
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "base_seq": 1,
+            "event_type": "CHAT::FEDERATE",
+            "set_is_federated": true,
+            "set_federation_stream_id": "s",
+            "set_in_trash": true
+          }
+        ],
+        "valid": false,
+        "reason": "a federation transition changes nothing else"
       }
     ]
   },

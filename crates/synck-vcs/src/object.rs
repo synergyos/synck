@@ -97,6 +97,57 @@ pub fn verify_encrypted_frame(stored: &[u8]) -> Result<(), ObjectError> {
     }
 }
 
+/// Checks a SALTED frame in constant memory as its stored bytes pass, since the
+/// frame has no size cap. It says nothing about the object's ID.
+#[derive(Default)]
+pub struct SaltedFrame {
+    header: Vec<u8>,
+    /// The start of a character a write ended inside.
+    partial: Vec<u8>,
+    invalid: bool,
+}
+
+impl SaltedFrame {
+    pub fn finish(self) -> Result<(), ObjectError> {
+        Header::parse(&self.header)?;
+        if self.invalid || !self.partial.is_empty() {
+            return Err(ObjectError::Utf8);
+        }
+        Ok(())
+    }
+
+    fn check(&mut self, bytes: &[u8]) {
+        match std::str::from_utf8(bytes) {
+            Ok(_) => self.partial.clear(),
+            Err(error) if error.error_len().is_none() => {
+                self.partial = bytes[error.valid_up_to()..].to_vec();
+            }
+            Err(_) => self.invalid = true,
+        }
+    }
+}
+
+impl std::io::Write for SaltedFrame {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        let (header, mut text) = bytes.split_at(bytes.len().min(HEADER_BYTES - self.header.len()));
+        self.header.extend_from_slice(header);
+        while !self.partial.is_empty() && !self.invalid {
+            let Some((first, rest)) = text.split_first() else {
+                return Ok(bytes.len());
+            };
+            text = rest;
+            let mut extended = std::mem::take(&mut self.partial);
+            extended.push(*first);
+            self.check(&extended);
+        }
+        self.check(text);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 /// The ID of stored bytes, whatever their form. For a PLAIN file this is its
 /// ordinary SHA-256, so `sha256sum` confirms it.
 pub fn plain_id(bytes: &[u8]) -> ObjectId {
@@ -284,5 +335,42 @@ impl Object {
     }
     pub fn utf8(&self) -> &str {
         std::str::from_utf8(self.bytes()).expect("verified UTF-8")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn a_salted_frame_gives_one_verdict_however_its_bytes_arrive() {
+        let valid = Object::new("añ€😀".as_bytes()).unwrap().payload().to_vec();
+        let mut cut_short = valid.clone();
+        cut_short.pop();
+        let mut not_text = valid.clone();
+        not_text[HEADER_BYTES + 1] = 0xff;
+        let mut not_a_frame = valid.clone();
+        not_a_frame[0] ^= 1;
+        for (stored, verdict) in [
+            (&valid, Ok(())),
+            (&cut_short, Err("Utf8")),
+            (&not_text, Err("Utf8")),
+            (&not_a_frame, Err("Framing")),
+            (&valid[..3].to_vec(), Err("Framing")),
+        ] {
+            for size in 1..=stored.len().max(1) {
+                let mut frame = SaltedFrame::default();
+                for piece in stored.chunks(size) {
+                    frame.write_all(piece).unwrap();
+                }
+                let found = frame.finish().map_err(|error| match error {
+                    ObjectError::Utf8 => "Utf8",
+                    ObjectError::Framing => "Framing",
+                    _ => "other",
+                });
+                assert_eq!(found, verdict, "pieces of {size}");
+            }
+        }
     }
 }

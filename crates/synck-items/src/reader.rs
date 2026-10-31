@@ -149,6 +149,8 @@ pub struct ItemReader {
     data_links: BTreeMap<String, subitems::ItemDataLink>,
     ancillary_events: Vec<AncillaryEvent>,
     poisoned: bool,
+    /// A subitem's creation can be erased, leaving later events nothing to act on.
+    erased_subitems: bool,
     projection: Option<replica_projection::ReplicaItemProjection>,
     chat: Option<ChatDetails>,
     subitems: BTreeMap<(String, SubitemIdentity), ReadableSubitem>,
@@ -180,6 +182,7 @@ impl ItemReader {
             data_links: BTreeMap::new(),
             ancillary_events: Vec::new(),
             poisoned: false,
+            erased_subitems: false,
             projection: None,
             chat: None,
             subitems: BTreeMap::new(),
@@ -287,6 +290,11 @@ impl ItemReader {
             return Err(invalid("noncontiguous ref sequence"));
         }
         if let Some(verb) = event.event_type.strip_prefix("FILE_VERSION::") {
+            if is_erased(&event.set_metadata) {
+                self.erased_subitems = true;
+                self.ref_seq = ctx.ref_seq;
+                return Ok(());
+            }
             let meta = event
                 .set_metadata.as_ref().and_then(synck_vcs::metadata::MetadataRef::value)
                 .ok_or_else(|| invalid("version ref metadata missing"))?;
@@ -415,7 +423,7 @@ impl ItemReader {
             }
             _ => return Err(unsupported(&kind, &event.event_type)),
         }
-        if kind == "FILE" && matches!(event.event_type.as_str(), "FILE::CREATE" | "FILE::SET_CONTENT") && event.set_content.is_some() {
+        if kind == "FILE" && event.replaces_content() {
             let blob = projection.content_blob_id.clone().ok_or_else(|| invalid("FILE revision has no bytes"))?;
             self.file_revisions.insert(context.item_seq, (blob, projection.size));
         }
@@ -431,10 +439,14 @@ impl ItemReader {
         projection: &mut replica_projection::ReplicaItemProjection,
     ) -> Result<(), ReadError> {
         let meta = event.set_metadata.as_ref().and_then(synck_vcs::metadata::MetadataRef::value).unwrap_or(&Value::Null);
+        let erased = is_erased(&event.set_metadata);
         if matches!(
             event.event_type.as_str(),
             "ITEM::DATA_LINK::PUT" | "ITEM::DATA_LINK::DELETE"
         ) {
+            if erased {
+                return Ok(());
+            }
             let link =
                 subitems::parse_structured_data_item_link_projection(meta, &event.event_type)?;
             if event.event_type == "ITEM::DATA_LINK::PUT" {
@@ -459,6 +471,13 @@ impl ItemReader {
         if kind == "CHAT" {
             let mut chat = self.chat.clone().unwrap_or_default();
             match event.event_type.as_str() {
+                // An erased payload reads as missing: no profile, no known change.
+                "CHAT::SET_PROFILE" if erased => chat.profile = None,
+                "CHAT::ADD_ASSISTANT"
+                | "CHAT::REMOVE_ASSISTANT"
+                | "CHAT::UPSERT_USER_PARTICIPANT"
+                | "CHAT::REMOVE_USER_PARTICIPANT"
+                    if erased => {}
                 "CHAT::SET_PROFILE" => {
                     chat.profile = Some(subitems::parse_chat_profile_event(meta).map_err(invalid)?)
                 }
@@ -543,6 +562,10 @@ impl ItemReader {
         event: &EventProposal,
         ctx: &ReadContext<'_>,
     ) -> Result<(), ReadError> {
+        if is_erased(&event.set_metadata) {
+            self.erased_subitems = true;
+            return Ok(());
+        }
         let family = kind.event_type_create().strip_suffix("::CREATE").unwrap();
         let creating = verb == Verb::Create;
         let target = if creating {
@@ -568,9 +591,13 @@ impl ItemReader {
             initialize_subitem(kind, &mut row, ctx)?;
             row
         } else {
-            let mut row = previous
-                .cloned()
-                .ok_or_else(|| invalid("subitem mutation before creation"))?;
+            let Some(mut row) = previous.cloned() else {
+                return if self.erased_subitems {
+                    Ok(())
+                } else {
+                    Err(invalid("subitem mutation before creation"))
+                };
+            };
             update_subitem(kind, verb, &mut row, event, &meta, &content, ctx)?;
             row
         };
@@ -659,11 +686,13 @@ impl ItemReader {
             }
             row
         } else {
-            let mut row = self
-                .subitems
-                .get(&key)
-                .cloned()
-                .ok_or_else(|| invalid("named-version version before creation"))?;
+            let Some(mut row) = self.subitems.get(&key).cloned() else {
+                return if self.erased_subitems {
+                    Ok(())
+                } else {
+                    Err(invalid("named-version version before creation"))
+                };
+            };
             if row.file_item_id != Some(owner) {
                 return Err(invalid("named-version file identity changed"));
             }
@@ -796,6 +825,10 @@ fn lifecycle_for_event(event: &str) -> Result<SubitemLifecycle, ReadError> {
         Some("TOMBSTONE") => "TOMBSTONED",
         _ => return Err(invalid("not a lifecycle event")),
     })
+}
+
+fn is_erased(metadata: &Option<synck_vcs::metadata::MetadataRef>) -> bool {
+    matches!(metadata, Some(synck_vcs::metadata::MetadataRef::Absent(_)))
 }
 
 fn initialize_subitem(

@@ -491,7 +491,7 @@ pub fn validate_bundle_event_payload_json_and_digest(
 
     let event_hash = compute_sha256_digest_bytes(payload_bytes);
     let expected_event_digest =
-        Sha256Digest::parse(event_payload_digest).map_err(|e| e.to_string())?;
+        Sha256Digest::parse_stored(event_payload_digest)?;
     if sha256_digest_to_digest_bytes(&expected_event_digest) != event_hash {
         return Err("event_payload_digest mismatch".to_string());
     }
@@ -513,7 +513,7 @@ pub fn validate_bundle_ref_event_payload_json_and_digest(
     }
     let event_hash = compute_sha256_digest_bytes(payload_bytes);
     let expected_event_digest =
-        Sha256Digest::parse(event_payload_digest).map_err(|e| e.to_string())?;
+        Sha256Digest::parse_stored(event_payload_digest)?;
     if sha256_digest_to_digest_bytes(&expected_event_digest) != event_hash {
         return Err("event_payload_digest mismatch".to_string());
     }
@@ -596,6 +596,23 @@ mod bundle_tests {
         let mut blank = value;
         blank["operation_id"] = serde_json::json!(" ");
         assert!(decode_commit_record(blank).is_err());
+    }
+
+    #[test]
+    fn a_bundle_event_digest_is_lowercase() {
+        let item_id = crate::types::ItemId::new();
+        let event = EventProposal::from_fields(serde_json::json!({
+            "item_id": item_id, "event_type": "ITEM::NOTE", "base_seq": 1
+        }))
+        .unwrap();
+        let payload = canonical_event_proposal_bytes(&event).unwrap();
+        let digest = crate::types::sha256_prefixed_hex_from_digest_bytes(
+            compute_sha256_digest_bytes(&payload),
+        );
+        let payload = std::str::from_utf8(&payload).unwrap();
+        assert!(validate_bundle_event_payload_json_and_digest(payload, &digest).is_ok());
+        let upper = format!("sha256:{}", digest[7..].to_uppercase());
+        assert!(validate_bundle_event_payload_json_and_digest(payload, &upper).is_err());
     }
 
     #[test]

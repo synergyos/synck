@@ -187,7 +187,7 @@ are reported with the affected commit and field, also under `--json`.
 
 `repository.local.sqlite3`, `repository.state.sqlite3`, their SQLite sidecars and
 scan caches are disposable and outside the format. `agent-locks.sqlite3`,
-`checkout.json` and recovery intents in `tmp/` are not disposable. Never copy only a
+`checkout.json` and the recovery journals beside it are not disposable. Never copy only a
 live SQLite main file: use SQLite's backup API or a quiescent, checkpointed snapshot.
 
 The state cache holds `vcs_state_nodes`, `vcs_state_roots` and

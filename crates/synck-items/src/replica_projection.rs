@@ -162,10 +162,9 @@ pub fn apply_replica_item_event(
         && let Some(content) = &proposal.set_content {
             item.content_roles = content.roles().clone();
         }
-    if matches!(
-        proposal.event_type.as_str(),
-        "FILE::CREATE" | "FILE::SET_CONTENT"
-    ) && let Some(blob_id) = proposal.set_content.as_ref().and_then(|content| content.only("bytes"))
+    if item.item_type == "FILE"
+        && proposal.replaces_content()
+        && let Some(blob_id) = proposal.set_content.as_ref().and_then(|content| content.only("bytes"))
     {
         let previous_blob = item.content_blob_id.as_deref();
         let explicit_size = proposal
@@ -179,12 +178,16 @@ pub fn apply_replica_item_event(
         } else if explicit_size.is_some() {
             item.size = explicit_size;
         }
-        if let Some(content) = proposal
-            .set_metadata.as_ref().and_then(synck_vcs::metadata::MetadataRef::value)
-            .and_then(|metadata| metadata.get("content"))
-            && let serde_json::Value::Object(current) = &mut item.metadata_json
-        {
-            current.insert("content".to_string(), content.clone());
+        if let serde_json::Value::Object(current) = &mut item.metadata_json {
+            let metadata = proposal.set_metadata.as_ref();
+            if let Some(content) = metadata
+                .and_then(MetadataRef::value)
+                .and_then(|metadata| metadata.get("content"))
+            {
+                current.insert("content".to_string(), content.clone());
+            } else if metadata.is_some_and(|metadata| metadata.value().is_none()) {
+                current.remove("content");
+            }
         }
         item.content_blob_id = Some(blob_id.to_string());
         item.content_item_seq = Some(item_seq);
@@ -258,6 +261,9 @@ fn set_record_title(
     }
     if proposal.set_metadata.as_ref().is_some_and(|metadata| metadata.value().is_none()) {
         item.name = UNAVAILABLE_TITLE.to_string();
+        if let serde_json::Value::Object(current) = &mut item.metadata_json {
+            current.remove("title");
+        }
         return Ok(());
     }
     let metadata = proposal.set_metadata.as_ref().and_then(MetadataRef::value);
@@ -265,7 +271,12 @@ fn set_record_title(
         .and_then(|metadata| metadata.get("title"))
         .and_then(serde_json::Value::as_str);
     match title {
-        Some(title) if !title.is_empty() => item.name = title.to_string(),
+        Some(title) if !title.is_empty() => {
+            item.name = title.to_string();
+            if let serde_json::Value::Object(current) = &mut item.metadata_json {
+                current.insert("title".to_string(), title.into());
+            }
+        }
         Some(_) => {
             return Err(ReplicaProjectionError::Invalid("a title is nonempty".to_string()));
         }
@@ -328,6 +339,77 @@ mod tests {
         assert_eq!(projected.size, Some(42));
         assert_eq!(projected.metadata_json["content"]["size"], 42);
         assert_eq!(projected.content_item_seq, Some(2));
+    }
+
+    #[test]
+    fn an_erased_revision_or_title_hides_the_older_value() {
+        let now = Utc::now();
+        let event = |value: serde_json::Value| EventProposal::from_fields(value).unwrap();
+        let blob = |byte: char| format!("sha256:{}", byte.to_string().repeat(64));
+
+        let file = ItemId::new();
+        let created = apply_replica_item_event(
+            None,
+            file.clone(),
+            1,
+            &event(serde_json::json!({
+                "item_id": file, "event_type": "FILE::CREATE",
+                "create_item": {"item_type": "FILE", "name": "a.txt"},
+                "set_content": {"bytes": blob('a')},
+                "set_metadata": {"content": {"size": 7}}
+            })),
+            now,
+            "actor",
+        )
+        .unwrap();
+        let mut revision = event(serde_json::json!({
+            "item_id": file, "event_type": "FILE::SET_CONTENT", "base_seq": 1,
+            "set_content": {"bytes": blob('b')},
+            "set_metadata": {"content": {"size": 8}}
+        }));
+        revision.set_metadata = Some(MetadataRef::Absent(ObjectId::from_digest([1; 32])));
+        let erased =
+            apply_replica_item_event(Some(created), file.clone(), 2, &revision, now, "actor")
+                .unwrap();
+        assert_eq!(erased.content_blob_id, Some(blob('b')));
+        assert_eq!(erased.size, None);
+        assert_eq!(erased.metadata_json.get("content"), None);
+
+        // Replay follows fields, so the head moves with the roles on any verb.
+        let later = event(serde_json::json!({
+            "item_id": file, "event_type": "FILE::SET_METADATA", "base_seq": 2,
+            "set_content": {"bytes": blob('c')}
+        }));
+        let moved =
+            apply_replica_item_event(Some(erased), file, 3, &later, now, "actor").unwrap();
+        assert_eq!(moved.content_blob_id, Some(blob('c')));
+        assert_eq!(moved.content_item_seq, Some(3));
+
+        let task = ItemId::new();
+        let created = apply_replica_item_event(
+            None,
+            task.clone(),
+            1,
+            &event(serde_json::json!({
+                "item_id": task, "event_type": "EMAIL::CREATE",
+                "create_item": {"item_type": "EMAIL"},
+                "set_metadata": {"title": "first"}
+            })),
+            now,
+            "actor",
+        )
+        .unwrap();
+        let mut title = event(serde_json::json!({
+            "item_id": task, "event_type": "EMAIL::SET_TITLE", "base_seq": 1,
+            "set_metadata": {"title": "second"}
+        }));
+        let renamed =
+            apply_replica_item_event(Some(created), task.clone(), 2, &title, now, "actor").unwrap();
+        assert_eq!(renamed.metadata_json["title"], "second");
+        title.set_metadata = Some(MetadataRef::Absent(ObjectId::from_digest([1; 32])));
+        let erased =
+            apply_replica_item_event(Some(renamed), task, 3, &title, now, "actor").unwrap();
+        assert_eq!(erased.metadata_json.get("title"), None);
     }
 
     #[test]

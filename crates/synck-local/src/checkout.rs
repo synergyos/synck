@@ -29,6 +29,7 @@ pub(crate) struct Transition {
 
 const CHECKOUT_FILE: &str = "checkout.json";
 pub(crate) const CHECKOUT_SOURCE_FILE: &str = "checkout-source.json";
+pub(crate) const CHECKOUT_FILES: [&str; 2] = [CHECKOUT_FILE, CHECKOUT_SOURCE_FILE];
 const MAX_CHECKOUT_BYTES: u64 = 64 * 1024;
 
 /// A repository with no checkout state has no working tree.
