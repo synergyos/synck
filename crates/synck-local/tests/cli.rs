@@ -346,7 +346,6 @@ fn cli_monitor_tracks_immediate_external_changes_and_stops_cleanly() {
     );
 }
 
-#[cfg(windows)]
 #[cfg(unix)]
 #[test]
 fn cli_monitor_exits_when_its_repository_is_removed() {
@@ -362,7 +361,8 @@ fn cli_monitor_exits_when_its_repository_is_removed() {
         .args(["--repo-id", config["repo_id"].as_str().unwrap()])
         .spawn()
         .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(5);
+    // The first run of a new binary can take seconds on macOS.
+    let deadline = Instant::now() + Duration::from_secs(30);
     while !root.join(".synck/monitor.sock").exists() {
         assert!(Instant::now() < deadline, "monitor did not start");
         std::thread::sleep(Duration::from_millis(10));
@@ -380,6 +380,7 @@ fn cli_monitor_exits_when_its_repository_is_removed() {
     }
 }
 
+#[cfg(windows)]
 #[test]
 fn cli_monitor_starts_tracks_changes_and_stops_cleanly() {
     let temporary = tempfile::tempdir().unwrap();
