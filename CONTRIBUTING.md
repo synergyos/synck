@@ -44,9 +44,11 @@ cargo fmt -p synck-file-folder -- --check
 
 Two longer checks are worth running when a change touches what they cover:
 
-- A write path: the crash matrix kills a real `synck` at every filesystem
-  mutation, then checks that the repository verifies and the operation finishes.
-  It runs on macOS and Linux and takes minutes.
+- A write path: the crash matrix kills a real `synck` at each write, rename,
+  removal and directory change, then checks that the repository verifies, that the
+  operation finishes and that nothing is left behind. It hooks libc, so macOS is
+  complete. Linux runs it too, but misses what rustix sends straight to the kernel.
+  It takes over an hour.
 
   ```sh
   cargo test --locked -p synck-local --test crash_points -- --ignored

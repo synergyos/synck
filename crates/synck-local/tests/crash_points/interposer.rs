@@ -1,7 +1,13 @@
 //! Loaded into a real `synck` process: SIGKILL at the Nth filesystem mutation.
 //!
 //! `SYNCK_CRASH_AT=N` picks the mutation. The call does not run, so the disk holds
-//! exactly the first N-1 mutations. Writes to the standard streams do not count.
+//! the first N-1 mutations. Writes to the standard streams do not count. Creating a
+//! file or changing its mode has no point of its own: a kill at the next mutation
+//! sees that same disk.
+//!
+//! This hooks libc. On macOS every Synck mutation goes through it. On Linux rustix
+//! calls the kernel directly, so cap-std and rustix renames, removals and directory
+//! changes are not points there, and macOS is the platform that proves the matrix.
 
 use std::ffi::{c_char, c_int, c_uint, c_void};
 use std::sync::atomic::{AtomicI64, Ordering::SeqCst};
@@ -106,3 +112,5 @@ mutation!(
 );
 #[cfg(target_os = "linux")]
 mutation!(pwrite64(fd: c_int, data: *const c_void, size: usize, at: i64) -> isize, file_write(fd));
+#[cfg(target_os = "linux")]
+mutation!(ftruncate64(fd: c_int, size: i64) -> c_int, file_write(fd));

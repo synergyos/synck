@@ -83,8 +83,12 @@ fn copy(from: &Path, to: &Path) {
 
 /// A repository with history, ready for the operation under test.
 fn base(root: &Path) {
+    base_in("WHOLE_FILE", root);
+}
+
+fn base_in(mode: &str, root: &Path) {
     fs::create_dir(root).unwrap();
-    ok(root, &["init", "--author", "tester", "--storage-mode", "WHOLE_FILE"]);
+    ok(root, &["init", "--author", "tester", "--storage-mode", mode]);
     fs::create_dir(root.join("folder")).unwrap();
     fs::write(root.join("folder/keep.txt"), "keep\n").unwrap();
     fs::write(root.join("edit.txt"), "before\n").unwrap();
@@ -122,9 +126,13 @@ fn scenario(prepare: impl Fn(&Path), args: &[&str]) {
 }
 
 fn scenario_with(prepare: impl Fn(&Path) -> Vec<String>) {
+    scenario_in("WHOLE_FILE", prepare);
+}
+
+fn scenario_in(mode: &str, prepare: impl Fn(&Path) -> Vec<String>) {
     let directory = tempfile::tempdir().unwrap();
     let prepared = directory.path().join("prepared");
-    base(&prepared);
+    base_in(mode, &prepared);
     let args = prepare(&prepared);
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     let args = args.as_slice();
@@ -383,4 +391,46 @@ fn import_email_survives_a_kill_at_every_mutation() {
         },
         &["repository", "import-email", "../message.eml", "-m", "mail"],
     );
+}
+
+/// Bytes that split into several chunks, so a kill can land between them.
+fn chunked_content() -> Vec<u8> {
+    let mut state = 1u32;
+    (0..300 * 1024)
+        .map(|_| {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (state >> 24) as u8
+        })
+        .collect()
+}
+
+#[test]
+#[ignore = "kills a real process at every mutation"]
+fn chunked_commit_survives_a_kill_at_every_mutation() {
+    scenario_in("CHUNKED", |root| {
+        fs::write(root.join("large.bin"), chunked_content()).unwrap();
+        fs::write(root.join("edit.txt"), "third\n").unwrap();
+        ["commit", "-m", "third"].map(str::to_string).to_vec()
+    });
+}
+
+#[test]
+#[ignore = "kills a real process at every mutation"]
+fn chunked_create_file_survives_a_kill_at_every_mutation() {
+    scenario_in("CHUNKED", |root| {
+        fs::write(root.join("../source.bin"), chunked_content()).unwrap();
+        ["repository", "create-file", "large.bin", "../source.bin", "-m", "add", "--operation-id", OPERATION]
+            .map(str::to_string)
+            .to_vec()
+    });
+}
+
+#[test]
+#[ignore = "kills a real process at every mutation"]
+fn chunked_gc_survives_a_kill_at_every_mutation() {
+    scenario_in("CHUNKED", |root| {
+        fs::write(root.join("large.bin"), chunked_content()).unwrap();
+        ok(root, &["commit", "-m", "large"]);
+        ["gc"].map(str::to_string).to_vec()
+    });
 }
