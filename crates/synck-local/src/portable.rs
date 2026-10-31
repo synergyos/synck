@@ -1905,6 +1905,53 @@ impl PortableRepository {
         }
     }
 
+    /// Find the email import already accepted under `operation_id`. A reused ID must
+    /// name the same source, link and title; anything else is a caller error.
+    async fn replayed_email_import(
+        &self,
+        options: &WriteOptions,
+        create: &EventProposal,
+    ) -> Result<Option<(ItemId, CommitId)>> {
+        let Some(operation_id) = options.operation_id else {
+            return Ok(None);
+        };
+        let core = self.core();
+        let Some(commit) = core
+            .get_commit_by_operation_id(self.repo_id().clone(), &stored_operation_id(&operation_id))
+            .await?
+        else {
+            return Ok(None);
+        };
+        let accepted = core
+            .list_events_for_commit(self.repo_id().clone(), commit.commit_id.clone(), 1)
+            .await?;
+        let accepted = accepted.first().map(|row| row.proposal()).transpose()?;
+        let title = |event: &EventProposal| {
+            event
+                .set_metadata
+                .as_ref()
+                .and_then(synck_vcs::metadata::MetadataRef::value)
+                .and_then(|metadata: &serde_json::Value| metadata.get("title"))
+                .cloned()
+        };
+        let link = |event: &EventProposal| event.create_item.as_ref().and_then(|item| item.link.clone());
+        let source = |event: &EventProposal| {
+            event.set_content.as_ref().and_then(|content| content.get("source")).cloned()
+        };
+        match accepted {
+            Some(accepted)
+                if accepted.event_type == create.event_type
+                    && link(&accepted) == link(create)
+                    && source(&accepted) == source(create)
+                    && title(&accepted) == title(create) =>
+            {
+                let item = accepted.item_id.ok_or_else(|| corrupt("accepted event has no item ID"))?;
+                Ok(Some((item, commit.commit_id)))
+            }
+            _ => Err(invalid("operation ID was already used for a different write")),
+        }
+    }
+
     /// Find the FILE write already accepted under `operation_id`.
     ///
     /// A reused ID must name the same FILE (or, for a creation, the same
@@ -2327,8 +2374,8 @@ impl PortableRepository {
             .await
     }
 
-    /// Import an email with caller attribution. Imports do not accept an
-    /// operation ID.
+    /// Import an email with caller attribution. A replayed operation ID returns
+    /// its original item and commit.
     pub async fn import_email_with(
         &mut self,
         link: Option<ItemId>,
@@ -2338,9 +2385,6 @@ impl PortableRepository {
     ) -> Result<(ItemId, CommitId)> {
         self.writable()?;
         options.validate()?;
-        if options.operation_id.is_some() {
-            return Err(invalid("email imports do not accept an operation ID"));
-        }
         let filename = source.file_name().and_then(|name| name.to_str()).ok_or_else(|| {
             invalid("EMAIL_IMPORT_INVALID_FORMAT: email source filename must be UTF-8")
         })?;
@@ -2349,6 +2393,10 @@ impl PortableRepository {
         }
         let id = ItemId::new();
         let prepared = crate::email_import::prepare(&id, link, filename, title, source)?;
+        let create = prepared.events.first().ok_or_else(|| corrupt("an email import has no events"))?;
+        if let Some((item, commit)) = self.replayed_email_import(options, create).await? {
+            return Ok((item, self.finished(commit).await?));
+        }
         for (_, bytes) in prepared.objects {
             self.store_bytes(&bytes)?;
         }

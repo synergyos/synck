@@ -423,6 +423,21 @@ fn replaying_a_save_finishes_a_killed_acceptance() {
 
 #[test]
 #[ignore = "kills a real process at every mutation"]
+fn replaying_an_email_import_finishes_a_killed_acceptance() {
+    let directory = tempfile::tempdir().unwrap();
+    let prepared = directory.path().join("prepared");
+    base(&prepared);
+    let source = directory.path().join("message.eml");
+    fs::write(&source, "From: a@example.com\r\nTo: b@example.com\r\nSubject: Hello\r\n\r\nBody\r\n").unwrap();
+    let args = ["repository", "import-email", source.to_str().unwrap(), "-m", "mail", "--operation-id", OPERATION];
+    each_kill(&prepared, &args, |crashed, context| {
+        succeeds(crashed, &args, context);
+        succeeds(crashed, &["fsck"], context);
+    });
+}
+
+#[test]
+#[ignore = "kills a real process at every mutation"]
 fn save_file_survives_a_kill_at_every_mutation() {
     scenario_with(|root| {
         fs::write(root.join("../source.txt"), "saved\n").unwrap();

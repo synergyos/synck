@@ -675,6 +675,33 @@ async fn a_follower_ignores_checkout_state_until_its_config_names_a_writer() {
 }
 
 #[test]
+fn an_operation_id_makes_an_email_import_safe_to_repeat() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("repository");
+    fs::create_dir(&root).unwrap();
+    run(&root, &["init", "--author", "tester"]);
+    let email = temp.path().join("message.eml");
+    fs::write(&email, "From: a@example.com\r\nTo: b@example.com\r\nSubject: Hello\r\n\r\nBody\r\n").unwrap();
+    let source = email.to_str().unwrap();
+    let import = ["repository", "import-email", source, "-m", "mail",
+        "--operation-id", "019a2900-0000-4000-8000-000000000001"];
+    let first = run(&root, &import);
+    assert_eq!(run(&root, &import), first);
+    let listed = json(&root, &["item", "list"]);
+    assert_eq!(listed["items"].as_array().unwrap().len(), 1);
+
+    let mut retitled = import.to_vec();
+    retitled.extend(["--title", "Another"]);
+    let output = Command::new(env!("CARGO_BIN_EXE_synck"))
+        .current_dir(&root)
+        .args(&retitled)
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("different write"));
+}
+
+#[test]
 fn a_move_refuses_an_oversized_message_before_it_journals() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
