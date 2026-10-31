@@ -1029,9 +1029,7 @@ impl PortableRepository {
 
     /// Stable historical namespace page, rebuilding the disposable cache as needed.
     /// Live records in item ID order, after `after`. With `link`, only those
-    /// filed in that folder; a tombstoned folder has none filed in it, even if a
-    /// federated tombstone left their links. Records have no path, so a namespace
-    /// listing omits them.
+    /// filed in that folder. Records have no path, so a namespace listing omits them.
     pub async fn list_records(
         &self,
         link: Option<&ItemId>,
@@ -1044,9 +1042,7 @@ impl PortableRepository {
         let connection = self.storage.open_readonly().map_err(corrupt)?;
         let mut query = connection.prepare(
             "SELECT item_id FROM vcs_items WHERE repo_id=?1 AND name_key IS NULL \
-             AND lifecycle_state='LIVE' AND (?2 IS NULL OR (link_folder_id=?2 AND NOT EXISTS( \
-             SELECT 1 FROM vcs_items folder WHERE folder.repo_id=?1 AND folder.item_id=?2 \
-             AND folder.lifecycle_state='TOMBSTONED'))) \
+             AND lifecycle_state='LIVE' AND (?2 IS NULL OR link_folder_id=?2) \
              AND (?3 IS NULL OR item_id>?3) ORDER BY item_id LIMIT ?4",
         )?;
         let ids = query

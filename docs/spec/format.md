@@ -209,7 +209,7 @@ type, and never on an `ITEM::` event.
 | `TRASH` | All | `set_in_trash: true` |
 | `RESTORE` | All | `set_in_trash: false` |
 | `TOMBSTONE` | All | `set_tombstoned: true` |
-| `FEDERATE` | All | `set_is_federated`, and `set_federation_stream_id` when true |
+| `FEDERATE` | All but FOLDER and LOCAL_COMPANION | `set_is_federated`, and `set_federation_stream_id` when true |
 
 ### Structural replay
 
@@ -287,8 +287,8 @@ A `CREATE` may carry `set_is_federated: true` and `set_federation_stream_id`, bo
 neither. That is federated bootstrap: the item starts FEDERATED, and one more
 `FEDERATE` with the same stream is allowed in that commit. Outside bootstrap,
 switching to federated is a local append and switching to local is a federated
-ingest. At most one mode change per item per commit is permitted, and an append
-does not tombstone an item it federates.
+ingest. At most one mode change per item per commit is permitted. A FOLDER never
+federates: a shared tree replicates as a whole repository through a federation domain.
 
 ### Tree items and records
 
@@ -334,10 +334,7 @@ items. At the end of a commit:
   in the same commit.
 - No record that is not tombstoned links to a TOMBSTONED folder, including a
   record in the trash. Tombstoning a folder must, in the same commit, clear or
-  tombstone every record still linked to it. The exception is a FEDERATED folder:
-  its tombstone comes from outside this repository and cannot touch local records,
-  so an existing link stays and the record reads as unfiled: the link remains in
-  its state, and listing that folder finds nothing filed there.
+  tombstone every record still linked to it.
 - No FEDERATED item has a link. A federated record's history is shared, so a
   local link cannot live on it. Federating a linked record clears the link in the
   same commit.

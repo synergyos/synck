@@ -2705,69 +2705,64 @@ async fn a_link_set_in_a_commit_needs_a_live_folder_whatever_it_was_before() {
     storage.init_schema().await.unwrap();
     let repo_id = RepoId::new();
     let repo = Repo::new(Storage::new(Arc::new(storage)), CoreConfig::default());
-    let stream = "shared-folder";
-    let (shared, trashed, doomed) = (ItemId::new(), ItemId::new(), ItemId::new());
-    let (filed, in_trash, unlucky) = (ItemId::new(), ItemId::new(), ItemId::new());
+    let (trashed, doomed) = (ItemId::new(), ItemId::new());
+    let (in_trash, unfiled) = (ItemId::new(), ItemId::new());
     let folder = |id: &ItemId, name: &str| {
         event_of(serde_json::json!({
             "item_id": id, "event_type": "FOLDER::CREATE",
             "create_item": CreateItem::tree("FOLDER", None, name),
         }))
     };
-    let task = |id: &ItemId, link: &ItemId| {
+    let task = |id: &ItemId, link: Option<&ItemId>| {
         event_of(serde_json::json!({
             "item_id": id, "event_type": "TASK::CREATE",
-            "create_item": CreateItem::record("TASK", None, Some(link.clone())),
+            "create_item": CreateItem::record("TASK", None, link.cloned()),
         }))
     };
     repo.append(repo_id.clone(), commit(vec![
-        folder(&shared, "shared"), folder(&trashed, "trashed"), folder(&doomed, "doomed"),
-        task(&filed, &shared), task(&in_trash, &trashed), task(&unlucky, &doomed),
+        folder(&trashed, "trashed"), folder(&doomed, "doomed"),
+        task(&in_trash, Some(&trashed)), task(&unfiled, None),
     ])).await.unwrap();
-    let federate = |id: &ItemId| {
-        event_of(serde_json::json!({
-            "item_id": id, "event_type": "FOLDER::FEDERATE", "base_seq": 1,
-            "set_is_federated": true, "set_federation_stream_id": stream,
-        }))
-    };
-    repo.append(repo_id.clone(), commit(vec![federate(&shared)])).await.unwrap();
-    let tombstone = event_of(serde_json::json!({
-        "item_id": shared, "event_type": "FOLDER::TOMBSTONE", "set_tombstoned": true,
-    }));
-    repo.ingest(repo_id.clone(), federated(stream, 3, vec![tombstone])).await.unwrap();
     repo.append(repo_id.clone(), commit(vec![event_of(serde_json::json!({
         "item_id": trashed, "event_type": "FOLDER::TRASH", "base_seq": 1, "set_in_trash": true,
     }))])).await.unwrap();
+    repo.append(repo_id.clone(), commit(vec![event_of(serde_json::json!({
+        "item_id": doomed, "event_type": "FOLDER::TOMBSTONE", "base_seq": 1, "set_tombstoned": true,
+    }))])).await.unwrap();
 
-    let touch = |id: &ItemId| {
-        event_of(serde_json::json!({
-            "item_id": id, "event_type": "TASK::SET_METADATA", "base_seq": 1,
-            "set_metadata": {"note": "still here"},
-        }))
-    };
-    let relink = |id: &ItemId, target: &ItemId, base_seq: i64| {
-        event_of(serde_json::json!({
-            "item_id": id, "event_type": "TASK::SET_LINK", "base_seq": base_seq, "set_link": target,
-        }))
-    };
-    // A link that stays may point at a folder no longer LIVE. Setting it again may not.
-    repo.append(repo_id.clone(), commit(vec![touch(&filed), touch(&in_trash)])).await.unwrap();
-    for (record, target) in [(&filed, &shared), (&in_trash, &trashed)] {
+    // A link that stays may point at a folder in the trash. Setting it again may not.
+    repo.append(repo_id.clone(), commit(vec![event_of(serde_json::json!({
+        "item_id": in_trash, "event_type": "TASK::SET_METADATA", "base_seq": 1,
+        "set_metadata": {"note": "still here"},
+    }))])).await.unwrap();
+    for (record, target, base_seq) in [(&in_trash, &trashed, 2), (&unfiled, &doomed, 1)] {
         let error = repo
-            .append(repo_id.clone(), commit(vec![relink(record, target, 2)]))
+            .append(repo_id.clone(), commit(vec![event_of(serde_json::json!({
+                "item_id": record, "event_type": "TASK::SET_LINK", "base_seq": base_seq,
+                "set_link": target,
+            }))]))
             .await
             .unwrap_err();
         assert!(matches!(error, CoreError::InvalidProposal(_)), "{error}");
     }
+}
 
-    // An append cannot pass a local folder off as federated to leave its links behind.
-    let mut tombstone = federate(&doomed);
-    tombstone.set_is_federated = None;
-    tombstone.set_federation_stream_id = None;
-    tombstone.event_type = "FOLDER::TOMBSTONE".to_string();
-    tombstone.set_tombstoned = Some(true);
+#[tokio::test]
+async fn a_folder_never_federates() {
+    let (_dir, storage) = backend();
+    storage.init_schema().await.unwrap();
+    let repo_id = RepoId::new();
+    let repo = Repo::new(Storage::new(Arc::new(storage)), CoreConfig::default());
+    let id = ItemId::new();
+    repo.append(repo_id.clone(), commit(vec![event_of(serde_json::json!({
+        "item_id": id, "event_type": "FOLDER::CREATE",
+        "create_item": CreateItem::tree("FOLDER", None, "shared"),
+    }))])).await.unwrap();
     let error = repo
-        .append(repo_id.clone(), commit(vec![federate(&doomed), tombstone]))
+        .append(repo_id.clone(), commit(vec![event_of(serde_json::json!({
+            "item_id": id, "event_type": "FOLDER::FEDERATE", "base_seq": 1,
+            "set_is_federated": true, "set_federation_stream_id": "shared-folder",
+        }))]))
         .await
         .unwrap_err();
     assert!(matches!(error, CoreError::IllegalFederationTransition), "{error}");

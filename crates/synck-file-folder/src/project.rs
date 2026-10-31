@@ -23,7 +23,6 @@ const KNOWN_FILE_OMISSIONS: &[&str] = &[
 ];
 const KNOWN_FOLDER_OMISSIONS: &[&str] = &[
     "FOLDER::SET_METADATA",
-    "FOLDER::FEDERATE",
 ];
 const KNOWN_ITEM_OMISSIONS: &[&str] = &[
     "ITEM::DATA_LINK::PUT",
@@ -892,7 +891,7 @@ fn require_omission_shape(proposal: &EventProposal) -> Result<(), SemanticError>
         && proposal.set_tombstoned.is_none()
         && proposal.set_in_trash.is_none();
     let product_modifier_is_valid = match proposal.event_type.as_str() {
-        "FILE::FEDERATE" | "FOLDER::FEDERATE" => {
+        "FILE::FEDERATE" => {
             proposal.set_metadata.is_none()
                 && proposal.set_content.is_none()
                 && matches!(

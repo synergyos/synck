@@ -1225,7 +1225,7 @@
           }
         ],
         "valid": false,
-        "reason": "a LOCAL_COMPANION is never federated"
+        "reason": "this item type is never federated"
       }
     ]
   },
@@ -1257,7 +1257,7 @@
     ]
   },
   {
-    "name": "a federated folder's tombstone passes a local link",
+    "name": "a folder never federates",
     "commits": [
       {
         "events": [
@@ -1283,45 +1283,8 @@
             "set_federation_stream_id": "s"
           }
         ],
-        "valid": true,
-        "state_digest": "sha256:fbf1740c8de955e5046b2151a01f85e04e7a47041110685d9b4e4eb27e427e62"
-      },
-      {
-        "events": [
-          {
-            "item_id": "019a2900-0000-7000-8000-000000000202",
-            "event_type": "CHAT::CREATE",
-            "create_item": {
-              "item_type": "CHAT",
-              "link": "019a2900-0000-7000-8000-000000000200"
-            }
-          }
-        ],
-        "valid": true,
-        "state_digest": "sha256:70cec88c384d647becb041f4f1918b5887b9bb32aab8758263a583093d542994"
-      },
-      {
-        "events": [
-          {
-            "item_id": "019a2900-0000-7000-8000-000000000200",
-            "base_seq": 2,
-            "event_type": "FOLDER::TOMBSTONE",
-            "set_tombstoned": true
-          }
-        ],
-        "valid": true,
-        "state_digest": "sha256:790430e94cb4c092ce93cd36377b9f033546b73228d98ee079f56ec5edce5620"
-      },
-      {
-        "events": [
-          {
-            "item_id": "019a2900-0000-7000-8000-000000000202",
-            "base_seq": 1,
-            "event_type": "CHAT::SET_METADATA"
-          }
-        ],
-        "valid": true,
-        "state_digest": "sha256:988f13c9d9845e889b13841c12cee932f173bdfa78144874dd939c3317928da9"
+        "valid": false,
+        "reason": "this item type is never federated"
       }
     ]
   },
@@ -1345,19 +1308,6 @@
       {
         "events": [
           {
-            "item_id": "019a2900-0000-7000-8000-000000000200",
-            "base_seq": 1,
-            "event_type": "FOLDER::FEDERATE",
-            "set_is_federated": true,
-            "set_federation_stream_id": "s"
-          }
-        ],
-        "valid": true,
-        "state_digest": "sha256:fbf1740c8de955e5046b2151a01f85e04e7a47041110685d9b4e4eb27e427e62"
-      },
-      {
-        "events": [
-          {
             "item_id": "019a2900-0000-7000-8000-000000000202",
             "event_type": "CHAT::CREATE",
             "create_item": {
@@ -1366,19 +1316,19 @@
           }
         ],
         "valid": true,
-        "state_digest": "sha256:c624decda3e96b55d4a9fd2cbc26ac791b8dee3e89f1a834bc9596dcd6fe125a"
+        "state_digest": "sha256:05c75177e28c3176abd1f720e0b718e90e905ce77c2581fb0cee8689d34f6874"
       },
       {
         "events": [
           {
             "item_id": "019a2900-0000-7000-8000-000000000200",
-            "base_seq": 2,
+            "base_seq": 1,
             "event_type": "FOLDER::TOMBSTONE",
             "set_tombstoned": true
           }
         ],
         "valid": true,
-        "state_digest": "sha256:b2aba9a110f9c3c4c3d93713c52a26d87b2ac9a24bdb77440e81e7a83234e949"
+        "state_digest": "sha256:9612a7ef42db2eb468db80c6386ca4264b290385f94e4c1c08826d7e321b7606"
       },
       {
         "events": [

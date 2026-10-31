@@ -1117,14 +1117,9 @@ impl Repo {
         }
 
         // Enforce at most one federation mode change per item within a commit.
-        // A federated item's tombstone comes from outside, so an append cannot
-        // federate an item and tombstone it in one commit.
         let mut mode_change_seen: HashMap<ItemId, ()> = HashMap::new();
         for (idx, ev) in proposal.events.iter().enumerate() {
             let item_id = &event_item_ids[idx];
-            if ev.set_tombstoned.is_some() && mode_change_seen.contains_key(item_id) {
-                return Err(CoreError::IllegalFederationTransition);
-            }
             if ev.set_is_federated.is_some()
                 && mode_change_seen.insert(item_id.clone(), ()).is_some()
             {
@@ -1804,7 +1799,7 @@ impl Repo {
                         "unknown federation_stream_id; first event must be create_item".to_string(),
                     ));
                 }
-                if item_row.item_type == "LOCAL_COMPANION" {
+                if matches!(item_row.item_type.as_str(), "FOLDER" | "LOCAL_COMPANION") {
                     return Err(CoreError::IllegalFederationTransition);
                 }
 
@@ -2741,11 +2736,7 @@ async fn check_final_items<T: StorageTxn + ?Sized>(
             || txn.get_item(repo_id, &item.item_id).await?.is_none();
         match folder.lifecycle_state {
             LifecycleState::Live => {}
-            LifecycleState::Tombstoned => {
-                if set_here || folder.sequencing_mode != SequencingMode::Federated {
-                    return invalid("link target is tombstoned");
-                }
-            }
+            LifecycleState::Tombstoned => return invalid("link target is tombstoned"),
             LifecycleState::Trash if set_here => {
                 return invalid("link set to a folder that is not live");
             }
@@ -2754,11 +2745,8 @@ async fn check_final_items<T: StorageTxn + ?Sized>(
     }
 
     for folder in items.values() {
-        // A federated folder's tombstone comes from elsewhere and cannot clear a local
-        // link, and nothing local may refuse it: the record reads as unfiled.
         if folder.item_type != "FOLDER"
             || !matches!(folder.lifecycle_state, LifecycleState::Tombstoned)
-            || folder.sequencing_mode == SequencingMode::Federated
         {
             continue;
         }
@@ -2791,7 +2779,7 @@ fn validate_event_for_item(
     item_type: &str,
     event: &EventProposal,
 ) -> Result<(), CoreError> {
-    if item_type == "LOCAL_COMPANION" && event.changes_federation() {
+    if matches!(item_type, "FOLDER" | "LOCAL_COMPANION") && event.changes_federation() {
         return Err(CoreError::IllegalFederationTransition);
     }
     let event_type = event.event_type.as_str();

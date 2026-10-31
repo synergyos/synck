@@ -1195,8 +1195,8 @@ def replay_commit(items, commit):
                 raise Invalid("a FOLDER has no content")
             item["content"] = event["set_content"]
         if event.get("set_is_federated") is True:
-            if item["type"] == "LOCAL_COMPANION":
-                raise Invalid("a LOCAL_COMPANION is never federated")
+            if item["type"] in ("FOLDER", "LOCAL_COMPANION"):
+                raise Invalid("this item type is never federated")
             item["mode"] = "FEDERATED"
             item["stream"] = event["set_federation_stream_id"]
         if event.get("set_is_federated") is False:
@@ -1239,8 +1239,7 @@ def replay_commit(items, commit):
         target = items.get(item["link"])
         if target is None or target["type"] != "FOLDER":
             raise Invalid("link target is not a folder")
-        if target["life"] == "TOMBSTONED" and (
-                item_id in changed_links or target["mode"] != "FEDERATED"):
+        if target["life"] == "TOMBSTONED":
             raise Invalid("link to a tombstoned folder")
         if item_id in changed_links and target["life"] != "LIVE":
             raise Invalid("link set to a folder that is not live")
@@ -1442,20 +1441,15 @@ def new_records():
         ("a creation carries its link in create_item", [
             ([folder("F"), dict(record("r1", "CHAT"), set_link=f1)], False),
         ]),
-        ("a federated folder's tombstone passes a local link", [
+        ("a folder never federates", [
             ([folder("F")], True),
             ([update("f1", 1, "FOLDER::FEDERATE", set_is_federated=True,
-                     set_federation_stream_id="s")], True),
-            ([record("r1", "CHAT", link=f1)], True),
-            ([tombstone("f1", 2, "FOLDER")], True),
-            ([update("r1", 1, "CHAT::SET_METADATA")], True),
+                     set_federation_stream_id="s")], False),
         ]),
         ("a new link never targets a tombstoned folder", [
             ([folder("F")], True),
-            ([update("f1", 1, "FOLDER::FEDERATE", set_is_federated=True,
-                     set_federation_stream_id="s")], True),
             ([record("r1", "CHAT")], True),
-            ([tombstone("f1", 2, "FOLDER")], True),
+            ([tombstone("f1", 1, "FOLDER")], True),
             ([update("r1", 1, "CHAT::SET_LINK", set_link=f1)], False),
         ]),
         ("a commit with no events", [
