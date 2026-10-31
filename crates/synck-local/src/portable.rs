@@ -783,9 +783,11 @@ impl PortableRepository {
         let before = self.config.clone();
         self.config.author = Some(author.to_string());
         self.config.authority = Authority::IndependentLocal;
+        let mut written = false;
         let published: Result<()> = (|| {
             if !follower {
                 self.write_config()?;
+                written = true;
             }
             working.write_checkout_source(&[])?;
             working.publish_checkout_config()?;
@@ -795,7 +797,9 @@ impl PortableRepository {
             Ok(())
         })();
         if let Err(error) = published {
-            self.config = before;
+            if !written {
+                self.config = before;
+            }
             return Err(error);
         }
         self.config.checkout = Some(checkout);
@@ -1259,6 +1263,7 @@ impl PortableRepository {
                 )
                 .map_err(corrupt)?;
                 let mut event: EventProposal = row.proposal()?;
+                let mut body_erased = false;
                 if let Some(content_id) = event.set_content.as_ref().and_then(|content| content.get("body")).cloned() {
                     if self.object_held(&content_id)? {
                         let objects = BTreeMap::from([(content_id.clone(), self.read_body(content_id)?)]);
@@ -1268,7 +1273,7 @@ impl PortableRepository {
                         )
                         .map_err(corrupt)?;
                     } else {
-                        event.set_content = None;
+                        body_erased = true;
                     }
                 }
                 let commit = self
@@ -1277,18 +1282,19 @@ impl PortableRepository {
                     .await
                     .map_err(corrupt)?
                     .ok_or_else(|| corrupt("item event has no commit"))?;
-                reader
-                    .apply(
-                        &event,
-                        ReadContext {
-                            item_seq: row.item_seq,
-                            created_at: row.created_at,
-                            occurred_at: commit.occurred_at,
-                            author: &commit.author_id,
-                            committer: &commit.committer_id,
-                        },
-                    )
-                    .map_err(corrupt)?;
+                let context = ReadContext {
+                    item_seq: row.item_seq,
+                    created_at: row.created_at,
+                    occurred_at: commit.occurred_at,
+                    author: &commit.author_id,
+                    committer: &commit.committer_id,
+                };
+                if body_erased {
+                    reader.apply_with_erased_body(&event, context)
+                } else {
+                    reader.apply(&event, context)
+                }
+                .map_err(corrupt)?;
                 from = row
                     .item_seq
                     .checked_add(1)

@@ -150,8 +150,9 @@ pub struct ItemReader {
     ancillary_events: Vec<AncillaryEvent>,
     poisoned: bool,
     /// A subitem's creation can be erased, leaving later events nothing to act on.
-    erased_subitem_creations: BTreeSet<i64>,
+    erased_subitem_creations: BTreeSet<(String, i64)>,
     erased_version_creation: bool,
+    body_erased: bool,
     projection: Option<replica_projection::ReplicaItemProjection>,
     chat: Option<ChatDetails>,
     subitems: BTreeMap<(String, SubitemIdentity), ReadableSubitem>,
@@ -185,6 +186,7 @@ impl ItemReader {
             poisoned: false,
             erased_subitem_creations: BTreeSet::new(),
             erased_version_creation: false,
+            body_erased: false,
             projection: None,
             chat: None,
             subitems: BTreeMap::new(),
@@ -381,6 +383,19 @@ impl ItemReader {
         result
     }
 
+    /// Apply an event whose body object was erased. The body reads as missing,
+    /// so the body an edit replaced stays hidden.
+    pub fn apply_with_erased_body(
+        &mut self,
+        event: &EventProposal,
+        context: ReadContext<'_>,
+    ) -> Result<(), ReadError> {
+        self.body_erased = true;
+        let result = self.apply(event, context);
+        self.body_erased = false;
+        result
+    }
+
     fn apply_inner(
         &mut self,
         event: &EventProposal,
@@ -402,7 +417,7 @@ impl ItemReader {
         .to_string();
         if let Some(content) = &event.set_content
             && let Some(id) = content.get("body")
-                && content.object("body").is_none() { return Err(ReadError::NeedsContent(id.clone())); }
+                && content.object("body").is_none() && !self.body_erased { return Err(ReadError::NeedsContent(id.clone())); }
         let mut projection = replica_projection::apply_replica_item_event(
             self.projection.clone(),
             self.item_id.clone(),
@@ -564,13 +579,13 @@ impl ItemReader {
         event: &EventProposal,
         ctx: &ReadContext<'_>,
     ) -> Result<(), ReadError> {
+        let family = kind.event_type_create().strip_suffix("::CREATE").unwrap();
         if is_erased(&event.set_metadata) {
             if verb == Verb::Create {
-                self.erased_subitem_creations.insert(ctx.item_seq);
+                self.erased_subitem_creations.insert((family.into(), ctx.item_seq));
             }
             return Ok(());
         }
-        let family = kind.event_type_create().strip_suffix("::CREATE").unwrap();
         let creating = verb == Verb::Create;
         let target = if creating {
             ctx.item_seq
@@ -580,10 +595,14 @@ impl ItemReader {
         };
         let key = (family.into(), SubitemIdentity::Sequence(target));
         let meta = subitems::reconstruct_subitem_meta(event.set_metadata.as_ref().and_then(synck_vcs::metadata::MetadataRef::value));
-        let content = subitems::reconstruct_subitem_content(
-            event.set_metadata.as_ref().and_then(synck_vcs::metadata::MetadataRef::value),
-            event.set_content.as_ref(),
-        );
+        let content = if self.body_erased {
+            Value::Null
+        } else {
+            subitems::reconstruct_subitem_content(
+                event.set_metadata.as_ref().and_then(synck_vcs::metadata::MetadataRef::value),
+                event.set_content.as_ref(),
+            )
+        };
         let parent = subitems::meta_get_i64(event.set_metadata.as_ref().and_then(synck_vcs::metadata::MetadataRef::value), "parent_item_seq");
         let previous = self.subitems.get(&key);
         let mut row = if creating {
@@ -596,7 +615,7 @@ impl ItemReader {
             row
         } else {
             let Some(mut row) = previous.cloned() else {
-                return if self.erased_subitem_creations.contains(&target) {
+                return if self.erased_subitem_creations.contains(&(family.to_string(), target)) {
                     Ok(())
                 } else {
                     Err(invalid("subitem mutation before creation"))
@@ -605,6 +624,12 @@ impl ItemReader {
             update_subitem(kind, verb, &mut row, event, &meta, &content, ctx)?;
             row
         };
+        if self.body_erased {
+            row.body = None;
+            if let Some(fields) = row.content.as_object_mut() {
+                fields.remove("body");
+            }
+        }
         row.latest_position.seq = ctx.item_seq;
         if event.set_content.is_some() && matches!(verb, Verb::Create | Verb::SetContent | Verb::SetMetadata) {
             row.content_position = Some(row.latest_position.clone());

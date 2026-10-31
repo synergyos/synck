@@ -8,7 +8,7 @@ use synck_vcs::types::{
     CommitEventRow, CommitRow, EventProposal, EventRow, ItemId, RefEventProposal,
     RefEventRow, canonical_event_proposal_bytes, canonical_ref_event_proposal_bytes,
     canonical_stored_commit_bytes_for_hash, compute_commit_id, compute_sha256_digest_bytes,
-    sha256_prefixed_hex_from_digest_bytes,
+    empty_commit_events_digest, sha256_prefixed_hex_from_digest_bytes,
 };
 
 use crate::error::{SemanticError, SemanticErrorCode};
@@ -428,8 +428,13 @@ fn parse_and_verify_events<'a>(
         aggregate_digest.update([COMMIT_EVENT_FAMILY_REF]);
         aggregate_digest.update(digest);
     }
-    let events_digest: [u8; 32] = aggregate_digest.finalize().into();
-    if sha256_prefixed_hex_from_digest_bytes(events_digest) != commit.events_digest.as_str() {
+    let events_digest = match commit.repo_seq {
+        Some(repo_seq) if events.is_empty() && ref_events.is_empty() => {
+            empty_commit_events_digest(repo_seq).to_string()
+        }
+        _ => sha256_prefixed_hex_from_digest_bytes(aggregate_digest.finalize().into()),
+    };
+    if events_digest != commit.events_digest.as_str() {
         return Err(error(
             SemanticErrorCode::MalformedProfileEvent,
             "commit events_digest mismatch",

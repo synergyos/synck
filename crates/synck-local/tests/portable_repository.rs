@@ -1758,6 +1758,7 @@ async fn a_chat_reads_after_a_message_body_is_erased() {
     assert!(repository.verify().await.unwrap().missing_objects.contains(&fixture.body.id()));
     let shown = serde_json::to_string(&repository.show_item(&fixture.chat, None).await.unwrap()).unwrap();
     assert!(shown.contains("CHAT::MESSAGE"), "{shown}");
+    assert!(!shown.contains("original body"), "{shown}");
 }
 
 #[tokio::test]

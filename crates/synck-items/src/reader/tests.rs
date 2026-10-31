@@ -396,6 +396,65 @@ fn only_an_erased_creation_excuses_a_mutation_of_nothing() {
 }
 
 #[test]
+fn an_erased_edit_hides_the_body_it_replaced() {
+    let (mut reader, id) = create("CHAT");
+    apply(
+        &mut reader,
+        &event(&id, "CHAT::MESSAGE::CREATE", json!({}), json_body("first")),
+        "alice",
+    );
+    let message = reader.latest_item_seq();
+    let edit = event(
+        &id,
+        "CHAT::MESSAGE::SET_CONTENT",
+        json!({"item_seq": message}),
+        Some(EventContent::body(ObjectId::from_digest([2; 32]))),
+    );
+    reader
+        .apply_with_erased_body(
+            &edit,
+            ReadContext {
+                item_seq: message + 1,
+                created_at: now(),
+                occurred_at: None,
+                author: "alice",
+                committer: "alice",
+            },
+        )
+        .unwrap();
+    let subitem = reader.snapshot().unwrap().subitems.remove(0);
+    assert_eq!(subitem.body, None);
+    assert!(subitem.content.get("body").is_none());
+    assert_eq!(subitem.content_position.unwrap().seq, message + 1);
+}
+
+#[test]
+fn an_erased_creation_excuses_only_its_own_family() {
+    let (mut reader, id) = create("CHAT");
+    let mut erased = event(&id, "CHAT::MESSAGE::CREATE", json!({}), None);
+    erased.set_metadata =
+        Some(synck_vcs::metadata::MetadataRef::Absent(ObjectId::from_digest([1; 32])));
+    apply(&mut reader, &erased, "alice");
+    let target = reader.latest_item_seq();
+    let result = reader.apply(
+        &event(
+            &id,
+            "CHAT::MESSAGE.REACTION::SET_CONTENT",
+            json!({"item_seq": target}),
+            None,
+        ),
+        ReadContext {
+            item_seq: target + 1,
+            created_at: now(),
+            occurred_at: None,
+            author: "alice",
+            committer: "alice",
+        },
+    );
+    assert!(result.is_err());
+}
+
+#[test]
 fn a_restored_reader_still_knows_what_was_erased() {
     let (mut reader, id) = create("CHAT");
     let mut erased = event(&id, "CHAT::MESSAGE::CREATE", json!({}), None);

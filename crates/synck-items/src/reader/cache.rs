@@ -21,7 +21,7 @@ struct ReaderState {
     projection: Option<replica_projection::ReplicaItemProjection>,
     chat: Option<ChatDetails>,
     subitems: Vec<ReadableSubitem>,
-    erased_subitem_creations: Vec<i64>,
+    erased_subitem_creations: Vec<(String, i64)>,
     erased_version_creation: bool,
 }
 fn digest(state: &ReaderState) -> Result<String, ReadError> {
@@ -55,7 +55,7 @@ impl ItemReader {
             projection: self.projection.clone(),
             chat: self.chat.clone(),
             subitems: self.subitems.values().cloned().collect(),
-            erased_subitem_creations: self.erased_subitem_creations.iter().copied().collect(),
+            erased_subitem_creations: self.erased_subitem_creations.iter().cloned().collect(),
             erased_version_creation: self.erased_version_creation,
         };
         let digest = digest(&state)?;

@@ -1474,7 +1474,10 @@ fn flush_directory(directory: impl rustix::fd::AsFd) -> io::Result<()> {
     match rustix::fs::fcntl_fullfsync(&directory) {
         Ok(()) => return Ok(()),
         Err(
-            rustix::io::Errno::NOTSUP | rustix::io::Errno::INVAL | rustix::io::Errno::NOTTY,
+            rustix::io::Errno::NOTSUP
+            | rustix::io::Errno::OPNOTSUPP
+            | rustix::io::Errno::INVAL
+            | rustix::io::Errno::NOTTY,
         ) => {}
         Err(error) => return Err(error.into()),
     }
