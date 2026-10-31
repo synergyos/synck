@@ -71,7 +71,7 @@ A repository is a directory containing `.synck/` with:
   [object-store.sql](object-store.sql).
 - `checkout.json`: optional mutable checkout state.
 - `lock`: required empty file for local coordination. A reader must obtain a consistent snapshot, including SQLite WAL contents.
-- `tmp/`: optional; holds the recovery intents of interrupted operations.
+- `tmp/`: staging that a writer clears under the lock; optional without a checkout.
 
 Any other file in `.synck/` is outside the format, and a reader ignores it. Nothing
 outside the format contributes to any hash, and verification neither requires nor
@@ -90,8 +90,9 @@ it is not history.
 identifies the repository. It is an object with `paths` (array of selected
 relative paths; empty means all), `hidden_files` (`ignore`, default, or `track`)
 and optional `pending`, which holds `previous_paths` (null or an array) while
-transitioning its materialized paths. A missing file means the defaults. It is not
-canonical history and copies do not carry it.
+transitioning its materialized paths. A missing file means the repository has no
+working tree, and a `FOLLOWER` has none whatever the file says. It is not canonical
+history and copies do not carry it.
 
 Authority is local operational configuration, not a cryptographic credential.
 `FOLLOWER` is an imported copy, and it refuses writes. `INDEPENDENT_LOCAL` accepts

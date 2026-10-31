@@ -28,6 +28,7 @@ pub(crate) struct Transition {
 }
 
 const CHECKOUT_FILE: &str = "checkout.json";
+pub(crate) const CHECKOUT_SOURCE_FILE: &str = "checkout-source.json";
 const MAX_CHECKOUT_BYTES: u64 = 64 * 1024;
 
 /// A repository with no checkout state has no working tree.
@@ -63,7 +64,9 @@ pub(crate) fn write_checkout(metadata: &Path, checkout: &Checkout) -> Result<()>
             "checkout selection exceeds config size limit".into(),
         ));
     }
-    let path = metadata.join(format!("checkout-{}.tmp", uuid::Uuid::new_v4()));
+    let path = metadata
+        .join("tmp")
+        .join(format!("checkout-{}.tmp", uuid::Uuid::new_v4()));
     std::fs::write(&path, &bytes).at("write checkout state", &path)?;
     crate::repository::sync_file(&path)?;
     crate::repository::replace_file(&path, &metadata.join(CHECKOUT_FILE))
@@ -307,17 +310,17 @@ impl Repository {
     }
 
     pub(crate) async fn finish_checkout_transition(&mut self) -> Result<()> {
-        let Some(pending) = self
+        let pending = self
             .config()
             .checkout
             .as_ref()
-            .and_then(|c| c.pending.clone())
-        else {
-            return Ok(());
-        };
-        let _ = pending;
+            .is_some_and(|c| c.pending.is_some());
+        if !pending {
+            // A kill can leave a manifest that no transition uses.
+            return self.remove_checkout_source();
+        }
         let source = crate::repository::open_regular_file_nofollow(
-            &self.metadata_path().join("checkout-source.json"),
+            &self.metadata_path().join(CHECKOUT_SOURCE_FILE),
         )?;
         let source: Vec<WorktreeRestoreEntry> = serde_json::from_reader(source)?;
         self.restore_checkout_worktree(&source).await?;
@@ -327,16 +330,25 @@ impl Repository {
             .expect("checkout transition")
             .pending = None;
         self.publish_checkout_config()?;
-        std::fs::remove_file(self.metadata_path().join("checkout-source.json"))
-            .map_err(|e| LocalError::Invalid(e.to_string()))?;
-        crate::repository::sync_directory(self.metadata_path())
+        self.remove_checkout_source()
+    }
+
+    fn remove_checkout_source(&self) -> Result<()> {
+        use crate::error::IoContext;
+        let path = self.metadata_path().join(CHECKOUT_SOURCE_FILE);
+        match std::fs::remove_file(&path) {
+            Ok(()) => crate::repository::sync_directory(self.metadata_path()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error).at("remove checkout source", &path),
+        }
     }
 
     pub(crate) fn write_checkout_source(&self, source: &[WorktreeRestoreEntry]) -> Result<()> {
         use std::io::Write;
-        let target = self.metadata_path().join("checkout-source.json");
+        let target = self.metadata_path().join(CHECKOUT_SOURCE_FILE);
         let temp = self
             .metadata_path()
+            .join("tmp")
             .join(format!("checkout-source-{}.json", uuid::Uuid::new_v4()));
         let mut file = std::fs::OpenOptions::new()
             .create_new(true)

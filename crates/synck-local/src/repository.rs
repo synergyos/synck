@@ -302,14 +302,7 @@ impl Repository {
         };
         let _ = repository.validate_pending_operations()?;
         repository.recover_name_repairs()?;
-        if repository
-            .config
-            .checkout
-            .as_ref()
-            .is_some_and(|c| c.pending.is_some())
-        {
-            repository.finish_checkout_transition().await?;
-        }
+        repository.finish_checkout_transition().await?;
         repository.recover_pending_working_tree_edit()?;
         repository.recover_pending_move().await?;
         repository.recover_pending_recover().await?;
@@ -1420,7 +1413,7 @@ fn local_schema_objects(connection: &Connection) -> Result<synck_vcs_sqlite::sch
     Ok(synck_vcs_sqlite::schema::inspect(connection, "local_")?)
 }
 
-fn cleanup_tmp(path: &Path) -> Result<()> {
+pub(crate) fn cleanup_tmp(path: &Path) -> Result<()> {
     let metadata = fs::symlink_metadata(path).at("inspect", path)?;
     if !metadata.file_type().is_dir() || is_link_or_reparse(&metadata) {
         return Err(LocalError::Invalid(format!(

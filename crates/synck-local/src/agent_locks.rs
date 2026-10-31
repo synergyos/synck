@@ -100,7 +100,9 @@ fn open(root: &Path, repo_id: &str, create: bool) -> Result<Option<Connection>> 
         if !create {
             return Ok(None);
         }
-        let temporary = metadata.join(format!("agent-locks-{}.sqlite3", Uuid::new_v4()));
+        let temporary = metadata
+            .join("tmp")
+            .join(format!("agent-locks-{}.sqlite3", Uuid::new_v4()));
         let result = (|| -> Result<()> {
             let mut options = std::fs::OpenOptions::new();
             options.write(true).create_new(true);

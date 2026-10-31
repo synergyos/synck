@@ -48,6 +48,16 @@ use crate::tree_materialization::{materialize_tree, validate_materialized_tree};
 use crate::working_tree_edit::{WORKING_TREE_EDIT_INTENT_NAME, WORKING_TREE_EDIT_STAGE_NAME};
 use crate::worktree::{Change, ChangeKind, CommittedNode, NodeKind, WorkingNode};
 
+/// Each is an interrupted operation that the next checkout open finishes.
+pub(crate) const INTENT_NAMES: [&str; 6] = [
+    crate::name_repair_journal::JOURNAL,
+    MOVE_INTENT_NAME,
+    RECOVER_INTENT_NAME,
+    REVERT_INTENT_NAME,
+    WORKTREE_RESTORE_INTENT_NAME,
+    WORKING_TREE_EDIT_INTENT_NAME,
+];
+
 mod commit;
 mod export;
 mod history;
@@ -653,16 +663,8 @@ mod durable_events {
 
 impl Repository {
     pub(crate) fn validate_pending_operations(&self) -> Result<Option<&'static str>> {
-        let intent_names = [
-            crate::name_repair_journal::JOURNAL,
-            MOVE_INTENT_NAME,
-            RECOVER_INTENT_NAME,
-            REVERT_INTENT_NAME,
-            WORKTREE_RESTORE_INTENT_NAME,
-            WORKING_TREE_EDIT_INTENT_NAME,
-        ];
         let mut present = Vec::new();
-        for name in intent_names {
+        for name in INTENT_NAMES {
             let path = self.metadata_path().join(name);
             match std::fs::symlink_metadata(&path) {
                 Ok(_) => present.push(name),

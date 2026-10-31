@@ -438,7 +438,10 @@ impl PortableRepository {
             return Err(unsupported_format(version));
         }
         let mut config: Config = serde_json::from_value(value)?;
-        config.checkout = crate::checkout::read_checkout(&root.join(".synck"))?;
+        // A checkout takes effect with the config that names its writer.
+        if config.authority != Authority::Follower {
+            config.checkout = crate::checkout::read_checkout(&root.join(".synck"))?;
+        }
         if let Some(author) = &config.author {
             author_valid(author)?;
         } else if config.authority != Authority::Follower {
@@ -590,15 +593,14 @@ impl PortableRepository {
     }
 
     pub async fn gc(&mut self) -> Result<crate::GcReport> {
-        if entries(&self.metadata)?
-            .iter()
-            .any(|name| name.ends_with(".json") && !matches!(name.as_str(), "config.json" | "checkout.json"))
-        {
+        if self.recovery_pending()? {
             return Err(invalid(
                 "finish checkout recovery before garbage collection",
             ));
         }
         self.verify().await?;
+        // The repository lock is held, so nothing in staging belongs to a live writer.
+        self.clear_staging()?;
         // The repository lock is held from here through removal, and every writer
         // holds it from reusing an object through its commit.
         let (referenced, _) = self.references().await?;
@@ -634,12 +636,7 @@ impl PortableRepository {
 
     /// Convert physical storage only. Canonical history and all IDs stay intact.
     pub async fn optimize_storage(&mut self) -> Result<bool> {
-        if self
-            .config
-            .checkout
-            .as_ref()
-            .is_some_and(|c| c.pending.is_some())
-        {
+        if self.recovery_pending()? {
             return Err(invalid(
                 "finish checkout selection before optimizing storage",
             ));
@@ -662,8 +659,7 @@ impl PortableRepository {
             .at("inspect object store", store.path())?
         {
             let temporary = self
-                .root
-                .join(".synck")
+                .staging_directory()?
                 .join(format!("object-store-{}.sqlite3", Uuid::new_v4()));
             ChunkStore::create(&temporary, self.repo_id())?;
             rename_noreplace(&temporary, store.path()).at("publish object store", store.path())?;
@@ -685,7 +681,10 @@ impl PortableRepository {
         store.verify_all()?;
         store.checkpoint()?;
         self.config.storage_mode = StorageMode::Chunked;
-        self.write_config()?;
+        if let Err(error) = self.write_config() {
+            self.config.storage_mode = StorageMode::WholeFile;
+            return Err(error);
+        }
         self.remove_whole_file_objects()?;
         Ok(true)
     }
@@ -730,24 +729,19 @@ impl PortableRepository {
     /// The existing source may remain live. There is no synchronization or rejoin.
     pub async fn enable_checkout(&mut self, author: &str, paths: &[String]) -> Result<()> {
         author_valid(author)?;
+        self.holds_keys()?;
+        let paths = crate::checkout::normalize_paths(paths)?;
         if let Some(checkout) = &self.config.checkout {
-            if checkout.pending.is_none() {
-                // A repeat of the finished request has nothing left to do.
-                if self.config.author.as_deref() == Some(author)
-                    && checkout.paths == crate::checkout::normalize_paths(paths)?
-                {
-                    return Ok(());
-                }
+            if self.config.author.as_deref() != Some(author) || checkout.paths != paths {
                 return Err(invalid("checkout already enabled; use checkout selection"));
             }
-            // An interrupted enable finishes the transition it recorded.
+            // A repeat finishes whatever the first attempt recorded.
             let mut working = self.checkout_adapter()?;
             working.recover_current().await?;
             working.finish_checkout_transition().await?;
             self.config.checkout = working.config().checkout.clone();
             return Ok(());
         }
-        let paths = crate::checkout::normalize_paths(paths)?;
         self.verify().await?;
         let root = directory(&self.root)?;
         if entries(&root)? != BTreeSet::from([".synck".to_string()]) {
@@ -755,15 +749,7 @@ impl PortableRepository {
                 "checkout requires a directory containing only .synck; existing files are never overwritten",
             ));
         }
-        for name in ["tmp"] {
-            match self.metadata.create_dir(name) {
-                Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                    self.metadata.open_dir_nofollow(name).map_err(corrupt)?;
-                }
-                Err(error) => return Err(invalid(error)),
-            }
-        }
+        self.staging_directory()?;
         crate::repository::initialize_checkout_schema(&self.storage)?;
         let checkout = crate::checkout::Checkout {
             hidden_files: Default::default(),
@@ -790,10 +776,12 @@ impl PortableRepository {
         working.recover_current().await?;
         working.validate_checkout_selection().await?;
         working.write_checkout_source(&[])?;
+        // The config is the commit point: a follower ignores checkout state, so a
+        // kill before this rename leaves a follower that can simply start again.
+        working.publish_checkout_config()?;
         self.config.author = Some(author.to_string());
         self.config.authority = Authority::IndependentLocal;
         self.write_config()?;
-        working.publish_checkout_config()?;
         self.config.checkout = Some(checkout);
         working.finish_checkout_transition().await?;
         self.config.checkout = working.config().checkout.clone();
@@ -816,6 +804,7 @@ impl PortableRepository {
             ));
         }
         author_valid(author)?;
+        self.holds_keys()?;
         self.verify().await?;
         self.config.author = Some(author.into());
         self.config.authority = Authority::Local;
@@ -824,8 +813,7 @@ impl PortableRepository {
 
     fn write_config(&self) -> Result<()> {
         let path = self
-            .root
-            .join(".synck")
+            .staging_directory()?
             .join(format!("config-{}.json", Uuid::new_v4()));
         write_new(&path, &serde_json::to_vec(&self.config)?)?;
         replace_file(&path, &self.root.join(".synck/config.json"))
@@ -842,12 +830,44 @@ impl PortableRepository {
             },
         )
     }
-    fn writable(&self) -> Result<()> {
+    fn holds_keys(&self) -> Result<()> {
         if self.config.encrypted {
             return Err(invalid(
                 "this repository is encrypted, and this client holds no key: it can only verify it",
             ));
         }
+        Ok(())
+    }
+
+    /// Staging lives in `.synck/tmp`. A kill can leave it behind, and it is cleared
+    /// under the lock by `gc` and by opening a checkout.
+    fn staging_directory(&self) -> Result<PathBuf> {
+        match self.metadata.create_dir("tmp") {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                self.metadata.open_dir_nofollow("tmp").map_err(corrupt)?;
+            }
+            Err(error) => return Err(invalid(error)),
+        }
+        Ok(self.root.join(".synck/tmp"))
+    }
+
+    fn clear_staging(&self) -> Result<()> {
+        crate::repository::cleanup_tmp(&self.staging_directory()?)
+    }
+
+    /// A named journal is an operation that opening the checkout must finish.
+    fn recovery_pending(&self) -> Result<bool> {
+        let present = entries(&self.metadata)?;
+        Ok(self.config.checkout.as_ref().is_some_and(|c| c.pending.is_some())
+            || present.contains(crate::checkout::CHECKOUT_SOURCE_FILE)
+            || crate::commands::INTENT_NAMES
+                .iter()
+                .any(|name| present.contains(*name)))
+    }
+
+    fn writable(&self) -> Result<()> {
+        self.holds_keys()?;
         if self.config.format_version != FORMAT_VERSION
             || self.config.authority == Authority::Follower
         {
@@ -1950,9 +1970,8 @@ impl PortableRepository {
             return Ok(name);
         }
         let temporary = self
-            .root
-            .join(".synck/objects")
-            .join(format!(".pending-{}", Uuid::new_v4()));
+            .staging_directory()?
+            .join(format!("object-{}", Uuid::new_v4()));
         let result = (|| {
             write_new(&temporary, bytes)?;
             rename_noreplace(&temporary, &path).at("publish immutable object", &path)
@@ -1975,6 +1994,7 @@ impl PortableRepository {
         std::io::Seek::rewind(&mut file).at("rewind capture source", source)?;
         let store = self.object_store();
         let captured = crate::raw_object::capture(file, before.len(), regions, &self.root.join(".synck/objects"),
+            &self.staging_directory()?,
             (self.storage_mode() == StorageMode::Chunked).then_some(&store), true)?;
         let after = fs::symlink_metadata(source).at("inspect capture source", source)?;
         if !after.is_file() || before.len() != after.len() || before.modified().ok() != after.modified().ok() {
@@ -2032,15 +2052,7 @@ impl PortableRepository {
         content: &BlobRef,
         options: &WriteOptions,
     ) -> Result<(ItemId, CommitId)> {
-        if self
-            .config
-            .checkout
-            .as_ref()
-            .is_some_and(|checkout| checkout.pending.is_some())
-            || entries(&self.metadata)?
-                .iter()
-                .any(|name| name.ends_with(".json") && !matches!(name.as_str(), "config.json" | "checkout.json"))
-        {
+        if self.recovery_pending()? {
             return Err(invalid(
                 "finish checkout recovery with synck status before writing files",
             ));
@@ -2469,14 +2481,11 @@ impl PortableRepository {
     }
 
     pub async fn archive_with_mode(&self, destination: &Path, mode: StorageMode) -> Result<()> {
-        if let Some(checkout) = &self.config.checkout
-            && (checkout.pending.is_some()
-                || !entries(&self.metadata.open_dir_nofollow("tmp").map_err(corrupt)?)?.is_empty())
-            {
-                return Err(invalid(
-                    "finish checkout recovery before copying the repository",
-                ));
-            }
+        if self.recovery_pending()? {
+            return Err(invalid(
+                "finish checkout recovery before copying the repository",
+            ));
+        }
         let report = self.verify().await?;
         if !report.missing_objects.is_empty() || !report.missing_metadata.is_empty() {
             return Err(invalid("complete export requires all referenced content and metadata objects"));

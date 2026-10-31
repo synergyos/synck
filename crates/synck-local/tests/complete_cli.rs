@@ -522,6 +522,50 @@ async fn checkout_file_writers_preserve_clean_state_identity_and_dirty_files() {
     }
 }
 
+#[tokio::test]
+async fn gc_ignores_foreign_files_and_clears_staging_a_kill_left() {
+    use synck_local::portable::PortableRepository;
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source");
+    fs::create_dir(&source).unwrap();
+    run(&source, &["init", "--author", "tester"]);
+    fs::write(source.join(".synck/notes.json"), b"not ours").unwrap();
+    run(&source, &["gc"]);
+
+    let follower = temp.path().join("follower");
+    run(&source, &["repository", "import", ".", follower.to_str().unwrap()]);
+    fs::create_dir_all(follower.join(".synck/tmp")).unwrap();
+    fs::write(follower.join(".synck/tmp/object-killed"), b"partial").unwrap();
+    PortableRepository::open(&follower).unwrap().gc().await.unwrap();
+    assert_eq!(fs::read_dir(follower.join(".synck/tmp")).unwrap().count(), 0);
+}
+
+#[tokio::test]
+async fn a_follower_ignores_checkout_state_until_its_config_names_a_writer() {
+    use synck_local::portable::PortableRepository;
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source");
+    fs::create_dir(&source).unwrap();
+    run(&source, &["init", "--author", "tester"]);
+    let follower = temp.path().join("follower");
+    run(&source, &["repository", "import", ".", follower.to_str().unwrap()]);
+    // What a kill between publishing checkout.json and config.json leaves.
+    fs::write(
+        follower.join(".synck/checkout.json"),
+        br#"{"paths":["elsewhere"],"pending":{"previous_paths":null}}"#,
+    )
+    .unwrap();
+    fs::write(follower.join(".synck/checkout-source.json"), b"[]").unwrap();
+
+    let mut repository = PortableRepository::open(&follower).unwrap();
+    assert!(repository.checkout_paths().is_none());
+    repository.enable_checkout("reader", &[]).await.unwrap();
+    drop(repository);
+    assert_eq!(fs::read_to_string(follower.join(".synckignore")).is_ok(), true);
+    assert!(!follower.join(".synck/checkout-source.json").exists());
+    run(&follower, &["fsck"]);
+}
+
 #[test]
 fn verification_rejects_valid_but_incorrect_checkout_projection_values() {
     for assignment in [

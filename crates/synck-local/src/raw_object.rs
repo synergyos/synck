@@ -36,6 +36,7 @@ pub(crate) fn capture<R: Read>(
     size: u64,
     regions: Option<Vec<u64>>,
     objects: &Path,
+    staging: &Path,
     store: Option<&ChunkStore>,
     checkpoint: bool,
 ) -> Result<Captured> {
@@ -63,7 +64,7 @@ pub(crate) fn capture<R: Read>(
         }
         digest
     } else {
-        let temporary = objects.join(format!(".pending-{}", uuid::Uuid::new_v4()));
+        let temporary = staging.join(format!("object-{}", uuid::Uuid::new_v4()));
         let result = (|| -> Result<[u8; 32]> {
             let file = std::fs::OpenOptions::new()
                 .write(true)
@@ -94,7 +95,7 @@ pub(crate) fn capture<R: Read>(
             let digest: [u8; 32] = hasher.finalize().into();
             let destination = objects.join(hex::encode(digest));
             match rename_noreplace(&temporary, &destination) {
-                Ok(()) => sync_directory(objects)?,
+                Ok(()) => {}
                 // Identical bytes have one ID, and are stored once.
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
                     verify_object_file(&destination, &hex::encode(digest), size)?;
@@ -102,6 +103,8 @@ pub(crate) fn capture<R: Read>(
                 }
                 Err(error) => return Err(error).at("publish object", &destination),
             }
+            // An earlier writer may have published this object without syncing it.
+            sync_directory(objects)?;
             Ok(digest)
         })();
         if result.is_err() {
@@ -141,7 +144,7 @@ mod tests {
         ChunkStore::create(&path, &repo).unwrap();
         let store = ChunkStore::new(path, &repo);
         for mode in [None, Some(&store)] {
-            let captured = capture(&b""[..], 0, None, directory.path(), mode, true).unwrap();
+            let captured = capture(&b""[..], 0, None, directory.path(), directory.path(), mode, true).unwrap();
             assert!(stored(&captured, directory.path(), mode).is_empty());
             assert_eq!(captured.plain_digest, hex::encode(Sha256::digest(b"")));
             synck_vcs::object::verify_stored(&captured.id, synck_vcs::object::Form::Plain, b"")
@@ -159,7 +162,7 @@ mod tests {
         let bytes = (0..700_000).map(|i| (i * 17) as u8).collect::<Vec<_>>();
         for mode in [None, Some(&store)] {
             let capture_bytes = || {
-                capture(bytes.as_slice(), bytes.len() as u64, None, directory.path(), mode, true)
+                capture(bytes.as_slice(), bytes.len() as u64, None, directory.path(), directory.path(), mode, true)
                     .unwrap()
             };
             let (first, second) = (capture_bytes(), capture_bytes());

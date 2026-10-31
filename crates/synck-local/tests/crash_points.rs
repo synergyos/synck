@@ -94,6 +94,24 @@ fn base(root: &Path) {
     ok(root, &["commit", "-m", "second"]);
 }
 
+/// Whatever a kill left, the repository can collect, and nothing stays behind.
+fn assert_clean_metadata(root: &Path, context: &str) {
+    let gc = synck(root, &["gc"], None);
+    assert!(gc.status.success(), "{context}: {}", String::from_utf8_lossy(&gc.stderr));
+    let names = |path: &str| -> Vec<String> {
+        fs::read_dir(root.join(path))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect()
+    };
+    assert_eq!(names(".synck/tmp"), Vec::<String>::new(), "{context}");
+    let stray = names(".synck")
+        .into_iter()
+        .filter(|name| name.ends_with(".json") && name != "config.json" && name != "checkout.json")
+        .collect::<Vec<_>>();
+    assert_eq!(stray, Vec::<String>::new(), "{context}");
+}
+
 fn scenario(prepare: impl Fn(&Path), args: &[&str]) {
     scenario_with(
         |root| {
@@ -158,6 +176,7 @@ fn scenario_with(prepare: impl Fn(&Path) -> Vec<String>) {
         assert_eq!(tree(&crashed), expected_tree, "{context}");
         let fsck = synck(&crashed, &["fsck"], None);
         assert!(fsck.status.success(), "{context}: {}", String::from_utf8_lossy(&fsck.stderr));
+        assert_clean_metadata(&crashed, &context);
 
         fs::remove_dir_all(&crashed).unwrap();
         point += 1;
