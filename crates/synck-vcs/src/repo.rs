@@ -208,6 +208,20 @@ impl Repo {
         Ok(())
     }
 
+    /// An encrypted repository's caller publishes encrypted objects first, and an
+    /// event only names them. Metadata that arrives here is SALTED plaintext.
+    fn require_metadata_form(
+        &self,
+        metadata: Option<&crate::metadata::MetadataRef>,
+    ) -> Result<(), CoreError> {
+        if self.config.encrypted && metadata.is_some_and(|value| value.payload().is_some()) {
+            return Err(CoreError::InvalidProposal(
+                "an encrypted repository stores no plaintext metadata".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
     pub fn new(storage: Storage, config: CoreConfig) -> Self {
         Self {
             storage,

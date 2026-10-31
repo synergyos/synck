@@ -49,8 +49,8 @@ path. Install object metadata through Core's metadata API. Do not log content.
 `Capabilities` contains `protocol_version: 1`, `repository`, `encrypted` (a client
 needs it to compute the genesis value), `latest` complete cursor and `policy`. Fixed transfer bounds are **512 records per page** and
 **8 MiB of serialized JSON per page**. These are not commit limits. The byte
-bound fits any format-valid individual event even with JSON numeric-byte history
-encoding. Producers stop a page before either bound, and paginate again. They
+bound fits any format-valid individual event, with `payload_json` escaped.
+Producers stop a page before either bound, and paginate again. They
 bound the source query and construction, not just the final serialization.
 Receivers cap network bytes before parsing; in-memory validation alone cannot
 protect an unbounded parser. Headers are small because format limits are fixed.

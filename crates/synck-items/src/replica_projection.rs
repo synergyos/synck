@@ -158,8 +158,7 @@ pub fn apply_replica_item_event(
             );
     }
     set_record_title(&mut item, proposal)?;
-    if (proposal.event_type == format!("{}::CREATE", item.item_type)
-        || proposal.event_type == format!("{}::SET_CONTENT", item.item_type))
+    if proposal.replaces_content()
         && let Some(content) = &proposal.set_content {
             item.content_roles = content.roles().clone();
         }

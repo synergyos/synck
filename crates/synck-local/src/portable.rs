@@ -19,7 +19,7 @@ use sha2::{Digest, Sha256};
 use synck_file_folder::{
     BlobRef, CurrentItem, Intent, IntentProposal, Location, ProfileLifecycleState,
 };
-use synck_vcs::object::{Form, HEADER_BYTES, Object, VerifyingWriter, content_form, verify_stored};
+use synck_vcs::object::{Form, HEADER_BYTES, Object, VerifyingWriter, content_form};
 use synck_items::reader::{ItemReader, ReadContext, ReadableItem, RefReadContext};
 use synck_vcs::bundle::{
     BundleReader, validate_bundle_event_payload_json_and_digest,
@@ -1880,12 +1880,12 @@ impl PortableRepository {
     /// location) and the same bytes; anything else is a caller error.
     async fn replayed_file_write(
         &self,
-        operation_id: Option<Uuid>,
+        options: &WriteOptions,
         item: Option<&ItemId>,
         location: Option<&Location>,
         content: &BlobRef,
     ) -> Result<Option<(ItemId, CommitId)>> {
-        let Some(operation_id) = operation_id else {
+        let Some(operation_id) = options.operation_id else {
             return Ok(None);
         };
         let core = self.core();
@@ -1921,7 +1921,14 @@ impl PortableRepository {
                 }),
                 (None, None) => false,
             };
-            if same_item && blob.size == content.size {
+            let same_sources = event.merged_from == options.merged_from
+                && events.iter().all(|create| {
+                    create.create_item.as_ref().is_none_or(|created| {
+                        create.item_id.as_ref() != Some(id)
+                            || created.derived_from == options.derived_from
+                    })
+                });
+            if same_item && same_sources && blob.size == content.size {
                 let mut previous = crate::objects::PlainDigest::default();
                 let mut proposed = crate::objects::PlainDigest::default();
                 self.copy_blob(&blob.blob_id, &mut previous)?;
@@ -1943,11 +1950,8 @@ impl PortableRepository {
         match form {
             Form::Plain | Form::Opaque if unhashed => self.copy_blob(id, &mut std::io::sink()).map(|_| ()),
             Form::Plain | Form::Opaque => Ok(()),
-            Form::Salted => {
-                let mut stored = Vec::new();
-                self.copy_blob(id, &mut stored)?;
-                verify_stored(id, form, &stored).map_err(corrupt)
-            }
+            // Bounded, and checks the ID and the frame.
+            Form::Salted => self.read_body(id.clone()).map(|_| ()),
             Form::Encrypted => {
                 let mut frame = FrameStart::default();
                 self.copy_blob(id, &mut frame)?;
@@ -2229,7 +2233,7 @@ impl PortableRepository {
             name: name.into(),
         };
         if let Some(replayed) = self
-            .replayed_file_write(options.operation_id, None, Some(&location), &content)
+            .replayed_file_write(options, None, Some(&location), &content)
             .await?
         {
             let (item, commit) = replayed;
@@ -2346,7 +2350,7 @@ impl PortableRepository {
         options.validate()?;
         let content = self.store_file(source)?;
         if let Some((_, commit)) = self
-            .replayed_file_write(options.operation_id, Some(id), None, &content)
+            .replayed_file_write(options, Some(id), None, &content)
             .await?
         {
             return Ok(commit);

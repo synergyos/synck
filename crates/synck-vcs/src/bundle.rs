@@ -2,7 +2,7 @@
 //!
 //! The source schema in a header is provenance, not a target schema instruction.
 //! Only the current bundle encoding is accepted.
-use crate::limits::MAX_EVENT_PAYLOAD_BYTES;
+use crate::limits::{MAX_BUNDLE_RECORD_BYTES, MAX_EVENT_PAYLOAD_BYTES};
 use crate::errors::CoreError;
 use crate::types::{
     COMMIT_FORMAT_VERSION, EventProposal, RefEventProposal, RepoId, Sha256Digest,
@@ -13,7 +13,7 @@ use crate::types::{
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::io::BufRead;
+use std::io::{BufRead, Read};
 
 /// Canonical commit outcome shared by offline bundle command wrappers.
 #[derive(Debug)]
@@ -232,13 +232,16 @@ impl<'a> BundleReader<'a> {
     /// Read one line, which every record ends with. `None` is end of input.
     fn line(&mut self) -> Result<Option<String>, String> {
         let mut line = String::new();
-        if self
-            .reader
+        if (&mut self.reader)
+            .take(MAX_BUNDLE_RECORD_BYTES + 1)
             .read_line(&mut line)
             .map_err(|error| format!("read: {error}"))?
             == 0
         {
             return Ok(None);
+        }
+        if line.len() as u64 > MAX_BUNDLE_RECORD_BYTES {
+            return Err("bundle record exceeds its size bound".to_string());
         }
         if !line.ends_with('\n') {
             return Err("bundle record has no final line feed".to_string());
@@ -274,7 +277,7 @@ impl<'a> BundleReader<'a> {
             let Some(line) = self.line()? else {
                 return Err("bundle has no end record".to_string());
             };
-            if !line.trim_end().is_empty() {
+            if line != "\n" {
                 break line;
             }
             self.hasher.update(line.as_bytes());
@@ -284,13 +287,14 @@ impl<'a> BundleReader<'a> {
         let kind = value
             .get("type")
             .and_then(|value| value.as_str())
-            .ok_or_else(|| "record missing string field: type".to_string())?;
+            .ok_or_else(|| "record missing string field: type".to_string())?
+            .to_string();
         if kind == "synck_vcs_bundle_end" {
             self.finish(value)?;
             return Ok(None);
         }
         self.accept(&line);
-        decode_record(kind, value.clone()).map(Some)
+        decode_record(&kind, value).map(Some)
     }
 
     /// Read and validate the header before acquiring repository authority.
@@ -309,9 +313,12 @@ fn decode_record(kind: &str, value: serde_json::Value) -> Result<BundleRecord, S
             serde_json::from_value(value).map_err(|error| format!("decode metadata: {error}"))?,
         ),
         "commit" => BundleRecord::Commit(decode_commit_record(value)?),
-        "event" => BundleRecord::Event(
-            serde_json::from_value(value).map_err(|error| format!("decode event: {error}"))?,
-        ),
+        "event" => {
+            require_fields(&value, "event", &["parent_folder_id", "parent_folder_id_before"])?;
+            BundleRecord::Event(
+                serde_json::from_value(value).map_err(|error| format!("decode event: {error}"))?,
+            )
+        }
         "ref_event" => BundleRecord::RefEvent(
             serde_json::from_value(value).map_err(|error| format!("decode ref_event: {error}"))?,
         ),
@@ -559,14 +566,32 @@ mod bundle_tests {
     }
 
     #[test]
-    fn bundle_commit_requires_explicit_optional_fields_and_current_version() {
+    fn a_record_past_the_size_bound_is_refused_before_it_is_parsed() {
+        let mut input = std::io::Cursor::new(vec![b' '; MAX_BUNDLE_RECORD_BYTES as usize + 2]);
+        let error = BundleReader::new(&mut input).read_record().unwrap_err();
+        assert!(error.contains("size bound"), "{error}");
+    }
+
+    #[test]
+    fn an_event_record_names_its_parents_even_when_null() {
+        let mut value = serde_json::json!({
+            "commit_id": format!("sha256:{}", "a".repeat(64)),
+            "parent_folder_id": null,
+            "parent_folder_id_before": null,
+        });
+        value.as_object_mut().unwrap().remove("parent_folder_id");
+        let error = decode_record("event", value).err().unwrap();
+        assert!(error.contains("parent_folder_id"), "{error}");
+    }
+
+    #[test]
+    fn bundle_commit_requires_explicit_optional_fields() {
         let value = commit_json();
         assert!(decode_commit_record(value.clone()).is_ok());
-        {
-            let field = "operation_id";
+        for field in ["operation_id", "message", "occurred_at"] {
             let mut missing = value.clone();
             missing.as_object_mut().unwrap().remove(field);
-            assert!(decode_commit_record(missing).is_err());
+            assert!(decode_commit_record(missing).is_err(), "{field}");
         }
         let mut blank = value;
         blank["operation_id"] = serde_json::json!(" ");

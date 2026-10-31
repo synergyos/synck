@@ -410,6 +410,7 @@ impl Repo {
             let item_id = &placement.item_ids[idx];
             let item = items.get(item_id).expect("event item id must exist in items map");
             validate_event_for_item(item_id, item.item_type.as_str(), ev)?;
+            self.require_metadata_form(ev.set_metadata.as_ref())?;
             let event_hash = compute_sha256_digest_bytes(&payload);
             digest.update([COMMIT_EVENT_FAMILY_ITEM]);
             digest.update(event_hash);
@@ -431,6 +432,7 @@ impl Repo {
         }
         let mut ref_rows = Vec::with_capacity(ref_events.len());
         for (idx, (event, payload)) in ref_events.iter().zip(payloads).enumerate() {
+            self.require_metadata_form(event.set_metadata.as_ref())?;
             let event_hash = compute_sha256_digest_bytes(&payload);
             digest.update([COMMIT_EVENT_FAMILY_REF]);
             digest.update(event_hash);

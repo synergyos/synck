@@ -195,7 +195,12 @@ macro_rules! sha256_id {
                 D: Deserializer<'de>,
             {
                 let s = String::deserialize(deserializer)?;
-                Self::parse(&s).map_err(D::Error::custom)
+                let id = Self::parse(&s).map_err(D::Error::custom)?;
+                // Only people type uppercase. Stored and wire IDs have one spelling.
+                if id.as_str() != s {
+                    return Err(D::Error::custom("digest IDs are lowercase"));
+                }
+                Ok(id)
             }
         }
 
@@ -1276,8 +1281,8 @@ mod tests {
     }
 
     #[test]
-    fn sha256_ids_deserialize_and_canonicalize_hex() {
-        let json = "\"sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\"";
+    fn sha256_ids_round_trip_in_lowercase_hex() {
+        let json = "\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"";
         let id: CommitId = serde_json::from_str(json).expect("deserialize CommitId");
         assert_eq!(
             id.as_str(),
@@ -1400,6 +1405,13 @@ mod tests {
             bytes,
             "accepted numbers must remain valid after canonical round trip"
         );
+    }
+
+    #[test]
+    fn digest_ids_accept_uppercase_only_from_people() {
+        let upper = format!("sha256:{}", "A".repeat(64));
+        assert!(Sha256Digest::parse(&upper).is_ok());
+        assert!(serde_json::from_value::<Sha256Digest>(serde_json::json!(upper)).is_err());
     }
 
     #[test]

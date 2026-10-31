@@ -553,6 +553,46 @@ async fn a_file_write_refuses_a_rename_onto_its_path_and_a_merge_that_records_no
     assert!(error.to_string().contains("commit or restore"), "{error}");
 }
 
+#[tokio::test]
+async fn an_operation_id_names_one_request_with_its_sources() {
+    use synck_local::portable::{PortableRepository, WriteOptions, init_repository};
+    use synck_vcs::types::ItemRevision;
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("root");
+    init_repository(&root, "tester").await.unwrap();
+    let source = temp.path().join("source.txt");
+    fs::write(&source, b"first").unwrap();
+    let plain = WriteOptions { message: Some("m".into()), ..Default::default() };
+    let mut repo = PortableRepository::open(&root).unwrap();
+    let (file, _) = repo.create_file_with(None, "a.txt", &source, &plain).await.unwrap();
+    let (other, _) = repo.create_file_with(None, "b.txt", &source, &plain).await.unwrap();
+    fs::write(&source, b"second").unwrap();
+    let write = WriteOptions { operation_id: Some(uuid::Uuid::from_u128(9)), ..plain };
+    repo.save_file_with(&file, &source, None, &write).await.unwrap();
+    repo.save_file_with(&file, &source, None, &write).await.unwrap();
+    let merge = WriteOptions {
+        merged_from: Some(ItemRevision { item_id: other, item_seq: 1 }),
+        ..write
+    };
+    let error = repo.save_file_with(&file, &source, None, &merge).await.unwrap_err();
+    assert!(error.to_string().contains("already used"), "{error}");
+}
+
+#[test]
+fn a_missing_projection_row_is_a_finding() {
+    let temp = tempfile::tempdir().unwrap();
+    run(temp.path(), &["init", "--author", "tester"]);
+    let db = rusqlite::Connection::open(temp.path().join(".synck/repository.local.sqlite3")).unwrap();
+    db.execute("DELETE FROM local_projection_state", []).unwrap();
+    drop(db);
+    let output = Command::new(env!("CARGO_BIN_EXE_synck"))
+        .current_dir(temp.path())
+        .args(["repository", "verify"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+}
+
 #[test]
 fn a_recovery_journal_never_holds_what_acceptance_would_refuse() {
     let temp = tempfile::tempdir().unwrap();

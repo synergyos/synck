@@ -6,6 +6,8 @@ pub const MAX_ACTOR_ID_BYTES: usize = 256;
 pub const MAX_OPERATION_ID_BYTES: usize = 256;
 pub const MAX_EVENT_PAYLOAD_BYTES: usize = 1024 * 1024;
 pub const MAX_NAME_BYTES: usize = 255;
+/// One bundle record. Fits any format-valid event, escaped, or metadata object.
+pub const MAX_BUNDLE_RECORD_BYTES: u64 = 8 * 1024 * 1024;
 pub const MAX_RECORD_KEY_BYTES: usize = 256;
 pub const MAX_ITEM_TYPE_BYTES: usize = 64;
 pub const MAX_EVENT_TYPE_BYTES: usize = 128;

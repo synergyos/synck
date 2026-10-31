@@ -305,6 +305,7 @@ async fn install(
     let mut items_started = false;
     let mut domains_started = false;
     let mut metadata_ids = std::collections::HashSet::new();
+    let mut origins = std::collections::HashMap::new();
     while let Some(record) = reader.read_record()? {
         match record {
             BundleRecord::Metadata(record) => {
@@ -342,6 +343,12 @@ async fn install(
                     created_at,
                     record.payload_json.len(),
                 )?;
+                if record.item_seq == 1 {
+                    origins.insert(
+                        record.item_id.clone(),
+                        (created_at, current.row.author_id.clone()),
+                    );
+                }
                 let hash = validate_bundle_event_payload_json_and_digest(
                     &record.payload_json,
                     &record.event_payload_digest,
@@ -393,6 +400,9 @@ async fn install(
                     return Err("item after domains or incomplete commit".into());
                 }
                 items_started = true;
+                let (created_at, created_by) = origins
+                    .remove(&record.item_id)
+                    .ok_or("item record has no first event")?;
                 let item = ItemRow {
                     repo_id: repo_id.clone(),
                     item_id: item_id(record.item_id)?,
@@ -412,8 +422,8 @@ async fn install(
                         record.sequencing_mode
                     ))
                     .map_err(detail)?,
-                    created_at: parse_rfc3339_utc(&record.created_at)?,
-                    created_by: record.created_by,
+                    created_at,
+                    created_by,
                     federation_stream_id: record.federation_stream_id,
                 };
                 if txn

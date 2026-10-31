@@ -329,7 +329,7 @@ pub(crate) fn verify_projection(
         .optional()?;
     // A projection behind history is an interrupted update, which the next open
     // replays. Only one at the same position can be compared with it.
-    if applied.is_some_and(|applied| applied > maximum) {
+    if applied.is_none_or(|applied| applied > maximum) {
         findings.push(format!(
             "local projection sequence is {applied:?}, expected {maximum}"
         ));

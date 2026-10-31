@@ -1104,6 +1104,10 @@ All records contain `type`. Other fields are:
 | `federation_domain` | `domain_id`, `last_domain_seq`, `created_at`, `updated_at` |
 | `synck_vcs_bundle_end` | `record_count`, `checkpoint`, `digest` |
 
+An `item` record's `created_at` and `created_by` repeat the acceptance time and author of
+the item's first commit, and a reader takes them from that commit. A record is at most
+8 MiB, line feed included. Digest IDs are lowercase.
+
 Optional commit message, author time, operation IDs, parents, names, keys, links, sources
 and stream IDs are JSON null when absent. `ref_head_seq` may be omitted when zero.
 Digest fields use prefixed hexadecimal spelling, except `payload_hex`, which

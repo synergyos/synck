@@ -30,6 +30,9 @@ Core SQLite schema 7. Repositories from 0.1 are refused. Copy files across with
 
 ### Engine
 
+- `item show` prints a ref's payload as `payload_json`, a string, not a byte array.
+- `RESERVED_WORKTREE_PATH` is gone. `.synck` is a reserved name, so it reports
+  `INVALID_NAME`.
 - Every write path goes through one set of admission rules.
 - macOS writes flush the drive cache. Every SQLite connection refuses schema tricks
   from a repository it opens.
@@ -38,7 +41,8 @@ Core SQLite schema 7. Repositories from 0.1 are refused. Copy files across with
 
 ### Testing
 
-- A crash matrix kills a real `synck` at every filesystem mutation.
+- A crash matrix kills a real `synck` at each filesystem mutation it makes through
+  libc, which on macOS is all of them.
 - Every format read from untrusted input has a fuzz target and a mutation test.
 
 ## 0.1.1
