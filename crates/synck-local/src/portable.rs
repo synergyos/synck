@@ -482,11 +482,14 @@ impl PortableRepository {
         config: &crate::repository::Config,
         tokens: &[String],
     ) -> Result<Self> {
+        // `checkout` lives in its own file, so serde does not carry it.
+        let mut view: Config = serde_json::from_value(serde_json::to_value(config)?)?;
+        view.checkout = config.checkout.clone();
         Ok(Self {
             agent_lock_tokens: tokens.to_vec(),
             root: root.to_path_buf(),
             metadata: directory(&root.join(".synck"))?,
-            config: serde_json::from_value(serde_json::to_value(config)?)?,
+            config: view,
             storage,
             _lock: lock,
         })

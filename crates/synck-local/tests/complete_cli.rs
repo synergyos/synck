@@ -534,7 +534,11 @@ fn verification_rejects_valid_but_incorrect_checkout_projection_values() {
         let db = rusqlite::Connection::open(temp.path().join(".synck/repository.local.sqlite3")).unwrap();
         db.execute(&format!("UPDATE local_file_heads SET {assignment}"), [])
             .unwrap();
-        for command in [vec!["fsck"], vec!["repository", "verify"]] {
+        for command in [
+            vec!["fsck"],
+            vec!["repository", "verify"],
+            vec!["fsck", "--rebuild-state-index"],
+        ] {
             let output = Command::new(env!("CARGO_BIN_EXE_synck"))
                 .current_dir(temp.path())
                 .args(command)
