@@ -378,6 +378,10 @@ def new_names():
         ("not a short name", "synck~2", True, "synck~2"),
         ("no dot", "synck", True, "synck"),
         ("control directory with suffix", ".synck (2)", True, ".synck (2)"),
+        ("truncation exposes a device name", "CON" + " " * 300 + "x", False, "_CON"),
+        ("truncation exposes the control directory", ".synck" + " " * 300 + "x", False, "_.synck"),
+        ("truncation leaves nothing", " " * 300 + "x", False, "_"),
+        ("device name prefix overflows", "CON." + "a" * 251, False, "_CON." + "a" * 250),
     ]
     generated = {name for _, name, _, _ in additions}
     cases = [c for c in load("names.json")["cases"] if c["name"] not in generated]

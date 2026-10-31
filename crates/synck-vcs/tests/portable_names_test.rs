@@ -15,6 +15,22 @@ struct Case {
 }
 
 #[test]
+fn truncation_cannot_expose_a_reserved_or_empty_name() {
+    let spaces = " ".repeat(300);
+    for name in [
+        format!("CON{spaces}x"),
+        format!(".synck{spaces}x"),
+        format!("{spaces}x"),
+        format!("CON.{}", "a".repeat(251)),
+    ] {
+        let fixed = portable_name(&name);
+        assert!(compute_name_key(&fixed).is_ok(), "{fixed:?}");
+        assert!(fixed.len() <= 255);
+        assert_eq!(portable_name(&fixed), fixed);
+    }
+}
+
+#[test]
 fn portable_names_match_language_neutral_vectors() {
     let vectors: Vectors =
         serde_json::from_str(include_str!("../../../docs/spec/vectors/names.json")).unwrap();

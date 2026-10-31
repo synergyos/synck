@@ -223,16 +223,21 @@ pub fn portable_name(name: &str) -> String {
             }
         })
         .collect();
-    fixed.truncate(fixed.trim_end_matches([' ', '.']).len());
+    fit_name(&mut fixed);
     if fixed.is_empty() {
         fixed.push('_');
     }
     if is_reserved_device_name(&fixed.to_ascii_uppercase()) || is_reserved_control_name(&fixed) {
         fixed.insert(0, '_');
+        fit_name(&mut fixed);
     }
-    truncate_name(&mut fixed, MAX_NAME_BYTES);
-    fixed.truncate(fixed.trim_end_matches([' ', '.']).len());
     fixed
+}
+
+/// Truncation can expose trailing spaces and dots, so strip them after it.
+fn fit_name(name: &mut String) {
+    truncate_name(name, MAX_NAME_BYTES);
+    name.truncate(name.trim_end_matches([' ', '.']).len());
 }
 
 /// Reserve the suffix's bytes before truncating a colliding portable name.

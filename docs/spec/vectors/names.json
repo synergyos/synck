@@ -282,6 +282,30 @@
       "valid": true,
       "key": ".synck (2)",
       "fixed": ".synck (2)"
+    },
+    {
+      "name": "CON                                                                                                                                                                                                                                                                                                            x",
+      "valid": false,
+      "key": null,
+      "fixed": "_CON"
+    },
+    {
+      "name": ".synck                                                                                                                                                                                                                                                                                                            x",
+      "valid": false,
+      "key": null,
+      "fixed": "_.synck"
+    },
+    {
+      "name": "                                                                                                                                                                                                                                                                                                            x",
+      "valid": false,
+      "key": null,
+      "fixed": "_"
+    },
+    {
+      "name": "CON.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "valid": false,
+      "key": null,
+      "fixed": "_CON.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     }
   ]
 }

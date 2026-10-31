@@ -466,9 +466,11 @@ normalization uses the Unicode 18.0.0 data. The name vectors are language-neutra
 JSON in `vectors/names.json`.
 
 A proposed portable spelling normalizes NFC, replaces each forbidden character
-and each unassigned code point with `_`, strips trailing ASCII spaces/dots, substitutes `_` for an empty result,
-prefixes device and reserved names with `_`, and truncates on a UTF-8 boundary to 255 bytes.
-Strip any space or dot exposed by truncation. For sibling collisions append
+and each unassigned code point with `_`, truncates on a UTF-8 boundary to 255
+bytes, strips trailing ASCII spaces/dots, substitutes `_` for an empty result, and
+prefixes device and reserved names with `_`, truncating and stripping again when
+the prefix overflows. The order matters: truncation can expose a reserved name or
+leave nothing. For sibling collisions append
 ` (2)`, ` (3)`, etc., reserving suffix bytes before truncation. Filesystem
 renaming requires explicit `--fix-names`; validation alone never renames files.
 Non-UTF-8 names are errors, never guessed encodings.
