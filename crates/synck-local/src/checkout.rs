@@ -28,12 +28,26 @@ pub(crate) struct Transition {
 }
 
 const CHECKOUT_FILE: &str = "checkout.json";
+const MAX_CHECKOUT_BYTES: u64 = 64 * 1024;
 
 /// A repository with no checkout state has no working tree.
 pub(crate) fn read_checkout(metadata: &Path) -> Result<Option<Checkout>> {
     let path = metadata.join(CHECKOUT_FILE);
     match crate::repository::open_regular_file_nofollow(&path) {
-        Ok(file) => Ok(Some(serde_json::from_reader(file)?)),
+        Ok(file) => {
+            use crate::error::IoContext;
+            use std::io::Read;
+            let mut bytes = Vec::new();
+            file.take(MAX_CHECKOUT_BYTES + 1)
+                .read_to_end(&mut bytes)
+                .at("read checkout state", &path)?;
+            if bytes.len() as u64 > MAX_CHECKOUT_BYTES {
+                return Err(LocalError::Integrity(
+                    "checkout state exceeds its size bound".into(),
+                ));
+            }
+            Ok(Some(serde_json::from_slice(&bytes)?))
+        }
         Err(LocalError::Io { source, .. }) if source.kind() == std::io::ErrorKind::NotFound => {
             Ok(None)
         }
@@ -44,16 +58,14 @@ pub(crate) fn read_checkout(metadata: &Path) -> Result<Option<Checkout>> {
 pub(crate) fn write_checkout(metadata: &Path, checkout: &Checkout) -> Result<()> {
     use crate::error::IoContext;
     let bytes = serde_json::to_vec(checkout)?;
-    if bytes.len() > 64 * 1024 {
+    if bytes.len() as u64 > MAX_CHECKOUT_BYTES {
         return Err(LocalError::Invalid(
             "checkout selection exceeds config size limit".into(),
         ));
     }
     let path = metadata.join(format!("checkout-{}.tmp", uuid::Uuid::new_v4()));
     std::fs::write(&path, &bytes).at("write checkout state", &path)?;
-    std::fs::File::open(&path)
-        .and_then(|file| file.sync_all())
-        .at("sync checkout state", &path)?;
+    crate::repository::sync_file(&path)?;
     crate::repository::replace_file(&path, &metadata.join(CHECKOUT_FILE))
         .at("publish checkout state", &path)?;
     crate::repository::sync_directory(metadata)
