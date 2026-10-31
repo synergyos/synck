@@ -1130,7 +1130,7 @@ async fn complete_checkout_recovery_refuses_changed_source_and_bare_open_stays_r
 
 #[tokio::test]
 async fn local_email_import_preserves_source_and_materializes_one_atomic_email() {
-    let fixture = local_fixture().await;
+    let fixture = fixture().await;
     let source = fixture.root.join("source.EML");
     let bytes =
         include_bytes!("../../synck-items/tests/fixtures/imported_email/representative.eml");
@@ -1794,7 +1794,7 @@ async fn history_verifies_with_absent_content_and_metadata_but_complete_export_r
 
 #[tokio::test]
 async fn repeating_an_email_import_survives_its_folder_leaving() {
-    let fixture = local_fixture().await;
+    let fixture = fixture().await;
     let folder = ItemId::new();
     let core = Repo::new(
         Storage::new(Arc::new(SqliteStorage::new(fixture.source.join(".synck/repository.sqlite3")))),

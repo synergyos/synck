@@ -1407,7 +1407,10 @@ impl Repo {
             matches!(event.set_link, Some(Some(_)))
                 || event.create_item.as_ref().is_some_and(|create| create.link.is_some())
         });
-        if sets_link && txn.has_federation_domain(&repo_id).await? {
+        if self.config.follows_domains
+            && sets_link
+            && txn.has_federation_domain(&repo_id).await?
+        {
             return Err(CoreError::InvalidProposal(
                 "a repository following a federation domain files through the domain".to_string(),
             ));

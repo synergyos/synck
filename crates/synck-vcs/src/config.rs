@@ -6,6 +6,9 @@ pub struct CoreConfig {
     pub default_sequencing_mode: SequencingMode,
     /// Fixed at creation. A commit message in an encrypted repository is null.
     pub encrypted: bool,
+    /// Whether domain cursors mean this replica follows those domains. A portable
+    /// repository ingests no domain and keeps its cursors only as provenance.
+    pub follows_domains: bool,
 }
 
 impl CoreConfig {
@@ -19,6 +22,7 @@ impl Default for CoreConfig {
         Self {
             default_sequencing_mode: SequencingMode::Local,
             encrypted: false,
+            follows_domains: true,
         }
     }
 }

@@ -1340,6 +1340,200 @@
     ]
   },
   {
+    "name": "a companion never federates, even within one commit",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000205",
+            "event_type": "LOCAL_COMPANION::CREATE",
+            "create_item": {
+              "item_type": "LOCAL_COMPANION",
+              "key": "019a2900-0000-7000-8000-000000000202"
+            },
+            "set_is_federated": true,
+            "set_federation_stream_id": "s"
+          },
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000205",
+            "event_type": "LOCAL_COMPANION::FEDERATE",
+            "set_is_federated": false
+          }
+        ],
+        "valid": false,
+        "reason": "this item type is never federated"
+      }
+    ]
+  },
+  {
+    "name": "a federated item does not federate again",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "CHAT::CREATE",
+            "create_item": {
+              "item_type": "CHAT"
+            }
+          }
+        ],
+        "valid": true,
+        "state_digest": "sha256:ff52f769678d620bdeba6b0566545cdd510afd59c266951aa49d4157e385372e"
+      },
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "base_seq": 1,
+            "event_type": "CHAT::FEDERATE",
+            "set_is_federated": true,
+            "set_federation_stream_id": "s"
+          }
+        ],
+        "valid": true,
+        "state_digest": "sha256:3b54897df617255e2f72cb4a888daccd9ec25a4f296f0a84ddca1afbda1c52a8"
+      },
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "base_seq": 2,
+            "event_type": "CHAT::FEDERATE",
+            "set_is_federated": true,
+            "set_federation_stream_id": "s2"
+          }
+        ],
+        "valid": false,
+        "reason": "illegal federation transition"
+      }
+    ]
+  },
+  {
+    "name": "a bootstrap repeats its own stream",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "CHAT::CREATE",
+            "create_item": {
+              "item_type": "CHAT"
+            },
+            "set_is_federated": true,
+            "set_federation_stream_id": "s"
+          },
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "CHAT::FEDERATE",
+            "set_is_federated": true,
+            "set_federation_stream_id": "other"
+          }
+        ],
+        "valid": false,
+        "reason": "illegal federation transition"
+      }
+    ]
+  },
+  {
+    "name": "one commit changes an item's mode once",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "CHAT::CREATE",
+            "create_item": {
+              "item_type": "CHAT"
+            }
+          }
+        ],
+        "valid": true,
+        "state_digest": "sha256:ff52f769678d620bdeba6b0566545cdd510afd59c266951aa49d4157e385372e"
+      },
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "base_seq": 1,
+            "event_type": "CHAT::FEDERATE",
+            "set_is_federated": true,
+            "set_federation_stream_id": "s"
+          },
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "base_seq": 1,
+            "event_type": "CHAT::FEDERATE",
+            "set_is_federated": false
+          }
+        ],
+        "valid": false,
+        "reason": "only a federated item returns to local, once"
+      }
+    ]
+  },
+  {
+    "name": "federation needs a stream",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "CHAT::CREATE",
+            "create_item": {
+              "item_type": "CHAT"
+            }
+          }
+        ],
+        "valid": true,
+        "state_digest": "sha256:ff52f769678d620bdeba6b0566545cdd510afd59c266951aa49d4157e385372e"
+      },
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "base_seq": 1,
+            "event_type": "CHAT::FEDERATE",
+            "set_is_federated": true
+          }
+        ],
+        "valid": false,
+        "reason": "federation needs a stream"
+      }
+    ]
+  },
+  {
+    "name": "federation needs a nonempty stream",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "CHAT::CREATE",
+            "create_item": {
+              "item_type": "CHAT"
+            }
+          }
+        ],
+        "valid": true,
+        "state_digest": "sha256:ff52f769678d620bdeba6b0566545cdd510afd59c266951aa49d4157e385372e"
+      },
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "base_seq": 1,
+            "event_type": "CHAT::FEDERATE",
+            "set_is_federated": true,
+            "set_federation_stream_id": ""
+          }
+        ],
+        "valid": false,
+        "reason": "federation needs a stream"
+      }
+    ]
+  },
+  {
     "name": "a new link never targets a tombstoned folder",
     "commits": [
       {

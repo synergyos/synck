@@ -863,6 +863,7 @@ impl PortableRepository {
             Storage::new(Arc::new(self.storage.clone())),
             CoreConfig {
                 encrypted: self.config.encrypted,
+                follows_domains: false,
                 ..CoreConfig::default()
             },
         )

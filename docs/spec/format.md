@@ -289,9 +289,9 @@ neither. That is federated bootstrap: the item starts FEDERATED, and one more
 switching to federated is a local append and switching to local is a federated
 ingest. At most one mode change per item per commit is permitted. A FOLDER never
 federates: a shared tree replicates as a whole repository through a federation domain.
-Everything in that repository belongs to the domain. Filing there goes through the
-domain, and append refuses to set a link, because a tombstone arriving through the
-domain could not clear it.
+A replica following a domain files through the domain, and append refuses to set a
+link, because a local link would refuse a tombstone arriving through the domain. A
+copy that follows nothing keeps the domain cursors as provenance and files locally.
 
 ### Tree items and records
 

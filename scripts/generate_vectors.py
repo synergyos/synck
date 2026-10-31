@@ -1100,6 +1100,7 @@ def replay_commit(items, commit):
     items = copy.deepcopy(items)
     heads = {i: v["seq"] for i, v in items.items()}
     changed_links = set()
+    created, rebound, mode_changed = set(), set(), set()
     for event in commit["events"]:
         item_id = event["item_id"]
         create = event.get("create_item")
@@ -1151,6 +1152,7 @@ def replay_commit(items, commit):
                 "link": create.get("link"), "life": "LIVE", "mode": "LOCAL", "seq": 1,
                 "ref": 0, "content": {}, "stream": None,
             }
+            created.add(item_id)
             if "link" in create:
                 changed_links.add(item_id)
         else:
@@ -1197,13 +1199,25 @@ def replay_commit(items, commit):
         if event.get("set_is_federated") is True:
             if item["type"] in ("FOLDER", "LOCAL_COMPANION"):
                 raise Invalid("this item type is never federated")
-            item["mode"] = "FEDERATED"
-            item["stream"] = event["set_federation_stream_id"]
+            stream = event.get("set_federation_stream_id")
+            if not stream:
+                raise Invalid("federation needs a stream")
+            if create is not None:
+                item["mode"], item["stream"] = "FEDERATED", stream
+            elif (item_id in created and item_id not in rebound
+                    and item["mode"] == "FEDERATED" and item["stream"] == stream):
+                rebound.add(item_id)
+            elif item["mode"] == "LOCAL" and item_id not in mode_changed:
+                mode_changed.add(item_id)
+                item["mode"], item["stream"] = "FEDERATED", stream
+            else:
+                raise Invalid("illegal federation transition")
         if "set_federation_stream_id" in event and event.get("set_is_federated") is not True:
             raise Invalid("a stream comes with a federation")
         if event.get("set_is_federated") is False:
-            if item["mode"] != "FEDERATED":
-                raise Invalid("only a federated item returns to local")
+            if item["mode"] != "FEDERATED" or item_id in mode_changed:
+                raise Invalid("only a federated item returns to local, once")
+            mode_changed.add(item_id)
             item["mode"] = "LOCAL"
             item["stream"] = None
 
@@ -1457,6 +1471,39 @@ def new_records():
         ("a record may leave federation in the commit that created it", [
             ([dict(record("r1", "CHAT"), set_is_federated=True, set_federation_stream_id="s"),
               {"item_id": ids["r1"], "event_type": "CHAT::FEDERATE", "set_is_federated": False}], True),
+        ]),
+        ("a companion never federates, even within one commit", [
+            ([dict(record("c1", "LOCAL_COMPANION", key=ids["r1"]), set_is_federated=True,
+                   set_federation_stream_id="s"),
+              {"item_id": ids["c1"], "event_type": "LOCAL_COMPANION::FEDERATE",
+               "set_is_federated": False}], False),
+        ]),
+        ("a federated item does not federate again", [
+            ([record("r1", "CHAT")], True),
+            ([update("r1", 1, "CHAT::FEDERATE", set_is_federated=True,
+                     set_federation_stream_id="s")], True),
+            ([update("r1", 2, "CHAT::FEDERATE", set_is_federated=True,
+                     set_federation_stream_id="s2")], False),
+        ]),
+        ("a bootstrap repeats its own stream", [
+            ([dict(record("r1", "CHAT"), set_is_federated=True, set_federation_stream_id="s"),
+              {"item_id": ids["r1"], "event_type": "CHAT::FEDERATE", "set_is_federated": True,
+               "set_federation_stream_id": "other"}], False),
+        ]),
+        ("one commit changes an item's mode once", [
+            ([record("r1", "CHAT")], True),
+            ([update("r1", 1, "CHAT::FEDERATE", set_is_federated=True,
+                     set_federation_stream_id="s"),
+              update("r1", 1, "CHAT::FEDERATE", set_is_federated=False)], False),
+        ]),
+        ("federation needs a stream", [
+            ([record("r1", "CHAT")], True),
+            ([update("r1", 1, "CHAT::FEDERATE", set_is_federated=True)], False),
+        ]),
+        ("federation needs a nonempty stream", [
+            ([record("r1", "CHAT")], True),
+            ([update("r1", 1, "CHAT::FEDERATE", set_is_federated=True,
+                     set_federation_stream_id="")], False),
         ]),
         ("a new link never targets a tombstoned folder", [
             ([folder("F")], True),
