@@ -1231,9 +1231,6 @@ pub fn canonical_commit_bytes_for_hash(
     events_digest: &Sha256Digest,
 ) -> Result<Vec<u8>, CoreError> {
     crate::limits::validate_commit_metadata(author_id, committer_id, message, None)?;
-    if event_count == 0 {
-        return Err(CoreError::EmptyCommit);
-    }
     if occurred_at.is_some_and(|time| time.timestamp_subsec_nanos() >= 1_000_000_000) {
         return Err(CoreError::InvalidProposal(
             "leap seconds are not supported".into(),

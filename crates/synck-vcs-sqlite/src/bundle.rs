@@ -60,7 +60,7 @@ struct PendingCommit {
 
 impl PendingCommit {
     fn new(record: BundleCommitRecord) -> Result<Self, String> {
-        if record.event_count < 1 {
+        if record.event_count < 0 {
             return Err("commit event_count exceeds supported canonical bounds".into());
         }
         Ok(Self {

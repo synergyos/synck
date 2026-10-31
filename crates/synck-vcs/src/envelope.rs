@@ -390,10 +390,6 @@ impl CommitEnvelopeValidator {
     }
 
     pub fn finish(mut self) -> Vec<String> {
-        if self.next_event_index == 0 {
-            self.findings
-                .push(format!("{}: commit has no events", self.label));
-        }
         if self
             .commit
             .event_count

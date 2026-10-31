@@ -21,14 +21,26 @@
     },
     {
       "repo_seq": 4,
-      "commit_id": "sha256:a522a6b0cff60089e358cc82575e663bdf50514b19a0aa3c7571b75dbd1da753",
-      "checkpoint": "sha256:e14e0cafa957c14305cc7e20848cb05f1ddee0467a051d7f56037bfc5dce3022",
-      "state_digest": "sha256:64605b1b08100706c2d17f120b38fc180dbbeaf156b684cbb434eeca825348ec"
+      "commit_id": "sha256:25f0b02530ff4a0baa53e5ae890b9c51a1dccf95e5164ad4d834fcbb25146213",
+      "checkpoint": "sha256:f54a63b46c04b4fe32d9c02270df204c331c8699ca7ca81234e556e99c8cb396",
+      "state_digest": "sha256:8ae484474d537dd6a2d1289c65f9569824e4befb14f81374fee4ccdfca1967c1"
     },
     {
       "repo_seq": 5,
+      "commit_id": "sha256:a522a6b0cff60089e358cc82575e663bdf50514b19a0aa3c7571b75dbd1da753",
+      "checkpoint": "sha256:064dfd19b33f63170a9e4cc5cb681bf14c42f1f24d45651f960487afb86123d4",
+      "state_digest": "sha256:64605b1b08100706c2d17f120b38fc180dbbeaf156b684cbb434eeca825348ec"
+    },
+    {
+      "repo_seq": 6,
       "commit_id": "sha256:1c37625f644922756fcfcf68029a773056bbdfc1812ebbefbe54435ccd8c1777",
-      "checkpoint": "sha256:7b5f9c5e123826d30aa05deb7ccb966ceabf8863cdecc3af8ab1ac51ecd4c19d",
+      "checkpoint": "sha256:e6f37046dd3a8c137c67cfbf311a85e210a79631a53b92b1a5268779021726cb",
+      "state_digest": "sha256:4b6c00af6f3c560688761b3dcdafe35ef832869b80bcf0523272a20e741b8a5b"
+    },
+    {
+      "repo_seq": 7,
+      "commit_id": "sha256:eb9462e49194197282bc9373e65c1421b1c023eed7db632691fb05ffad59db80",
+      "checkpoint": "sha256:7c962bd03de92b9980a994472631a7f017c0a86e52ae543ec547e19bc75db1d1",
       "state_digest": "sha256:4b6c00af6f3c560688761b3dcdafe35ef832869b80bcf0523272a20e741b8a5b"
     }
   ],

@@ -2725,7 +2725,14 @@ async fn check_final_items<T: StorageTxn + ?Sized>(
         }
         match folder.lifecycle_state {
             LifecycleState::Live => {}
-            LifecycleState::Tombstoned => return invalid("link target is tombstoned"),
+            LifecycleState::Tombstoned => {
+                let before = txn.get_item(repo_id, &item.item_id).await?;
+                if folder.sequencing_mode != SequencingMode::Federated
+                    || before.is_none_or(|row| row.link_folder_id.as_ref() != Some(target))
+                {
+                    return invalid("link target is tombstoned");
+                }
+            }
             LifecycleState::Trash => {
                 let before = txn.get_item(repo_id, &item.item_id).await?;
                 if before.is_none_or(|row| row.link_folder_id.as_ref() != Some(target)) {
@@ -2736,8 +2743,11 @@ async fn check_final_items<T: StorageTxn + ?Sized>(
     }
 
     for folder in items.values() {
+        // A federated folder's tombstone comes from elsewhere and cannot clear a local
+        // link, and nothing local may refuse it: the record reads as unfiled.
         if folder.item_type != "FOLDER"
             || !matches!(folder.lifecycle_state, LifecycleState::Tombstoned)
+            || folder.sequencing_mode == SequencingMode::Federated
         {
             continue;
         }

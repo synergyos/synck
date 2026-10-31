@@ -109,7 +109,7 @@ domain ID is a nonempty string, opaque to the format.
 
 Sequences are positive signed 64-bit integers in SQLite; ref bases also allow
 zero. In hashed JSON they stop at 2^53 - 1, like every number. Event indexes start
-at zero and event counts are positive; both fit signed 32-bit storage/API integers.
+at zero and event counts are not negative; both fit signed 32-bit storage/API integers.
 There is no smaller policy cap.
 
 Time strings are RFC 3339 UTC, with years 0000 through 9999. A writer uses one
@@ -333,7 +333,9 @@ items. At the end of a commit:
   in the same commit.
 - No record that is not tombstoned links to a TOMBSTONED folder, including a
   record in the trash. Tombstoning a folder must, in the same commit, clear or
-  tombstone every record still linked to it.
+  tombstone every record still linked to it. The exception is a FEDERATED folder:
+  its tombstone comes from outside this repository and cannot touch local records,
+  so an existing link stays and the record reads as unfiled.
 - No FEDERATED item has a link. A federated record's history is shared, so a
   local link cannot live on it. Federating a linked record clears the link in the
   same commit.
@@ -919,9 +921,13 @@ JSON with exactly these fields (including explicit nulls for absent values):
 `object_type` (`vcs_commit`), `format_version` (6), `author_id`, `committer_id`,
 `occurred_at`, `message`, `event_count`, and `events_digest`.
 The optional origin timestamp is UTC RFC 3339 with exactly nine fractional digits
-and `Z`; leap seconds are rejected. The positive event count is the number of item and attached-reference
+and `Z`; leap seconds are rejected. The event count is the number of item and attached-reference
 events combined. The commit ID is SHA-256 of these canonical UTF-8 bytes,
 represented as `sha256:` followed by 64 lowercase hexadecimal digits.
+
+A writer never adds a commit with no events, which is an admission rule. A reader
+accepts one, because converting history can leave a commit whose position has to
+stay. Such a commit changes no state, and its `events_digest` hashes nothing.
 
 Each event digest is SHA-256 of its canonical envelope bytes. The aggregate
 `events_digest` hashes the concatenation, in commit-event-index order, of one

@@ -356,15 +356,9 @@ pub(super) async fn historical_parent_name<S: StateIndexStore>(
 }
 
 pub(crate) fn checked_commit_event_count(event_count: i32, commit_id: &CommitId) -> Result<usize> {
-    let event_count = usize::try_from(event_count).map_err(|_| {
+    usize::try_from(event_count).map_err(|_| {
         LocalError::Integrity(format!("commit {commit_id} has a negative event count"))
-    })?;
-    if event_count == 0 {
-        return Err(LocalError::Integrity(format!(
-            "commit {commit_id} event count {event_count} is outside the FILE/FOLDER profile limit"
-        )));
-    }
-    Ok(event_count)
+    })
 }
 
 pub(super) fn history_path(item_id: &ItemId, nodes: &HashMap<ItemId, HistoryNode>) -> Result<Option<String>> {

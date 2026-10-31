@@ -1257,6 +1257,178 @@
     ]
   },
   {
+    "name": "a federated folder's tombstone passes a local link",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000200",
+            "event_type": "FOLDER::CREATE",
+            "create_item": {
+              "item_type": "FOLDER",
+              "name": "F"
+            }
+          }
+        ],
+        "valid": true,
+        "state_digest": "sha256:d4321809e4ba55af045f69db2dd3a2743b06eeadc6319e0b876e28c3f3642e5b"
+      },
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000200",
+            "base_seq": 1,
+            "event_type": "FOLDER::FEDERATE",
+            "set_is_federated": true,
+            "set_federation_stream_id": "s"
+          }
+        ],
+        "valid": true,
+        "state_digest": "sha256:fbf1740c8de955e5046b2151a01f85e04e7a47041110685d9b4e4eb27e427e62"
+      },
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "CHAT::CREATE",
+            "create_item": {
+              "item_type": "CHAT",
+              "link": "019a2900-0000-7000-8000-000000000200"
+            }
+          }
+        ],
+        "valid": true,
+        "state_digest": "sha256:70cec88c384d647becb041f4f1918b5887b9bb32aab8758263a583093d542994"
+      },
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000200",
+            "base_seq": 2,
+            "event_type": "FOLDER::TOMBSTONE",
+            "set_tombstoned": true
+          }
+        ],
+        "valid": true,
+        "state_digest": "sha256:790430e94cb4c092ce93cd36377b9f033546b73228d98ee079f56ec5edce5620"
+      },
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "base_seq": 1,
+            "event_type": "CHAT::SET_METADATA"
+          }
+        ],
+        "valid": true,
+        "state_digest": "sha256:988f13c9d9845e889b13841c12cee932f173bdfa78144874dd939c3317928da9"
+      }
+    ]
+  },
+  {
+    "name": "a new link never targets a tombstoned folder",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000200",
+            "event_type": "FOLDER::CREATE",
+            "create_item": {
+              "item_type": "FOLDER",
+              "name": "F"
+            }
+          }
+        ],
+        "valid": true,
+        "state_digest": "sha256:d4321809e4ba55af045f69db2dd3a2743b06eeadc6319e0b876e28c3f3642e5b"
+      },
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000200",
+            "base_seq": 1,
+            "event_type": "FOLDER::FEDERATE",
+            "set_is_federated": true,
+            "set_federation_stream_id": "s"
+          }
+        ],
+        "valid": true,
+        "state_digest": "sha256:fbf1740c8de955e5046b2151a01f85e04e7a47041110685d9b4e4eb27e427e62"
+      },
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "CHAT::CREATE",
+            "create_item": {
+              "item_type": "CHAT"
+            }
+          }
+        ],
+        "valid": true,
+        "state_digest": "sha256:c624decda3e96b55d4a9fd2cbc26ac791b8dee3e89f1a834bc9596dcd6fe125a"
+      },
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000200",
+            "base_seq": 2,
+            "event_type": "FOLDER::TOMBSTONE",
+            "set_tombstoned": true
+          }
+        ],
+        "valid": true,
+        "state_digest": "sha256:b2aba9a110f9c3c4c3d93713c52a26d87b2ac9a24bdb77440e81e7a83234e949"
+      },
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "base_seq": 1,
+            "event_type": "CHAT::SET_LINK",
+            "set_link": "019a2900-0000-7000-8000-000000000200"
+          }
+        ],
+        "valid": false,
+        "reason": "link to a tombstoned folder"
+      }
+    ]
+  },
+  {
+    "name": "a commit with no events",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "CHAT::CREATE",
+            "create_item": {
+              "item_type": "CHAT"
+            }
+          }
+        ],
+        "valid": true,
+        "state_digest": "sha256:ff52f769678d620bdeba6b0566545cdd510afd59c266951aa49d4157e385372e"
+      },
+      {
+        "events": [],
+        "valid": true,
+        "state_digest": "sha256:ff52f769678d620bdeba6b0566545cdd510afd59c266951aa49d4157e385372e"
+      },
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "base_seq": 1,
+            "event_type": "CHAT::SET_METADATA"
+          }
+        ],
+        "valid": true,
+        "state_digest": "sha256:7add0cf383bbb38306497803848ca83bd61ffb9c0e3567784c27e3c60716a1c7"
+      }
+    ]
+  },
+  {
     "name": "a creation changes nothing else",
     "commits": [
       {

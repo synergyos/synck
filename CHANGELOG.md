@@ -24,6 +24,10 @@ Core SQLite schema 7. Repositories from 0.1 are refused. Copy files across with
 - Hashed JSON is a strict subset of RFC 8785, with a fixed integer range and depth.
 - History bundles end with a record count, tip and digest, so a truncated bundle is
   refused.
+- History may hold a commit with no events, which changes nothing and keeps its
+  position. No writer adds one.
+- A FEDERATED folder's tombstone passes a local record's link, and the record reads
+  as unfiled.
 - Language-neutral vectors now cover names, JSON, objects, encryption, metadata,
   events, replay, state digests, checkpoints, bundles, labels, the sync wire and a
   whole repository, and an independent generator computes all of them.

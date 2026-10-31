@@ -206,14 +206,16 @@ both item and ref events. The completed cursor never advances inside a commit.
 
 A `HistoryPage` contains the exact requested `after`, ordered `fragments` and
 `has_more`. Each `HistoryFragment` has its own `header` (`CommitRow` and resulting
-checkpoint) and nonempty ordered `events`. Continuations repeat the identical
+checkpoint) and ordered `events`, empty only for a commit with no events.
+Continuations repeat the identical
 header. The first fragment may continue the pending commit, followed by any
 number of complete commits and at most one incomplete final fragment. A page
 may also contain only a portion of the pending commit. Never begin another
 commit before finishing the current one, or split one commit into multiple
 fragments within the same page.
 
-The **sum** of events across fragments must not exceed 512, and the entire
+The **sum** of events across fragments must not exceed 512, with a fragment of no
+events counting as one, and the entire
 serialized page, including every header, must fit 8 MiB. The server packs commits
 until the requested event limit or byte bound is reached; it does not stop just
 because a commit ended. An empty fragment list is allowed only at a complete

@@ -435,6 +435,9 @@ impl SemanticVerifier {
                         LifecycleState::Live => {}
                         LifecycleState::Trash if unchanged => {}
                         LifecycleState::Trash => report("link set to a folder in the trash"),
+                        LifecycleState::Tombstoned
+                            if unchanged
+                                && folder.state.sequencing_mode == SequencingMode::Federated => {}
                         LifecycleState::Tombstoned => report("link to a tombstoned folder"),
                     }
                 }
@@ -446,6 +449,7 @@ impl SemanticVerifier {
                 continue;
             };
             if item.state.lifecycle_state == LifecycleState::Tombstoned
+                && item.state.sequencing_mode != SequencingMode::Federated
                 && self
                     .linked_records
                     .get(item_id)

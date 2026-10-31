@@ -53,7 +53,7 @@ CREATE TABLE vcs_commits (
     CHECK (
         (commit_id IS NULL AND events_digest IS NULL AND event_count IS NULL)
         OR
-        (commit_id IS NOT NULL AND events_digest IS NOT NULL AND event_count IS NOT NULL AND event_count >= 1)
+        (commit_id IS NOT NULL AND events_digest IS NOT NULL AND event_count IS NOT NULL AND event_count >= 0)
     )
 ) STRICT;
 

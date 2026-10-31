@@ -923,7 +923,7 @@ def new_repository():
     second_commit = identify(commits[1][1], commits[1][2], commits[1][0])[0]
     commits += [("Name the second revision", [], [
         label(2, 2, "MAJOR", 2048, "second-label", 0, second_commit),
-    ]), ("Move the notes and file a task", [
+    ]), ("Nothing remains of this commit", [], []), ("Move the notes and file a task", [
         {"item_id": notes, "base_seq": 2, "event_type": "FILE::SET_PARENT", "set_parent": None},
         {"item_id": scratch, "event_type": "FILE::CREATE",
          "create_item": {"item_type": "FILE", "name": "scratch.txt"},
@@ -932,7 +932,7 @@ def new_repository():
          "create_item": {"item_type": "TASK", "link": docs}},
     ], []), ("Trash the scratch file", [
         {"item_id": scratch, "base_seq": 1, "event_type": "FILE::TRASH", "set_in_trash": True},
-    ], [])]
+    ], []), ("Nothing remains of this one either", [], [])]
 
     def quote(text):
         return "NULL" if text is None else "'" + text.replace("'", "''") + "'"
@@ -1235,7 +1235,8 @@ def replay_commit(items, commit):
         target = items.get(item["link"])
         if target is None or target["type"] != "FOLDER":
             raise Invalid("link target is not a folder")
-        if target["life"] == "TOMBSTONED":
+        if target["life"] == "TOMBSTONED" and (
+                item_id in changed_links or target["mode"] != "FEDERATED"):
             raise Invalid("link to a tombstoned folder")
         if item_id in changed_links and target["life"] != "LIVE":
             raise Invalid("link set to a folder that is not live")
@@ -1436,6 +1437,27 @@ def new_records():
         ]),
         ("a creation carries its link in create_item", [
             ([folder("F"), dict(record("r1", "CHAT"), set_link=f1)], False),
+        ]),
+        ("a federated folder's tombstone passes a local link", [
+            ([folder("F")], True),
+            ([update("f1", 1, "FOLDER::FEDERATE", set_is_federated=True,
+                     set_federation_stream_id="s")], True),
+            ([record("r1", "CHAT", link=f1)], True),
+            ([tombstone("f1", 2, "FOLDER")], True),
+            ([update("r1", 1, "CHAT::SET_METADATA")], True),
+        ]),
+        ("a new link never targets a tombstoned folder", [
+            ([folder("F")], True),
+            ([update("f1", 1, "FOLDER::FEDERATE", set_is_federated=True,
+                     set_federation_stream_id="s")], True),
+            ([record("r1", "CHAT")], True),
+            ([tombstone("f1", 2, "FOLDER")], True),
+            ([update("r1", 1, "CHAT::SET_LINK", set_link=f1)], False),
+        ]),
+        ("a commit with no events", [
+            ([record("r1", "CHAT")], True),
+            ([], True),
+            ([update("r1", 1, "CHAT::SET_METADATA")], True),
         ]),
         ("a creation changes nothing else", [
             ([dict(record("r1", "CHAT"), set_in_trash=True)], False),
@@ -1799,9 +1821,19 @@ def new_bundle():
         return "".join(retimed) + bundle_end(retimed, tip)
 
     blank = lines[:3] + ["\n"] + lines[3:]
+    nothing = events_digest([])
+    empty_id = sha_id(jcs_bytes(header("owner", "device", None, "nothing left", 0, nothing)))
+    empty_tip = "sha256:" + checkpoint(bytes.fromhex(tip[7:]), 2, empty_id, *accepted_time(at)).hex()
+    empty = lines[:5] + [bundle_line({
+        "type": "commit", "commit_id": empty_id, "checkpoint": empty_tip, "repo_seq": 2,
+        "operation_id": None, "format_version": 6, "author_id": "owner",
+        "committer_id": "device", "message": "nothing left", "occurred_at": None,
+        "created_at": at, "event_count": 0, "events_digest": nothing,
+    })] + lines[5:]
     cases = [
         ("complete", whole, True),
         ("empty history", head + bundle_end([head], genesis_value), True),
+        ("a commit with no events", "".join(empty) + bundle_end(empty, empty_tip), True),
         ("blank body line", "".join(blank) + bundle_end(blank, tip), True),
         ("event spells the same instant another way", event_time("2026-10-30T12:00:00Z"), True),
         ("event time differs from its commit", event_time("2026-10-30T12:00:00.000000001Z"), False),

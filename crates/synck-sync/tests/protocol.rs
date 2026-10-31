@@ -785,6 +785,39 @@ fn history_page_can_start_and_end_mid_commit_with_complete_commits_between() {
 }
 
 #[test]
+fn a_commit_with_no_events_is_a_fragment_of_none() {
+    let (_, commits) = history_vector("many_small_commits");
+    let mut state = HistoryVerifier::new(Cursor::genesis(repository(), false).unwrap()).unwrap();
+    let after = state.position().clone();
+    assert!(state.clone().push(&page(&commits[0], after.clone(), Vec::new(), false)).is_err());
+
+    let mut empty = commits[0].clone();
+    empty.events.clear();
+    let commit = &mut empty.commit;
+    commit.event_count = 0;
+    commit.events_digest = digest(compute_sha256_digest_bytes(b""));
+    commit.commit_id = compute_commit_id(
+        &canonical_stored_commit_bytes_for_hash(
+            commit.format_version,
+            &commit.author_id,
+            &commit.committer_id,
+            commit.occurred_at,
+            commit.message.as_deref(),
+            0,
+            &commit.events_digest,
+        )
+        .unwrap(),
+    );
+    empty.checkpoint = digest(
+        synck_vcs::checkpoint::digest(&genesis_value(), 1, &commit.commit_id, commit.created_at)
+            .unwrap(),
+    );
+    verify_published_commit(&empty, &repository()).unwrap();
+    let cursor = state.push(&page(&empty, after, Vec::new(), false)).unwrap().unwrap();
+    assert_eq!(cursor.repo_seq, 1);
+}
+
+#[test]
 fn history_rejects_a_sequence_gap_even_with_a_matching_checkpoint() {
     let (vector, commits) = history_vector("many_small_commits");
     let mut state = HistoryVerifier::new(Cursor::genesis(repository(), false).unwrap()).unwrap();

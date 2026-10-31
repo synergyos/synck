@@ -115,7 +115,7 @@ fn header(header: &PublishedHeader, after: &Cursor) -> Result<(), ProtocolError>
         .filter(|seq| *seq > 0)
         .ok_or_else(|| invalid("published commit requires positive repo_seq"))?
         as u64;
-    if after.repo_seq.checked_add(1) != Some(sequence) || commit.event_count < 1 {
+    if after.repo_seq.checked_add(1) != Some(sequence) || commit.event_count < 0 {
         return Err(invalid("invalid published commit position or count"));
     }
     let bytes = canonical_stored_commit_bytes_for_hash(
@@ -153,7 +153,7 @@ pub fn verify_published_commit(
     if commit.repo_id != repository.repo_id {
         return Err(ProtocolError::Generation);
     }
-    if commit.repo_seq.is_none_or(|n| n < 1) || commit.event_count < 1 {
+    if commit.repo_seq.is_none_or(|n| n < 1) || commit.event_count < 0 {
         return Err(invalid("invalid published commit"));
     }
     let bytes = canonical_stored_commit_bytes_for_hash(
@@ -207,14 +207,14 @@ impl HistoryVerifier {
         if page.after != self.position {
             return Err(ProtocolError::Checkpoint);
         }
-        // Every fragment is nonempty, so this also bounds header count.
+        // Every fragment counts for at least one, so this also bounds header count.
         let mut remaining = MAX_PAGE_RECORDS;
         for fragment in &page.fragments {
-            if fragment.events.is_empty() {
+            if fragment.events.is_empty() && fragment.header.commit.event_count != 0 {
                 return Err(invalid("empty commit fragment"));
             }
             remaining = remaining
-                .checked_sub(fragment.events.len())
+                .checked_sub(fragment.events.len().max(1))
                 .ok_or(ProtocolError::Limit("history page events"))?;
         }
         check_page_size(page)?;
