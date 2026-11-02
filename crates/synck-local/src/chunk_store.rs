@@ -86,8 +86,11 @@ impl ChunkStore {
                 | OpenFlags::SQLITE_OPEN_NO_MUTEX
                 | OpenFlags::SQLITE_OPEN_NOFOLLOW,
         )?;
+        // Chunks average 64 KiB and overflow their row's page. Importing 906 MB
+        // took 4.3 s into 911 MB with 4 KiB pages, 2.9 s into 955 MB with 32 KiB
+        // and 3.0 s into 1042 MB with 64 KiB.
         connection.execute_batch(
-            "PRAGMA page_size = 65536;
+            "PRAGMA page_size = 32768;
              PRAGMA auto_vacuum = INCREMENTAL;
              PRAGMA journal_mode = WAL;
              PRAGMA foreign_keys = ON;
@@ -145,9 +148,9 @@ impl ChunkStore {
         keep_wal_on_close(&connection)?;
         // Content is large, and every write path ends with `checkpoint`. Each
         // automatic checkpoint fully flushes the drive twice and stalls the other
-        // writer, so let the WAL grow to 1 GiB (16384 pages of 64 KiB) first.
+        // writer, so let the WAL grow to 1 GiB (32768 pages of 32 KiB) first.
         connection.execute_batch(
-            "PRAGMA wal_autocheckpoint = 16384;
+            "PRAGMA wal_autocheckpoint = 32768;
              PRAGMA journal_size_limit = 67108864;",
         )?;
         // A commit captures files on several threads, each with its own writer.
@@ -178,7 +181,7 @@ impl ChunkStore {
         if application_id != APPLICATION_ID
             || user_version != USER_VERSION
             // Stores created before 0.2.1 use 4 KiB pages.
-            || !matches!(page_size, 4096 | 65536)
+            || !matches!(page_size, 4096 | 32768)
             || auto_vacuum != 2
             || !journal_mode.eq_ignore_ascii_case("wal")
         {
