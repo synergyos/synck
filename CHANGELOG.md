@@ -31,6 +31,11 @@ reads only its own repository format; see [Format and compatibility](docs/format
   twice instead of once per file and folder.
 - The historical-state cache uses WAL without a flush per transaction, so catching
   it up after 20 commits flushes the drive about 20 times instead of 280.
+- A command keeps an idle connection to the history and local databases, as it
+  already did to the object store. A connection opened alone rebuilt the WAL index
+  from the whole WAL and forgot what had been checkpointed, so past 1000 pages
+  every transaction copied the whole WAL again and the WAL never restarted. A small
+  commit flushes the drive 6 times instead of 14.
 - Office files are chunked per ZIP member, with a large member's local header apart
   from its payload, so an edit stores only the members it changed.
 
