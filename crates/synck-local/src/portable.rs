@@ -946,6 +946,24 @@ impl PortableRepository {
         Ok(item)
     }
 
+    /// The live tree item at `path`, names separated by `/` from the top level.
+    /// Names compare by their canonical key, as the namespace does.
+    pub fn item_at_path(&self, path: &str) -> Result<ItemId> {
+        let missing = || invalid(format!("no live item at repository path {path}"));
+        let connection = self.storage.open_readonly().map_err(corrupt)?;
+        let mut query = connection.prepare(
+            "SELECT item_id FROM vcs_items WHERE repo_id=?1 AND parent_folder_id IS ?2 \
+             AND name_key=?3 AND lifecycle_state='LIVE'",
+        )?;
+        let mut item: Option<String> = None;
+        for name in path.split('/') {
+            let name_key = synck_vcs::naming::compute_name_key(name).map_err(|_| missing())?;
+            let mut rows = query.query(params![self.repo_id().as_str(), item, name_key])?;
+            item = Some(rows.next()?.ok_or_else(missing)?.get(0)?);
+        }
+        ItemId::parse(item.expect("split yields at least one name")).map_err(corrupt)
+    }
+
     /// Accepted live namespace, ordered by canonical name then item ID. Current
     /// pages are not a frozen multi-request snapshot; pin a historical revision
     /// when stable pagination is required.

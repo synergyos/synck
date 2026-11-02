@@ -392,7 +392,7 @@ enum PortableCommand {
         name: String,
         /// Local file to read.
         source: PathBuf,
-        /// Folder item ID to create it in; the top level by default.
+        /// Folder to create it in, as a path or item ID; the top level by default.
         #[arg(long)]
         parent: Option<String>,
         #[command(flatten)]
@@ -403,11 +403,11 @@ enum PortableCommand {
     },
     /// Copy a FILE's current content into a new FILE that records its origin.
     Duplicate {
-        /// FILE item ID to duplicate.
+        /// FILE to duplicate, as a repository path or item ID.
         item_id: String,
         /// Name of the new file.
         name: String,
-        /// Folder item ID to create it in; the top level by default.
+        /// Folder to create it in, as a path or item ID; the top level by default.
         #[arg(long)]
         parent: Option<String>,
         #[command(flatten)]
@@ -420,7 +420,7 @@ enum PortableCommand {
     ImportEmail {
         /// Local .eml or .msg file to read.
         source: PathBuf,
-        /// Folder item ID to link it to; none by default.
+        /// Folder to link it to, as a path or item ID; none by default.
         #[arg(long)]
         link: Option<String>,
         /// Title; the message subject by default.
@@ -434,14 +434,14 @@ enum PortableCommand {
     },
     /// Record new content for an existing FILE item, keeping its identity.
     SaveFile {
-        /// FILE item ID.
+        /// FILE to save into, as a repository path or item ID.
         item_id: String,
         /// Local file to read.
         source: PathBuf,
         /// Refuse with CONFLICT unless the current content is this blob ID.
         #[arg(long)]
         base_content: Option<String>,
-        /// Record that this content takes in another item's revision, as <item-id>@<seq>.
+        /// Record that this content takes in another item's revision, as <path or item ID>@<seq>.
         #[arg(long)]
         merged_from: Option<String>,
         #[command(flatten)]
@@ -527,7 +527,7 @@ impl WriteArgs {
 enum ItemCommand {
     /// Write a file's content, or an email's original message, to a new file.
     Export {
-        /// FILE or EMAIL item ID.
+        /// FILE as a repository path or item ID, or EMAIL item ID.
         item_id: String,
         /// New file to write; it must not exist.
         destination: PathBuf,
@@ -540,7 +540,7 @@ enum ItemCommand {
     },
     /// Read one item as JSON, including messages, attachments and refs.
     Show {
-        /// Item ID.
+        /// Repository path of a file or folder, or any item ID.
         item_id: String,
         /// Read as of this sealed repository sequence.
         #[arg(long)]
@@ -551,7 +551,7 @@ enum ItemCommand {
     },
     /// List live items at the top level or in one folder, as JSON.
     List {
-        /// Folder item ID; the top level by default.
+        /// Folder as a path or item ID; the top level by default.
         #[arg(long)]
         parent: Option<String>,
         /// The next_cursor value from the previous page.
@@ -1732,17 +1732,31 @@ fn print_name_repairs(repairs: &[synck_local::NameRepair]) {
     }
 }
 
-fn item_revision(value: &str) -> Result<synck_vcs::types::ItemRevision, LocalError> {
-    let invalid = || LocalError::Invalid("--merged-from must be <item-id>@<seq>".to_string());
-    let (item_id, item_seq) = value.split_once('@').ok_or_else(invalid)?;
+fn item_revision(
+    repository: &synck_local::portable::PortableRepository,
+    value: &str,
+) -> Result<synck_vcs::types::ItemRevision, LocalError> {
+    let invalid = || LocalError::Invalid("--merged-from must be <item>@<seq>".to_string());
+    let (item, item_seq) = value.rsplit_once('@').ok_or_else(invalid)?;
     Ok(synck_vcs::types::ItemRevision {
-        item_id: portable_item_id(item_id)?,
+        item_id: portable_item(repository, item)?,
         item_seq: item_seq.parse().map_err(|_| invalid())?,
     })
 }
 
 fn portable_item_id(value: &str) -> synck_local::Result<synck_vcs::types::ItemId> {
     synck_vcs::types::ItemId::parse(value).map_err(|error| LocalError::Invalid(error.to_string()))
+}
+
+/// A canonical item ID, or else the repository path of a live item, as `recover` reads it.
+fn portable_item(
+    repository: &synck_local::portable::PortableRepository,
+    value: &str,
+) -> synck_local::Result<synck_vcs::types::ItemId> {
+    match synck_vcs::types::ItemId::parse(value) {
+        Ok(id) if id.as_str() == value => Ok(id),
+        _ => repository.item_at_path(value),
+    }
 }
 
 async fn run_portable(command: &PortableCommand, tokens: &[String]) -> synck_local::Result<()> {
@@ -1881,9 +1895,14 @@ async fn run_portable(command: &PortableCommand, tokens: &[String]) -> synck_loc
             write,
         } => async {
             let options = write.options()?;
-            let outcome = open(path)?
+            let mut repository = open(path)?;
+            let parent = parent
+                .as_deref()
+                .map(|parent| portable_item(&repository, parent))
+                .transpose()?;
+            let outcome = repository
                 .create_file_with(
-                    parent.as_deref().map(portable_item_id).transpose()?,
+                    parent,
                     name,
                     source,
                     &options,
@@ -1904,10 +1923,16 @@ async fn run_portable(command: &PortableCommand, tokens: &[String]) -> synck_loc
             write,
         } => async {
             let options = write.options()?;
-            let outcome = open(path)?
+            let mut repository = open(path)?;
+            let source = portable_item(&repository, item_id)?;
+            let parent = parent
+                .as_deref()
+                .map(|parent| portable_item(&repository, parent))
+                .transpose()?;
+            let outcome = repository
                 .duplicate_file_with(
-                    &portable_item_id(item_id)?,
-                    parent.as_deref().map(portable_item_id).transpose()?,
+                    &source,
+                    parent,
                     name,
                     &options,
                 )
@@ -1927,9 +1952,14 @@ async fn run_portable(command: &PortableCommand, tokens: &[String]) -> synck_loc
             write,
         } => async {
             let options = write.options()?;
-            let outcome = open(path)?
+            let mut repository = open(path)?;
+            let link = link
+                .as_deref()
+                .map(|link| portable_item(&repository, link))
+                .transpose()?;
+            let outcome = repository
                 .import_email_with(
-                    link.as_deref().map(portable_item_id).transpose()?,
+                    link,
                     source,
                     title.as_deref(),
                     &options,
@@ -1951,7 +1981,12 @@ async fn run_portable(command: &PortableCommand, tokens: &[String]) -> synck_loc
             write,
         } => async {
             let mut options = write.options()?;
-            options.merged_from = merged_from.as_deref().map(item_revision).transpose()?;
+            let mut repository = open(path)?;
+            let item = portable_item(&repository, item_id)?;
+            options.merged_from = merged_from
+                .as_deref()
+                .map(|source| item_revision(&repository, source))
+                .transpose()?;
             let base_content = base_content
                 .as_deref()
                 .map(|value| {
@@ -1960,9 +1995,9 @@ async fn run_portable(command: &PortableCommand, tokens: &[String]) -> synck_loc
                     })
                 })
                 .transpose()?;
-            let commit = open(path)?
+            let commit = repository
                 .save_file_with(
-                    &portable_item_id(item_id)?,
+                    &item,
                     source,
                     base_content.as_ref(),
                     &options,
@@ -2018,12 +2053,13 @@ async fn run_portable_item(command: &ItemCommand, tokens: &[String]) -> synck_lo
         } => async {
             let mut repository = PortableRepository::open(path)?;
             repository.set_agent_lock_tokens(tokens)?;
+            let item = portable_item(&repository, item_id)?;
             let bytes = repository
-                .export_file(&portable_item_id(item_id)?, destination, *through)
+                .export_file(&item, destination, *through)
                 .await?;
             println!(
                 "{}",
-                json!({"schema_version":1,"item_id":item_id,"destination":destination,"bytes":bytes})
+                json!({"schema_version":1,"item_id":item,"destination":destination,"bytes":bytes})
             );
             Ok(())
         }
@@ -2033,13 +2069,11 @@ async fn run_portable_item(command: &ItemCommand, tokens: &[String]) -> synck_lo
             item_id,
             through,
         } => async {
+            let repository = PortableRepository::open(path)?;
+            let item = portable_item(&repository, item_id)?;
             println!(
                 "{}",
-                serde_json::to_string(
-                    &PortableRepository::open(path)?
-                        .show_item(&portable_item_id(item_id)?, *through)
-                        .await?
-                )?
+                serde_json::to_string(&repository.show_item(&item, *through).await?)?
             );
             Ok(())
         }
@@ -2053,7 +2087,10 @@ async fn run_portable_item(command: &ItemCommand, tokens: &[String]) -> synck_lo
             limit,
         } => async {
             let repository = PortableRepository::open(path)?;
-            let parent = parent.as_deref().map(portable_item_id).transpose()?;
+            let parent = parent
+                .as_deref()
+                .map(|parent| portable_item(&repository, parent))
+                .transpose()?;
             if *records {
                 let after = after.as_deref().map(portable_item_id).transpose()?;
                 let items = repository

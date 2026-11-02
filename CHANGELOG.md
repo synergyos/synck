@@ -14,6 +14,10 @@ reads only its own repository format; see [Format and compatibility](docs/format
   `export-tree`, `recover`, `mv`, `gc`, `archive`, `init`, `storage optimize`,
   `instructions` and the `version` writes refused it before, although every
   command's help listed it.
+- `repository save-file` and `duplicate`, `item show`, `export` and `list`, and
+  every `--parent`, `--link` and `--merged-from` accept a repository path such as
+  `Matters/brief.docx` as well as an item ID. Names match by their canonical key,
+  so case and Unicode normalization do not matter.
 - The filesystem monitor answers at once on macOS and Linux. Its server checked
   for a connection only every 25 ms and both sides polled the socket every 2 ms;
   `status` takes about 35 ms instead of 70.

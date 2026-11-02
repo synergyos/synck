@@ -21,17 +21,19 @@ synck init /path/to/repository --author app:example-editor
 ```
 
 The application stores the `item_id` that Synck returns for each document.
-Item IDs are permanent, including across renames and moves.
+Item IDs are permanent, including across renames and moves. Wherever a
+command below takes a file or folder, it also accepts the item's current
+repository path, names separated by `/`; a canonical item ID is read as an ID.
 
 ## Calls
 
 | Purpose | Command |
 | --- | --- |
-| Create a document | `synck --json repository create-file <name> <source> [--parent <folder-id>] [write options] --path <repo>` |
-| Save a revision | `synck --json repository save-file <item-id> <source> [--base-content <blob-id>] [--merged-from <item-id>@<seq>] [write options] --path <repo>` |
-| Duplicate a document | `synck --json repository duplicate <item-id> <name> [--parent <folder-id>] [write options] --path <repo>` |
-| Read the current state | `synck --json item show <item-id> --path <repo>` |
-| Read the current bytes | `synck --json item export <item-id> <destination> --path <repo>` |
+| Create a document | `synck --json repository create-file <name> <source> [--parent <folder>] [write options] --path <repo>` |
+| Save a revision | `synck --json repository save-file <file> <source> [--base-content <blob-id>] [--merged-from <item>@<seq>] [write options] --path <repo>` |
+| Duplicate a document | `synck --json repository duplicate <file> <name> [--parent <folder>] [write options] --path <repo>` |
+| Read the current state | `synck --json item show <item> --path <repo>` |
+| Read the current bytes | `synck --json item export <file> <destination> --path <repo>` |
 
 `<source>` is a file holding the exact bytes to record. Write options:
 

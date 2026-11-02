@@ -422,6 +422,57 @@ fn repeating_a_write_finishes_one_killed_before_acceptance() {
 }
 
 #[test]
+fn item_commands_take_repository_paths() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("repository");
+    fs::create_dir_all(root.join("Matters/Case A")).unwrap();
+    fs::write(root.join("Matters/Case A/brief.txt"), "draft\n").unwrap();
+    run(&root, &["init", "--author", "tester"]);
+    run(&root, &["commit", "-m", "brief"]);
+
+    let listed = json(&root, &["item", "list", "--parent", "Matters/Case A"]);
+    let brief = listed["items"][0]["item_id"].as_str().unwrap().to_owned();
+    assert_eq!(
+        run(&root, &["item", "show", "matters/case a/BRIEF.txt"]),
+        run(&root, &["item", "show", &brief])
+    );
+
+    let source = temp.path().join("source.txt");
+    fs::write(&source, "final\n").unwrap();
+    fs::write(root.join("Matters/Case A/brief.txt"), "final\n").unwrap();
+    let source = source.to_str().unwrap();
+    run(&root, &["repository", "save-file", "Matters/Case A/brief.txt", source, "-m", "save"]);
+    let copy = json(&root, &[
+        "repository", "duplicate", "Matters/Case A/brief.txt", "copy.txt",
+        "--parent", "Matters/Case A", "-m", "copy",
+    ]);
+    assert_eq!(fs::read(root.join("Matters/Case A/copy.txt")).unwrap(), b"final\n");
+    assert_eq!(
+        json(&root, &["item", "show", "Matters/Case A/copy.txt"])["item"]["projection"]["item_id"],
+        copy["item_id"]
+    );
+    fs::write(root.join("Matters/Case A/brief.txt"), "taken in\n").unwrap();
+    fs::write(temp.path().join("source.txt"), "taken in\n").unwrap();
+    run(&root, &[
+        "repository", "save-file", &brief, source, "-m", "take in",
+        "--merged-from", "Matters/Case A/copy.txt@1",
+    ]);
+    let exported = temp.path().join("exported.txt");
+    run(&root, &["item", "export", "Matters/Case A/brief.txt", exported.to_str().unwrap()]);
+    assert_eq!(fs::read(&exported).unwrap(), b"taken in\n");
+
+    for missing in ["Matters/Case B/brief.txt", "Matters/Case A/brief.txt/x", "", "Matters//brief.txt"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_synck"))
+            .current_dir(&root)
+            .args(["item", "show", missing])
+            .output()
+            .unwrap();
+        assert!(!output.status.success(), "{missing}");
+        assert!(String::from_utf8_lossy(&output.stderr).contains("no live item"), "{missing}");
+    }
+}
+
+#[test]
 fn init_rejects_nested_repositories_before_publication() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("repo");
