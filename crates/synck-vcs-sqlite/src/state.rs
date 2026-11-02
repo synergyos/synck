@@ -63,6 +63,7 @@ impl SqliteStorage {
 
     /// Open the cache under the caller's repository lock, creating it if absent.
     pub fn state_index_store(&self, repo_id: RepoId) -> Result<SqliteStateStore, StateError> {
+        remove_stale_sidecars(&self.state_index_path())?;
         let cache = SqliteStorage::new(self.state_index_path());
         let connection = cache
             .open_writable_unchecked(true)
@@ -137,6 +138,28 @@ impl SqliteStorage {
             projection_transaction_active: false,
         })
     }
+}
+
+/// The cache keeps its WAL between commands, so deleting only its main file
+/// leaves sidecars that belong to no database. Drop them.
+fn remove_stale_sidecars(path: &std::path::Path) -> Result<(), StateError> {
+    if path.symlink_metadata().is_ok() {
+        return Ok(());
+    }
+    for suffix in ["-wal", "-shm", "-journal"] {
+        let mut name = path.as_os_str().to_os_string();
+        name.push(suffix);
+        match std::fs::remove_file(&name) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                return Err(StateError::Storage(format!(
+                    "cannot remove stale state cache sidecar {}: {error}",
+                    std::path::Path::new(&name).display()
+                )));
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 fn encode_projection_item(item: &ProjectionItem) -> Result<Vec<u8>, StateError> {
