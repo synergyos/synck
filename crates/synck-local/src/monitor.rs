@@ -707,6 +707,7 @@ fn path_identity(path: &Path) -> Result<PathIdentity> {
 
 #[cfg(unix)]
 fn run_platform_server(root: &Path, metadata_path: &Path, repo_id: &RepoId) -> Result<()> {
+    use std::os::fd::AsRawFd;
     use std::os::unix::fs::{FileTypeExt, MetadataExt};
     use std::os::unix::net::UnixListener;
 
@@ -780,12 +781,19 @@ fn run_platform_server(root: &Path, metadata_path: &Path, repo_id: &RepoId) -> R
     let mut checked_at = Instant::now();
     let mut stop = false;
     while !stop {
-        while let Ok(event) = receiver.try_recv() {
-            match process_event(event, root, metadata_path) {
-                EventDisposition::Paths(paths) => history.record(paths),
-                EventDisposition::Invalidate => history.invalidate(),
-                EventDisposition::Ignore => {}
-                EventDisposition::Stop => {
+        loop {
+            match receiver.try_recv() {
+                Ok(event) => match process_event(event, root, metadata_path) {
+                    EventDisposition::Paths(paths) => history.record(paths),
+                    EventDisposition::Invalidate => history.invalidate(),
+                    EventDisposition::Ignore => {}
+                    EventDisposition::Stop => {
+                        stop = true;
+                        break;
+                    }
+                },
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => {
                     stop = true;
                     break;
                 }
@@ -803,7 +811,8 @@ fn run_platform_server(root: &Path, metadata_path: &Path, repo_id: &RepoId) -> R
                 if !same_user_peer(&stream) {
                     continue;
                 }
-                if stream.set_nonblocking(true).is_err() {
+                // An accepted socket inherits the listener's O_NONBLOCK on BSD and macOS.
+                if block_with_timeouts(&stream).is_err() {
                     continue;
                 }
                 let deadline = Instant::now() + REQUEST_DEADLINE;
@@ -834,16 +843,15 @@ fn run_platform_server(root: &Path, metadata_path: &Path, repo_id: &RepoId) -> R
                 }
             }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                match receiver.recv_timeout(Duration::from_millis(25)) {
-                    Ok(event) => match process_event(event, root, metadata_path) {
-                        EventDisposition::Paths(paths) => history.record(paths),
-                        EventDisposition::Invalidate => history.invalidate(),
-                        EventDisposition::Ignore => {}
-                        EventDisposition::Stop => stop = true,
-                    },
-                    Err(mpsc::RecvTimeoutError::Timeout) => {}
-                    Err(mpsc::RecvTimeoutError::Disconnected) => stop = true,
-                }
+                // Wake for a connection at once. Events wait in the channel, and a
+                // query reads them up to its cookie before answering.
+                let mut listening = libc::pollfd {
+                    fd: listener.as_raw_fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                };
+                // SAFETY: `listening` is one live pollfd for a descriptor `listener` keeps open.
+                unsafe { libc::poll(&mut listening, 1, 25) };
                 if checked_at.elapsed() >= REPOSITORY_CHECK_INTERVAL {
                     checked_at = Instant::now();
                     stop |= repository_replaced();
@@ -1007,6 +1015,7 @@ fn exchange(metadata_path: &Path, request: &Request) -> Result<Response> {
             "monitor peer belongs to another user".to_string(),
         ));
     }
+    block_with_timeouts(&stream).at("configure monitor connection", &socket_path)?;
     write_frame(&mut stream, request, deadline)?;
     read_frame(&mut stream, deadline)
 }
@@ -1565,6 +1574,8 @@ trait MonitorIo: Read + Write {
 
 #[cfg(unix)]
 impl MonitorIo for std::os::unix::net::UnixStream {
+    // `block_with_timeouts` bounds each read and write. macOS refuses to set a
+    // timeout once the peer has closed, which it may have after answering.
     fn set_read_limit(&self, _timeout: Duration) -> std::io::Result<()> {
         Ok(())
     }
@@ -1572,6 +1583,16 @@ impl MonitorIo for std::os::unix::net::UnixStream {
     fn set_write_limit(&self, _timeout: Duration) -> std::io::Result<()> {
         Ok(())
     }
+}
+
+/// Frames block for at most the request deadline per read or write, and the
+/// frame loops check the deadline between them. Polling a nonblocking socket
+/// slept 2 ms a turn.
+#[cfg(unix)]
+fn block_with_timeouts(stream: &std::os::unix::net::UnixStream) -> std::io::Result<()> {
+    stream.set_nonblocking(false)?;
+    stream.set_read_timeout(Some(REQUEST_DEADLINE))?;
+    stream.set_write_timeout(Some(REQUEST_DEADLINE))
 }
 
 #[cfg(windows)]
