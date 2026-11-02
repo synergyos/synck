@@ -61,6 +61,7 @@ Expired tokens cannot write or renew. Preserve unfinished files and stop editing
 on lock loss. Expired reservations still block writes until clean takeover or
 explicit release. Inspect abandoned work before using lock break <path>...;
 never automatically break another agent's reservation. Release/break keep files.
+Reservations hold in every clone of the repository; status lists their holders.
 These are cooperative local locks, not OS access controls: raw filesystem writes
 bypass them. Every agent must participate. Cache rebuilding preserves locks;
 archives omit them. Concurrent commands may return BUSY; retry after completion.

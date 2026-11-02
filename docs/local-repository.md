@@ -120,10 +120,17 @@ For saves submitted through Synck, retain the `--base-content` check as well.
 The short repository OS lock serializes commands; it is not held during editing.
 Concurrent commands can return `BUSY`; retry after the other command finishes.
 
-Reservations live in `.synck/agent-locks.sqlite3`, separate from disposable
-projection caches and canonical history. Cache rebuilding preserves them;
-archives and repository imports omit them. Do not delete this database to clear
-locks. There is no canonical format change or server synchronization of leases.
+Reservations live in the origin's `.synck/agent-locks.sqlite3`, separate from
+disposable projection caches and canonical history, so they hold in every clone:
+a commit, move, revert, recovery, version restore or push from any working tree
+that touches a reserved path needs its token. Each reservation records the
+working tree that took it, and commands that only rewrite working files —
+`pull`, `restore`, `restore-tree`, checkout selection, name repair and exports
+into the tree — answer only to their own tree's reservations, so one agent's
+lease never stops another clone from pulling the holder's commits. `status`
+lists every reservation with its holder and expiry. Cache rebuilding preserves
+them; archives and repository imports omit them. Do not delete this database to
+clear locks. Leases are not history and are not synchronized to any server.
 
 ## Clones: one working tree per agent or person
 

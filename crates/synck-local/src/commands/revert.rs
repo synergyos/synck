@@ -689,7 +689,7 @@ pub(super) fn entry_matches_revert_state(
 
 impl Repository {
     pub async fn revert(&self, revision: &str, message: &str) -> Result<String> {
-        self.guard_agent_all()?;
+        self.guard_agent_everywhere()?;
         self.pull_if_behind().await?;
         if message.is_empty() {
             return Err(LocalError::Invalid(

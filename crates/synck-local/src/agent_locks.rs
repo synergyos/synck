@@ -1,5 +1,12 @@
-//! Local path reservations. Every entry point runs under RepositoryLock; leases
-//! never hold that OS lock while an agent is editing. These are not history/cache.
+//! Path reservations (leases). Every entry point runs under RepositoryLock;
+//! leases never hold that OS lock while an agent is editing. These are not
+//! history/cache.
+//!
+//! They live in the origin, so they cover every working tree of a repository:
+//! a reservation refuses other writers' commits to its paths from any clone.
+//! Each records the working tree that took it (empty for the origin's own),
+//! and an operation that only rewrites working files, such as `pull`,
+//! answers only to its own tree's reservations.
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -18,8 +25,10 @@ const SCHEMA: &str = "
 CREATE TABLE identity (singleton INTEGER PRIMARY KEY CHECK(singleton=1), repo_id TEXT NOT NULL) STRICT;
 CREATE TABLE reservations (
  path_key TEXT PRIMARY KEY, path TEXT NOT NULL, owner TEXT NOT NULL,
- token TEXT NOT NULL, expires_at INTEGER NOT NULL CHECK(expires_at>0)
+ token TEXT NOT NULL, expires_at INTEGER NOT NULL CHECK(expires_at>0),
+ tree TEXT NOT NULL DEFAULT ''
 ) STRICT;";
+const SCHEMA_VERSION: i64 = 2;
 
 #[derive(Clone, Debug, Serialize)]
 pub struct AgentLock {
@@ -38,6 +47,7 @@ struct Reservation {
     info: AgentLock,
     key: String,
     token: String,
+    tree: String,
 }
 
 fn invalid(message: impl Into<String>) -> LocalError {
@@ -92,8 +102,7 @@ fn overlaps(a: &str, b: &str) -> bool {
     covers(a, b) || covers(b, a)
 }
 
-fn open(root: &Path, repo_id: &str, create: bool) -> Result<Option<Connection>> {
-    let metadata = root.join(".synck");
+fn open(metadata: &Path, repo_id: &str, create: bool) -> Result<Option<Connection>> {
     let path = metadata.join(FILE);
     synck_vcs_sqlite::validate_database_family(&path, true).map_err(|e| corrupt(e.to_string()))?;
     if !path.try_exists().at("inspect agent locks", &path)? {
@@ -121,14 +130,14 @@ fn open(root: &Path, repo_id: &str, create: bool) -> Result<Option<Connection>> 
             connection.execute_batch("PRAGMA synchronous=FULL; BEGIN IMMEDIATE;")?;
             connection.execute_batch(SCHEMA)?;
             connection.pragma_update(None, "application_id", APPLICATION_ID)?;
-            connection.pragma_update(None, "user_version", 1)?;
+            connection.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             connection.execute("INSERT INTO identity VALUES(1,?1)", [repo_id])?;
             connection.execute_batch("COMMIT")?;
             drop(connection);
             file.sync_all().at("sync agent locks", &temporary)?;
             drop(file);
             rename_noreplace(&temporary, &path).at("publish agent locks", &path)?;
-            sync_directory(&metadata)
+            sync_directory(metadata)
         })();
         if result.is_err() {
             let _ = std::fs::remove_file(&temporary);
@@ -140,7 +149,16 @@ fn open(root: &Path, repo_id: &str, create: bool) -> Result<Option<Connection>> 
         OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NOFOLLOW,
     )?;
     let application: i64 = connection.pragma_query_value(None, "application_id", |r| r.get(0))?;
-    let version: i64 = connection.pragma_query_value(None, "user_version", |r| r.get(0))?;
+    let mut version: i64 = connection.pragma_query_value(None, "user_version", |r| r.get(0))?;
+    // Version 1 predates clones: every reservation was the origin's own tree.
+    if application == APPLICATION_ID && version == 1 {
+        connection.execute_batch(
+            "PRAGMA synchronous=FULL; BEGIN IMMEDIATE;
+             ALTER TABLE reservations ADD COLUMN tree TEXT NOT NULL DEFAULT '';
+             PRAGMA user_version=2; COMMIT;",
+        )?;
+        version = SCHEMA_VERSION;
+    }
     static EXPECTED: OnceLock<synck_vcs_sqlite::schema::SchemaShape> = OnceLock::new();
     let expected = EXPECTED.get_or_init(|| {
         let db = Connection::open_in_memory().expect("open reservation schema");
@@ -148,7 +166,7 @@ fn open(root: &Path, repo_id: &str, create: bool) -> Result<Option<Connection>> 
         synck_vcs_sqlite::schema::inspect(&db, "").expect("inspect reservation schema")
     });
     if application != APPLICATION_ID
-        || version != 1
+        || version != SCHEMA_VERSION
         || &synck_vcs_sqlite::schema::inspect(&connection, "")? != expected
     {
         return Err(corrupt("invalid agent lock database schema"));
@@ -166,7 +184,7 @@ fn open(root: &Path, repo_id: &str, create: bool) -> Result<Option<Connection>> 
 
 fn reservations(connection: &Connection) -> Result<Vec<Reservation>> {
     let mut statement = connection.prepare(
-        "SELECT path_key,path,owner,token,expires_at FROM reservations ORDER BY path_key",
+        "SELECT path_key,path,owner,token,expires_at,tree FROM reservations ORDER BY path_key",
     )?;
     let rows = statement.query_map([], |row| {
         Ok(Reservation {
@@ -177,6 +195,7 @@ fn reservations(connection: &Connection) -> Result<Vec<Reservation>> {
                 expires_at: row.get(4)?,
             },
             token: row.get(3)?,
+            tree: row.get(5)?,
         })
     })?;
     let mut entries = Vec::new();
@@ -199,6 +218,7 @@ fn reservations(connection: &Connection) -> Result<Vec<Reservation>> {
 // Destinations outside this checkout remain the caller's responsibility.
 pub(crate) fn guard_output(
     root: &Path,
+    scope: &Scope<'_>,
     repo_id: &str,
     tokens: &[String],
     destination: &Path,
@@ -222,18 +242,25 @@ pub(crate) fn guard_output(
             })
             .collect::<Result<Vec<_>>>()?
             .join("/");
-        guard(&root, repo_id, tokens, Some(&[&path]))?;
+        guard(scope, repo_id, tokens, Some(&[&path]))?;
     }
     Ok(())
 }
 
+/// Where reservations live and whose count: every working tree's for a
+/// history write, one tree's for an operation that only rewrites its files.
+pub(crate) struct Scope<'a> {
+    pub(crate) metadata: &'a Path,
+    pub(crate) tree: Option<&'a str>,
+}
+
 pub(crate) fn guard(
-    root: &Path,
+    scope: &Scope<'_>,
     repo_id: &str,
     tokens: &[String],
     paths: Option<&[&str]>,
 ) -> Result<()> {
-    let records = match open(root, repo_id, false)? {
+    let records = match open(scope.metadata, repo_id, false)? {
         Some(db) => reservations(&db)?,
         None if tokens.is_empty() => return Ok(()),
         None => return Err(LocalError::LockLost),
@@ -251,9 +278,10 @@ pub(crate) fn guard(
         .map(|paths| paths.iter().map(|p| key(p)).collect::<Result<Vec<_>>>())
         .transpose()?;
     for row in &records {
-        if paths
-            .as_ref()
-            .is_none_or(|paths| paths.iter().any(|p| overlaps(p, &row.key)))
+        if scope.tree.is_none_or(|tree| row.tree == tree)
+            && paths
+                .as_ref()
+                .is_none_or(|paths| paths.iter().any(|p| overlaps(p, &row.key)))
             && (row.info.expires_at <= time || !tokens.contains(&row.token))
         {
             return Err(LocalError::Locked {
@@ -284,17 +312,53 @@ impl Repository {
         self.agent_lock_tokens = tokens.to_vec();
         Ok(())
     }
+    /// This working tree in the reservation table: empty for the origin's own.
+    pub(crate) fn lock_tree(&self) -> String {
+        match self.config().origin {
+            Some(_) => self.root_path().to_string_lossy().into_owned(),
+            None => String::new(),
+        }
+    }
+    pub(crate) fn lock_scope<'a>(&'a self, tree: Option<&'a str>) -> Scope<'a> {
+        Scope {
+            metadata: self.store_path(),
+            tree,
+        }
+    }
+    /// A write to history and files: every working tree's reservations count.
     pub(crate) fn guard_agent_paths(&self, paths: &[&str]) -> Result<()> {
         guard(
-            self.root_path(),
+            &self.lock_scope(None),
             self.repository_id().as_str(),
             &self.agent_lock_tokens,
             Some(paths),
         )
     }
-    pub(crate) fn guard_agent_all(&self) -> Result<()> {
+    /// A write to this tree's files only.
+    pub(crate) fn guard_agent_files(&self, paths: &[&str]) -> Result<()> {
+        let tree = self.lock_tree();
         guard(
-            self.root_path(),
+            &self.lock_scope(Some(&tree)),
+            self.repository_id().as_str(),
+            &self.agent_lock_tokens,
+            Some(paths),
+        )
+    }
+    /// A rewrite of this tree's files anywhere: its own reservations count.
+    pub(crate) fn guard_agent_all(&self) -> Result<()> {
+        let tree = self.lock_tree();
+        guard(
+            &self.lock_scope(Some(&tree)),
+            self.repository_id().as_str(),
+            &self.agent_lock_tokens,
+            None,
+        )
+    }
+    /// A history write whose paths are not known up front: every reservation
+    /// in every working tree counts.
+    pub(crate) fn guard_agent_everywhere(&self) -> Result<()> {
+        guard(
+            &self.lock_scope(None),
             self.repository_id().as_str(),
             &self.agent_lock_tokens,
             None,
@@ -319,7 +383,7 @@ impl Repository {
     }
     pub fn agent_locks(&self) -> Result<Vec<AgentLock>> {
         Ok(
-            match open(self.root_path(), self.repository_id().as_str(), false)? {
+            match open(self.store_path(), self.repository_id().as_str(), false)? {
                 Some(db) => reservations(&db)?.into_iter().map(|r| r.info).collect(),
                 None => Vec::new(),
             },
@@ -370,7 +434,7 @@ impl Repository {
                 check_paths.insert(path.clone());
             }
         }
-        if let Some(db) = open(self.root_path(), self.repository_id().as_str(), false)? {
+        if let Some(db) = open(self.store_path(), self.repository_id().as_str(), false)? {
             for row in reservations(&db)? {
                 if keys.iter().any(|p| covers(p, &row.key)) {
                     check_paths.insert(row.info.path);
@@ -411,7 +475,7 @@ impl Repository {
             }
         }
         let mut db =
-            open(self.root_path(), self.repository_id().as_str(), true)?.expect("created database");
+            open(self.store_path(), self.repository_id().as_str(), true)?.expect("created database");
         let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         for row in reservations(&tx)? {
             if keys.iter().any(|p| overlaps(p, &row.key)) {
@@ -430,10 +494,11 @@ impl Repository {
         let expires_at = expiry(ttl)?;
         let token = Uuid::new_v4().to_string();
         let mut locks = Vec::new();
+        let tree = self.lock_tree();
         for (path, path_key) in paths.into_iter().zip(keys) {
             tx.execute(
-                "INSERT INTO reservations VALUES(?1,?2,?3,?4,?5)",
-                params![path_key, path, owner, token, expires_at],
+                "INSERT INTO reservations VALUES(?1,?2,?3,?4,?5,?6)",
+                params![path_key, path, owner, token, expires_at, tree],
             )?;
             locks.push(AgentLock {
                 path,
@@ -447,7 +512,7 @@ impl Repository {
     pub fn renew_agent_locks(&self, token: &str, ttl: u64) -> Result<()> {
         validate_tokens(&[token.into()])?;
         let expires_at = expiry(ttl)?;
-        let mut db = open(self.root_path(), self.repository_id().as_str(), false)?
+        let mut db = open(self.store_path(), self.repository_id().as_str(), false)?
             .ok_or(LocalError::LockLost)?;
         let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let rows = reservations(&tx)?;
@@ -468,7 +533,7 @@ impl Repository {
     /// Exact-token release is idempotent and never changes working files.
     pub fn release_agent_locks(&self, token: &str) -> Result<usize> {
         validate_tokens(&[token.into()])?;
-        let Some(db) = open(self.root_path(), self.repository_id().as_str(), false)? else {
+        let Some(db) = open(self.store_path(), self.repository_id().as_str(), false)? else {
             return Ok(0);
         };
         db.execute("DELETE FROM reservations WHERE token=?1", [token])
@@ -483,7 +548,7 @@ impl Repository {
             .iter()
             .map(|p| self.agent_path(caller, p).and_then(|p| key(&p)))
             .collect::<Result<Vec<_>>>()?;
-        let Some(mut db) = open(self.root_path(), self.repository_id().as_str(), false)? else {
+        let Some(mut db) = open(self.store_path(), self.repository_id().as_str(), false)? else {
             return Ok(0);
         };
         let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;

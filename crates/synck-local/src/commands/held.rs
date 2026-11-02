@@ -20,6 +20,8 @@ pub(crate) const HELD_FILE: &str = "held.json";
 /// unpushed commits reference.
 pub(crate) const PINS_DIRECTORY: &str = "pins";
 const PAGE: usize = 256;
+/// SQLite limits are signed.
+const UNBOUNDED: usize = i64::MAX as usize;
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -157,7 +159,7 @@ async fn stale_items(target: &Repo, repo_id: &RepoId, events: &[EventProposal]) 
             continue;
         }
         let descendants: Vec<ItemId> = target
-            .list_non_tombstoned_descendants_bounded(repo_id.clone(), (*root).clone(), usize::MAX)
+            .list_non_tombstoned_descendants_bounded(repo_id.clone(), (*root).clone(), UNBOUNDED)
             .await?
             .into_iter()
             .map(|(item_id, _)| item_id)
@@ -302,6 +304,19 @@ impl Repository {
         }
         self.pull().await?;
         let pushed = self.held_commits().await?.unwrap_or_default();
+        // A reservation from any working tree refuses these commits as it
+        // would have refused them unheld.
+        let mut items = Vec::new();
+        for commit_id in &pushed {
+            let commit_id = CommitId::parse(commit_id).map_err(|error| LocalError::Integrity(error.to_string()))?;
+            for event in self.core().list_events_for_commit(self.repository_id().clone(), commit_id, UNBOUNDED).await? {
+                items.push(event.item_id);
+            }
+        }
+        if !items.is_empty() {
+            let paths = self.item_paths(&items).await?;
+            self.guard_agent_paths(&paths.iter().map(String::as_str).collect::<Vec<_>>())?;
+        }
         let mut held = read_held(self.metadata_path())?;
         let origin = self.origin_core();
         // The origin's lock is held, so nothing has reached it since the pull.

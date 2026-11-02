@@ -398,7 +398,7 @@ impl Repository {
         let (display, blob_id, size) = self
             .resolve_file_revision(caller, input, requested_seq)
             .await?;
-        self.guard_agent_paths(&[&display])?;
+        self.guard_agent_files(&[&display])?;
         self.write_working_file(&display, &blob_id, size, true)?;
         sync_display_parent(self.root_path(), &display)?;
         self.refresh_worktree_identities().await

@@ -83,7 +83,7 @@ impl Repository {
             .await?;
         let (parent, name, destination) =
             resolve_export_destination(caller, destination, self.metadata_path())?;
-        crate::agent_locks::guard_output(self.root_path(), self.repository_id().as_str(), &self.agent_lock_tokens, &destination)?;
+        crate::agent_locks::guard_output(self.root_path(), &self.lock_scope(Some(&self.lock_tree())), self.repository_id().as_str(), &self.agent_lock_tokens, &destination)?;
         let parent_dir = Dir::open_ambient_dir(&parent, ambient_authority())
             .at("open export parent", &parent)?;
         match parent_dir.symlink_metadata(&name) {
@@ -125,7 +125,7 @@ impl Repository {
 
         let (parent, name, destination) =
             resolve_export_destination(caller, destination, self.metadata_path())?;
-        crate::agent_locks::guard_output(self.root_path(), self.repository_id().as_str(), &self.agent_lock_tokens, &destination)?;
+        crate::agent_locks::guard_output(self.root_path(), &self.lock_scope(Some(&self.lock_tree())), self.repository_id().as_str(), &self.agent_lock_tokens, &destination)?;
         let temporary_name = OsString::from(format!(
             ".{}.synck-tmp-{}",
             name.to_string_lossy(),

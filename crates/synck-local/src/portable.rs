@@ -1550,7 +1550,7 @@ impl PortableRepository {
             .unwrap_or_else(|| Path::new("."))
             .canonicalize()
             .at("resolve file export parent", destination)?;
-        crate::agent_locks::guard_output(&self.root, self.repo_id().as_str(), &self.agent_lock_tokens, &parent_path.join(name))?;
+        crate::agent_locks::guard_output(&self.root, &crate::agent_locks::Scope { metadata: &self.root.join(".synck"), tree: Some("") }, self.repo_id().as_str(), &self.agent_lock_tokens, &parent_path.join(name))?;
         let parent = directory(&parent_path)?;
         match parent.symlink_metadata(name) {
             Ok(_) => return Err(invalid("export destination already exists")),
@@ -2714,7 +2714,7 @@ impl PortableRepository {
             return Err(invalid("complete export requires all referenced content and metadata objects"));
         }
         let (objects_to_copy, _) = self.references().await?;
-        crate::agent_locks::guard_output(&self.root, self.repo_id().as_str(), &self.agent_lock_tokens, destination)?;
+        crate::agent_locks::guard_output(&self.root, &crate::agent_locks::Scope { metadata: &self.root.join(".synck"), tree: Some("") }, self.repo_id().as_str(), &self.agent_lock_tokens, destination)?;
         let (parent, parent_path, name, staging) = staging(destination)?;
         let result = async {
             let metadata = staging.join(".synck");

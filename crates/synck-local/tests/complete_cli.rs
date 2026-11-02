@@ -561,6 +561,43 @@ fn clones_share_one_history_and_never_overwrite_each_other() {
 }
 
 #[test]
+fn a_reservation_holds_in_every_clone() {
+    let temp = tempfile::tempdir().unwrap();
+    let origin = temp.path().join("origin");
+    fs::create_dir_all(&origin).unwrap();
+    fs::write(origin.join("report.docx"), b"r\n").unwrap();
+    fs::write(origin.join("notes.txt"), b"n\n").unwrap();
+    run(&origin, &["init", "--author", "origin"]);
+    run(&origin, &["commit", "-m", "start"]);
+    run(temp.path(), &["clone", "origin", "a", "--author", "a"]);
+    run(temp.path(), &["clone", "origin", "b", "--author", "b"]);
+    let (a, b) = (temp.path().join("a"), temp.path().join("b"));
+    let lease = json(&a, &["--json", "lock", "acquire", "report.docx", "--owner", "agent-a"]);
+    let token = lease["result"]["token"].as_str().unwrap().to_string();
+
+    // Another clone sees the holder and cannot commit the file or take it.
+    let status = json(&b, &["status", "--json"]);
+    assert_eq!(status["reservations"][0]["owner"], "agent-a");
+    fs::write(b.join("report.docx"), b"b\n").unwrap();
+    assert_eq!(fails(&b, &["commit", "-m", "b", "--json"])["error"]["kind"], "LOCKED");
+    run(&b, &["restore", "report.docx"]);
+    assert_eq!(
+        fails(&b, &["--json", "lock", "acquire", "report.docx", "--owner", "agent-b"])["error"]["kind"],
+        "LOCKED"
+    );
+
+    // Other files still land, and the holder's commit reaches every clone.
+    fs::write(b.join("notes.txt"), b"n b\n").unwrap();
+    run(&b, &["commit", "-m", "notes"]);
+    fs::write(a.join("report.docx"), b"r a\n").unwrap();
+    run(&a, &["--lock-token", &token, "commit", "-m", "report"]);
+    run(&b, &["pull"]);
+    assert_eq!(fs::read(b.join("report.docx")).unwrap(), b"r a\n");
+    run(&a, &["lock", "release", &token]);
+    assert!(json(&b, &["status", "--json"]).get("reservations").is_none());
+}
+
+#[test]
 fn held_clones_keep_commits_until_push_with_their_ids() {
     let temp = tempfile::tempdir().unwrap();
     let origin = temp.path().join("origin");

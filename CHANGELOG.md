@@ -25,6 +25,11 @@ reads only its own repository format; see [Format and compatibility](docs/format
   changes; `commit`, `revert`, `mv`, `recover` and `version restore` pull first.
   A file changed on both sides is a `CONFLICT` with its `paths`, and nothing is
   written. `checkout.json` records each working tree's `baseline` commit.
+- Reservations (`synck lock`) live in the origin and hold in every clone: a
+  commit touching a reserved path from any working tree needs its token, while
+  `pull` and other working-file rewrites answer only to their own tree's
+  reservations. `status` lists each holder and expiry (`reservations` in JSON
+  when any exist). The reservation database migrates to schema 2.
 - `synck clone --hold` keeps commits in the clone until `synck push`, which
   pulls and then sends them in order, each with the commit ID it was given;
   `status` lists them. A held clone keeps its own copy of the history; the

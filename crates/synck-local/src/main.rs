@@ -1074,17 +1074,32 @@ async fn run_checkout(
         Command::Status => async {
             let (changes, warnings) = repository.status_with_path_warnings().await.map_err(|error| (error, false))?;
             let held = repository.held_commits().await.map_err(|error| (error, false))?;
+            let reservations = repository.agent_locks().map_err(|error| (error, false))?;
             print_path_warnings(&warnings);
             if json {
                 let mut status = status_json(&changes);
                 if let Some(held) = held {
                     status["held_commits"] = json!(held);
                 }
+                if !reservations.is_empty() {
+                    status["reservations"] = json!(reservations);
+                }
                 println!("{status}");
             } else {
                 print_status(&changes, align_change_markers);
                 if let Some(held) = held.filter(|held| !held.is_empty()) {
                     println!("{} commits held; push sends them", held.len());
+                }
+                let now = chrono::Utc::now().timestamp();
+                for lock in &reservations {
+                    let until = chrono::DateTime::from_timestamp(lock.expires_at, 0)
+                        .map(|time| time.to_rfc3339())
+                        .unwrap_or_default();
+                    if lock.expires_at > now {
+                        println!("reserved by {} until {until}: {}", visible(&lock.owner), visible(&lock.path));
+                    } else {
+                        println!("reservation by {} expired {until}: {}", visible(&lock.owner), visible(&lock.path));
+                    }
                 }
             }
             Ok(ExitCode::SUCCESS)
