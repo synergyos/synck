@@ -23,7 +23,7 @@ use synck_vcs::state::{
 };
 use synck_vcs::types::{
     ObjectId, COMMIT_EVENT_FAMILY_ITEM, COMMIT_EVENT_FAMILY_REF, CommitEventRow, CommitId,
-    CommitProposal, CommitRow, EventProposal, EventRow, EventsDigest, ItemId, LifecycleState,
+    CommitProposal, CommitRow, EventProposal, EventRow, EventsDigest, ItemId, ItemRevision, LifecycleState,
     RefEventProposal, RepoEventCursor, RepoId, SubtreeClosureGuard,
     canonical_commit_bytes_for_hash, canonical_event_proposal_bytes,
     canonical_ref_event_proposal_bytes, compute_commit_id, compute_sha256_digest_bytes,
@@ -59,6 +59,7 @@ pub(crate) const INTENT_NAMES: [&str; 7] = [
     WORKING_TREE_EDIT_INTENT_NAME,
 ];
 
+mod alternatives;
 mod commit;
 mod export;
 mod held;

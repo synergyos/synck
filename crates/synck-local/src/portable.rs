@@ -2339,7 +2339,7 @@ impl PortableRepository {
             return Err(invalid("injected failure before file acceptance"));
         }
         let outcome = working
-            .commit_selected_with(working.root_path(), &[PathBuf::from(&path)], options, Some((&path, content)))
+            .commit_selected_with(working.root_path(), &[PathBuf::from(&path)], options, Some((&path, content)), &HashMap::new())
             .await?;
         let commit = match outcome {
             crate::CommitOutcome::Committed(id) => CommitId::parse(id).map_err(corrupt)?,

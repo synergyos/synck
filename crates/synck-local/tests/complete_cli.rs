@@ -608,6 +608,39 @@ fn pull_merges_text_and_keeps_both_versions_of_anything_else() {
 }
 
 #[test]
+fn an_alternative_folder_is_duplicated_and_adopted_with_its_sources() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("repo");
+    fs::create_dir_all(root.join("Design/sub")).unwrap();
+    fs::write(root.join("Design/plan.txt"), b"plan\n").unwrap();
+    fs::write(root.join("Design/old.txt"), b"old\n").unwrap();
+    fs::write(root.join("Design/sub/spec.txt"), b"spec\n").unwrap();
+    run(&root, &["init", "--author", "a"]);
+    run(&root, &["commit", "-m", "start"]);
+    run(&root, &["duplicate", "Design", "Option B"]);
+    assert_eq!(fs::read(root.join("Option B/sub/spec.txt")).unwrap(), b"spec\n");
+    let created = json(&root, &["show", "HEAD", "--events", "--json"]).to_string();
+    assert!(created.contains("derived_from"), "{created}");
+
+    fs::write(root.join("Option B/plan.txt"), b"plan B\n").unwrap();
+    fs::remove_file(root.join("Option B/old.txt")).unwrap();
+    fs::write(root.join("Option B/sub/new.txt"), b"new\n").unwrap();
+    run(&root, &["commit", "-m", "option B"]);
+    let plan = json(&root, &["item", "show", "Design/plan.txt", "--json"]);
+    run(&root, &["adopt", "Option B", "Design"]);
+    assert!(run(&root, &["status"]).contains("working tree clean"));
+    assert_eq!(fs::read(root.join("Design/plan.txt")).unwrap(), b"plan B\n");
+    assert_eq!(fs::read(root.join("Design/sub/new.txt")).unwrap(), b"new\n");
+    assert!(!root.join("Design/old.txt").exists());
+    // The original keeps its identity; the new version names its source.
+    let adopted = json(&root, &["item", "show", "Design/plan.txt", "--json"]);
+    assert_eq!(adopted["result"]["item_id"], plan["result"]["item_id"]);
+    let events = json(&root, &["show", "HEAD", "--events", "--json"]).to_string();
+    assert!(events.contains("merged_from"), "{events}");
+    assert!(run(&root, &["adopt", "Option B", "Design"]).contains("already matches"));
+}
+
+#[test]
 fn a_reservation_holds_in_every_clone() {
     let temp = tempfile::tempdir().unwrap();
     let origin = temp.path().join("origin");

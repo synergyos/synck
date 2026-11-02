@@ -25,6 +25,10 @@ reads only its own repository format; see [Format and compatibility](docs/format
   changes; `commit`, `revert`, `mv`, `recover` and `version restore` pull first.
   A file changed on both sides is a `CONFLICT` with its `paths`, and nothing is
   written. `checkout.json` records each working tree's `baseline` commit.
+- `synck duplicate <source> <destination>` copies a committed file or folder as
+  an alternative in the same history, each copy recording `derived_from`.
+  `synck adopt <alternative> <original>` makes the original match it in one
+  commit, keeping the original's items: changed files record `merged_from`.
 - `synck pull` merges files changed both here and in history: text three-way
   with conflict markers, anything else kept as yours with the repository's
   version beside it as `<name>.~theirs.<ext>`. `status` lists conflicts

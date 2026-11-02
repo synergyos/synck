@@ -217,6 +217,29 @@ the push or pull fails with `CONFLICT` and the paths. Held commits are not
 backed up and nobody else sees them until pushed. `gc` in the origin keeps
 their content; delete a held clone only after pushing it.
 
+## Alternatives instead of branches
+
+An alternative is a copy of a file or folder inside the same history: a design
+option, another cut, a second draft of a clause. There are no branches.
+
+```sh
+synck duplicate Design "Design option B"     # copy and commit
+# ... edit and commit inside "Design option B" ...
+synck adopt "Design option B" Design         # take it back
+```
+
+`duplicate SOURCE DESTINATION` copies the committed file or folder and commits
+the copies; each records the revision it began as (`derived_from`). Both stay
+visible, versioned and comparable (`compare`, `diff`). `adopt ALTERNATIVE
+ORIGINAL` makes the original match the alternative, path by path, in one
+commit: a file at the same relative path gets the alternative's content as a
+new version recording where it came from (`merged_from`), a file only in the
+alternative is created, and a file only in the original is deleted, so the
+original keeps its items, identities and history. Both need the paths clean in
+the working tree and write the files before committing; an interruption leaves
+the written files as ordinary changes. Delete the alternative afterwards if it
+is no longer wanted; its history stays.
+
 ## Content and imported email
 
 FILE content is stored as its exact bytes, and its object ID is their SHA-256, so

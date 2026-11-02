@@ -51,6 +51,15 @@ writes nothing. Repository and item commands take the origin's path.
 A held clone keeps its commits, each with its final commit ID, until push sends
 them in order; status lists them. push pulls first and stops at CONFLICT.
 
+ALTERNATIVES
+
+There are no branches. Copy a file or folder in the same history, work on the
+copy, and take it back into the original, which keeps its identity:
+    synck duplicate <source> <destination> [-m <message>]
+    synck adopt <alternative> <original> [-m <message>]
+adopt gives files at the same relative path the alternative's content, creates
+files only in the alternative and deletes files only in the original.
+
 LOCAL AGENT RESERVATIONS
 
 Reserve before reading/editing a tracked file or creating a new file:

@@ -462,17 +462,19 @@ impl Repository {
             message: message.map(str::to_string),
             ..Default::default()
         };
-        self.commit_selected_with(caller, inputs, &options, None).await
+        self.commit_selected_with(caller, inputs, &options, None, &HashMap::new()).await
     }
 
     /// Selected commit with direct-writer attribution; the configured author
-    /// remains the committer.
+    /// remains the committer. `sources` names, by working path, the revision
+    /// a new item began as or a new content came from.
     pub(crate) async fn commit_selected_with(
         &self,
         caller: &Path,
         inputs: &[PathBuf],
         options: &crate::portable::WriteOptions,
         captured_file: Option<(&str, &BlobRef)>,
+        sources: &HashMap<String, ItemRevision>,
     ) -> Result<CommitOutcome> {
         let message = options.message.as_deref();
         validate_commit_message(message)?;
@@ -511,6 +513,23 @@ impl Repository {
         let captured = self.capture_changed_files(&working, &changes, captured_file)?;
         let mut prepared = self.prepare_working_commit(&committed, &working, &changes, &working_ids, message, &captured)?;
         options.mark_file_write(&mut prepared.events);
+        if !sources.is_empty() {
+            let paths: HashMap<&ItemId, &String> = working_ids
+                .iter()
+                .map(|(path, item_id)| (item_id, path))
+                .chain(prepared.created_ids.iter().map(|(path, item_id)| (item_id, path)))
+                .collect();
+            for event in &mut prepared.events {
+                let Some(source) = event.item_id.as_ref().and_then(|id| paths.get(id)).and_then(|path| sources.get(*path)) else {
+                    continue;
+                };
+                match event.create_item.as_mut() {
+                    Some(create) => create.derived_from = Some(source.clone()),
+                    None if event.set_content.is_some() => event.merged_from = Some(source.clone()),
+                    None => {}
+                }
+            }
+        }
         self.guard_agent_paths(&reserved_paths)?;
         if self.held() {
             self.pin_held_objects(&captured.values().collect::<Vec<_>>()).await?;

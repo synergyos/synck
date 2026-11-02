@@ -169,6 +169,27 @@ enum Command {
     },
     /// Send a held clone's commits to its origin, after pulling.
     Push,
+    /// Copy a committed file or folder as an alternative in the same history.
+    ///
+    /// Each copy records the revision it began as. Work on the alternative,
+    /// compare it, and take it back with `adopt`.
+    Duplicate {
+        source: PathBuf,
+        destination: PathBuf,
+        #[arg(short, long)]
+        message: Option<String>,
+    },
+    /// Make a file or folder match an alternative of it, keeping its history.
+    ///
+    /// Files at the same relative path take the alternative's content as a new
+    /// version recording where it came from; files only in the alternative are
+    /// created and files only in the original are deleted.
+    Adopt {
+        alternative: PathBuf,
+        original: PathBuf,
+        #[arg(short, long)]
+        message: Option<String>,
+    },
     /// Mark files a pull merged with conflicts as resolved.
     ///
     /// Remove the conflict markers from a text file first. For any other file
@@ -1661,6 +1682,38 @@ async fn run_checkout(
             Ok(ExitCode::SUCCESS)
         }
         .await,
+        Command::Duplicate { source, destination, message } => async {
+            let outcome = repository
+                .duplicate_path(&current, &source, &destination, message.as_deref())
+                .await
+                .map_err(|error| (error, false))?;
+            match outcome {
+                CommitOutcome::Committed(commit_id) => print_committed(json, &commit_id),
+                CommitOutcome::Clean => print_outcome(
+                    json,
+                    json!({"commit_id": null}),
+                    format_args!("nothing to commit: the copies are ignored"),
+                ),
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        .await,
+        Command::Adopt { alternative, original, message } => async {
+            let outcome = repository
+                .adopt(&current, &alternative, &original, message.as_deref())
+                .await
+                .map_err(|error| (error, false))?;
+            match outcome {
+                CommitOutcome::Committed(commit_id) => print_committed(json, &commit_id),
+                CommitOutcome::Clean => print_outcome(
+                    json,
+                    json!({"commit_id": null}),
+                    format_args!("the original already matches the alternative"),
+                ),
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        .await,
         Command::Push => async {
             let outcome = repository.push().await.map_err(|error| (error, false))?;
             print_outcome(
@@ -2321,6 +2374,8 @@ fn uses_worktree(command: &Command) -> bool {
                 | Command::RestoreTree { .. }
                 | Command::Pull { .. }
                 | Command::Push
+                | Command::Duplicate { .. }
+                | Command::Adopt { .. }
                 | Command::Version {
                     command: VersionCommand::Restore { .. },
                 }
