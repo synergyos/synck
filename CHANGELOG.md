@@ -19,6 +19,8 @@ reads only its own repository format; see [Format and compatibility](docs/format
   commands instead of checkpointing on every close; object staging and the
   disposable local database no longer flush each transaction, and one checkpoint
   before the history transaction makes a commit's objects durable.
+- Office files are chunked per ZIP member, with a large member's local header apart
+  from its payload, so an edit stores only the members it changed.
 
 ## 0.2.0
 

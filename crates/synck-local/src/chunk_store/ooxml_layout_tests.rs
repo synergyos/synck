@@ -74,8 +74,9 @@ struct SectionResult {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum RegionKind {
+    LocalHeader,
     LargeMember,
-    SmallMemberRun,
+    SmallMember,
     CentralDirectory,
 }
 
@@ -282,37 +283,32 @@ fn chunk_regions(sections: &[ArchiveSection]) -> Option<Vec<ChunkRegion>> {
     if directory.kind != SectionKind::CentralDirectory {
         return None;
     }
+    // Every member is a region; a large member's local header is one of its own.
     let mut regions = Vec::new();
-    let mut small: Option<ChunkRegion> = None;
     for section in locals {
         let member_name = section.member_name.clone()?;
-        if section.end.checked_sub(section.start)? >= MIN_CHUNK as usize {
-            if let Some(region) = small.take() {
-                regions.push(region);
-            }
+        let payload_start = section.payload_start?;
+        if section.end.checked_sub(payload_start)? >= MIN_CHUNK as usize {
+            regions.push(ChunkRegion {
+                kind: RegionKind::LocalHeader,
+                member_names: vec![member_name.clone()],
+                start: section.start,
+                end: payload_start,
+            });
             regions.push(ChunkRegion {
                 kind: RegionKind::LargeMember,
                 member_names: vec![member_name],
-                start: section.start,
+                start: payload_start,
                 end: section.end,
             });
-        } else if let Some(region) = &mut small {
-            if region.end != section.start {
-                return None;
-            }
-            region.member_names.push(member_name);
-            region.end = section.end;
         } else {
-            small = Some(ChunkRegion {
-                kind: RegionKind::SmallMemberRun,
+            regions.push(ChunkRegion {
+                kind: RegionKind::SmallMember,
                 member_names: vec![member_name],
                 start: section.start,
                 end: section.end,
             });
         }
-    }
-    if let Some(region) = small {
-        regions.push(region);
     }
     regions.push(ChunkRegion {
         kind: RegionKind::CentralDirectory,
@@ -879,12 +875,13 @@ fn rawzip_sections_cover_every_source_byte_and_own_their_payloads() {
     assert_eq!(layout.member_count, 3);
     assert_eq!(layout.sections.len(), 4);
     assert!(sections_cover_source(&layout.sections, valid.len()));
-    assert_eq!(layout.regions.len(), 4);
+    assert_eq!(layout.regions.len(), 5);
     assert!(regions_cover_source(&layout.regions, valid.len()));
-    assert_eq!(layout.regions[0].kind, RegionKind::SmallMemberRun);
-    assert_eq!(layout.regions[1].kind, RegionKind::LargeMember);
-    assert_eq!(layout.regions[2].kind, RegionKind::SmallMemberRun);
-    assert_eq!(layout.regions[3].kind, RegionKind::CentralDirectory);
+    assert_eq!(layout.regions[0].kind, RegionKind::SmallMember);
+    assert_eq!(layout.regions[1].kind, RegionKind::LocalHeader);
+    assert_eq!(layout.regions[2].kind, RegionKind::LargeMember);
+    assert_eq!(layout.regions[3].kind, RegionKind::SmallMember);
+    assert_eq!(layout.regions[4].kind, RegionKind::CentralDirectory);
     assert_eq!(
         layout.sections.last().unwrap().kind,
         SectionKind::CentralDirectory
@@ -946,9 +943,10 @@ fn rawzip_sections_cover_every_source_byte_and_own_their_payloads() {
     }
     assert_eq!(reconstructed, valid);
     assert_eq!(results[0].chunk_count, 1);
-    assert!(results[1].chunk_count > 1);
-    assert_eq!(results[2].chunk_count, 1);
+    assert_eq!(results[1].chunk_count, 1);
+    assert!(results[2].chunk_count > 1);
     assert_eq!(results[3].chunk_count, 1);
+    assert_eq!(results[4].chunk_count, 1);
 }
 
 #[test]
@@ -988,7 +986,7 @@ fn rawzip_sections_include_data_descriptors() {
 }
 
 #[test]
-fn subminimum_members_share_one_region_but_directory_stays_separate() {
+fn subminimum_members_are_one_chunk_each() {
     let valid = build_stored_zip(
         &[
             (b"[Content_Types].xml", b"types"),
@@ -998,17 +996,18 @@ fn subminimum_members_share_one_region_but_directory_stays_separate() {
         b"",
     );
     let layout = ooxml_layout(&valid, OoxmlKind::Docx).unwrap();
-    assert_eq!(layout.regions.len(), 2);
-    assert_eq!(layout.regions[0].kind, RegionKind::SmallMemberRun);
-    assert_eq!(layout.regions[0].member_names.len(), 3);
-    assert_eq!(layout.regions[1].kind, RegionKind::CentralDirectory);
+    assert_eq!(layout.regions.len(), 4);
+    for region in &layout.regions[..3] {
+        assert_eq!(region.kind, RegionKind::SmallMember);
+        assert_eq!(region.member_names.len(), 1);
+    }
+    assert_eq!(layout.regions[3].kind, RegionKind::CentralDirectory);
 
     let mut chunker = RegionChunker::new(&valid, &layout.regions);
     while chunker.next_chunk().is_some() {}
     let results = region_results(&valid, &layout.regions);
     assert!(region_results_cover_source(&results, valid.len()));
-    assert_eq!(results[0].chunk_count, 1);
-    assert_eq!(results[1].chunk_count, 1);
+    assert!(results.iter().all(|result| result.chunk_count == 1));
 }
 
 #[test]

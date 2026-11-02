@@ -240,20 +240,15 @@ fn region_lengths(sections: &[Section], central_offset: u64, source_size: u64) -
         return None;
     }
 
-    let mut ends = Vec::new();
-    let mut small_start = None;
+    // Every member is a region, so an edit stores only the members it changed.
+    // A large member's local header (time, CRC, sizes) changes with every save,
+    // so it is a region of its own rather than part of the payload's first chunk.
+    let mut ends = Vec::with_capacity(sections.len() * 2 + 1);
     for section in sections {
-        if section.end.checked_sub(section.start)? >= u64::from(MIN_CHUNK) {
-            if small_start.take().is_some() {
-                ends.push(section.start);
-            }
-            ends.push(section.end);
-        } else if small_start.is_none() {
-            small_start = Some(section.start);
+        if section.end.checked_sub(section.payload_start)? >= u64::from(MIN_CHUNK) {
+            ends.push(section.payload_start);
         }
-    }
-    if small_start.is_some() {
-        ends.push(central_offset);
+        ends.push(section.end);
     }
     ends.push(source_size);
     let mut previous = 0_u64;
