@@ -68,8 +68,8 @@ HISTORY AND RECOVERY
 Revert and recover append commits. Restore and restore-tree change files on disk;
 review and commit the result when wanted. Revert/recover require a clean tree.
 Revert accepts filesystem commits; mixed typed-item commits are refused atomically.
-Widen sparse checkout selection before operating outside it. Use --json for
-machine-readable inspection and commit/revert receipts, including commit IDs.
+Widen sparse checkout selection before operating outside it. Every command
+accepts --json and prints one machine-readable document, including commit IDs.
 
 VERIFY, STORE AND COPY
 

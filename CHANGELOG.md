@@ -3,6 +3,15 @@
 Format numbers are listed with each release that changes one. Before 1.0 a release
 reads only its own repository format; see [Format and compatibility](docs/formats.md).
 
+## Unreleased
+
+### CLI
+
+- `--json` works with every command. `restore`, `restore-tree`, `export`,
+  `export-tree`, `recover`, `mv`, `gc`, `archive`, `init`, `storage optimize`,
+  `instructions` and the `version` writes refused it before, although every
+  command's help listed it.
+
 ## 0.2.0
 
 Repository format 7, commit format 6, object frame V1, history bundle format 5,

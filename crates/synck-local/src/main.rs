@@ -61,7 +61,7 @@ fn exit_quietly_when_output_is_closed() {
     about = "Version control for knowledge work: files, email and chats with complete, verifiable history"
 )]
 struct Cli {
-    /// Emit one versioned JSON document for supported commands.
+    /// Emit one versioned JSON document.
     #[arg(long, global = true)]
     json: bool,
     /// Ownership token returned by lock acquire; repeat for multiple reservations.
@@ -739,12 +739,10 @@ async fn run(cli: Cli) -> Result<ExitCode, (LocalError, bool)> {
     }
     if matches!(&cli.command, Command::Instructions) {
         if cli.json {
-            return Err((
-                LocalError::Invalid("--json is not supported for this command".to_string()),
-                false,
-            ));
+            print_outcome(true, json!({"instructions": INSTRUCTIONS}), format_args!(""));
+        } else {
+            print!("{INSTRUCTIONS}");
         }
-        print!("{INSTRUCTIONS}");
         return Ok(ExitCode::SUCCESS);
     }
     let align_change_markers = terminal_presentation_enabled();
@@ -762,12 +760,6 @@ async fn run(cli: Cli) -> Result<ExitCode, (LocalError, bool)> {
         synck_local::run_monitor_server(root, repo_id).map_err(|error| (error, false))?;
         return Ok(ExitCode::SUCCESS);
     }
-    if cli.json && !supports_json(&cli.command) {
-        return Err((
-            LocalError::Invalid("--json is not supported for this command".to_string()),
-            false,
-        ));
-    }
     if let Command::Init {
         directory,
         author,
@@ -778,8 +770,14 @@ async fn run(cli: Cli) -> Result<ExitCode, (LocalError, bool)> {
         let (repo_id, repairs) = synck_local::portable::init_repository_with_name_repair(
             directory, author, *storage_mode, *fix_names,
         ).await.map_err(|error| (error, false))?;
-        print_name_repairs(&repairs);
-        println!("initialized Synck repository {repo_id}");
+        if !cli.json {
+            print_name_repairs(&repairs);
+        }
+        print_outcome(
+            cli.json,
+            json!({"repo_id": repo_id, "renamed": repairs}),
+            format_args!("initialized Synck repository {repo_id}"),
+        );
         return Ok(ExitCode::SUCCESS);
     }
     if matches!(
@@ -792,14 +790,7 @@ async fn run(cli: Cli) -> Result<ExitCode, (LocalError, bool)> {
             .await
             .map_err(|error| (error, false))?
         {
-            println!(
-                "{}",
-                if changed {
-                    "storage optimized"
-                } else {
-                    "storage already optimized"
-                }
-            );
+            print_optimized(cli.json, changed);
             return Ok(ExitCode::SUCCESS);
         }
     if matches!(
@@ -1062,7 +1053,9 @@ async fn run_checkout(
                 let (repairs, paths) = if fix_names {
                     repository.fix_names_and_remap_paths(&current, &paths).await.map_err(|error| (error, false))?
                 } else { (Vec::new(), paths) };
-                print_name_repairs(&repairs);
+                if !json {
+                    print_name_repairs(&repairs);
+                }
                 let caller = if fix_names { repository.repository_root() } else { &current };
                 let outcome = repository
                     .commit_selected(caller, &paths, message.as_deref())
@@ -1093,14 +1086,7 @@ async fn run_checkout(
                 .revert(&revision, &message)
                 .await
                 .map_err(|error| (error, false))?;
-            if json {
-                println!(
-                    "{}",
-                    json!({"schema_version": cli_json::SCHEMA_VERSION, "commit_id": commit_id})
-                );
-            } else {
-                println!("committed {commit_id}");
-            }
+            print_committed(json, &commit_id);
             Ok(ExitCode::SUCCESS)
         }
         .await,
@@ -1113,7 +1099,7 @@ async fn run_checkout(
                 .move_path(&current, &source, &destination, &message)
                 .await
                 .map_err(|error| (error, false))?;
-            println!("committed {commit_id}");
+            print_committed(json, &commit_id);
             Ok(ExitCode::SUCCESS)
         }
         .await,
@@ -1339,7 +1325,7 @@ async fn run_checkout(
                 .recover_item(&item_id, &message)
                 .await
                 .map_err(|error| (error, false))?;
-            println!("committed {commit_id}");
+            print_committed(json, &commit_id);
             Ok(ExitCode::SUCCESS)
         }
         .await,
@@ -1426,7 +1412,7 @@ async fn run_checkout(
                         )
                         .await
                         .map_err(|error| (error, false))?;
-                    println!("committed {commit_id}");
+                    print_committed(json, &commit_id);
                 }
                 VersionCommand::SetDescription {
                     path,
@@ -1444,7 +1430,7 @@ async fn run_checkout(
                         )
                         .await
                         .map_err(|error| (error, false))?;
-                    println!("committed {commit_id}");
+                    print_committed(json, &commit_id);
                 }
                 VersionCommand::Promote {
                     path,
@@ -1455,7 +1441,7 @@ async fn run_checkout(
                         .set_named_version_kind(&current, &path, &version_id, "MAJOR", &message)
                         .await
                         .map_err(|error| (error, false))?;
-                    println!("committed {commit_id}");
+                    print_committed(json, &commit_id);
                 }
                 VersionCommand::Demote {
                     path,
@@ -1466,7 +1452,7 @@ async fn run_checkout(
                         .set_named_version_kind(&current, &path, &version_id, "MINOR", &message)
                         .await
                         .map_err(|error| (error, false))?;
-                    println!("committed {commit_id}");
+                    print_committed(json, &commit_id);
                 }
                 VersionCommand::Tombstone {
                     path,
@@ -1477,16 +1463,17 @@ async fn run_checkout(
                         .tombstone_named_version(&current, &path, &version_id, &message)
                         .await
                         .map_err(|error| (error, false))?;
-                    println!("committed {commit_id}");
+                    print_committed(json, &commit_id);
                 }
                 VersionCommand::Restore { path, version_id } => {
                     repository
                         .restore_named_version(&current, &path, &version_id)
                         .await
                         .map_err(|error| (error, false))?;
-                    println!(
-                        "restored {} from named version {version_id}",
-                        path.display()
+                    print_outcome(
+                        json,
+                        json!({"restored": path, "version_id": version_id}),
+                        format_args!("restored {} from named version {version_id}", path.display()),
                     );
                 }
             }
@@ -1498,20 +1485,31 @@ async fn run_checkout(
                 .restore(&current, &path, item_seq)
                 .await
                 .map_err(|error| (error, false))?;
-            println!("restored {}", path.display());
+            print_outcome(
+                json,
+                json!({"restored": path, "item_seq": item_seq}),
+                format_args!("restored {}", path.display()),
+            );
             Ok(ExitCode::SUCCESS)
         }
         .await,
         Command::RestoreTree => async {
-            if repository
+            let restored = repository
                 .restore_worktree()
                 .await
-                .map_err(|error| (error, false))?
-            {
-                println!("restored working tree");
-            } else {
-                println!("nothing to restore");
-            }
+                .map_err(|error| (error, false))?;
+            print_outcome(
+                json,
+                json!({"restored": restored}),
+                format_args!(
+                    "{}",
+                    if restored {
+                        "restored working tree"
+                    } else {
+                        "nothing to restore"
+                    }
+                ),
+            );
             Ok(ExitCode::SUCCESS)
         }
         .await,
@@ -1524,7 +1522,11 @@ async fn run_checkout(
                 .export(&current, &path, &destination, item_seq)
                 .await
                 .map_err(|error| (error, false))?;
-            println!("exported {} to {}", path.display(), destination.display());
+            print_outcome(
+                json,
+                json!({"exported": path, "item_seq": item_seq, "destination": destination}),
+                format_args!("exported {} to {}", path.display(), destination.display()),
+            );
             Ok(ExitCode::SUCCESS)
         }
         .await,
@@ -1537,7 +1539,11 @@ async fn run_checkout(
                 .export_tree(&current, &revision, folder.as_deref(), &destination)
                 .await
                 .map_err(|error| (error, false))?;
-            println!("exported {revision} to {}", destination.display());
+            print_outcome(
+                json,
+                json!({"revision": revision, "folder": folder, "destination": destination}),
+                format_args!("exported {revision} to {}", destination.display()),
+            );
             Ok(ExitCode::SUCCESS)
         }
         .await,
@@ -1622,15 +1628,11 @@ async fn run_checkout(
                     }
                 }
                 Some(StorageCommand::Optimize) => {
-                    if repository
+                    let changed = repository
                         .optimize_storage()
                         .await
-                        .map_err(|error| (error, false))?
-                    {
-                        println!("storage optimized");
-                    } else {
-                        println!("storage already optimized");
-                    }
+                        .map_err(|error| (error, false))?;
+                    print_optimized(json, changed);
                 }
             }
             Ok(ExitCode::SUCCESS)
@@ -1638,8 +1640,17 @@ async fn run_checkout(
         .await,
         Command::Gc => async {
             let report = repository.gc().await.map_err(|error| (error, false))?;
-            println!("removed_objects {}", report.removed_objects);
-            println!("removed_bytes {}", report.removed_bytes);
+            print_outcome(
+                json,
+                json!({
+                    "removed_objects": report.removed_objects,
+                    "removed_bytes": report.removed_bytes,
+                }),
+                format_args!(
+                    "removed_objects {}\nremoved_bytes {}",
+                    report.removed_objects, report.removed_bytes
+                ),
+            );
             Ok(ExitCode::SUCCESS)
         }
         .await,
@@ -1651,7 +1662,11 @@ async fn run_checkout(
                 .archive_complete(&destination, storage_mode)
                 .await
                 .map_err(|error| (error, false))?;
-            println!("archived {}", destination.display());
+            print_outcome(
+                json,
+                json!({"archived": destination}),
+                format_args!("archived {}", destination.display()),
+            );
             Ok(ExitCode::SUCCESS)
         }
         .await,
@@ -1664,6 +1679,43 @@ fn parse_storage_mode(value: &str) -> Result<synck_local::StorageMode, String> {
         "CHUNKED" => Ok(synck_local::StorageMode::Chunked),
         _ => Err("storage mode must be WHOLE_FILE or CHUNKED".into()),
     }
+}
+
+/// Prints a command's outcome: under `--json` one versioned document holding
+/// `fields`, otherwise `text`.
+fn print_outcome(json: bool, fields: Value, text: std::fmt::Arguments<'_>) {
+    if json {
+        let Value::Object(mut document) = fields else {
+            unreachable!("outcome fields are an object")
+        };
+        document.insert("schema_version".into(), cli_json::SCHEMA_VERSION.into());
+        println!("{}", Value::Object(document));
+    } else {
+        println!("{text}");
+    }
+}
+
+fn print_committed(json: bool, commit_id: &str) {
+    print_outcome(
+        json,
+        json!({"commit_id": commit_id}),
+        format_args!("committed {commit_id}"),
+    );
+}
+
+fn print_optimized(json: bool, changed: bool) {
+    print_outcome(
+        json,
+        json!({"optimized": changed}),
+        format_args!(
+            "{}",
+            if changed {
+                "storage optimized"
+            } else {
+                "storage already optimized"
+            }
+        ),
+    );
 }
 
 fn print_name_repairs(repairs: &[synck_local::NameRepair]) {
@@ -2036,32 +2088,6 @@ async fn run_portable_item(command: &ItemCommand, tokens: &[String]) -> synck_lo
         }
         .await,
     }
-}
-
-fn supports_json(command: &Command) -> bool {
-    matches!(
-        command,
-        Command::Lock { .. }
-            | Command::Info
-            | Command::Context
-            | Command::Monitor { .. }
-            | Command::Config { .. }
-            | Command::Status
-            | Command::Commit { .. }
-            | Command::Revert { .. }
-            | Command::Log { .. }
-            | Command::Show { .. }
-            | Command::History { .. }
-            | Command::Compare { .. }
-            | Command::Diff { .. }
-            | Command::Deleted
-            | Command::Versions { .. }
-            | Command::Fsck { .. }
-            | Command::Storage { command: None }
-            | Command::Version {
-                command: VersionCommand::List { .. },
-            }
-    )
 }
 
 fn uses_worktree(command: &Command) -> bool {

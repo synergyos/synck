@@ -149,15 +149,10 @@ fn cli_instructions_teach_the_complete_safe_workflow_without_a_repository() {
             .contains("instructions")
     );
 
-    let unsupported = synck(temporary.path(), &["instructions", "--json"]);
-    assert!(!unsupported.status.success());
-    assert!(unsupported.stdout.is_empty());
-    let error: Value = serde_json::from_slice(&unsupported.stderr).unwrap();
-    assert_eq!(error["error"]["kind"], "INVALID");
-    assert_eq!(
-        error["error"]["message"],
-        "--json is not supported for this command"
-    );
+    let json = synck(temporary.path(), &["instructions", "--json"]);
+    assert!(json.status.success());
+    let json: Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(json["instructions"], instructions);
 }
 
 #[cfg(unix)]
@@ -2104,16 +2099,20 @@ fn cli_json_errors_and_exit_codes_are_stable() {
     assert_eq!(usage["schema_version"], 5);
     assert_eq!(usage["error"]["kind"], "USAGE");
 
-    let unsupported = synck(root, &["restore-tree", "--json"]);
-    assert_eq!(unsupported.status.code(), Some(1));
-    assert!(unsupported.stdout.is_empty());
-    let unsupported: Value = serde_json::from_slice(&unsupported.stderr).unwrap();
-    assert_eq!(unsupported["schema_version"], 5);
-    assert_eq!(unsupported["error"]["kind"], "INVALID");
-    assert_eq!(
-        unsupported["error"]["message"],
-        "--json is not supported for this command"
-    );
+    // Every command honors --json, including those that only change files.
+    fs::write(root.join("file.txt"), b"changed").unwrap();
+    let restored = json_stdout(root, &["restore", "file.txt", "--json"]);
+    assert_eq!(restored["schema_version"], 5);
+    assert_eq!(restored["restored"], "file.txt");
+    assert_eq!(fs::read(root.join("file.txt")).unwrap(), b"content");
+    let tree = json_stdout(root, &["restore-tree", "--json"]);
+    assert_eq!(tree["restored"], false);
+    let exported = json_stdout(root, &["export-tree", "HEAD", "exported", "--json"]);
+    assert_eq!(exported["revision"], "HEAD");
+    assert_eq!(fs::read(root.join("exported/file.txt")).unwrap(), b"content");
+    fs::remove_dir_all(root.join("exported")).unwrap();
+    let gc = json_stdout(root, &["gc", "--json"]);
+    assert_eq!(gc["removed_objects"], 0);
 
     let runtime = synck(root, &["--json", "show", "missing"]);
     assert_eq!(runtime.status.code(), Some(1));
@@ -2584,10 +2583,9 @@ fn storage_optimize_help_and_json_contract_are_explicit() {
 
     let rejected = synck(temporary.path(), &["--json", "storage", "optimize"]);
     assert_eq!(rejected.status.code(), Some(1));
-    assert!(
-        String::from_utf8_lossy(&rejected.stderr)
-            .contains("--json is not supported for this command")
-    );
+    assert!(rejected.stdout.is_empty());
+    let error: Value = serde_json::from_slice(&rejected.stderr).unwrap();
+    assert!(error["error"]["kind"].is_string());
     assert!(!temporary.path().join(".synck").exists());
 }
 
