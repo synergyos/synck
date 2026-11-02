@@ -67,6 +67,15 @@ impl SqliteStorage {
         let connection = cache
             .open_writable_unchecked(true)
             .map_err(|error| StateError::Storage(error.to_string()))?;
+        // Disposable: power loss may drop its last transactions, never corrupt it,
+        // and a history read catches it up. Rollback journaling flushed the drive
+        // about 12 times per projected commit.
+        connection
+            .pragma_update(None, "journal_mode", "WAL")
+            .map_err(sql_error)?;
+        connection
+            .pragma_update(None, "synchronous", "NORMAL")
+            .map_err(sql_error)?;
         let empty: bool = connection.query_row(
             "SELECT NOT EXISTS(SELECT 1 FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%')",
             [], |row| row.get(0),

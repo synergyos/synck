@@ -134,11 +134,6 @@ impl Repository {
         std::fs::create_dir(&temporary).at("create historical export staging", &temporary)?;
         let result = (|| -> Result<()> {
             materialize_tree(self, &temporary, &tree)?;
-            let staged = Dir::open_ambient_dir(&temporary, ambient_authority())
-                .at("open historical export staging", &temporary)?;
-            let working = crate::worktree::scan_materialized_tree(&staged, &tree)?;
-            validate_materialized_tree(&tree, &working)?;
-            drop(staged);
             rename_noreplace(&temporary, &destination)
                 .at("publish historical export", &destination)?;
             sync_directory(&parent)

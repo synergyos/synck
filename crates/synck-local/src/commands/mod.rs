@@ -44,7 +44,7 @@ use crate::repository::{
     Repository, is_cap_link_or_reparse, is_link_or_reparse, remove_tree_nofollow, rename_noreplace,
     sync_directory,
 };
-use crate::tree_materialization::{materialize_tree, validate_materialized_tree};
+use crate::tree_materialization::materialize_tree;
 use crate::working_tree_edit::{WORKING_TREE_EDIT_INTENT_NAME, WORKING_TREE_EDIT_STAGE_NAME};
 use crate::worktree::{Change, ChangeKind, CommittedNode, NodeKind, WorkingNode};
 

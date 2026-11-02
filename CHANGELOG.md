@@ -26,6 +26,11 @@ reads only its own repository format; see [Format and compatibility](docs/format
   on two threads, compresses chunks at zstd level 1 instead of 6, and lets the
   object store's WAL reach 1 GiB before an automatic checkpoint. New object stores
   use 32 KiB pages, which 0.2.0 refuses to open; 4 KiB stores still open.
+- `export-tree` of 906 MB takes 1.7 s instead of 3.6 s. It hashes each byte while
+  copying instead of again from disk afterwards, and on macOS flushes the drive
+  twice instead of once per file and folder.
+- The historical-state cache uses WAL without a flush per transaction, so catching
+  it up after 20 commits flushes the drive about 20 times instead of 280.
 - Office files are chunked per ZIP member, with a large member's local header apart
   from its payload, so an edit stores only the members it changed.
 

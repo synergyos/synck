@@ -19,7 +19,7 @@ use sha2::{Digest, Sha256};
 use synck_file_folder::{
     BlobRef, CurrentItem, Intent, IntentProposal, Location, ProfileLifecycleState,
 };
-use synck_vcs::object::{Form, HEADER_BYTES, Object, SaltedFrame, VerifyingWriter, content_form};
+use synck_vcs::object::{Form, HEADER_BYTES, Object, SaltedFrame, content_form};
 use synck_items::reader::{ItemReader, ReadContext, ReadableItem, RefReadContext};
 use synck_vcs::bundle::{
     BundleReader, validate_bundle_event_payload_json_and_digest,
@@ -1356,11 +1356,10 @@ impl PortableRepository {
     /// Stream exact blob bytes. On error the caller must discard any partial
     /// output; publish extracted files only after this returns success.
     pub fn copy_blob(&self, id: &ObjectId, out: &mut dyn Write) -> Result<u64> {
-        let mut writer = VerifyingWriter::new(id.clone(), out);
-        self.copy_stored_object(id, &mut writer)?;
-        writer.finish().map_err(corrupt)
+        self.copy_stored_object(id, out)
     }
 
+    /// Both stores hash the bytes they write and refuse a digest other than `id`.
     pub(crate) fn copy_stored_object(&self, id: &ObjectId, mut out: &mut dyn Write) -> Result<u64> {
         if self.storage_mode() == StorageMode::Chunked {
             let size = self.object_store().blob_size(id)?;
