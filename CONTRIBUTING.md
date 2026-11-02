@@ -11,6 +11,13 @@ contracts before implementing it. Follow the [pre-1.0 single-format policy](docs
 history within that format, and preserve error categories. Product policy, hosted services and GUI applications are outside
 this workspace's scope.
 
+## Branches
+
+Work lands on `dev`. `main` holds only released commits: a release tags a `dev`
+commit that passed the release gate (see Verification), then fast-forwards `main`
+to it. Never commit to `main` directly; if it cannot fast-forward, fix that rather
+than merging around it.
+
 ## Getting started
 
 Install Rust through rustup and run commands from the checkout root.
