@@ -561,6 +561,53 @@ fn clones_share_one_history_and_never_overwrite_each_other() {
 }
 
 #[test]
+fn pull_merges_text_and_keeps_both_versions_of_anything_else() {
+    let temp = tempfile::tempdir().unwrap();
+    let origin = temp.path().join("origin");
+    fs::create_dir_all(&origin).unwrap();
+    fs::write(origin.join("a.txt"), b"1\n2\n3\n4\n5\n").unwrap();
+    fs::write(origin.join("c.txt"), b"x\ny\n").unwrap();
+    fs::write(origin.join("plan.bin"), b"plan\0base").unwrap();
+    run(&origin, &["init", "--author", "origin"]);
+    run(&origin, &["commit", "-m", "start"]);
+    run(temp.path(), &["clone", "origin", "b", "--author", "b"]);
+    let b = temp.path().join("b");
+    fs::write(origin.join("a.txt"), b"1 origin\n2\n3\n4\n5\n").unwrap();
+    fs::write(origin.join("c.txt"), b"x origin\ny\n").unwrap();
+    fs::write(origin.join("plan.bin"), b"plan\0origin").unwrap();
+    run(&origin, &["commit", "-m", "origin"]);
+    fs::write(b.join("a.txt"), b"1\n2\n3\n4\n5 b\n").unwrap();
+    fs::write(b.join("c.txt"), b"x b\ny\n").unwrap();
+    fs::write(b.join("plan.bin"), b"plan\0b").unwrap();
+
+    // A commit stops; pull merges.
+    assert_eq!(fails(&b, &["commit", "-m", "b", "--json"])["error"]["kind"], "CONFLICT");
+    let pulled = json(&b, &["pull", "--json"]);
+    assert_eq!(pulled["conflicts"], serde_json::json!(["c.txt", "plan.bin"]));
+    assert_eq!(fs::read(b.join("a.txt")).unwrap(), b"1 origin\n2\n3\n4\n5 b\n");
+    assert_eq!(
+        fs::read(b.join("c.txt")).unwrap(),
+        b"<<<<<<< ours\nx b\n=======\nx origin\n>>>>>>> theirs\ny\n"
+    );
+    assert_eq!(fs::read(b.join("plan.bin")).unwrap(), b"plan\0b");
+    assert_eq!(fs::read(b.join("plan.~theirs.bin")).unwrap(), b"plan\0origin");
+    let status = json(&b, &["status", "--json"]);
+    assert_eq!(status["conflicts"][1]["theirs"], "plan.~theirs.bin");
+
+    // Nothing is committed until every conflict is resolved.
+    assert_eq!(fails(&b, &["commit", "-m", "b", "--json"])["error"]["kind"], "CONFLICT");
+    assert_eq!(fails(&b, &["resolve", "c.txt", "--json"])["error"]["kind"], "INVALID");
+    fs::write(b.join("c.txt"), b"x both\ny\n").unwrap();
+    fs::remove_file(b.join("plan.~theirs.bin")).unwrap();
+    run(&b, &["resolve", "c.txt", "plan.bin"]);
+    assert!(json(&b, &["status", "--json"]).get("conflicts").is_none());
+    run(&b, &["commit", "-m", "b merged"]);
+    run(&origin, &["pull"]);
+    assert_eq!(fs::read(origin.join("a.txt")).unwrap(), b"1 origin\n2\n3\n4\n5 b\n");
+    assert_eq!(fs::read(origin.join("c.txt")).unwrap(), b"x both\ny\n");
+}
+
+#[test]
 fn a_reservation_holds_in_every_clone() {
     let temp = tempfile::tempdir().unwrap();
     let origin = temp.path().join("origin");

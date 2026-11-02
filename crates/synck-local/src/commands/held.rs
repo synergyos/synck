@@ -253,7 +253,7 @@ impl Repository {
         let last = match replay(&self.origin_core(), self.core(), self.repository_id(), held.origin_seq).await? {
             Ok(last) => last,
             Err(items) => {
-                return Err(LocalError::ChangedOnBothSides {
+                return Err(LocalError::HeldConflict {
                     paths: self.item_paths(&items).await?,
                 });
             }
@@ -321,7 +321,7 @@ impl Repository {
         let origin = self.origin_core();
         // The origin's lock is held, so nothing has reached it since the pull.
         if let Err(items) = replay(self.core(), &origin, self.repository_id(), held.pushed_seq).await? {
-            return Err(LocalError::ChangedOnBothSides {
+            return Err(LocalError::HeldConflict {
                 paths: self.item_paths(&items).await?,
             });
         }

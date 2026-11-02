@@ -97,6 +97,12 @@ tree has committed since. A missing `baseline` means HEAD. A missing file means
 the repository has no working tree, and a `FOLLOWER` has none whatever the file
 says. It is not canonical history and copies do not carry it.
 
+`.synck/conflicts.json`, present only after a pull merged files, is an array of
+`{path, item_id, head_seq, digest, theirs, conflicted}`: the file merged, the
+repository head it took in, the SHA-256 of the merged file, where the
+repository's version was written when the file is not text, and whether a
+decision is still needed. It is working-tree state, not history.
+
 A clone is another working tree of a repository on the same machine. Its
 `config.json` names the absolute path of the origin's root in `origin`, and its
 `.synck/` holds `config.json`, `checkout.json`, `lock` and `tmp/` but no history

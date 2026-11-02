@@ -476,6 +476,7 @@ impl Repository {
     ) -> Result<CommitOutcome> {
         let message = options.message.as_deref();
         validate_commit_message(message)?;
+        self.reject_unresolved()?;
         self.pull_if_behind().await?;
         let (committed, working, all_changes, working_ids) = self.changes().await?;
         let changes = select_changes(

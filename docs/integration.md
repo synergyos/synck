@@ -108,9 +108,10 @@ no history. See [Portable repositories](portable-repository.md#optional-editable
 Give each agent its own working tree with `synck clone REPO DIR --author AGENT`
 (add `--include PATH` for a part of the tree). Commits from every clone go into
 the origin's history at once; `synck pull` brings in the others'. A `CONFLICT`
-error from `commit` or `pull` carries `paths`: files changed both in this clone
-and in history since its last pull. Nothing was written; keep or restore the
-local file, then pull. See [clones](local-repository.md#clones-one-working-tree-per-agent-or-person).
+error from `commit` carries `paths`: files changed both in this clone and in
+history since its last pull. Nothing was written; run `synck pull`, which merges
+them, fix each file it lists in `conflicts`, run `synck resolve PATH...`, and
+commit. A `CONFLICT` from `pull` itself is a move or deletion against an edit. See [clones](local-repository.md#clones-one-working-tree-per-agent-or-person).
 An agent whose work should land only when finished clones with `--hold` and runs
 `synck push` at the end; its commits keep their IDs.
 

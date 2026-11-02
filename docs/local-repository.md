@@ -150,11 +150,39 @@ Every working tree, the origin's included, is based on one commit, recorded in
 `checkout.json` as its baseline. `status` and `diff` compare with the baseline,
 so commits made from other working trees never look like local edits. `pull`
 writes what changed since the baseline to every file without a local change,
-keeps local changes, and then bases the tree on HEAD. A file changed both here
-and in history is reported with `CONFLICT` and the paths, and nothing is
-written. `commit`, `revert`, `mv`, `recover` and `version restore` pull first, so
-commits that touch different files land from every working tree with no extra
-step. `pull --include PATH` then changes the checked-out paths.
+keeps local changes, and then bases the tree on HEAD. `commit`, `revert`, `mv`,
+`recover` and `version restore` pull first, so commits that touch different
+files land from every working tree with no extra step; one that meets a file
+changed both here and in history stops with `CONFLICT` and the paths, having
+written nothing. `pull --include PATH` then changes the checked-out paths.
+
+### Changed on both sides
+
+`synck pull` merges a file whose content changed both here and in history:
+
+- Text is merged three-way from the baseline's version. Where both sides
+  changed the same lines, the file gets markers:
+
+  ```text
+  <<<<<<< ours
+  this working tree's lines
+  =======
+  the repository's lines
+  >>>>>>> theirs
+  ```
+
+- Anything else keeps this tree's version and writes the repository's beside
+  it as `<name>.~theirs.<ext>`, for example `plan.~theirs.docx`.
+
+A clean merge is an ordinary change; review it and commit. The others are
+conflicts: `status` lists them and `commit` refuses until each is resolved.
+Edit the file (remove every marker, or keep the version you want), delete the
+`~theirs` copy or keep it as a new file, then run `synck resolve PATH...`.
+`restore` and `restore-tree` drop a conflict along with the merged file.
+Changes that are not content, such as a move against an edit or a deletion
+against an edit, are not merged: `pull` fails with `CONFLICT`, writes nothing,
+and the change has to be made the same way here or undone with `restore`.
+Prevent conflicts in files that cannot merge with a reservation.
 
 A clone holds the origin's repository lock for each command, waiting for the
 other working trees' commands rather than returning `BUSY`. The origin must be on

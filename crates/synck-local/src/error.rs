@@ -61,8 +61,17 @@ pub enum LocalError {
         expected: String,
     },
     /// History and this working tree changed the same items since its baseline.
-    #[error("changed here and in the repository since this working tree was last updated: {}; commit or restore them, then pull", .paths.join(", "))]
+    #[error("changed here and in the repository since this working tree was last updated: {}; run synck pull to merge them", .paths.join(", "))]
     ChangedOnBothSides { paths: Vec<String> },
+    /// Changes on both sides that pull cannot merge: anything but content.
+    #[error("changed here and in the repository in ways pull cannot merge (moved, renamed, deleted, or a file against a folder): {}; make the repository's change here too, or synck restore them, then pull", .paths.join(", "))]
+    CannotMerge { paths: Vec<String> },
+    /// A held commit changes items the repository changed too.
+    #[error("held commits change items the repository changed too: {}; push cannot send them. Copy these files aside, clone again, and commit them there", .paths.join(", "))]
+    HeldConflict { paths: Vec<String> },
+    /// Files a pull merged with conflicts or kept both versions of.
+    #[error("unresolved conflicts: {}; edit them, then run synck resolve with their paths", .paths.join(", "))]
+    Unresolved { paths: Vec<String> },
     #[error("move from {from_path} to {to_path} is pending recovery: {detail}")]
     MoveNeedsRecovery {
         from_path: String,

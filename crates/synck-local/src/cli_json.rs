@@ -174,7 +174,11 @@ pub(crate) fn error(value: &LocalError) -> Value {
         LocalError::Integrity(_) => "INTEGRITY",
         LocalError::MonitorUnavailable(_) => "MONITOR_UNAVAILABLE",
         LocalError::AcceptedNeedsRecovery { .. } => "ACCEPTED_NEEDS_RECOVERY",
-        LocalError::Conflict { .. } | LocalError::ChangedOnBothSides { .. } => "CONFLICT",
+        LocalError::Conflict { .. }
+        | LocalError::ChangedOnBothSides { .. }
+        | LocalError::CannotMerge { .. }
+        | LocalError::HeldConflict { .. }
+        | LocalError::Unresolved { .. } => "CONFLICT",
         LocalError::MoveNeedsRecovery { .. } => "MOVE_NEEDS_RECOVERY",
         LocalError::PublishedNeedsDurability { .. } => "PUBLISHED_NEEDS_DURABILITY",
         LocalError::Io { .. } => "IO",
@@ -191,7 +195,11 @@ pub(crate) fn error(value: &LocalError) -> Value {
         error["path"] = json!(path);
         error["owner"] = json!(owner);
     }
-    if let LocalError::ChangedOnBothSides { paths } = value {
+    if let LocalError::ChangedOnBothSides { paths }
+    | LocalError::CannotMerge { paths }
+    | LocalError::HeldConflict { paths }
+    | LocalError::Unresolved { paths } = value
+    {
         error["paths"] = json!(paths);
     }
     if let LocalError::Conflict {

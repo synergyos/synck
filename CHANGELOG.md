@@ -25,6 +25,13 @@ reads only its own repository format; see [Format and compatibility](docs/format
   changes; `commit`, `revert`, `mv`, `recover` and `version restore` pull first.
   A file changed on both sides is a `CONFLICT` with its `paths`, and nothing is
   written. `checkout.json` records each working tree's `baseline` commit.
+- `synck pull` merges files changed both here and in history: text three-way
+  with conflict markers, anything else kept as yours with the repository's
+  version beside it as `<name>.~theirs.<ext>`. `status` lists conflicts
+  (`conflicts` in JSON when present), `commit` refuses until `synck resolve`
+  marks each fixed, and `pull` reports them. A commit that meets such a file
+  still stops with `CONFLICT`, writing nothing. Non-content changes on both
+  sides fail with `CONFLICT` as before.
 - Reservations (`synck lock`) live in the origin and hold in every clone: a
   commit touching a reserved path from any working tree needs its token, while
   `pull` and other working-file rewrites answer only to their own tree's

@@ -75,7 +75,7 @@ pub use commit::*;
 pub use history::*;
 pub use held::PushOutcome;
 pub(crate) use held::{HELD_FILE, Held, PINS_DIRECTORY, Pin, pin_path, write_held};
-pub use pull::PullOutcome;
+pub use pull::{Conflict, PullOutcome};
 use pull::{PULL_INTENT_NAME, PULL_STAGE_NAME};
 use moves::*;
 pub use recover::*;

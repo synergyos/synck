@@ -42,7 +42,7 @@ pub struct StructuralComparison {
     pub changes: Vec<Change>,
 }
 
-enum FileBytes {
+pub(crate) enum FileBytes {
     Bytes(Vec<u8>),
     TooLarge,
 }
@@ -133,7 +133,7 @@ impl Repository {
         Ok(output)
     }
 
-    fn read_object_bytes(&self, node: &CommittedNode) -> Result<FileBytes> {
+    pub(crate) fn read_object_bytes(&self, node: &CommittedNode) -> Result<FileBytes> {
         let size = u64::try_from(node.size.ok_or_else(|| {
             LocalError::Integrity("historical FILE has no content size".to_string())
         })?)
@@ -151,7 +151,7 @@ impl Repository {
         Ok(FileBytes::Bytes(bytes))
     }
 
-    fn read_working_bytes(&self, display: &str, node: &WorkingNode) -> Result<FileBytes> {
+    pub(crate) fn read_working_bytes(&self, display: &str, node: &WorkingNode) -> Result<FileBytes> {
         let size = node
             .size
             .ok_or_else(|| LocalError::Integrity(format!("working FILE has no size: {display}")))?;

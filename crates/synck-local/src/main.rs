@@ -169,6 +169,15 @@ enum Command {
     },
     /// Send a held clone's commits to its origin, after pulling.
     Push,
+    /// Mark files a pull merged with conflicts as resolved.
+    ///
+    /// Remove the conflict markers from a text file first. For any other file
+    /// the repository's version is beside it as `<name>.~theirs.<ext>`: keep
+    /// the version you want, then delete that copy or keep it as a new file.
+    Resolve {
+        #[arg(required = true)]
+        paths: Vec<PathBuf>,
+    },
     /// Show repository identity, format, author, and current head.
     Info,
     /// Summarize repository identity, current changes, and recent commits.
@@ -1075,6 +1084,7 @@ async fn run_checkout(
             let (changes, warnings) = repository.status_with_path_warnings().await.map_err(|error| (error, false))?;
             let held = repository.held_commits().await.map_err(|error| (error, false))?;
             let reservations = repository.agent_locks().map_err(|error| (error, false))?;
+            let conflicts = repository.conflicts().map_err(|error| (error, false))?;
             print_path_warnings(&warnings);
             if json {
                 let mut status = status_json(&changes);
@@ -1084,11 +1094,24 @@ async fn run_checkout(
                 if !reservations.is_empty() {
                     status["reservations"] = json!(reservations);
                 }
+                if !conflicts.is_empty() {
+                    status["conflicts"] = json!(conflicts);
+                }
                 println!("{status}");
             } else {
                 print_status(&changes, align_change_markers);
                 if let Some(held) = held.filter(|held| !held.is_empty()) {
                     println!("{} commits held; push sends them", held.len());
+                }
+                for conflict in &conflicts {
+                    match &conflict.theirs {
+                        Some(theirs) => println!(
+                            "conflict: {} (the repository's version is {}); synck resolve when done",
+                            visible(&conflict.path),
+                            visible(theirs)
+                        ),
+                        None => println!("conflict: {}; synck resolve when done", visible(&conflict.path)),
+                    }
                 }
                 let now = chrono::Utc::now().timestamp();
                 for lock in &reservations {
@@ -1601,6 +1624,7 @@ async fn run_checkout(
                     "from_repo_seq": outcome.from_repo_seq,
                     "to_repo_seq": outcome.to_repo_seq,
                     "updated": outcome.updated,
+                    "conflicts": outcome.conflicts,
                     "checkout_paths": repository.checkout_paths(),
                 }),
                 format_args!(
@@ -1615,6 +1639,24 @@ async fn run_checkout(
                         )
                     }
                 ),
+            );
+            if !json && !outcome.conflicts.is_empty() {
+                println!(
+                    "conflicts in {}; edit them, then run synck resolve with their paths",
+                    visible(&outcome.conflicts.join(", "))
+                );
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        .await,
+        Command::Resolve { paths } => async {
+            let resolved = repository
+                .resolve(&current, &paths)
+                .map_err(|error| (error, false))?;
+            print_outcome(
+                json,
+                json!({"resolved": resolved}),
+                format_args!("resolved {}", visible(&resolved.join(", "))),
             );
             Ok(ExitCode::SUCCESS)
         }

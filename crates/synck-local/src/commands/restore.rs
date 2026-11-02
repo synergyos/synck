@@ -401,6 +401,7 @@ impl Repository {
         self.guard_agent_files(&[&display])?;
         self.write_working_file(&display, &blob_id, size, true)?;
         sync_display_parent(self.root_path(), &display)?;
+        self.forget_conflicts(Some(&display))?;
         self.refresh_worktree_identities().await
     }
 
@@ -418,7 +419,9 @@ impl Repository {
                 (head.map(|head| head.repo_seq) != Some(repo_seq)).then_some(repo_seq)
             }
         };
-        self.restore_worktree_checked(None, target_repo_seq).await
+        let restored = self.restore_worktree_checked(None, target_repo_seq).await?;
+        self.forget_conflicts(None)?;
+        Ok(restored)
     }
 
     pub(crate) async fn restore_checkout_worktree(

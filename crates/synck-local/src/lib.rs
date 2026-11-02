@@ -30,7 +30,7 @@ mod working_tree_edit;
 mod worktree;
 
 pub use commands::{
-    PullOutcome, PushOutcome, CommitEvent, CommitEventPage, CommitOutcome, DeletedEntry,
+    Conflict, PullOutcome, PushOutcome, CommitEvent, CommitEventPage, CommitOutcome, DeletedEntry,
     DetailedEventLogEntry, DetailedLogEntry, EventHistoryCommit, HistoryCommit, LogEntry,
     VersionEntry,
 };
