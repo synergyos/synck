@@ -100,6 +100,7 @@ CREATE TABLE local_worktree_scan_state (
     )
 ) STRICT;
 
+-- Unused: a FILE object's ID is its plain SHA-256. Kept so 0.2.0 local databases open.
 CREATE TABLE local_object_digests (
     repo_id TEXT NOT NULL,
     object_id TEXT NOT NULL,

@@ -272,7 +272,6 @@ impl Repository {
             }
         }
 
-        let plain_digests = self.cached_plain_digests()?;
         let heads = load_file_heads(self.storage(), self.config().repo_id().as_str())?;
         let by_id: HashMap<ItemId, &ItemRow> = items
             .iter()
@@ -320,12 +319,7 @@ impl Repository {
                 .insert(
                     path.clone(),
                     CommittedNode {
-                        plain_digest: blob_id.as_ref().map(|id| -> Result<String> {
-                            match plain_digests.get(id) {
-                                Some(digest) => Ok(digest.clone()),
-                                None => self.plain_digest(id),
-                            }
-                        }).transpose()?,
+                        plain_digest: blob_id.as_ref().map(|id| self.plain_digest(id)).transpose()?,
                         item_id: item.item_id,
                         kind,
                         head_seq: item.head_seq,

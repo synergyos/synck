@@ -39,6 +39,14 @@ reads only its own repository format; see [Format and compatibility](docs/format
   from the whole WAL and forgot what had been checkpointed, so past 1000 pages
   every transaction copied the whole WAL again and the WAL never restarted. A small
   commit flushes the drive 6 times instead of 14.
+- On macOS, `repository checkout`, `restore-tree`, `revert` and `recover` order each
+  working file and folder they write with a barrier instead of a full flush, and
+  the operation's last full flush makes them durable. Checking out 300 files
+  flushes the drive 22 times instead of 789. `restore`, `export` and version
+  restores end with one full flush.
+- A FILE's plaintext digest is its object ID. Checkout and status no longer reread
+  and hash every object to learn it, and capture no longer writes it to the local
+  database. The table that cached it is unused.
 - Office files are chunked per ZIP member, with a large member's local header apart
   from its payload, so an edit stores only the members it changed.
 
