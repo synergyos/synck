@@ -54,11 +54,14 @@ pub const FORMAT_VERSION: u32 = 7;
 const MAX_PAYLOAD_BYTES: usize = HEADER_BYTES + synck_items::body_events::MAX_BODY_BYTES;
 pub(crate) fn unsupported_format(version: Option<u64>) -> LocalError {
     let reader = match version {
-        Some(6) => "Open format 6 with Synck 0.1.x, export its working files, and initialize a new repository with 0.2.0.",
+        Some(6) => "Open format 6 with Synck 0.1.x, export its working files, and initialize a new repository with this release.",
         _ => "Open this repository with the release that created it; this release has no migration reader.",
     };
     let version = version.map_or_else(|| "missing".to_string(), |value| value.to_string());
-    invalid(format!("unsupported repository format {version}; Synck 0.2.0 requires format-7. {reader}"))
+    invalid(format!(
+        "unsupported repository format {version}; Synck {} requires format-{FORMAT_VERSION}. {reader}",
+        env!("CARGO_PKG_VERSION")
+    ))
 }
 
 const PAGE: usize = 512;

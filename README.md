@@ -177,10 +177,10 @@ services and the user interface belong to the application that embeds it.
 
 ## Status and compatibility
 
-Synck 0.2.0 uses repository format 7. Before 1.0, each release reads only its
-own format and refuses other formats without modifying them. There are no
-compatibility readers or automatic migrations. The Rust API can also change;
-repositories made by untagged development builds are disposable.
+Synck 0.3.0 uses repository format 7, as 0.2.0 does. Before 1.0, each release
+reads only its own format and refuses other formats without modifying them.
+There are no compatibility readers or automatic migrations. The Rust API can
+also change; repositories made by untagged development builds are disposable.
 
 The [standalone format specification](docs/spec/format.md), SQL schemas and
 language-neutral vectors define the format independently of the Rust source.
