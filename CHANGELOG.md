@@ -12,6 +12,14 @@ reads only its own repository format; see [Format and compatibility](docs/format
   `instructions` and the `version` writes refused it before, although every
   command's help listed it.
 
+### Storage
+
+- A commit flushes the drive about 6 times instead of 39, and importing 200 files
+  about 55 times instead of 1063. Repository databases keep their WAL between
+  commands instead of checkpointing on every close; object staging and the
+  disposable local database no longer flush each transaction, and one checkpoint
+  before the history transaction makes a commit's objects durable.
+
 ## 0.2.0
 
 Repository format 7, commit format 6, object frame V1, history bundle format 5,

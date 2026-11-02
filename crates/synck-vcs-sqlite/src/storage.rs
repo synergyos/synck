@@ -405,6 +405,7 @@ fn configure_writable(conn: &Connection) -> Result<(), StorageError> {
         .map_err(map_sqlite_error)?;
     conn.pragma_update(None, "synchronous", "FULL")
         .map_err(map_sqlite_error)?;
+    crate::connection::keep_wal_on_close(conn).map_err(map_sqlite_error)?;
     Ok(())
 }
 

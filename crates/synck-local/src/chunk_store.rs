@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use fastcdc::v2020::{FastCDC, Normalization};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
-use synck_vcs_sqlite::open_connection;
+use synck_vcs_sqlite::{keep_wal_on_close, open_connection};
 use sha2::{Digest, Sha256};
 use synck_vcs::types::{ObjectId, RepoId};
 
@@ -135,15 +135,19 @@ impl ChunkStore {
                 | OpenFlags::SQLITE_OPEN_NO_MUTEX
                 | OpenFlags::SQLITE_OPEN_NOFOLLOW,
         )?;
+        // Staging transactions do not flush one by one. Nothing refers to a blob
+        // until `checkpoint` has flushed the whole WAL: `complete_blob` does it for
+        // each blob, and a commit does it once before its history transaction.
         connection.execute_batch(
             "PRAGMA foreign_keys = ON;
-             PRAGMA synchronous = FULL;",
+             PRAGMA synchronous = NORMAL;",
         )?;
+        keep_wal_on_close(&connection)?;
         let foreign_keys: i64 =
             connection.pragma_query_value(None, "foreign_keys", |row| row.get(0))?;
         let synchronous: i64 =
             connection.pragma_query_value(None, "synchronous", |row| row.get(0))?;
-        if foreign_keys != 1 || synchronous != 2 {
+        if foreign_keys != 1 || synchronous != 1 {
             return Err(LocalError::Integrity(
                 "object database connection pragmas were not applied".to_string(),
             ));
@@ -218,6 +222,9 @@ impl ChunkStore {
             .query_map([], |row| row.get::<_, Vec<u8>>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         drop(statement);
+        if digests.is_empty() {
+            return Ok(());
+        }
         for digest in digests {
             delete_incomplete_blob(&connection, &digest, true)?;
         }
@@ -1547,7 +1554,7 @@ mod tests {
             .pragma_query_value(None, "synchronous", |row| row.get(0))
             .unwrap();
         assert_eq!(foreign_keys, 1);
-        assert_eq!(synchronous, 2);
+        assert_eq!(synchronous, 1);
         drop(connection);
 
         let bytes = b"stored bytes";

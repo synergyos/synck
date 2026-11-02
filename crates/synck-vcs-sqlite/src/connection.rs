@@ -27,6 +27,19 @@ pub fn open_connection(path: impl AsRef<Path>, flags: OpenFlags) -> rusqlite::Re
     Ok(connection)
 }
 
+/// Leave committed WAL frames for the next connection instead of checkpointing
+/// when the last connection closes. A command opens and closes a repository
+/// database many times, and each closing checkpoint costs two more full flushes.
+/// A WAL commit under `synchronous = FULL` is already durable. Use only on a
+/// database at its final name inside its directory: a database file moved on
+/// its own would leave its WAL behind.
+pub fn keep_wal_on_close(connection: &Connection) -> rusqlite::Result<()> {
+    connection.set_db_config(DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, true)?;
+    // A checkpoint resets the WAL; keep a large transaction's WAL from staying large.
+    connection.pragma_update(None, "journal_size_limit", 4 * 1024 * 1024)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -7,7 +7,7 @@ mod state;
 mod storage;
 mod metadata;
 
-pub use connection::open_connection;
+pub use connection::{keep_wal_on_close, open_connection};
 pub use state::SqliteStateStore;
 pub use storage::{SqliteStorage, format_timestamp, parse_timestamp, validate_database_family};
 

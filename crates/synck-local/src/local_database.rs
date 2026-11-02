@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use rusqlite::{Connection, OpenFlags};
-use synck_vcs_sqlite::{SqliteStorage, open_connection, validate_database_family};
+use synck_vcs_sqlite::{SqliteStorage, keep_wal_on_close, open_connection, validate_database_family};
 
 use crate::error::{LocalError, Result};
 
@@ -32,6 +32,9 @@ fn open(storage: &SqliteStorage, writable: bool, create: bool) -> Result<Connect
             .map_err(|e| LocalError::Integrity(e.to_string()))?,
     );
     let path = path(storage);
+    if create {
+        remove_stale_sidecars(&path)?;
+    }
     validate_database_family(&path, create).map_err(|e| LocalError::Integrity(e.to_string()))?;
     let parent = path.parent().unwrap().canonicalize().map_err(|e| {
         LocalError::Invalid(format!("cannot resolve local database directory: {e}"))
@@ -53,7 +56,10 @@ fn open(storage: &SqliteStorage, writable: bool, create: bool) -> Result<Connect
     connection.pragma_update(None, "foreign_keys", "ON")?;
     if writable {
         connection.pragma_update(None, "journal_mode", "WAL")?;
-        connection.pragma_update(None, "synchronous", "FULL")?;
+        // Disposable: power loss may drop its last transactions, never corrupt
+        // it, and a command catches it up from history.
+        connection.pragma_update(None, "synchronous", "NORMAL")?;
+        keep_wal_on_close(&connection)?;
     }
     let history = storage
         .path()
@@ -74,6 +80,30 @@ fn open(storage: &SqliteStorage, writable: bool, create: bool) -> Result<Connect
         [format!("file://{history}?mode=ro")],
     )?;
     Ok(connection)
+}
+
+/// The database is disposable and keeps its WAL between commands, so deleting
+/// only its main file leaves a WAL that belongs to no database. Drop it.
+fn remove_stale_sidecars(path: &std::path::Path) -> Result<()> {
+    if path.symlink_metadata().is_ok() {
+        return Ok(());
+    }
+    for suffix in ["-wal", "-shm"] {
+        let mut name = path.as_os_str().to_os_string();
+        name.push(suffix);
+        let sidecar = PathBuf::from(name);
+        match std::fs::remove_file(&sidecar) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                return Err(LocalError::Io {
+                    action: "remove stale local database sidecar",
+                    path: sidecar,
+                    source: error,
+                });
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 /// Map a canonical Windows path to a SQLite URI path with an empty authority.
