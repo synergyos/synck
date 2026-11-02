@@ -26,6 +26,7 @@ pub(crate) fn change(value: &Change) -> Value {
 pub(crate) fn text_diff_entry(value: &TextDiffEntry) -> Value {
     let (kind, patch) = match &value.kind {
         TextDiffKind::Patch(patch) => ("PATCH", Some(patch)),
+        TextDiffKind::Document(patch) => ("DOCUMENT", Some(patch)),
         TextDiffKind::Binary => ("BINARY", None),
         TextDiffKind::TooLarge => ("TOO_LARGE", None),
     };

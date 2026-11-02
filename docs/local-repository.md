@@ -270,6 +270,15 @@ synck export notes.txt ./saved-notes.txt --item-seq 2
 synck export-tree HEAD ./exported-tree
 ```
 
+`diff` shows a line patch for text files. For a Word, Excel or PowerPoint
+file (`.docx`, `.xlsx`, `.pptx`) it compares the document's text instead of its
+bytes: Word paragraphs, slide paragraphs under `Slide N`, and sheet cells as
+`A1: value (=formula)` under `Sheet N`. JSON marks this `DOCUMENT`; the patch
+describes the text and cannot be applied to the file. A change only in
+formatting, images or anything else outside that text, and a document that
+cannot be read, shows as a binary difference. Files over 8 MiB are not
+compared.
+
 Commit log order is repository publication order. Item history follows stable
 identity through moves/renames. A FILE content revision is distinct from a named
 version label: labels point at FILE item sequences and do not store duplicate

@@ -2459,10 +2459,12 @@ fn print_context(
 fn print_text_diff(entry: &TextDiffEntry) {
     match &entry.kind {
         // A pipe gets the exact patch.
-        TextDiffKind::Patch(patch) if std::io::stdout().is_terminal() => {
+        TextDiffKind::Patch(patch) | TextDiffKind::Document(patch)
+            if std::io::stdout().is_terminal() =>
+        {
             print!("{}", visible_lines(patch));
         }
-        TextDiffKind::Patch(patch) => print!("{patch}"),
+        TextDiffKind::Patch(patch) | TextDiffKind::Document(patch) => print!("{patch}"),
         TextDiffKind::Binary => println!(
             "Binary files {} and {} differ",
             diff_path(entry.old_path.as_deref()),

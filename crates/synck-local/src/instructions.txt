@@ -95,6 +95,9 @@ HISTORY AND RECOVERY
     synck restore <path> [--item-seq N]
     synck restore-tree [<revision>]
 
+diff compares docx, xlsx and pptx files by their text: paragraphs, slides and
+sheet cells.
+
 Revert and recover append commits. Restore and restore-tree change files on disk;
 review and commit the result when wanted. restore-tree discards every working
 change; with a revision it writes that commit's tree, which status then shows as

@@ -29,6 +29,7 @@ diffy = "0.4"
 fastcdc = "3.2.1"
 hex.workspace = true
 ignore.workspace = true
+miniz_oxide = "0.9"
 notify = "8.2.0"
 rawzip = "0.5.1"
 rusqlite.workspace = true

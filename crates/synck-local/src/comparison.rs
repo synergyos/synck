@@ -10,6 +10,7 @@ use synck_vcs::types::ItemId;
 
 use crate::commands::{display_to_path, select_changes, sort_changes};
 use crate::error::{IoContext, LocalError, Result};
+use crate::ooxml::OoxmlKind;
 use crate::repository::{Repository, is_cap_link_or_reparse};
 use crate::worktree::{Change, ChangeKind, CommittedNode, NodeKind, WorkingNode};
 
@@ -18,6 +19,8 @@ pub const TEXT_DIFF_MAX_BYTES: u64 = 8 * 1024 * 1024;
 #[derive(Debug, Eq, PartialEq)]
 pub enum TextDiffKind {
     Patch(String),
+    /// A patch of the text of an Office document, not of its bytes.
+    Document(String),
     Binary,
     TooLarge,
 }
@@ -235,6 +238,18 @@ fn text_diff_entry(
     if old == new {
         return Ok(None);
     }
+    if let (Some(old_text), Some(new_text)) = (
+        document_text(old_path.as_deref(), &old),
+        document_text(new_path.as_deref(), &new),
+    ) {
+        // Bytes differ but the text may not: a change only in formatting.
+        let kind = if old_text == new_text {
+            TextDiffKind::Binary
+        } else {
+            TextDiffKind::Document(unified(old_path.as_deref(), new_path.as_deref(), &old_text, &new_text)?)
+        };
+        return Ok(Some(TextDiffEntry { old_path, new_path, kind }));
+    }
     let old_text = std::str::from_utf8(&old)
         .ok()
         .filter(|text| !text.contains('\0'));
@@ -248,12 +263,26 @@ fn text_diff_entry(
             kind: TextDiffKind::Binary,
         }));
     };
-    let old_label = old_path
-        .as_deref()
-        .map_or_else(|| "/dev/null".to_string(), |path| format!("a/{path}"));
-    let new_label = new_path
-        .as_deref()
-        .map_or_else(|| "/dev/null".to_string(), |path| format!("b/{path}"));
+    let patch = unified(old_path.as_deref(), new_path.as_deref(), old_text, new_text)?;
+    Ok(Some(TextDiffEntry {
+        old_path,
+        new_path,
+        kind: TextDiffKind::Patch(patch),
+    }))
+}
+
+/// The text of an Office document at `path`, or "" for an absent side. None
+/// when the present side is not a readable Office document.
+fn document_text(path: Option<&str>, bytes: &[u8]) -> Option<String> {
+    match path {
+        None => Some(String::new()),
+        Some(path) => crate::office_text::document_text(OoxmlKind::from_path(Path::new(path))?, bytes),
+    }
+}
+
+fn unified(old_path: Option<&str>, new_path: Option<&str>, old_text: &str, new_text: &str) -> Result<String> {
+    let old_label = old_path.map_or_else(|| "/dev/null".to_string(), |path| format!("a/{path}"));
+    let new_label = new_path.map_or_else(|| "/dev/null".to_string(), |path| format!("b/{path}"));
     let mut options = DiffOptions::new();
     options
         .set_original_filename(old_label)
@@ -264,11 +293,7 @@ fn text_diff_entry(
             "text diff produced no patch for different content".to_string(),
         ));
     }
-    Ok(Some(TextDiffEntry {
-        old_path,
-        new_path,
-        kind: TextDiffKind::Patch(patch),
-    }))
+    Ok(patch)
 }
 
 pub(crate) fn compare_trees(
@@ -357,6 +382,44 @@ mod tests {
     use synck_vcs::types::ObjectId;
 
     use crate::init;
+
+    fn docx(body: &str) -> Vec<u8> {
+        use std::io::Write;
+        let mut output = std::io::Cursor::new(Vec::new());
+        let mut archive = rawzip::ZipArchiveWriter::new(&mut output);
+        let (mut entry, config) = archive.new_file("word/document.xml").start().unwrap();
+        let mut writer = config.wrap(&mut entry);
+        writer
+            .write_all(format!("<w:document><w:body>{body}</w:body></w:document>").as_bytes())
+            .unwrap();
+        let (_, descriptor) = writer.finish().unwrap();
+        entry.finish(descriptor).unwrap();
+        archive.finish().unwrap();
+        output.into_inner()
+    }
+
+    fn diff_kind(old: Vec<u8>, new: Vec<u8>) -> TextDiffKind {
+        let path = Some("Contracts/lease.docx".to_string());
+        text_diff_entry(path.clone(), path, Some(FileBytes::Bytes(old)), Some(FileBytes::Bytes(new)))
+            .unwrap()
+            .unwrap()
+            .kind
+    }
+
+    #[test]
+    fn office_documents_diff_by_their_text() {
+        let old = docx("<w:p><w:r><w:t>Term: 12 months</w:t></w:r></w:p>");
+        let new = docx("<w:p><w:r><w:t>Term: 24 months</w:t></w:r></w:p>");
+        let TextDiffKind::Document(patch) = diff_kind(old.clone(), new) else {
+            panic!("expected a document diff");
+        };
+        assert!(patch.starts_with("--- a/Contracts/lease.docx\n+++ b/Contracts/lease.docx\n"));
+        assert!(patch.contains("-Term: 12 months\n+Term: 24 months\n"));
+
+        let restyled = docx("<w:p><w:r><w:rPr><w:b/></w:rPr><w:t>Term: 12 months</w:t></w:r></w:p>");
+        assert_eq!(diff_kind(old.clone(), restyled), TextDiffKind::Binary);
+        assert_eq!(diff_kind(old, b"not a zip".to_vec()), TextDiffKind::Binary);
+    }
 
     fn node(id: &str, kind: NodeKind, blob: Option<&str>) -> CommittedNode {
         CommittedNode {

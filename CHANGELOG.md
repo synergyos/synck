@@ -45,6 +45,9 @@ reads only its own repository format; see [Format and compatibility](docs/format
   pulls and then sends them in order, each with the commit ID it was given;
   `status` lists them. A held clone keeps its own copy of the history; the
   origin's `gc` keeps the content of unpushed commits.
+- `synck diff` compares Word, Excel and PowerPoint files by their text:
+  paragraphs, slide text and sheet cells with formulas, instead of reporting
+  a binary difference. JSON marks these entries `DOCUMENT`.
 - `restore-tree <revision>` writes an earlier commit's tree into the working
   tree. `status` shows it as changes against HEAD; `restore-tree` returns, and
   `commit` records a rollback that keeps every moved and edited item's identity.

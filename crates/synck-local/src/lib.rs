@@ -21,6 +21,7 @@ mod name_repair_journal;
 mod objects;
 mod raw_object;
 mod path_warnings;
+mod office_text;
 mod ooxml;
 pub mod portable;
 mod repository;
