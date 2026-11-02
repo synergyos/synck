@@ -25,6 +25,32 @@ Checkpoints use the canonical framing and exact
 acceptance timestamp. A cursor authenticates continuity from an already trusted
 checkpoint, not the remote party's identity. Validate it against stored history.
 
+## Trust model
+
+The authority orders history and clients trust it for what they cannot check.
+A client holding a cursor can prove:
+
+- **No rewrite.** Every later commit extends that cursor's checkpoint. An edited,
+  dropped or reordered commit already seen fails continuation with `Checkpoint`.
+- **No silent replacement.** Replacing history needs a new generation, which the
+  client sees.
+- **Exact content.** Each event re-encodes canonically and matches its digest;
+  each commit ID matches its envelope.
+
+A client cannot prove:
+
+- **One history for everyone.** The authority can show two clients histories that
+  split after a common checkpoint. Each is valid alone; only comparing
+  checkpoints reveals the split.
+- **Completeness.** The authority can withhold later commits and keep serving a
+  valid older prefix.
+- **Authorship.** `author_id` and `committer_id` are the authority's record.
+  Commits carry no author signature, so the authority, or anyone who can write
+  its storage, can record a valid commit under any author.
+
+Signed checkpoints and author signatures over commit IDs would close these gaps
+without changing commit identity. Neither is part of protocol 1.
+
 ## Discovery, transfer and admission policy
 
 All routes are under `/v1/repositories/{repo_id}/sync`:
