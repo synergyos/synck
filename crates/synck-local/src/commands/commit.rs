@@ -587,6 +587,7 @@ impl Repository {
         captured_file: Option<(&str, &BlobRef)>,
     ) -> Result<HashMap<String, ObjectId>> {
         let mut objects = HashMap::new();
+        let mut captures = Vec::new();
         for change in changes {
             if !matches!(change.kind, ChangeKind::Add | ChangeKind::Modify)
                 && !change.kind.is_relocation()
@@ -612,14 +613,80 @@ impl Repository {
                 objects.insert(change.path.clone(), content.blob_id.clone());
                 continue;
             }
-            let relative = display_to_path(&change.path);
-            let blob_id =
-                self.install_object_before_commit(&relative, &change.path, digest, size)?;
-            objects.insert(change.path.clone(), blob_id);
+            captures.push((change.path.as_str(), digest, size));
+        }
+        for (path, blob_id) in self.capture_in_parallel(&captures)? {
+            objects.insert(path.to_string(), blob_id);
         }
         if !objects.is_empty() {
             self.checkpoint_commit_objects()?;
         }
         Ok(objects)
+    }
+
+    /// A capture alternates hashing, chunking and compressing with object-store
+    /// writes, and SQLite takes one writer at a time. Two threads overlap one
+    /// file's computation with another's writes; more only wait for the lock
+    /// (on a 906 MB import: 5.0 s with one, 4.0 s with two, 4.8 s with eight).
+    /// Staging an object replaces any incomplete one with the same digest, so
+    /// files with the same contents are captured in turn on one thread.
+    fn capture_in_parallel<'a>(
+        &self,
+        captures: &[(&'a str, &str, u64)],
+    ) -> Result<Vec<(&'a str, ObjectId)>> {
+        let mut groups: Vec<Vec<(&'a str, &str, u64)>> = Vec::new();
+        let mut group_of = HashMap::new();
+        for &capture in captures {
+            let index = *group_of.entry(capture.1).or_insert_with(|| {
+                groups.push(Vec::new());
+                groups.len() - 1
+            });
+            groups[index].push(capture);
+        }
+        let threads = groups.len().min(2);
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let failed = std::sync::atomic::AtomicBool::new(false);
+        let capture = || -> Result<Vec<(&'a str, ObjectId)>> {
+            let mut captured = Vec::new();
+            loop {
+                let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let Some(group) = groups.get(index) else {
+                    return Ok(captured);
+                };
+                for &(path, digest, size) in group {
+                    if failed.load(std::sync::atomic::Ordering::Relaxed) {
+                        return Ok(captured);
+                    }
+                    let result = self.install_object_before_commit(
+                        &display_to_path(path),
+                        path,
+                        digest,
+                        size,
+                    );
+                    match result {
+                        Ok(blob_id) => captured.push((path, blob_id)),
+                        Err(error) => {
+                            failed.store(true, std::sync::atomic::Ordering::Relaxed);
+                            return Err(error);
+                        }
+                    }
+                }
+            }
+        };
+        if threads <= 1 {
+            return capture();
+        }
+        std::thread::scope(|scope| {
+            let workers = (0..threads).map(|_| scope.spawn(capture)).collect::<Vec<_>>();
+            let mut captured = Vec::with_capacity(captures.len());
+            let mut first_error = None;
+            for worker in workers {
+                match worker.join().expect("capture thread panicked") {
+                    Ok(part) => captured.extend(part),
+                    Err(error) => first_error = first_error.or(Some(error)),
+                }
+            }
+            first_error.map_or(Ok(captured), Err)
+        })
     }
 }

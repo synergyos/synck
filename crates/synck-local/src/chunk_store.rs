@@ -25,7 +25,7 @@ const USER_VERSION: i64 = 1;
 pub(super) const MIN_CHUNK: u32 = 32 * 1024;
 pub(super) const AVG_CHUNK: u32 = 64 * 1024;
 pub(crate) const MAX_CHUNK: usize = 256 * 1024;
-const ZSTD_LEVEL: i32 = 6;
+const ZSTD_LEVEL: i32 = 1;
 const MAX_BATCH_PAYLOAD: usize = 8 * 1024 * 1024;
 const MAX_BATCH_ROWS: usize = 1024;
 
@@ -87,7 +87,7 @@ impl ChunkStore {
                 | OpenFlags::SQLITE_OPEN_NOFOLLOW,
         )?;
         connection.execute_batch(
-            "PRAGMA page_size = 4096;
+            "PRAGMA page_size = 65536;
              PRAGMA auto_vacuum = INCREMENTAL;
              PRAGMA journal_mode = WAL;
              PRAGMA foreign_keys = ON;
@@ -143,6 +143,15 @@ impl ChunkStore {
              PRAGMA synchronous = NORMAL;",
         )?;
         keep_wal_on_close(&connection)?;
+        // Content is large, and every write path ends with `checkpoint`. Each
+        // automatic checkpoint fully flushes the drive twice and stalls the other
+        // writer, so let the WAL grow to 1 GiB (16384 pages of 64 KiB) first.
+        connection.execute_batch(
+            "PRAGMA wal_autocheckpoint = 16384;
+             PRAGMA journal_size_limit = 67108864;",
+        )?;
+        // A commit captures files on several threads, each with its own writer.
+        connection.busy_timeout(Duration::from_secs(5))?;
         let foreign_keys: i64 =
             connection.pragma_query_value(None, "foreign_keys", |row| row.get(0))?;
         let synchronous: i64 =
@@ -168,7 +177,8 @@ impl ChunkStore {
             connection.pragma_query_value(None, "journal_mode", |row| row.get(0))?;
         if application_id != APPLICATION_ID
             || user_version != USER_VERSION
-            || page_size != 4096
+            // Stores created before 0.2.1 use 4 KiB pages.
+            || !matches!(page_size, 4096 | 65536)
             || auto_vacuum != 2
             || !journal_mode.eq_ignore_ascii_case("wal")
         {
@@ -995,16 +1005,27 @@ fn flush_batch(
     let result = (|| -> Result<()> {
         for chunk in batch {
             if chunk.insert_chunk {
-                connection.execute(
+                let raw_size = i64::try_from(chunk.raw_size).expect("chunk size is bounded");
+                let inserted = connection.execute(
                     "INSERT INTO chunks(digest, raw_size, codec, payload)
-                     VALUES (?1, ?2, ?3, ?4)",
-                    params![
-                        chunk.digest.as_slice(),
-                        i64::try_from(chunk.raw_size).expect("chunk size is bounded"),
-                        chunk.codec,
-                        &chunk.payload,
-                    ],
+                     VALUES (?1, ?2, ?3, ?4) ON CONFLICT(digest) DO NOTHING",
+                    params![chunk.digest.as_slice(), raw_size, chunk.codec, &chunk.payload],
                 )?;
+                // Another capture in this commit stored it first.
+                if inserted == 0 {
+                    let (codec, payload): (String, Vec<u8>) = connection.query_row(
+                        "SELECT codec, payload FROM chunks WHERE digest = ?1 AND raw_size = ?2",
+                        params![chunk.digest.as_slice(), raw_size],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )?;
+                    if decode_chunk(&codec, raw_size, &payload)?
+                        != decode_chunk(chunk.codec, raw_size, &chunk.payload)?
+                    {
+                        return Err(LocalError::Integrity(
+                            "chunk digest collision between captures".to_string(),
+                        ));
+                    }
+                }
             }
             connection.execute(
                 "INSERT INTO blob_chunks(blob_digest, ordinal, chunk_digest)

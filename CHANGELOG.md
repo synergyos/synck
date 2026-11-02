@@ -19,6 +19,10 @@ reads only its own repository format; see [Format and compatibility](docs/format
   commands instead of checkpointing on every close; object staging and the
   disposable local database no longer flush each transaction, and one checkpoint
   before the history transaction makes a commit's objects durable.
+- Importing 906 MB of files takes 3.0 s instead of 24.9 s. A commit captures files
+  on two threads, compresses chunks at zstd level 1 instead of 6, and lets the
+  object store's WAL reach 1 GiB before an automatic checkpoint. New object stores
+  use 64 KiB pages, which 0.2.0 refuses to open; 4 KiB stores still open.
 - Office files are chunked per ZIP member, with a large member's local header apart
   from its payload, so an edit stores only the members it changed.
 

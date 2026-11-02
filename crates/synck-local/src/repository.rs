@@ -190,6 +190,10 @@ pub struct Repository {
     storage: SqliteStorage,
     repo: Repo,
     pub(crate) storage_mode: StorageMode,
+    /// An idle object-store connection. While any connection is open, opening
+    /// another reuses the WAL index; the first one rereads and checksums the
+    /// whole WAL, and every object-store transaction opens its own connection.
+    _object_store_open: Option<std::sync::Mutex<Connection>>,
 }
 
 impl Repository {
@@ -277,12 +281,16 @@ impl Repository {
         crate::checkout::validate_config(&config)?;
         let storage_mode = config.storage_mode.unwrap_or_default();
         let object_store = ChunkStore::new(metadata_path.join(OBJECT_STORE_FILE), &config.repo_id);
-        match storage_mode {
-            StorageMode::WholeFile => validate_optional_object_store_path(object_store.path())?,
+        let object_store_open = match storage_mode {
+            StorageMode::WholeFile => {
+                validate_optional_object_store_path(object_store.path())?;
+                None
+            }
             StorageMode::Chunked => {
                 object_store.recover_incomplete()?;
+                Some(std::sync::Mutex::new(object_store.open_readonly()?))
             }
-        }
+        };
 
         let root = Dir::open_ambient_dir(&root_path, ambient_authority())
             .at("open repository root", &root_path)?;
@@ -299,6 +307,7 @@ impl Repository {
             storage,
             repo,
             storage_mode,
+            _object_store_open: object_store_open,
         };
         let _ = repository.validate_pending_operations()?;
         repository.recover_name_repairs()?;
@@ -381,6 +390,7 @@ impl Repository {
             storage,
             repo,
             storage_mode,
+            _object_store_open: None,
         })
     }
 
