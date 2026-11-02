@@ -57,6 +57,10 @@ reads only its own repository format; see [Format and compatibility](docs/format
 
 ### Storage
 
+- The local database (`repository.local.sqlite3`) is about 45% smaller: rows no
+  longer repeat the repository ID, keyed tables are `WITHOUT ROWID`, and the
+  unused object digest table is gone. Local schema 15; a version 14 database is
+  migrated in place when the repository opens, keeping every row.
 - A commit flushes the drive about 6 times instead of 39, and importing 200 files
   about 55 times instead of 1063. Repository databases keep their WAL between
   commands instead of checkpointing on every close; object staging and the

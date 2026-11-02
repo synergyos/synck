@@ -27,7 +27,7 @@ use crate::chunk_store::{ChunkStore, OBJECT_STORE_FILE, StorageMode};
 use crate::error::{IoContext, LocalError, Result};
 
 use crate::portable::FORMAT_VERSION;
-const LOCAL_SCHEMA_VERSION: i64 = 14;
+const LOCAL_SCHEMA_VERSION: i64 = 15;
 pub(crate) const MONITOR_LOCK_FILE: &str = "monitor.lock";
 const PAGE_SIZE: usize = 1_024;
 const SQLITE_ITEM_ID_CHUNK_SIZE: usize = 900;
@@ -73,6 +73,41 @@ __pycache__/
 ";
 
 const LOCAL_SCHEMA: &str = include_str!("local-schema.sql");
+
+/// Version 15 dropped the repository ID from every row, made the keyed tables
+/// WITHOUT ROWID and removed the unused object digest table. A local database
+/// holds one repository, so every row carries over.
+const LOCAL_SCHEMA_14_OUT: &str = "
+    ALTER TABLE local_projection_state RENAME TO v14_projection_state;
+    ALTER TABLE local_file_heads RENAME TO v14_file_heads;
+    ALTER TABLE local_worktree_identities RENAME TO v14_worktree_identities;
+    ALTER TABLE local_worktree_entries RENAME TO v14_worktree_entries;
+    ALTER TABLE local_worktree_scan_state RENAME TO v14_worktree_scan_state;
+    DROP TABLE local_object_digests;
+    DROP TABLE local_schema_meta;
+";
+const LOCAL_SCHEMA_14_IN: &str = "
+    INSERT INTO local_projection_state
+        SELECT 1, applied_repo_seq FROM v14_projection_state;
+    INSERT INTO local_file_heads
+        SELECT item_id, item_seq, blob_id, size_bytes FROM v14_file_heads;
+    INSERT INTO local_worktree_identities
+        SELECT item_id, node_kind, device_id, file_id, birth_seconds, birth_nanos, path
+        FROM v14_worktree_identities;
+    INSERT INTO local_worktree_entries
+        SELECT path, node_kind, device_id, file_id, birth_seconds, birth_nanos,
+               size_bytes, mtime_seconds, mtime_nanos, change_seconds, change_nanos,
+               plain_sha256, stat_valid
+        FROM v14_worktree_entries;
+    INSERT INTO local_worktree_scan_state
+        SELECT 1, ignore_sha256, monitor_instance_id, monitor_sequence
+        FROM v14_worktree_scan_state;
+    DROP TABLE v14_projection_state;
+    DROP TABLE v14_file_heads;
+    DROP TABLE v14_worktree_identities;
+    DROP TABLE v14_worktree_entries;
+    DROP TABLE v14_worktree_scan_state;
+";
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -312,7 +347,6 @@ impl Repository {
             LocalError::Integrity(format!("cannot read Core VCS schema: {error}"))
         })?;
         initialize_checkout_schema(&local)?;
-        validate_local_schema_version(&local)?;
         let mut keep_open = vec![
             std::sync::Mutex::new(history),
             std::sync::Mutex::new(local.open_readonly()?),
@@ -419,7 +453,6 @@ impl Repository {
     ) -> Result<Self> {
         let local = crate::local_database::LocalDatabase::beside(&storage);
         initialize_checkout_schema(&local)?;
-        validate_local_schema_version(&local)?;
         let storage_mode = config.storage_mode.unwrap_or_default();
         let root_path = root_path
             .canonicalize()
@@ -606,10 +639,9 @@ impl Repository {
         if mode == previous { return Ok(()); }
         // Invalidate before publishing the preference: an interrupted update
         // can cause an extra scan, but cannot reuse a scan under a new policy.
-        self.local.open_writable()?.execute(
-            "DELETE FROM local_worktree_scan_state WHERE repo_id=?1",
-            [self.config.repo_id.as_str()],
-        )?;
+        self.local
+            .open_writable()?
+            .execute("DELETE FROM local_worktree_scan_state", [])?;
         self.config.checkout.as_mut().expect("checkout adapter").hidden_files = mode;
         if let Err(error) = self.publish_checkout_config() {
             self.config.checkout.as_mut().expect("checkout adapter").hidden_files = previous;
@@ -722,7 +754,7 @@ impl Repository {
              JOIN vcs_commits c
                ON c.repo_id = e.repo_id AND c.commit_pk = e.commit_pk
              LEFT JOIN local_file_heads f
-               ON f.repo_id = i.repo_id AND f.item_id = i.item_id
+               ON f.item_id = i.item_id
              WHERE i.repo_id = ?1 AND i.item_type IN ('FILE', 'FOLDER')
                AND i.item_id IN ({placeholders})
              ORDER BY i.item_id"
@@ -1122,17 +1154,14 @@ impl Repository {
         let transaction = connection.transaction()?;
         let applied: Option<i64> = transaction
             .query_row(
-                "SELECT applied_repo_seq FROM local_projection_state WHERE repo_id = ?1",
-                [self.config.repo_id.as_str()],
+                "SELECT applied_repo_seq FROM local_projection_state",
+                [],
                 |row| row.get(0),
             )
             .optional()?;
         let mut last_repo_seq = applied.unwrap_or(0);
         if applied.is_none() {
-            transaction.execute(
-                "DELETE FROM local_file_heads WHERE repo_id = ?1",
-                [self.config.repo_id.as_str()],
-            )?;
+            transaction.execute("DELETE FROM local_file_heads", [])?;
         }
         let mut next_repo_seq = last_repo_seq.saturating_add(1);
         loop {
@@ -1180,9 +1209,9 @@ impl Repository {
             }
         }
         transaction.execute(
-            "INSERT INTO local_projection_state(repo_id, applied_repo_seq) VALUES (?1, ?2)
-             ON CONFLICT(repo_id) DO UPDATE SET applied_repo_seq = excluded.applied_repo_seq",
-            params![self.config.repo_id.as_str(), last_repo_seq],
+            "INSERT INTO local_projection_state(singleton, applied_repo_seq) VALUES (1, ?1)
+             ON CONFLICT(singleton) DO UPDATE SET applied_repo_seq = excluded.applied_repo_seq",
+            params![last_repo_seq],
         )?;
         transaction.commit()?;
         Ok(())
@@ -1211,8 +1240,8 @@ impl Repository {
                 .and_then(|m| m.get("size"))
                 .and_then(serde_json::Value::as_i64)
                 .ok_or_else(|| LocalError::Integrity("FILE content size is missing".into()))?;
-            transaction.execute("INSERT INTO local_file_heads(repo_id,item_id,item_seq,blob_id,size_bytes) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(repo_id,item_id) DO UPDATE SET item_seq=excluded.item_seq,blob_id=excluded.blob_id,size_bytes=excluded.size_bytes",
-                params![self.config.repo_id.as_str(),event.item_id.as_str(),event.item_seq,blob_id.as_str(),size])?;
+            transaction.execute("INSERT INTO local_file_heads(item_id,item_seq,blob_id,size_bytes) VALUES(?1,?2,?3,?4) ON CONFLICT(item_id) DO UPDATE SET item_seq=excluded.item_seq,blob_id=excluded.blob_id,size_bytes=excluded.size_bytes",
+                params![event.item_id.as_str(),event.item_seq,blob_id.as_str(),size])?;
         }
         Ok(())
     }
@@ -1635,23 +1664,6 @@ fn validate_local_schema(connection: &Connection) -> Result<()> {
         return Err(LocalError::Integrity(
             "local SQLite schema contains unknown objects".to_string(),
         ));
-    }
-    Ok(())
-}
-
-fn validate_local_schema_version(local: &crate::local_database::LocalDatabase) -> Result<()> {
-    let connection = local.open_readonly().map_err(|error| {
-        LocalError::Integrity(format!("cannot read local repository schema: {error}"))
-    })?;
-    let version: i64 = connection.query_row(
-        "SELECT version FROM local_schema_meta WHERE singleton = 1",
-        [],
-        |row| row.get(0),
-    )?;
-    if version != LOCAL_SCHEMA_VERSION {
-        return Err(LocalError::Invalid(format!(
-            "unsupported local schema version {version}"
-        )));
     }
     Ok(())
 }
@@ -2430,7 +2442,6 @@ mod tests {
             .unwrap();
         repository.recover().await.unwrap();
 
-        let repo_id = repository.config().repo_id().to_string();
         let renames = item_ids
             .iter()
             .enumerate()
@@ -2469,8 +2480,8 @@ mod tests {
         let connection = repository.local.open_readonly().unwrap();
         let applied: i64 = connection
             .query_row(
-                "SELECT applied_repo_seq FROM local_projection_state WHERE repo_id = ?1",
-                [repo_id],
+                "SELECT applied_repo_seq FROM local_projection_state",
+                [],
                 |row| row.get(0),
             )
             .unwrap();
@@ -2659,14 +2670,30 @@ mod tests {
 /// Initialize the separate checkout database without modifying canonical history.
 pub(crate) fn initialize_checkout_schema(local: &crate::local_database::LocalDatabase) -> Result<()> {
     let mut connection = local.create()?;
-    let transaction = connection.transaction()?;
+    let transaction = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     let exists: bool = transaction.query_row(
         "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='local_schema_meta')",
         [],
         |r| r.get(0),
     )?;
-    if !exists {
+    let version: i64 = if exists {
+        transaction.query_row("SELECT version FROM local_schema_meta WHERE singleton = 1", [], |row| row.get(0))?
+    } else {
         transaction.execute_batch(LOCAL_SCHEMA)?;
+        LOCAL_SCHEMA_VERSION
+    };
+    match version {
+        LOCAL_SCHEMA_VERSION => {}
+        14 => {
+            transaction.execute_batch(LOCAL_SCHEMA_14_OUT)?;
+            transaction.execute_batch(LOCAL_SCHEMA)?;
+            transaction.execute_batch(LOCAL_SCHEMA_14_IN)?;
+        }
+        _ => {
+            return Err(LocalError::Invalid(format!(
+                "unsupported local schema version {version}"
+            )));
+        }
     }
     validate_local_schema(&transaction)?;
     transaction.commit()?;

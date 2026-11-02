@@ -4,22 +4,19 @@ CREATE TABLE local_schema_meta (
 ) STRICT;
 
 CREATE TABLE local_projection_state (
-    repo_id TEXT PRIMARY KEY,
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
     applied_repo_seq INTEGER NOT NULL CHECK (applied_repo_seq >= 0)
 ) STRICT;
 
 CREATE TABLE local_file_heads (
-    repo_id TEXT NOT NULL,
-    item_id TEXT NOT NULL,
+    item_id TEXT PRIMARY KEY,
     item_seq INTEGER NOT NULL CHECK (item_seq > 0),
     blob_id TEXT NOT NULL,
-    size_bytes INTEGER NOT NULL CHECK (size_bytes >= 0),
-    PRIMARY KEY (repo_id, item_id)
-) STRICT;
+    size_bytes INTEGER NOT NULL CHECK (size_bytes >= 0)
+) STRICT, WITHOUT ROWID;
 
 CREATE TABLE local_worktree_identities (
-    repo_id TEXT NOT NULL,
-    item_id TEXT NOT NULL,
+    item_id TEXT PRIMARY KEY,
     node_kind TEXT NOT NULL CHECK (node_kind IN ('FILE', 'FOLDER')),
     device_id BLOB NOT NULL CHECK (length(device_id) = 8),
     file_id BLOB NOT NULL CHECK (length(file_id) = 8),
@@ -32,13 +29,11 @@ CREATE TABLE local_worktree_identities (
             AND birth_nanos IS NOT NULL
             AND birth_nanos BETWEEN 0 AND 999999999)
     ),
-    PRIMARY KEY (repo_id, item_id),
-    UNIQUE (repo_id, path)
-) STRICT;
+    UNIQUE (path)
+) STRICT, WITHOUT ROWID;
 
 CREATE TABLE local_worktree_entries (
-    repo_id TEXT NOT NULL,
-    path TEXT NOT NULL CHECK (path <> ''),
+    path TEXT PRIMARY KEY CHECK (path <> ''),
     node_kind TEXT NOT NULL CHECK (node_kind IN ('FILE', 'FOLDER')),
     device_id BLOB NOT NULL CHECK (length(device_id) = 8),
     file_id BLOB NOT NULL CHECK (length(file_id) = 8),
@@ -78,12 +73,11 @@ CREATE TABLE local_worktree_entries (
             AND mtime_seconds IS NULL AND mtime_nanos IS NULL
             AND change_seconds IS NULL AND change_nanos IS NULL
             AND plain_sha256 IS NULL AND stat_valid IS NULL)
-    ),
-    PRIMARY KEY (repo_id, path)
-) STRICT;
+    )
+) STRICT, WITHOUT ROWID;
 
 CREATE TABLE local_worktree_scan_state (
-    repo_id TEXT PRIMARY KEY,
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
     ignore_sha256 TEXT CHECK (
         ignore_sha256 IS NULL
         OR (length(ignore_sha256) = 64
@@ -100,12 +94,4 @@ CREATE TABLE local_worktree_scan_state (
     )
 ) STRICT;
 
--- Unused: a FILE object's ID is its plain SHA-256. Kept so 0.2.0 local databases open.
-CREATE TABLE local_object_digests (
-    repo_id TEXT NOT NULL,
-    object_id TEXT NOT NULL,
-    plain_sha256 TEXT NOT NULL CHECK (length(plain_sha256) = 64),
-    PRIMARY KEY (repo_id, object_id)
-) STRICT;
-
-INSERT INTO local_schema_meta(singleton, version) VALUES (1, 14);
+INSERT INTO local_schema_meta(singleton, version) VALUES (1, 15);

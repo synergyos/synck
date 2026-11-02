@@ -142,8 +142,7 @@ impl Repository {
               AND e.item_id = i.item_id
               AND e.item_seq = i.head_seq
              LEFT JOIN local_file_heads h
-               ON h.repo_id = i.repo_id
-              AND h.item_id = i.item_id
+               ON h.item_id = i.item_id
              WHERE i.repo_id = ?1 AND i.lifecycle_state = 'LIVE'",
         )?;
         let rows = statement.query_map(params![self.config().repo_id().as_str()], |row| {

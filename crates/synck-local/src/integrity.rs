@@ -1,6 +1,6 @@
 use crate::error::{LocalError, Result};
 use crate::repository::Repository;
-use rusqlite::{OptionalExtension, params};
+use rusqlite::OptionalExtension;
 use std::collections::HashMap;
 use synck_vcs::errors::StorageError;
 use synck_vcs::types::{CommitPk, ItemId, RepoId};
@@ -322,8 +322,8 @@ pub(crate) fn verify_projection(
     )?;
     let applied: Option<i64> = connection
         .query_row(
-            "SELECT applied_repo_seq FROM local_projection_state WHERE repo_id = ?1",
-            [repo_id],
+            "SELECT applied_repo_seq FROM local_projection_state",
+            [],
             |row| row.get(0),
         )
         .optional()?;
@@ -338,8 +338,8 @@ pub(crate) fn verify_projection(
         return Ok(());
     }
     let actual_count: i64 = connection.query_row(
-        "SELECT count(*) FROM local_file_heads WHERE repo_id = ?1",
-        [repo_id],
+        "SELECT count(*) FROM local_file_heads",
+        [],
         |row| row.get(0),
     )?;
     if usize::try_from(actual_count).ok() != Some(expected.len()) {
@@ -348,9 +348,8 @@ pub(crate) fn verify_projection(
     for (item_id, (item_seq, blob_id, size)) in expected {
         let actual: Option<(i64, String, i64)> = connection
             .query_row(
-                "SELECT item_seq, blob_id, size_bytes FROM local_file_heads
-                 WHERE repo_id = ?1 AND item_id = ?2",
-                params![repo_id, item_id],
+                "SELECT item_seq, blob_id, size_bytes FROM local_file_heads WHERE item_id = ?1",
+                [item_id],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .optional()?;

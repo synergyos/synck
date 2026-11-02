@@ -2380,13 +2380,13 @@ async fn repository_open_rejects_unknown_local_schema_objects() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(version, 14);
+    assert_eq!(version, 15);
     assert_eq!(storage_tables, 1);
     assert_eq!(foreign_views, 1);
 }
 
 #[tokio::test]
-async fn repository_open_rejects_all_old_local_schema_versions_without_migration() {
+async fn repository_open_rejects_local_schema_versions_before_14() {
     for version in 1..14 {
         let temporary = tempfile::tempdir().unwrap();
         init(temporary.path(), "author").await.unwrap();
@@ -2423,24 +2423,93 @@ async fn repository_open_rejects_all_old_local_schema_versions_without_migration
 }
 
 #[tokio::test]
+async fn repository_open_migrates_local_schema_14_keeping_every_row() {
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path();
+    fs::create_dir(root.join("folder")).unwrap();
+    fs::write(root.join("folder/file.txt"), b"content").unwrap();
+    let repo_id = init(root, "author").await.unwrap();
+    Repository::discover(root).await.unwrap().commit("initial").await.unwrap();
+    let metadata = root.join(".synck");
+    let database = metadata.join("repository.local.sqlite3");
+    let tables = [
+        "local_projection_state",
+        "local_file_heads",
+        "local_worktree_identities",
+        "local_worktree_entries",
+        "local_worktree_scan_state",
+    ];
+    let count = |connection: &rusqlite::Connection, table: &str| -> i64 {
+        connection
+            .query_row(&format!("SELECT count(*) FROM {table}"), [], |row| row.get(0))
+            .unwrap()
+    };
+
+    // Rewrite the local database as version 14 holding the same rows.
+    let old = metadata.join("v14.sqlite3");
+    let connection = rusqlite::Connection::open(&old).unwrap();
+    connection
+        .execute_batch(include_str!("local-schema-14.sql"))
+        .unwrap();
+    connection
+        .execute(
+            "ATTACH DATABASE ?1 AS current",
+            [database.to_str().unwrap()],
+        )
+        .unwrap();
+    let mut counts = Vec::new();
+    for table in tables {
+        let rows = match table {
+            "local_projection_state" => connection.execute(
+                "INSERT INTO local_projection_state SELECT ?1, applied_repo_seq FROM current.local_projection_state",
+                [repo_id.as_str()],
+            ),
+            "local_worktree_scan_state" => connection.execute(
+                "INSERT INTO local_worktree_scan_state
+                 SELECT ?1, ignore_sha256, monitor_instance_id, monitor_sequence
+                 FROM current.local_worktree_scan_state",
+                [repo_id.as_str()],
+            ),
+            _ => connection.execute(
+                &format!("INSERT INTO {table} SELECT ?1, * FROM current.{table}"),
+                [repo_id.as_str()],
+            ),
+        }
+        .unwrap();
+        assert!(rows > 0, "{table}");
+        counts.push(rows as i64);
+    }
+    drop(connection);
+    for suffix in ["", "-wal", "-shm"] {
+        let _ = fs::remove_file(format!("{}{suffix}", database.display()));
+    }
+    fs::rename(&old, &database).unwrap();
+
+    let repository = Repository::discover(root).await.unwrap();
+    assert!(repository.status().await.unwrap().is_empty());
+    let connection = rusqlite::Connection::open(&database).unwrap();
+    let version: i64 = connection
+        .query_row("SELECT version FROM local_schema_meta", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, 15);
+    for (table, expected) in tables.into_iter().zip(counts) {
+        assert_eq!(count(&connection, table), expected, "{table}");
+    }
+}
+
+#[tokio::test]
 async fn worktree_cache_schema_rejects_incomplete_file_fingerprints() {
     let temporary = tempfile::tempdir().unwrap();
     init(temporary.path(), "author").await.unwrap();
     let connection =
         rusqlite::Connection::open(temporary.path().join(".synck/repository.local.sqlite3")).unwrap();
-    let repo_id: String = connection
-        .query_row("SELECT repo_id FROM local_projection_state", [], |row| {
-            row.get(0)
-        })
-        .unwrap();
     let result = connection.execute(
         "INSERT INTO local_worktree_entries(
-             repo_id, path, node_kind, device_id, file_id, size_bytes,
+             path, node_kind, device_id, file_id, size_bytes,
              mtime_seconds, mtime_nanos, change_seconds, change_nanos,
              plain_sha256, stat_valid
-         ) VALUES (?1, 'file', 'FILE', ?2, ?3, 1, 0, 0, 0, NULL, ?4, 1)",
+         ) VALUES ('file', 'FILE', ?1, ?2, 1, 0, 0, 0, NULL, ?3, 1)",
         rusqlite::params![
-            repo_id,
             1_u64.to_be_bytes().as_slice(),
             2_u64.to_be_bytes().as_slice(),
             "0".repeat(64),
@@ -2450,10 +2519,9 @@ async fn worktree_cache_schema_rejects_incomplete_file_fingerprints() {
 
     let result = connection.execute(
         "INSERT INTO local_worktree_entries(
-             repo_id, path, node_kind, device_id, file_id, birth_seconds
-         ) VALUES (?1, 'folder', 'FOLDER', ?2, ?3, 1)",
+             path, node_kind, device_id, file_id, birth_seconds
+         ) VALUES ('folder', 'FOLDER', ?1, ?2, 1)",
         rusqlite::params![
-            repo_id,
             1_u64.to_be_bytes().as_slice(),
             2_u64.to_be_bytes().as_slice(),
         ],
@@ -2462,9 +2530,9 @@ async fn worktree_cache_schema_rejects_incomplete_file_fingerprints() {
 
     let result = connection.execute(
         "INSERT INTO local_worktree_scan_state(
-             repo_id, ignore_sha256, monitor_instance_id, monitor_sequence
-         ) VALUES (?1, NULL, ?2, NULL)",
-        rusqlite::params![repo_id, uuid::Uuid::new_v4().to_string()],
+             singleton, ignore_sha256, monitor_instance_id, monitor_sequence
+         ) VALUES (1, NULL, ?1, NULL)",
+        [uuid::Uuid::new_v4().to_string()],
     );
     assert!(result.is_err());
 }

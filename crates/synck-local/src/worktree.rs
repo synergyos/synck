@@ -277,7 +277,7 @@ impl Repository {
             }
         }
 
-        let heads = load_file_heads(self.local_db(), self.config().repo_id().as_str())?;
+        let heads = load_file_heads(self.local_db())?;
         let by_id: HashMap<ItemId, &ItemRow> = items
             .iter()
             .map(|item| (item.item_id.clone(), item))
@@ -369,7 +369,7 @@ impl Repository {
             .unwrap()
             .push(self.config().repo_id().to_string());
         let committed = self.committed_tree().await?;
-        let cache = load_worktree_cache(self.local_db(), self.config().repo_id().as_str())?;
+        let cache = load_worktree_cache(self.local_db())?;
         let scan = self.scan_observed(&committed, &cache)?;
         let (changes, working_ids) = self.reconcile_observation(&committed, &scan)?;
         Ok((committed, scan.working, changes, working_ids))
@@ -390,7 +390,7 @@ impl Repository {
             .unwrap()
             .push(self.config().repo_id().to_string());
         let committed = self.committed_tree().await?;
-        let cache = load_worktree_cache(self.local_db(), self.config().repo_id().as_str())?;
+        let cache = load_worktree_cache(self.local_db())?;
         let (mut complete, mut scan) = self.scan_inspection(&committed, &cache)?;
         self.filter_checkout_observation(&mut complete);
         self.filter_checkout_observation(&mut scan.working);
@@ -404,7 +404,7 @@ impl Repository {
         scan: &ScanResult,
     ) -> Result<(Vec<Change>, HashMap<String, ItemId>)> {
         let working = &scan.working;
-        let records = load_identity_records(self.local_db(), self.config().repo_id().as_str())?;
+        let records = load_identity_records(self.local_db())?;
         let matched = reconcile_identities(committed, working, &records);
         let working_ids = matched
             .iter()
@@ -414,7 +414,6 @@ impl Repository {
         let identities = next_identity_records(committed, working, &records, &matched);
         publish_worktree_observation(
             self.local_db(),
-            self.config().repo_id().as_str(),
             scan,
             &identities,
             &records,
@@ -429,15 +428,14 @@ impl Repository {
             .unwrap()
             .push(self.config().repo_id().to_string());
         let committed = self.committed_tree().await?;
-        let cache = load_worktree_cache(self.local_db(), self.config().repo_id().as_str())?;
+        let cache = load_worktree_cache(self.local_db())?;
         let scan = self.scan_observed(&committed, &cache)?;
         let working = &scan.working;
-        let records = load_identity_records(self.local_db(), self.config().repo_id().as_str())?;
+        let records = load_identity_records(self.local_db())?;
         let matched = reconcile_identities(&committed, working, &records);
         let identities = next_identity_records(&committed, working, &records, &matched);
         publish_worktree_observation(
             self.local_db(),
-            self.config().repo_id().as_str(),
             &scan,
             &identities,
             &records,
@@ -453,8 +451,7 @@ impl Repository {
         &self,
         target: &BTreeMap<String, CommittedNode>,
     ) -> Result<bool> {
-        let repo_id = self.config().repo_id().as_str();
-        let cache = load_worktree_cache(self.local_db(), repo_id)?;
+        let cache = load_worktree_cache(self.local_db())?;
         let scan = self.scan_observed(target, &cache)?;
         let matches = scan.working.len() == target.len()
             && target.iter().all(|(path, node)| {
@@ -467,7 +464,7 @@ impl Repository {
         if !matches {
             return Ok(false);
         }
-        let previous = load_identity_records(self.local_db(), repo_id)?;
+        let previous = load_identity_records(self.local_db())?;
         let identities = target
             .iter()
             .map(|(path, node)| IdentityRecord {
@@ -477,7 +474,7 @@ impl Repository {
                 path: path.clone(),
             })
             .collect::<Vec<_>>();
-        publish_worktree_observation(self.local_db(), repo_id, &scan, &identities, &previous)?;
+        publish_worktree_observation(self.local_db(), &scan, &identities, &previous)?;
         Ok(true)
     }
 
@@ -549,18 +546,18 @@ impl Repository {
         let transaction = connection.transaction()?;
         for item_id in deleted {
             transaction.execute(
-                "DELETE FROM local_worktree_identities WHERE repo_id = ?1 AND item_id = ?2",
-                rusqlite::params![self.config().repo_id().as_str(), item_id.as_str()],
+                "DELETE FROM local_worktree_identities WHERE item_id = ?1",
+                [item_id.as_str()],
             )?;
         }
         for record in updated.values() {
             let incarnation = record.identity.incarnation;
             transaction.execute(
                 "INSERT INTO local_worktree_identities(
-                     repo_id, item_id, node_kind, device_id, file_id,
+                     item_id, node_kind, device_id, file_id,
                      birth_seconds, birth_nanos, path
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-                 ON CONFLICT(repo_id, item_id) DO UPDATE SET
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 ON CONFLICT(item_id) DO UPDATE SET
                      node_kind = excluded.node_kind,
                      device_id = excluded.device_id,
                      file_id = excluded.file_id,
@@ -568,7 +565,6 @@ impl Repository {
                      birth_nanos = excluded.birth_nanos,
                      path = excluded.path",
                 rusqlite::params![
-                    self.config().repo_id().as_str(),
                     record.item_id.as_str(),
                     match record.kind {
                         NodeKind::File => "FILE",
@@ -625,7 +621,7 @@ impl Repository {
                 .is_some_and(|c| c.pending.is_none())
             {
                 let records =
-                    load_identity_records(self.local_db(), self.config().repo_id().as_str())?;
+                    load_identity_records(self.local_db())?;
                 let matched = reconcile_identities(committed, &scan.working, &records);
                 if let Some((item_id, moved_to)) = matched
                     .iter()
@@ -1316,16 +1312,15 @@ fn reconcile_windows_tunneled_relocations(
 
 pub(crate) fn load_identity_records(
     local: &crate::local_database::LocalDatabase,
-    repo_id: &str,
 ) -> Result<Vec<IdentityRecord>> {
     let connection = local.open_readonly().map_err(|error| {
         LocalError::Integrity(format!("cannot read worktree identities: {error}"))
     })?;
     let mut statement = connection.prepare(
         "SELECT item_id, node_kind, device_id, file_id, birth_seconds, birth_nanos, path
-         FROM local_worktree_identities WHERE repo_id = ?1 ORDER BY item_id",
+         FROM local_worktree_identities ORDER BY item_id",
     )?;
-    let rows = statement.query_map([repo_id], |row| {
+    let rows = statement.query_map([], |row| {
         Ok((
             row.get::<_, String>(0)?,
             row.get::<_, String>(1)?,
@@ -1394,16 +1389,16 @@ fn validate_plain_digest(digest: &str) -> Result<()> {
     Ok(())
 }
 
-fn load_worktree_cache(local: &crate::local_database::LocalDatabase, repo_id: &str) -> Result<WorktreeCache> {
+fn load_worktree_cache(local: &crate::local_database::LocalDatabase) -> Result<WorktreeCache> {
     let connection = local.open_readonly()
         .map_err(|error| LocalError::Integrity(format!("cannot read worktree cache: {error}")))?;
     let mut statement = connection.prepare(
         "SELECT path, node_kind, device_id, file_id, birth_seconds, birth_nanos, size_bytes,
                 mtime_seconds, mtime_nanos, change_seconds, change_nanos,
                 plain_sha256, stat_valid
-         FROM local_worktree_entries WHERE repo_id = ?1 ORDER BY path",
+         FROM local_worktree_entries ORDER BY path",
     )?;
-    let rows = statement.query_map([repo_id], |row| {
+    let rows = statement.query_map([], |row| {
         Ok((
             row.get::<_, String>(0)?,
             row.get::<_, String>(1)?,
@@ -1513,8 +1508,8 @@ fn load_worktree_cache(local: &crate::local_database::LocalDatabase, repo_id: &s
     let state: Option<(Option<String>, Option<String>, Option<i64>)> = connection
         .query_row(
             "SELECT ignore_sha256, monitor_instance_id, monitor_sequence
-             FROM local_worktree_scan_state WHERE repo_id = ?1",
-            [repo_id],
+             FROM local_worktree_scan_state",
+            [],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .optional()?;
@@ -1601,7 +1596,6 @@ pub(crate) fn next_identity_records(
 
 fn publish_worktree_observation(
     local: &crate::local_database::LocalDatabase,
-    repo_id: &str,
     scan: &ScanResult,
     identities: &[IdentityRecord],
     previous_identities: &[IdentityRecord],
@@ -1615,15 +1609,12 @@ fn publish_worktree_observation(
         for scope in scopes {
             transaction.execute(
                 "DELETE FROM local_worktree_entries
-                 WHERE repo_id = ?1 AND (path = ?2 OR substr(path, 1, length(?2) + 1) = ?2 || '/')",
-                rusqlite::params![repo_id, scope],
+                 WHERE path = ?1 OR substr(path, 1, length(?1) + 1) = ?1 || '/'",
+                [scope],
             )?;
         }
     } else {
-        transaction.execute(
-            "DELETE FROM local_worktree_entries WHERE repo_id = ?1",
-            [repo_id],
-        )?;
+        transaction.execute("DELETE FROM local_worktree_entries", [])?;
     }
     for (path, node) in working.iter().filter(|(path, _)| {
         incremental_scopes
@@ -1650,13 +1641,12 @@ fn publish_worktree_observation(
         };
         transaction.execute(
             "INSERT INTO local_worktree_entries(
-                 repo_id, path, node_kind, device_id, file_id, birth_seconds, birth_nanos,
+                 path, node_kind, device_id, file_id, birth_seconds, birth_nanos,
                  size_bytes,
                  mtime_seconds, mtime_nanos, change_seconds, change_nanos,
                  plain_sha256, stat_valid
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             rusqlite::params![
-                repo_id,
                 path,
                 match node.kind {
                     NodeKind::File => "FILE",
@@ -1678,14 +1668,13 @@ fn publish_worktree_observation(
     }
     transaction.execute(
         "INSERT INTO local_worktree_scan_state(
-             repo_id, ignore_sha256, monitor_instance_id, monitor_sequence
-         ) VALUES (?1, ?2, ?3, ?4)
-         ON CONFLICT(repo_id) DO UPDATE SET
+             singleton, ignore_sha256, monitor_instance_id, monitor_sequence
+         ) VALUES (1, ?1, ?2, ?3)
+         ON CONFLICT(singleton) DO UPDATE SET
              ignore_sha256 = excluded.ignore_sha256,
              monitor_instance_id = excluded.monitor_instance_id,
              monitor_sequence = excluded.monitor_sequence",
         rusqlite::params![
-            repo_id,
             scan.ignore_sha256.as_deref(),
             scan.monitor_token
                 .as_ref()
@@ -1704,8 +1693,8 @@ fn publish_worktree_observation(
     for previous in previous_identities {
         if next_by_item.get(&previous.item_id).copied() != Some(previous) {
             transaction.execute(
-                "DELETE FROM local_worktree_identities WHERE repo_id = ?1 AND item_id = ?2",
-                rusqlite::params![repo_id, previous.item_id.as_str()],
+                "DELETE FROM local_worktree_identities WHERE item_id = ?1",
+                [previous.item_id.as_str()],
             )?;
         }
     }
@@ -1716,11 +1705,10 @@ fn publish_worktree_observation(
         let incarnation = record.identity.incarnation;
         transaction.execute(
             "INSERT INTO local_worktree_identities(
-                 repo_id, item_id, node_kind, device_id, file_id,
+                 item_id, node_kind, device_id, file_id,
                  birth_seconds, birth_nanos, path
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             rusqlite::params![
-                repo_id,
                 record.item_id.as_str(),
                 match record.kind {
                     NodeKind::File => "FILE",
@@ -1788,15 +1776,14 @@ fn build_item_path(
 
 fn load_file_heads(
     local: &crate::local_database::LocalDatabase,
-    repo_id: &str,
 ) -> Result<HashMap<ItemId, (i64, ObjectId, i64)>> {
     let connection = local.open_readonly()
         .map_err(|error| LocalError::Integrity(format!("cannot read file heads: {error}")))?;
     let mut statement = connection.prepare(
         "SELECT item_id, item_seq, blob_id, size_bytes
-         FROM local_file_heads WHERE repo_id = ?1",
+         FROM local_file_heads",
     )?;
-    let rows = statement.query_map([repo_id], |row| {
+    let rows = statement.query_map([], |row| {
         Ok((
             row.get::<_, String>(0)?,
             row.get::<_, i64>(1)?,
