@@ -33,9 +33,10 @@ engine and persisted-format contracts.
 
 ## Verification
 
-The [CI workflow](.github/workflows/public-ci.yml) lists the public package checks
-and platform matrix. Locally, run only the package and test targets affected by
-your change, for example:
+The [CI workflow](.github/workflows/public-ci.yml) is the release gate: the
+workspace tests on Linux, macOS and Windows, and the vector check. It runs only
+when started by hand, and every release tag passes it. Locally, run only the
+package and test targets affected by your change, for example:
 
 ```sh
 cargo test --locked -p synck-file-folder --test profile_v1
