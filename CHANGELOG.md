@@ -3,7 +3,11 @@
 Format numbers are listed with each release that changes one. Before 1.0 a release
 reads only its own repository format; see [Format and compatibility](docs/formats.md).
 
-## Unreleased
+## 0.3.0
+
+Repository format 7, commit format 6, object frame V1, history bundle format 5,
+Core SQLite schema 7, as in 0.2.0: 0.2.0 repositories open unchanged. 0.2.0
+refuses the object stores 0.3.0 creates (32 KiB pages).
 
 ### CLI
 
