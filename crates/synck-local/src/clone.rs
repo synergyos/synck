@@ -16,6 +16,7 @@ pub async fn clone_repository(
     destination: &Path,
     author: Option<&str>,
     include: &[String],
+    hold: bool,
 ) -> Result<Repository> {
     let origin = origin
         .canonicalize()
@@ -44,7 +45,7 @@ pub async fn clone_repository(
     let author = author.map(str::to_string).or(origin_author).ok_or_else(|| {
         LocalError::Invalid("the origin has no author; give one with --author".into())
     })?;
-    let (repo_id, storage_mode, head) = (
+    let (repo_id, storage_mode, mut head) = (
         portable.repo_id().clone(),
         portable.storage_mode(),
         portable.head_repo_seq()?,
@@ -62,6 +63,31 @@ pub async fn clone_repository(
         let path = metadata.join(name);
         std::fs::write(&path, b"").at("create", &path)?;
     }
+    if hold {
+        // A held clone's commits stay in its own copy of the history until
+        // pushed. The copy is one consistent read of the origin's.
+        let history = metadata.join("repository.sqlite3");
+        let path = history.to_str().ok_or_else(|| {
+            LocalError::Invalid("clone destination path is not valid UTF-8".into())
+        })?;
+        let origin_history = synck_vcs_sqlite::SqliteStorage::new(store.join("repository.sqlite3"));
+        origin_history
+            .open_readonly()
+            .map_err(|error| LocalError::Integrity(format!("cannot read repository history: {error}")))?
+            .execute("VACUUM INTO ?1", [path])?;
+        rusqlite::Connection::open(&history)?.query_row("PRAGMA journal_mode=WAL", [], |_| Ok(()))?;
+        head = crate::repository::head_repo_seq(
+            &synck_vcs_sqlite::SqliteStorage::new(history),
+            &repo_id,
+        )?;
+        crate::commands::write_held(
+            &metadata,
+            &crate::commands::Held {
+                origin_seq: head,
+                pushed_seq: head,
+            },
+        )?;
+    }
     let checkout = crate::checkout::Checkout {
         paths: include,
         hidden_files: Default::default(),
@@ -75,7 +101,7 @@ pub async fn clone_repository(
     crate::checkout::write_checkout(&metadata, &checkout)?;
     // The config names the origin, so it goes last: before it, the directory
     // opens as nothing.
-    let config = Config::clone_of(origin, repo_id, author, authority, checkout, storage_mode);
+    let config = Config::clone_of(origin, repo_id, author, authority, checkout, storage_mode, hold);
     let path = metadata.join("tmp").join("config.json");
     std::fs::write(&path, serde_json::to_vec_pretty(&config)?).at("write", &path)?;
     crate::repository::sync_file(&path)?;

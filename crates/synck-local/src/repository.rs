@@ -127,6 +127,10 @@ pub(crate) struct Config {
     /// reads in place. Its own `.synck` keeps only this working tree's state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) origin: Option<PathBuf>,
+    /// A held clone keeps its own copy of the origin's history and commits
+    /// to it until `push`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) hold: bool,
     /// Stored apart, in `checkout.json`.
     #[serde(skip)]
     pub(crate) checkout: Option<crate::checkout::Checkout>,
@@ -148,6 +152,7 @@ impl Config {
             authority: Some(authority),
             encrypted: false,
             origin: None,
+            hold: false,
             checkout: Some(checkout),
         }
     }
@@ -159,9 +164,11 @@ impl Config {
         authority: crate::portable::Authority,
         checkout: crate::checkout::Checkout,
         storage_mode: StorageMode,
+        hold: bool,
     ) -> Self {
         Self {
             origin: Some(origin),
+            hold,
             ..Self::complete(repo_id, author, authority, checkout, storage_mode)
         }
     }
@@ -203,8 +210,8 @@ pub struct Repository {
     pub(crate) agent_lock_tokens: Vec<String>,
     root_path: PathBuf,
     metadata_path: PathBuf,
-    /// Where history and content objects live: `metadata_path`, or the
-    /// origin's `.synck` in a clone.
+    /// Where content objects live, and history unless the clone is held:
+    /// `metadata_path`, or the origin's `.synck` in a clone.
     store_path: PathBuf,
     root: Dir,
     config: Config,
@@ -290,7 +297,13 @@ impl Repository {
             }
         };
 
-        let storage = SqliteStorage::new(store_path.join("repository.sqlite3"));
+        let history_path = if config.hold {
+            validate_entries(&metadata_path, &[crate::commands::HELD_FILE], &[])?;
+            &metadata_path
+        } else {
+            &store_path
+        };
+        let storage = SqliteStorage::new(history_path.join("repository.sqlite3"));
         let local = crate::local_database::LocalDatabase::new(
             storage.clone(),
             metadata_path.join("repository.local.sqlite3"),
@@ -391,7 +404,7 @@ impl Repository {
     pub(crate) fn portable_view(&self) -> Result<crate::portable::PortableRepository> {
         crate::portable::PortableRepository::from_locked_checkout(
             self.store_path.parent().expect("store path is inside a root"),
-            self.storage.clone(),
+            if self.config.hold { self.origin_storage() } else { self.storage.clone() },
             Arc::clone(self.origin_lock.as_ref().unwrap_or(&self._lock)),
             &self.config,
             &self.agent_lock_tokens,
@@ -481,14 +494,22 @@ impl Repository {
     }
 
     pub(crate) fn head_repo_seq(&self) -> Result<i64> {
-        let connection = self.storage.open_readonly().map_err(|error| {
-            LocalError::Integrity(format!("cannot read repository history: {error}"))
-        })?;
-        Ok(connection.query_row(
-            "SELECT COALESCE(max(repo_seq), 0) FROM vcs_commits WHERE repo_id = ?1",
-            [self.config.repo_id.as_str()],
-            |row| row.get(0),
-        )?)
+        head_repo_seq(&self.storage, &self.config.repo_id)
+    }
+
+    /// The history every working tree of the repository shares: the origin's.
+    /// Only a held clone reads another.
+    pub(crate) fn origin_storage(&self) -> SqliteStorage {
+        SqliteStorage::new(self.store_path.join("repository.sqlite3"))
+    }
+
+    pub(crate) fn held(&self) -> bool {
+        self.config.hold
+    }
+
+    /// Commits are being added that the working files do not have yet.
+    pub(crate) fn leave_head(&self) {
+        self.at_head.store(false, std::sync::atomic::Ordering::SeqCst);
     }
 
     fn files_changed_after(&self, repo_seq: i64) -> Result<bool> {
@@ -1419,6 +1440,17 @@ pub(crate) fn acquire_lock(metadata: &Path, wait: bool) -> Result<Arc<Repository
             source,
         }),
     }
+}
+
+pub(crate) fn head_repo_seq(storage: &SqliteStorage, repo_id: &RepoId) -> Result<i64> {
+    let connection = storage.open_readonly().map_err(|error| {
+        LocalError::Integrity(format!("cannot read repository history: {error}"))
+    })?;
+    Ok(connection.query_row(
+        "SELECT COALESCE(max(repo_seq), 0) FROM vcs_commits WHERE repo_id = ?1",
+        [repo_id.as_str()],
+        |row| row.get(0),
+    )?)
 }
 
 /// A clone's origin must still be the repository it was cloned from.

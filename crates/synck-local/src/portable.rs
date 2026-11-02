@@ -493,11 +493,9 @@ impl PortableRepository {
         // `checkout` lives in its own file, so serde does not carry it. A
         // clone's view is its origin's store, with no working tree.
         let mut value = serde_json::to_value(config)?;
-        let clone = value
-            .as_object_mut()
-            .expect("config is an object")
-            .remove("origin")
-            .is_some();
+        let fields = value.as_object_mut().expect("config is an object");
+        fields.remove("hold");
+        let clone = fields.remove("origin").is_some();
         let mut view: Config = serde_json::from_value(value)?;
         view.checkout = if clone { None } else { config.checkout.clone() };
         Ok(Self {
@@ -582,9 +580,46 @@ impl PortableRepository {
         Ok(stored)
     }
 
+    /// Objects held clones keep for commits not yet pushed, and the pins of
+    /// clones that are gone or no longer held.
+    fn held_pins(&self) -> Result<(BTreeSet<String>, Vec<PathBuf>)> {
+        let directory = self.root.join(".synck").join(crate::commands::PINS_DIRECTORY);
+        let root = self.root.canonicalize().at("resolve repository root", &self.root)?;
+        let mut objects = BTreeSet::new();
+        let mut stale = Vec::new();
+        let entries = match fs::read_dir(&directory) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok((objects, stale)),
+            Err(source) => return Err(LocalError::Io { action: "read held-object pins", path: directory, source }),
+        };
+        for entry in entries {
+            let path = entry.at("read held-object pins", &directory)?.path();
+            let pin: crate::commands::Pin = serde_json::from_slice(&fs::read(&path).at("read", &path)?)?;
+            let config: Option<serde_json::Value> = fs::read(pin.clone.join(".synck").join("config.json"))
+                .ok()
+                .and_then(|bytes| serde_json::from_slice(&bytes).ok());
+            let held = config.is_some_and(|config| {
+                config.get("hold") == Some(&serde_json::Value::Bool(true))
+                    && config.get("repo_id").and_then(serde_json::Value::as_str) == Some(self.repo_id().as_str())
+                    && config
+                        .get("origin")
+                        .and_then(serde_json::Value::as_str)
+                        .and_then(|origin| Path::new(origin).canonicalize().ok())
+                        == Some(root.clone())
+            });
+            if held && path.file_name() == crate::commands::pin_path(&root, &pin.clone).file_name() {
+                objects.extend(pin.objects);
+            } else {
+                stale.push(path);
+            }
+        }
+        Ok((objects, stale))
+    }
+
     pub async fn storage_report(&self) -> Result<crate::StorageReport> {
         self.verify().await?;
-        let (referenced, _) = self.references().await?;
+        let (mut referenced, _) = self.references().await?;
+        referenced.extend(self.held_pins()?.0);
         let stored = self.stored_objects()?;
         let mut report = crate::StorageReport {
             referenced_objects: 0,
@@ -616,7 +651,12 @@ impl PortableRepository {
         self.clear_staging()?;
         // The repository lock is held from here through removal, and every writer
         // holds it from reusing an object through its commit.
-        let (referenced, _) = self.references().await?;
+        let (mut referenced, _) = self.references().await?;
+        let (pinned, stale) = self.held_pins()?;
+        referenced.extend(pinned);
+        for path in stale {
+            fs::remove_file(&path).at("remove stale held-object pin", &path)?;
+        }
         if self.storage_mode() == StorageMode::Chunked {
             self.object_store().recover_incomplete()?;
             // Verify and remove optimization leftovers before collecting their chunks.

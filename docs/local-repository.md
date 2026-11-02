@@ -157,6 +157,31 @@ verifies the origin's history, its stored content and the clone's files, and
 `storage optimize` runs only in the origin. Moving or deleting the origin breaks
 its clones.
 
+### Held clones: private until pushed
+
+`synck clone --hold` makes a clone whose commits stay in it until `synck push`:
+a draft of the real files, for instance one folder with `--include`, that
+nobody else sees until it is ready. The clone keeps its own copy of the
+origin's history (about 1.5 MB for a 900 MB repository) and stores content in
+the origin, so `status`, `log`, `diff`, `restore` and `revert` work as in any
+clone. `status` lists the held commits.
+
+```sh
+synck clone /work/matter /work/matter-draft --hold --include Drafts
+cd /work/matter-draft
+synck commit -m "First pass"       # held here
+synck commit -m "Second pass"      # held here
+synck push                         # both land in the origin, in order
+```
+
+`pull` takes in the origin's newer commits. `push` pulls, then appends the
+held commits to the origin in order. A commit's ID does not depend on where it
+lands, so each keeps the ID it was given when committed. Nothing changes on
+either side when an item was changed both in a held commit and in the origin:
+the push or pull fails with `CONFLICT` and the paths. Held commits are not
+backed up and nobody else sees them until pushed. `gc` in the origin keeps
+their content; delete a held clone only after pushing it.
+
 ## Content and imported email
 
 FILE content is stored as its exact bytes, and its object ID is their SHA-256, so

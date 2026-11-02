@@ -40,6 +40,10 @@ A clone reads the origin's history in place; its commits land in the origin at
 once. pull brings in commits made from other working trees and keeps local
 changes; commit pulls first. CONFLICT lists paths changed here and in history;
 nothing is written. Repository and item commands take the origin's path.
+    synck clone <repository> <directory> --hold
+    synck push
+A held clone keeps its commits, each with its final commit ID, until push sends
+them in order; status lists them. push pulls first and stops at CONFLICT.
 
 LOCAL AGENT RESERVATIONS
 
@@ -134,5 +138,5 @@ remove it.
     synck repository append-chat <chat-id> <body-file> --path <directory> [--attachment <file>...]
 Chats and email are read with item show; they are not ordinary filesystem folders.
 
-All work is local. There are no network, synchronization or parallel-workspace
-commands; work in one checkout and copy with archive or repository import.
+All work is local: there are no network or server commands. Give each agent
+its own clone; copy a repository with archive or repository import.

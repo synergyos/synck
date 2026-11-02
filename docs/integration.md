@@ -111,6 +111,8 @@ the origin's history at once; `synck pull` brings in the others'. A `CONFLICT`
 error from `commit` or `pull` carries `paths`: files changed both in this clone
 and in history since its last pull. Nothing was written; keep or restore the
 local file, then pull. See [clones](local-repository.md#clones-one-working-tree-per-agent-or-person).
+An agent whose work should land only when finished clones with `--hold` and runs
+`synck push` at the end; its commits keep their IDs.
 
 ## Agents sharing a local checkout
 

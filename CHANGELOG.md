@@ -25,6 +25,10 @@ reads only its own repository format; see [Format and compatibility](docs/format
   changes; `commit`, `revert`, `mv`, `recover` and `version restore` pull first.
   A file changed on both sides is a `CONFLICT` with its `paths`, and nothing is
   written. `checkout.json` records each working tree's `baseline` commit.
+- `synck clone --hold` keeps commits in the clone until `synck push`, which
+  pulls and then sends them in order, each with the commit ID it was given;
+  `status` lists them. A held clone keeps its own copy of the history; the
+  origin's `gc` keeps the content of unpushed commits.
 - `restore-tree <revision>` writes an earlier commit's tree into the working
   tree. `status` shows it as changes against HEAD; `restore-tree` returns, and
   `commit` records a rollback that keeps every moved and edited item's identity.

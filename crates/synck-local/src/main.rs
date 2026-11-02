@@ -157,6 +157,9 @@ enum Command {
         /// Name recorded on commits from the clone; the origin's by default.
         #[arg(long)]
         author: Option<String>,
+        /// Keep commits in the clone until `push` sends them.
+        #[arg(long)]
+        hold: bool,
     },
     /// Bring in commits made from other working trees, keeping local changes.
     Pull {
@@ -164,6 +167,8 @@ enum Command {
         #[arg(long = "include")]
         include: Vec<String>,
     },
+    /// Send a held clone's commits to its origin, after pulling.
+    Push,
     /// Show repository identity, format, author, and current head.
     Info,
     /// Summarize repository identity, current changes, and recent commits.
@@ -815,10 +820,11 @@ async fn run(cli: Cli) -> Result<ExitCode, (LocalError, bool)> {
         destination,
         include,
         author,
+        hold,
     } = &cli.command
     {
         let repository =
-            synck_local::clone_repository(origin, destination, author.as_deref(), include)
+            synck_local::clone_repository(origin, destination, author.as_deref(), include, *hold)
                 .await
                 .map_err(|error| (error, false))?;
         print_outcome(
@@ -827,6 +833,7 @@ async fn run(cli: Cli) -> Result<ExitCode, (LocalError, bool)> {
                 "repo_id": repository.repository_id(),
                 "path": repository.repository_root(),
                 "checkout_paths": repository.checkout_paths(),
+                "hold": hold,
             }),
             format_args!(
                 "cloned {} into {}",
@@ -1066,11 +1073,19 @@ async fn run_checkout(
         .await,
         Command::Status => async {
             let (changes, warnings) = repository.status_with_path_warnings().await.map_err(|error| (error, false))?;
+            let held = repository.held_commits().await.map_err(|error| (error, false))?;
             print_path_warnings(&warnings);
             if json {
-                println!("{}", status_json(&changes));
+                let mut status = status_json(&changes);
+                if let Some(held) = held {
+                    status["held_commits"] = json!(held);
+                }
+                println!("{status}");
             } else {
                 print_status(&changes, align_change_markers);
+                if let Some(held) = held.filter(|held| !held.is_empty()) {
+                    println!("{} commits held; push sends them", held.len());
+                }
             }
             Ok(ExitCode::SUCCESS)
         }
@@ -1585,6 +1600,16 @@ async fn run_checkout(
                         )
                     }
                 ),
+            );
+            Ok(ExitCode::SUCCESS)
+        }
+        .await,
+        Command::Push => async {
+            let outcome = repository.push().await.map_err(|error| (error, false))?;
+            print_outcome(
+                json,
+                json!({"pushed": outcome.pushed}),
+                format_args!("pushed {} commits", outcome.pushed.len()),
             );
             Ok(ExitCode::SUCCESS)
         }
@@ -2238,6 +2263,7 @@ fn uses_worktree(command: &Command) -> bool {
                 | Command::Restore { .. }
                 | Command::RestoreTree { .. }
                 | Command::Pull { .. }
+                | Command::Push
                 | Command::Version {
                     command: VersionCommand::Restore { .. },
                 }

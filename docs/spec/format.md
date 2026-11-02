@@ -81,8 +81,8 @@ symlinks outside the repository.
 Configuration is an object with required `format_version: 7`, `repo_id`,
 `authority` (`LOCAL`, `FOLLOWER`, or `INDEPENDENT_LOCAL`), optional
 `storage_mode` (`WHOLE_FILE`, the default, or `CHUNKED`), `author` (string, required
-unless `authority` is `FOLLOWER`), optional `encrypted` (boolean, default false) and
-optional `origin`.
+unless `authority` is `FOLLOWER`), optional `encrypted` (boolean, default false),
+optional `origin` and optional `hold` (boolean, default false).
 Unknown fields are rejected. `encrypted` is fixed when the repository is created and
 copies keep it. `author` is the default author ID for new commits, at most 256 bytes;
 it is not history.
@@ -104,6 +104,16 @@ or objects: it reads the origin's `repository.sqlite3`, `objects/` and
 `object-store.sqlite3` in place, holding the origin's `lock` while it does.
 A clone is not a repository a reader can open on its own, and it cannot be
 copied or cloned; archive it to get a repository.
+
+A held clone (`"hold": true`) also has its own `repository.sqlite3`: a copy of
+the origin's history made when it was cloned, with its unpushed commits after
+it. Its sequence numbers and checkpoints are its own; commit IDs are the
+origin's. `held.json` holds `origin_seq`, through which every origin commit is
+in the copy, and `pushed_seq`, through which every commit of the copy is in the
+origin. Its content objects are written to the origin's store, and the origin's
+`pins/<SHA-256 of the clone's root path>.json` names them, as `{"clone": path,
+"objects": [object IDs]}`, until they are pushed; `gc` keeps every object a
+pin names and removes the pins of clones that are gone. Neither file is history.
 
 Authority is local operational configuration, not a cryptographic credential.
 `FOLLOWER` is an imported copy, and it refuses writes. `INDEPENDENT_LOCAL` accepts

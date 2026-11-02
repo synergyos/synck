@@ -144,7 +144,6 @@ fn help_exposes_only_supported_local_workflows() {
     let temp = tempfile::tempdir().unwrap();
     let help = run(temp.path(), &["--help"]);
     for command in [
-        "push",
         "workspace",
         "import",
         "restore-archive",
@@ -559,6 +558,51 @@ fn clones_share_one_history_and_never_overwrite_each_other() {
     assert_eq!(error["error"]["kind"], "CONFLICT");
     assert_eq!(error["error"]["paths"], serde_json::json!(["docs/a.txt"]));
     assert_eq!(fs::read(full.join("docs/a.txt")).unwrap(), b"a mine\n");
+}
+
+#[test]
+fn held_clones_keep_commits_until_push_with_their_ids() {
+    let temp = tempfile::tempdir().unwrap();
+    let origin = temp.path().join("origin");
+    fs::create_dir_all(origin.join("docs")).unwrap();
+    fs::write(origin.join("docs/a.txt"), b"a\n").unwrap();
+    fs::write(origin.join("b.txt"), b"b\n").unwrap();
+    run(&origin, &["init", "--author", "origin"]);
+    run(&origin, &["commit", "-m", "start"]);
+    run(temp.path(), &["clone", "origin", "held", "--hold", "--include", "docs"]);
+    let held = temp.path().join("held");
+
+    fs::write(held.join("docs/a.txt"), b"a held\n").unwrap();
+    let first = json(&held, &["commit", "-m", "held a", "--json"])["commit_id"].clone();
+    fs::write(held.join("docs/c.txt"), b"c held\n").unwrap();
+    let second = json(&held, &["commit", "-m", "held c", "--json"])["commit_id"].clone();
+    let status = json(&held, &["status", "--json"]);
+    assert_eq!(status["changes"], serde_json::json!([]));
+    assert_eq!(status["held_commits"], serde_json::json!([first, second]));
+    assert!(!run(&origin, &["log", "--oneline"]).contains("held"));
+    // Held content lives in the origin's store; garbage collection keeps it.
+    run(&origin, &["gc"]);
+
+    // Commits from elsewhere to other files do not stop a push.
+    fs::write(origin.join("b.txt"), b"b origin\n").unwrap();
+    run(&origin, &["commit", "-m", "origin b"]);
+    let pushed = json(&held, &["push", "--json"]);
+    assert_eq!(pushed["pushed"], serde_json::json!([first, second]));
+    assert_eq!(json(&held, &["status", "--json"])["held_commits"], serde_json::json!([]));
+    run(&origin, &["pull"]);
+    assert_eq!(fs::read(origin.join("docs/c.txt")).unwrap(), b"c held\n");
+    run(&origin, &["fsck"]);
+
+    // An item changed on both sides stops the push, and nothing moves.
+    fs::write(held.join("docs/a.txt"), b"a mine\n").unwrap();
+    run(&held, &["commit", "-m", "mine"]);
+    fs::write(origin.join("docs/a.txt"), b"a theirs\n").unwrap();
+    run(&origin, &["commit", "-m", "theirs"]);
+    let error = fails(&held, &["push", "--json"]);
+    assert_eq!(error["error"]["kind"], "CONFLICT");
+    assert_eq!(error["error"]["paths"], serde_json::json!(["docs/a.txt"]));
+    assert_eq!(fs::read(held.join("docs/a.txt")).unwrap(), b"a mine\n");
+    assert_eq!(json(&held, &["status", "--json"])["held_commits"].as_array().unwrap().len(), 1);
 }
 
 #[test]

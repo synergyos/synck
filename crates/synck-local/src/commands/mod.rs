@@ -61,6 +61,7 @@ pub(crate) const INTENT_NAMES: [&str; 7] = [
 
 mod commit;
 mod export;
+mod held;
 mod history;
 mod moves;
 mod pull;
@@ -72,6 +73,8 @@ mod tests;
 
 pub use commit::*;
 pub use history::*;
+pub use held::PushOutcome;
+pub(crate) use held::{HELD_FILE, Held, PINS_DIRECTORY, Pin, pin_path, write_held};
 pub use pull::PullOutcome;
 use pull::{PULL_INTENT_NAME, PULL_STAGE_NAME};
 use moves::*;

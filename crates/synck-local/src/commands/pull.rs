@@ -173,6 +173,9 @@ impl Repository {
     pub async fn pull(&self) -> Result<PullOutcome> {
         self.guard_agent_all()?;
         self.recover_pending_pull().await?;
+        if self.held() {
+            self.take_in_origin().await?;
+        }
         let from = self.baseline();
         if self.at_head() {
             return Ok(PullOutcome {

@@ -511,6 +511,9 @@ impl Repository {
         let mut prepared = self.prepare_working_commit(&committed, &working, &changes, &working_ids, message, &captured)?;
         options.mark_file_write(&mut prepared.events);
         self.guard_agent_paths(&reserved_paths)?;
+        if self.held() {
+            self.pin_held_objects(&captured.values().collect::<Vec<_>>()).await?;
+        }
         let accepted = self
             .core()
             .append_file_folder_checked_with_refs(
