@@ -163,7 +163,11 @@ manages those labels. Tombstoning a label does not delete its FILE history. Each
 new FILE gets its first label in the commit that creates it.
 
 `restore` and `restore-tree` change working files; recording them requires a
-commit. `revert` appends a compensating commit, preserving prior history. Durable
+commit. `restore-tree <revision>` discards every working change and writes that
+commit's tree, leaving ignored entries alone. `status` then shows the earlier
+tree as changes against HEAD, with moved and edited items keeping their
+identities: plain `restore-tree` returns to HEAD, and `commit` records the
+rollback. `revert` appends a compensating commit, preserving prior history. Durable
 recovery intents retain the metadata and expected plaintext identities needed
 to finish interrupted operations. Do not delete intents as if they were caches.
 Export commands refuse existing destinations and publish validated output only.

@@ -63,10 +63,12 @@ HISTORY AND RECOVERY
     synck recover <path-or-item-id> -m "<reason>"
     synck versions <path>
     synck restore <path> [--item-seq N]
-    synck restore-tree
+    synck restore-tree [<revision>]
 
 Revert and recover append commits. Restore and restore-tree change files on disk;
-review and commit the result when wanted. Revert/recover require a clean tree.
+review and commit the result when wanted. restore-tree discards every working
+change; with a revision it writes that commit's tree, which status then shows as
+changes against HEAD. Plain restore-tree returns; commit rolls back to it. Revert/recover require a clean tree.
 Revert accepts filesystem commits; mixed typed-item commits are refused atomically.
 Widen sparse checkout selection before operating outside it. Every command
 accepts --json and prints one machine-readable document, including commit IDs.

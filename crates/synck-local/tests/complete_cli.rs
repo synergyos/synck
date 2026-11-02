@@ -473,6 +473,46 @@ fn item_commands_take_repository_paths() {
 }
 
 #[test]
+fn restore_tree_visits_an_earlier_commit_and_commits_a_rollback() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("repository");
+    fs::create_dir_all(root.join("Docs")).unwrap();
+    fs::write(root.join("plan.txt"), "first\n").unwrap();
+    fs::write(root.join("Docs/notes.txt"), "notes\n").unwrap();
+    run(&root, &["init", "--author", "tester"]);
+    run(&root, &["commit", "-m", "one"]);
+    let id = |path: &str| json(&root, &["item", "show", path])["item"]["projection"]["item_id"].clone();
+    let (plan, notes) = (id("plan.txt"), id("Docs/notes.txt"));
+
+    fs::write(root.join("plan.txt"), "second\n").unwrap();
+    fs::rename(root.join("Docs/notes.txt"), root.join("notes.txt")).unwrap();
+    fs::write(root.join("added.txt"), "added\n").unwrap();
+    run(&root, &["commit", "-m", "two"]);
+    fs::write(root.join("scratch.tmp"), "ignored\n").unwrap();
+
+    let restored = json(&root, &["--json", "restore-tree", "HEAD~1"]);
+    assert_eq!(restored["restored"], true);
+    assert_eq!(fs::read(root.join("plan.txt")).unwrap(), b"first\n");
+    assert_eq!(fs::read(root.join("Docs/notes.txt")).unwrap(), b"notes\n");
+    assert!(!root.join("notes.txt").exists() && !root.join("added.txt").exists());
+    assert_eq!(fs::read(root.join("scratch.tmp")).unwrap(), b"ignored\n");
+    let changes = json(&root, &["status", "--json"])["changes"].clone();
+    assert_eq!(changes.as_array().unwrap().len(), 3, "{changes}");
+    assert_eq!(json(&root, &["--json", "restore-tree", "HEAD~1"])["restored"], false);
+
+    run(&root, &["restore-tree"]);
+    assert_eq!(fs::read(root.join("plan.txt")).unwrap(), b"second\n");
+    assert_eq!(fs::read(root.join("notes.txt")).unwrap(), b"notes\n");
+    assert!(run(&root, &["status"]).contains("working tree clean"));
+
+    run(&root, &["restore-tree", "HEAD~1"]);
+    run(&root, &["commit", "-m", "roll back"]);
+    assert!(run(&root, &["status"]).contains("working tree clean"));
+    assert_eq!((id("plan.txt"), id("Docs/notes.txt")), (plan, notes));
+    assert_eq!(fs::read(root.join("scratch.tmp")).unwrap(), b"ignored\n");
+}
+
+#[test]
 fn init_rejects_nested_repositories_before_publication() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("repo");

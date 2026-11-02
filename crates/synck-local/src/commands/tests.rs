@@ -511,6 +511,7 @@ async fn discovery_clears_a_completed_worktree_restore_intent() {
         version: WORKTREE_RESTORE_INTENT_VERSION,
         base_commit_id: Some(CommitId::parse(&head.commit_id).unwrap()),
         base_repo_seq: head.repo_seq,
+        target_repo_seq: None,
         source_tree: worktree_restore_manifest(&working, &working_ids).unwrap(),
         items: build_worktree_restore_items(&committed, &working, &working_ids).unwrap(),
     };

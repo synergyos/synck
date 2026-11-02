@@ -240,8 +240,15 @@ enum Command {
         #[arg(long)]
         item_seq: Option<i64>,
     },
-    /// Discard the complete canonical working-tree delta.
-    RestoreTree,
+    /// Discard every working-tree change: match HEAD, or an earlier commit's tree.
+    ///
+    /// An earlier tree shows in `status` as changes against HEAD. Run
+    /// `restore-tree` again to return to HEAD, or commit to roll back to it.
+    /// Ignored entries are never touched.
+    RestoreTree {
+        /// HEAD, HEAD~N, a sequence number or a full commit ID; HEAD by default.
+        revision: Option<String>,
+    },
     /// Copy committed file bytes to a new destination.
     Export {
         path: PathBuf,
@@ -1501,9 +1508,9 @@ async fn run_checkout(
             Ok(ExitCode::SUCCESS)
         }
         .await,
-        Command::RestoreTree => async {
+        Command::RestoreTree { revision } => async {
             let restored = repository
-                .restore_worktree()
+                .restore_worktree(revision.as_deref())
                 .await
                 .map_err(|error| (error, false))?;
             print_outcome(
@@ -2148,7 +2155,7 @@ fn uses_worktree(command: &Command) -> bool {
             command,
             Command::Recover { .. }
                 | Command::Restore { .. }
-                | Command::RestoreTree
+                | Command::RestoreTree { .. }
                 | Command::Version {
                     command: VersionCommand::Restore { .. },
                 }

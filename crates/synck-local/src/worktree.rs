@@ -440,6 +440,42 @@ impl Repository {
         Ok(())
     }
 
+    /// When the working tree is exactly `target`, record each target item's
+    /// filesystem identity at its path and return true. Otherwise record nothing.
+    /// After an earlier tree is restored this is what lets `status` and `commit`
+    /// see its moves and edits as changes to the same items.
+    pub(crate) fn record_restored_tree(
+        &self,
+        target: &BTreeMap<String, CommittedNode>,
+    ) -> Result<bool> {
+        let repo_id = self.config().repo_id().as_str();
+        let cache = load_worktree_cache(self.storage(), repo_id)?;
+        let scan = self.scan_observed(target, &cache)?;
+        let matches = scan.working.len() == target.len()
+            && target.iter().all(|(path, node)| {
+                scan.working.get(path).is_some_and(|working| {
+                    working.kind == node.kind
+                        && working.digest_hex == node.plain_digest
+                        && working.size.and_then(|size| i64::try_from(size).ok()) == node.size
+                })
+            });
+        if !matches {
+            return Ok(false);
+        }
+        let previous = load_identity_records(self.storage(), repo_id)?;
+        let identities = target
+            .iter()
+            .map(|(path, node)| IdentityRecord {
+                item_id: node.item_id.clone(),
+                kind: node.kind,
+                identity: scan.working[path].identity,
+                path: path.clone(),
+            })
+            .collect::<Vec<_>>();
+        publish_worktree_observation(self.storage(), repo_id, &scan, &identities, &previous)?;
+        Ok(true)
+    }
+
     pub(crate) fn publish_committed_identities(
         &self,
         committed: &BTreeMap<String, CommittedNode>,

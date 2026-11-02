@@ -1,4 +1,8 @@
 //! `synck restore` and `synck restore-tree`: replace working files with committed bytes.
+//!
+//! `restore-tree` makes the working tree equal to HEAD, or to an earlier commit's
+//! tree. An earlier tree is then an ordinary working-tree change against HEAD:
+//! `restore-tree` returns, and `commit` records it with each item's identity.
 
 use super::*;
 
@@ -11,6 +15,9 @@ pub(super) struct WorktreeRestoreIntent {
     pub(super) version: u32,
     pub(super) base_commit_id: Option<CommitId>,
     pub(super) base_repo_seq: i64,
+    /// The earlier commit whose tree is restored; HEAD when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) target_repo_seq: Option<i64>,
     pub(super) source_tree: Vec<WorktreeRestoreEntry>,
     pub(super) items: Vec<RevertIntentItem>,
 }
@@ -23,6 +30,17 @@ pub(crate) struct WorktreeRestoreEntry {
     pub(super) item_type: String,
     pub(super) plain_digest: Option<String>,
     pub(super) size: Option<i64>,
+}
+
+/// Working paths that hold an item of the target tree. Any other working item,
+/// such as one created after an earlier target, is removed like an untracked entry.
+fn target_working_ids(
+    target: &BTreeMap<String, CommittedNode>,
+    mut working_ids: HashMap<String, ItemId>,
+) -> HashMap<String, ItemId> {
+    let targets: HashSet<&ItemId> = target.values().map(|node| &node.item_id).collect();
+    working_ids.retain(|_, item_id| targets.contains(item_id));
+    working_ids
 }
 
 pub(super) fn build_worktree_restore_items(
@@ -386,27 +404,59 @@ impl Repository {
         self.refresh_worktree_identities().await
     }
 
-    pub async fn restore_worktree(&self) -> Result<bool> {
+    /// Make the working tree equal to `revision`'s tree, or to HEAD.
+    pub async fn restore_worktree(&self, revision: Option<&str>) -> Result<bool> {
         self.guard_agent_all()?;
-        self.restore_worktree_checked(None).await
+        let target_repo_seq = match revision {
+            None => None,
+            Some(revision) => {
+                let commit = self.resolve_revision(revision).await?;
+                let head = self.log(Some(1)).await?.into_iter().next();
+                let repo_seq = commit.repo_seq.ok_or_else(|| {
+                    LocalError::Integrity(format!("commit {} has no sequence", commit.commit_id))
+                })?;
+                (head.map(|head| head.repo_seq) != Some(repo_seq)).then_some(repo_seq)
+            }
+        };
+        self.restore_worktree_checked(None, target_repo_seq).await
     }
 
     pub(crate) async fn restore_checkout_worktree(
         &self,
         expected: &[WorktreeRestoreEntry],
     ) -> Result<()> {
-        self.restore_worktree_checked(Some(expected))
+        self.restore_worktree_checked(Some(expected), None)
             .await
             .map(|_| ())
+    }
+
+    /// The tree a restore writes: HEAD's, or an earlier commit's within the
+    /// checkout selection.
+    async fn restore_target(
+        &self,
+        target_repo_seq: Option<i64>,
+    ) -> Result<BTreeMap<String, CommittedNode>> {
+        let Some(repo_seq) = target_repo_seq else {
+            return self.committed_tree().await;
+        };
+        let (_, mut tree) = self.historical_tree_at(&repo_seq.to_string()).await?;
+        if let Some(paths) = self.checkout_paths() {
+            tree.retain(|path, _| crate::checkout::selected(paths, path));
+        }
+        Ok(tree)
     }
 
     pub(super) async fn restore_worktree_checked(
         &self,
         expected: Option<&[WorktreeRestoreEntry]>,
+        target_repo_seq: Option<i64>,
     ) -> Result<bool> {
         self.recover_pending_worktree_restore().await?;
-        let (committed, working, changes, working_ids) = self.changes().await?;
-        if changes.is_empty() {
+        let (_, working, _, working_ids) = self.changes().await?;
+        let committed = self.restore_target(target_repo_seq).await?;
+        let working_ids = target_working_ids(&committed, working_ids);
+        let items = build_worktree_restore_items(&committed, &working, &working_ids)?;
+        if items.is_empty() {
             return Ok(false);
         }
         if let Some(expected) = expected {
@@ -419,7 +469,6 @@ impl Repository {
             }
         }
         let head = self.log(Some(1)).await?.into_iter().next();
-        let items = build_worktree_restore_items(&committed, &working, &working_ids)?;
         reject_ignored_restore_descendants(self.root(), &committed, &items, &working)?;
         self.validate_inverse_objects(&items)?;
         self.validate_inverse_destinations(&items)?;
@@ -434,6 +483,7 @@ impl Repository {
                 })
                 .transpose()?,
             base_repo_seq: head.as_ref().map_or(0, |head| head.repo_seq),
+            target_repo_seq,
             source_tree: worktree_restore_manifest(&working, &working_ids)?,
             items,
         };
@@ -473,16 +523,16 @@ impl Repository {
                 "worktree restore base is no longer repository HEAD".to_string(),
             ));
         }
-        let committed = self.committed_tree().await?;
+        let committed = self.restore_target(intent.target_repo_seq).await?;
         validate_worktree_restore_target(intent, &committed)?;
         let stage = self.metadata_path().join(WORKTREE_RESTORE_STAGE_NAME);
         if !path_exists_nofollow(&stage)? {
-            if self.status().await?.is_empty() {
-                self.refresh_worktree_identities().await?;
+            if self.record_restored_tree(&committed)? {
                 return self.clear_intent(WORKTREE_RESTORE_INTENT_NAME);
             }
             if !source_validated {
                 let (_, working, _, working_ids) = self.changes().await?;
+                let working_ids = target_working_ids(&committed, working_ids);
                 if worktree_restore_manifest(&working, &working_ids)? != intent.source_tree {
                     return Err(LocalError::Integrity(
                         "working tree changed after the restore intent was written".to_string(),
@@ -493,13 +543,11 @@ impl Repository {
             self.validate_inverse_destinations(&intent.items)?;
         }
         self.materialize_inverse_items(&intent.items, WORKTREE_RESTORE_STAGE_NAME)?;
-        let changes = self.status().await?;
-        if !changes.is_empty() {
+        if !self.record_restored_tree(&committed)? {
             return Err(LocalError::Integrity(
                 "restored working tree does not match accepted history".to_string(),
             ));
         }
-        self.refresh_worktree_identities().await?;
         self.remove_inverse_stage(WORKTREE_RESTORE_STAGE_NAME)?;
         self.clear_intent(WORKTREE_RESTORE_INTENT_NAME)
     }

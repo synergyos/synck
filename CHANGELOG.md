@@ -18,6 +18,9 @@ reads only its own repository format; see [Format and compatibility](docs/format
   every `--parent`, `--link` and `--merged-from` accept a repository path such as
   `Matters/brief.docx` as well as an item ID. Names match by their canonical key,
   so case and Unicode normalization do not matter.
+- `restore-tree <revision>` writes an earlier commit's tree into the working
+  tree. `status` shows it as changes against HEAD; `restore-tree` returns, and
+  `commit` records a rollback that keeps every moved and edited item's identity.
 - The filesystem monitor answers at once on macOS and Linux. Its server checked
   for a connection only every 25 ms and both sides polled the socket every 2 ms;
   `status` takes about 35 ms instead of 70.

@@ -155,7 +155,7 @@ async fn restore_worktree_discards_the_complete_structural_delta_without_history
     fs::write(root.join("kind/child.bin"), b"child").unwrap();
     fs::write(root.join("added.bin"), b"added").unwrap();
 
-    assert!(repository.restore_worktree().await.unwrap());
+    assert!(repository.restore_worktree(None).await.unwrap());
     assert_eq!(
         fs::read(root.join("Folder/document.bin")).unwrap(),
         b"before"
@@ -168,7 +168,7 @@ async fn restore_worktree_discards_the_complete_structural_delta_without_history
     assert_eq!(repository.log(Some(1)).await.unwrap()[0].commit_id, head);
     assert!(!root.join(".synck/worktree-restore.json").exists());
     assert!(!root.join(".synck/worktree-restore-stage").exists());
-    assert!(!repository.restore_worktree().await.unwrap());
+    assert!(!repository.restore_worktree(None).await.unwrap());
     assert!(repository.fsck().await.unwrap().is_empty());
 }
 
@@ -178,7 +178,7 @@ async fn restore_worktree_supports_empty_history_and_preserves_ignored_entries()
     init(empty.path(), "author").await.unwrap();
     let repository = Repository::discover(empty.path()).await.unwrap();
     fs::write(empty.path().join("uncommitted.bin"), b"uncommitted").unwrap();
-    assert!(repository.restore_worktree().await.unwrap());
+    assert!(repository.restore_worktree(None).await.unwrap());
     assert!(!empty.path().join("uncommitted.bin").exists());
     assert_eq!(repository.log(None).await.unwrap().len(), 1);
     assert!(repository.status().await.unwrap().is_empty());
@@ -194,7 +194,7 @@ async fn restore_worktree_supports_empty_history_and_preserves_ignored_entries()
     repository.commit("initial").await.unwrap();
     fs::write(root.join("tracked.bin"), b"after").unwrap();
     fs::write(root.join("added.bin"), b"added").unwrap();
-    assert!(repository.restore_worktree().await.unwrap());
+    assert!(repository.restore_worktree(None).await.unwrap());
     assert_eq!(fs::read(root.join("tracked.bin")).unwrap(), b"before");
     assert_eq!(
         fs::read(root.join("ignored/private.bin")).unwrap(),
@@ -2876,7 +2876,7 @@ async fn ignored_untracked_symlink_is_not_visited_by_status_or_unrelated_restore
 
     let status = repository.status().await.unwrap();
     assert!(status.iter().all(|change| change.path != "link"));
-    assert!(repository.restore_worktree().await.unwrap());
+    assert!(repository.restore_worktree(None).await.unwrap());
     assert_eq!(
         fs::read(temporary.path().join("tracked.bin")).unwrap(),
         b"before"
@@ -3064,7 +3064,7 @@ async fn named_version_lifecycle_is_append_only_and_restore_is_a_worktree_change
         .unwrap();
     assert_eq!(fs::read(root.join("document.txt")).unwrap(), b"first");
     assert_eq!(repository.status().await.unwrap().len(), 1);
-    assert!(repository.restore_worktree().await.unwrap());
+    assert!(repository.restore_worktree(None).await.unwrap());
 
     let tombstone_commit = repository
         .tombstone_named_version(
