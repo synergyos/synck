@@ -541,6 +541,9 @@ fn clones_share_one_history_and_never_overwrite_each_other() {
     // A clone's gc collects the origin's store and leaves its checkout alone.
     run(&full, &["gc"]);
     assert!(run(&origin, &["status"]).contains("working tree clean"));
+    // A clone runs its own filesystem monitor.
+    run(&full, &["monitor", "start"]);
+    run(&full, &["monitor", "stop"]);
 
     // Commits to different files land from both, with no action from either.
     fs::write(full.join("b.txt"), b"b full\n").unwrap();
@@ -691,6 +694,8 @@ fn held_clones_keep_commits_until_push_with_their_ids() {
     run(&origin, &["commit", "-m", "start"]);
     run(temp.path(), &["clone", "origin", "held", "--hold", "--include", "docs"]);
     let held = temp.path().join("held");
+    run(&held, &["monitor", "start"]);
+    run(&held, &["monitor", "stop"]);
 
     fs::write(held.join("docs/a.txt"), b"a held\n").unwrap();
     let first = json(&held, &["commit", "-m", "held a", "--json"])["commit_id"].clone();

@@ -94,6 +94,11 @@ struct MonitorConfig {
     author: String,
     #[serde(default)]
     authority: Option<crate::portable::Authority>,
+    // A clone watches its own working tree like any checkout.
+    #[serde(default, rename = "origin")]
+    _origin: Option<std::path::PathBuf>,
+    #[serde(default, rename = "hold")]
+    _hold: bool,
 }
 
 #[derive(Debug)]
