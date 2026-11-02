@@ -403,7 +403,7 @@ impl Repo {
                 .map_err(|_| CoreError::InvalidProposal("commit event count overflow".to_string()))
         };
         let commit_pk = CommitPk::new();
-        let mut digest = Sha256::new();
+        let mut digest = EventsDigest::default();
         let mut payloads = self.validate_payload_limits(events, ref_events)?.into_iter();
         let mut event_rows = Vec::with_capacity(events.len());
         for (idx, (ev, payload)) in events.iter().zip(payloads.by_ref()).enumerate() {
@@ -412,8 +412,7 @@ impl Repo {
             validate_event_for_item(item_id, item.item_type.as_str(), ev)?;
             self.require_metadata_form(ev.set_metadata.as_ref())?;
             let event_hash = compute_sha256_digest_bytes(&payload);
-            digest.update([COMMIT_EVENT_FAMILY_ITEM]);
-            digest.update(event_hash);
+            digest.push(COMMIT_EVENT_FAMILY_ITEM, &event_hash);
             let transition = &placement.transitions[idx];
             event_rows.push(EventInsertRow {
                 repo_id: repo_id.clone(),
@@ -434,8 +433,7 @@ impl Repo {
         for (idx, (event, payload)) in ref_events.iter().zip(payloads).enumerate() {
             self.require_metadata_form(event.set_metadata.as_ref())?;
             let event_hash = compute_sha256_digest_bytes(&payload);
-            digest.update([COMMIT_EVENT_FAMILY_REF]);
-            digest.update(event_hash);
+            digest.push(COMMIT_EVENT_FAMILY_REF, &event_hash);
             ref_rows.push(RefEventInsertRow {
                 repo_id: repo_id.clone(),
                 commit_pk: commit_pk.clone(),
@@ -449,9 +447,8 @@ impl Repo {
                 created_at: header.created_at,
             });
         }
-        let digest: [u8; 32] = digest.finalize().into();
-        let events_digest = Sha256Digest::parse(sha256_prefixed_hex_from_digest_bytes(digest))
-            .expect("internal sha256 digest construction must be valid");
+        // Admission never seals an empty commit, so no repo_seq is needed.
+        let events_digest = digest.finish(None);
         let commit_id = compute_commit_id(&canonical_commit_bytes_for_hash(
             header.author_id,
             header.committer_id,

@@ -5,14 +5,14 @@ use crate::{
 use sha2::{Digest, Sha256};
 use synck_vcs::types::{
     COMMIT_EVENT_FAMILY_ITEM, COMMIT_EVENT_FAMILY_REF, CommitEventRow, CommitRow, EventProposal,
-    RefEventProposal, canonical_event_proposal_bytes, canonical_ref_event_proposal_bytes,
-    canonical_stored_commit_bytes_for_hash, compute_commit_id, empty_commit_events_digest,
+    EventsDigest, RefEventProposal, canonical_event_proposal_bytes,
+    canonical_ref_event_proposal_bytes, canonical_stored_commit_bytes_for_hash, compute_commit_id,
     sha256_digest_to_digest_bytes,
 };
 
 #[derive(Clone, Default)]
 struct Events {
-    digest: Sha256,
+    digest: EventsDigest,
     next: usize,
     refs_started: bool,
 }
@@ -82,13 +82,11 @@ impl Events {
                 )
             }
         };
-        let actual_digest = digest_id(Sha256::digest(payload).into());
-        if stored_digest != &actual_digest {
+        let actual_digest: [u8; 32] = Sha256::digest(payload).into();
+        if stored_digest != &digest_id(actual_digest) {
             return Err(invalid("event payload digest mismatch"));
         }
-        self.digest.update([family]);
-        self.digest
-            .update(sha256_digest_to_digest_bytes(&actual_digest));
+        self.digest.push(family, &actual_digest);
         self.next += 1;
         if self.next > commit.event_count as usize {
             return Err(invalid("too many commit events"));
@@ -96,10 +94,7 @@ impl Events {
         Ok(())
     }
     fn finish(&self, commit: &CommitRow) -> Result<(), ProtocolError> {
-        let digest = match commit.repo_seq {
-            Some(repo_seq) if self.next == 0 => empty_commit_events_digest(repo_seq),
-            _ => digest_id(self.digest.clone().finalize().into()),
-        };
+        let digest = self.digest.clone().finish(commit.repo_seq);
         if self.next != commit.event_count as usize || digest != commit.events_digest {
             return Err(invalid("commit event count or digest mismatch"));
         }

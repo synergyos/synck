@@ -1,14 +1,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 use synck_vcs::naming::compute_name_key;
 use synck_vcs::types::{
     ObjectId, COMMIT_EVENT_FAMILY_ITEM, COMMIT_EVENT_FAMILY_REF, COMMIT_FORMAT_VERSION,
-    CommitEventRow, CommitRow, EventProposal, EventRow, ItemId, RefEventProposal,
+    CommitEventRow, CommitRow, EventProposal, EventRow, EventsDigest, ItemId, RefEventProposal,
     RefEventRow, canonical_event_proposal_bytes, canonical_ref_event_proposal_bytes,
     canonical_stored_commit_bytes_for_hash, compute_commit_id, compute_sha256_digest_bytes,
-    empty_commit_events_digest, sha256_prefixed_hex_from_digest_bytes,
+    sha256_prefixed_hex_from_digest_bytes,
 };
 
 use crate::error::{SemanticError, SemanticErrorCode};
@@ -291,7 +290,7 @@ fn parse_and_verify_events<'a>(
     ref_events: &[RefEventRow],
 ) -> Result<Vec<(&'a EventRow, EventProposal)>, SemanticError> {
     let mut parsed = Vec::with_capacity(events.len());
-    let mut aggregate_digest = Sha256::new();
+    let mut aggregate_digest = EventsDigest::default();
     let mut ref_sequences: BTreeMap<ItemId, (i64, i64)> = BTreeMap::new();
     for (index, row) in events.iter().enumerate() {
         if row.repo_id != commit.repo_id
@@ -311,8 +310,7 @@ fn parse_and_verify_events<'a>(
                 "event payload digest mismatch",
             ));
         }
-        aggregate_digest.update([COMMIT_EVENT_FAMILY_ITEM]);
-        aggregate_digest.update(digest);
+        aggregate_digest.push(COMMIT_EVENT_FAMILY_ITEM, &digest);
         let proposal: EventProposal = row.proposal().map_err(|failure| {
             error(
                 SemanticErrorCode::MalformedProfileEvent,
@@ -424,16 +422,9 @@ fn parse_and_verify_events<'a>(
                 entry.get_mut().1 = row.ref_seq;
             }
         }
-        aggregate_digest.update([COMMIT_EVENT_FAMILY_REF]);
-        aggregate_digest.update(digest);
+        aggregate_digest.push(COMMIT_EVENT_FAMILY_REF, &digest);
     }
-    let events_digest = match commit.repo_seq {
-        Some(repo_seq) if events.is_empty() && ref_events.is_empty() => {
-            empty_commit_events_digest(repo_seq).to_string()
-        }
-        _ => sha256_prefixed_hex_from_digest_bytes(aggregate_digest.finalize().into()),
-    };
-    if events_digest != commit.events_digest.as_str() {
+    if aggregate_digest.finish(commit.repo_seq) != commit.events_digest {
         return Err(error(
             SemanticErrorCode::MalformedProfileEvent,
             "commit events_digest mismatch",
@@ -962,6 +953,7 @@ fn error(code: SemanticErrorCode, detail: impl Into<String>) -> SemanticError {
 
 #[cfg(test)]
 mod tests {
+    use sha2::{Digest, Sha256};
     use synck_vcs::types::{
         COMMIT_FORMAT_VERSION, RefEventProposal, RefEventRow, RepoId, Sha256Digest,
         canonical_ref_event_proposal_bytes, canonical_stored_commit_bytes_for_hash, now,

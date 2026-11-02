@@ -1131,6 +1131,34 @@ pub fn empty_commit_events_digest(repo_seq: i64) -> Sha256Digest {
     .expect("internal SHA-256 digest is valid")
 }
 
+/// A commit's `events_digest`: SHA-256 over each event's family byte and the
+/// SHA-256 of its canonical payload, in commit order. The one definition every
+/// writer and verifier uses.
+#[derive(Clone, Default)]
+pub struct EventsDigest {
+    hasher: Sha256,
+    events: u64,
+}
+
+impl EventsDigest {
+    pub fn push(&mut self, family: u8, payload_digest: &[u8; 32]) {
+        self.hasher.update([family]);
+        self.hasher.update(payload_digest);
+        self.events += 1;
+    }
+
+    /// A published commit with no events hashes its `repo_seq` instead.
+    pub fn finish(self, repo_seq: Option<i64>) -> Sha256Digest {
+        match repo_seq {
+            Some(repo_seq) if self.events == 0 => empty_commit_events_digest(repo_seq),
+            _ => Sha256Digest::parse(sha256_prefixed_hex_from_digest_bytes(
+                self.hasher.finalize().into(),
+            ))
+            .expect("internal SHA-256 digest is valid"),
+        }
+    }
+}
+
 /// Convert a `CommitId` into raw 32-byte digest bytes.
 pub fn commit_id_to_digest_bytes(id: &CommitId) -> [u8; 32] {
     sha256_id_to_digest_bytes(id.as_str())

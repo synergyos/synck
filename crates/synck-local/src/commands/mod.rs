@@ -23,8 +23,8 @@ use synck_vcs::state::{
 };
 use synck_vcs::types::{
     ObjectId, COMMIT_EVENT_FAMILY_ITEM, COMMIT_EVENT_FAMILY_REF, CommitEventRow, CommitId,
-    CommitProposal, CommitRow, EventProposal, EventRow, ItemId, LifecycleState,
-    RefEventProposal, RepoEventCursor, RepoId, Sha256Digest, SubtreeClosureGuard,
+    CommitProposal, CommitRow, EventProposal, EventRow, EventsDigest, ItemId, LifecycleState,
+    RefEventProposal, RepoEventCursor, RepoId, SubtreeClosureGuard,
     canonical_commit_bytes_for_hash, canonical_event_proposal_bytes,
     canonical_ref_event_proposal_bytes, compute_commit_id, compute_sha256_digest_bytes,
     sha256_digest_to_digest_bytes, sha256_prefixed_hex_from_digest_bytes,

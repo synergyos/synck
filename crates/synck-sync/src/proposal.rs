@@ -4,7 +4,7 @@ use crate::{
 };
 use sha2::{Digest, Sha256};
 use synck_vcs::types::{
-    CommitId, ItemId, Sha256Digest, Timestamp, canonical_commit_bytes_for_hash,
+    CommitId, EventsDigest, ItemId, Sha256Digest, Timestamp, canonical_commit_bytes_for_hash,
     canonical_event_proposal_bytes, canonical_json_bytes, canonical_ref_event_proposal_bytes,
     compute_commit_id,
 };
@@ -63,7 +63,7 @@ pub struct ProposalVerifier {
     offset: u64,
     events: u64,
     guards: u64,
-    events_hasher: Sha256,
+    events_hasher: EventsDigest,
     guards_hasher: Sha256,
     refs_started: bool,
     previous_guard: Option<ItemId>,
@@ -86,7 +86,7 @@ impl ProposalVerifier {
             offset: 0,
             events: 0,
             guards: 0,
-            events_hasher: Sha256::new(),
+            events_hasher: EventsDigest::default(),
             guards_hasher: Sha256::new(),
             refs_started: false,
             previous_guard: None,
@@ -172,8 +172,7 @@ impl ProposalVerifier {
             .checked_add(1)
             .filter(|n| *n <= i32::MAX as u64)
             .ok_or_else(|| invalid("event count does not fit the canonical representation"))?;
-        self.events_hasher.update([family]);
-        self.events_hasher.update(Sha256::digest(payload));
+        self.events_hasher.push(family, &Sha256::digest(payload).into());
         Ok(())
     }
     /// Build the final request from the exact uploaded stream. Guards bind the
@@ -184,7 +183,7 @@ impl ProposalVerifier {
             operation_id: self.operation_id.clone(),
             metadata,
             event_count: self.events,
-            events_digest: digest_id(self.events_hasher.clone().finalize().into()),
+            events_digest: self.events_hasher.clone().finish(None),
             guard_count: self.guards,
             guards_digest: digest_id(self.guards_hasher.clone().finalize().into()),
         };

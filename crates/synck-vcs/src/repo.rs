@@ -27,16 +27,15 @@ use crate::transition::{ItemState, TransitionError, check_source_revision, apply
 use crate::types::{
     AcceptedCommit, COMMIT_EVENT_FAMILY_ITEM, COMMIT_EVENT_FAMILY_REF,
     COMMIT_FORMAT_VERSION, CommitEventRow, CommitPk, CommitProposal, CommitRow,
-    CreateItem, CreatedItemInfo, EventInsertRow, EventProposal, EventRow,
+    CreateItem, CreatedItemInfo, EventInsertRow, EventProposal, EventRow, EventsDigest,
     FederatedDomainProposal, FederatedProposal,
     IngestedCommit, IngestedDomainCommit, ItemCursor, ItemId, ItemRow, LifecycleState,
-    RefEventInsertRow, RefEventProposal, RepoEventCursor, RepoId, SequencingMode, Sha256Digest,
+    RefEventInsertRow, RefEventProposal, RepoEventCursor, RepoId, SequencingMode,
     SubtreeClosureGuard, Timestamp,
 };
 use crate::types::{
     CommitId, canonical_commit_bytes_for_hash, canonical_event_proposal_bytes,
     canonical_ref_event_proposal_bytes, compute_commit_id, compute_sha256_digest_bytes, now,
-    sha256_prefixed_hex_from_digest_bytes,
 };
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeSet, HashMap, HashSet};

@@ -5,14 +5,12 @@
 //! instead of buffering an arbitrarily large commit in memory.
 
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 use crate::types::{
     COMMIT_EVENT_FAMILY_ITEM, COMMIT_EVENT_FAMILY_REF, COMMIT_FORMAT_VERSION, CommitId,
-    EventProposal, ItemId, RefEventProposal, SequencingMode, Sha256Digest,
+    EventProposal, EventsDigest, ItemId, RefEventProposal, SequencingMode, Sha256Digest,
     canonical_event_proposal_bytes, canonical_ref_event_proposal_bytes,
     canonical_stored_commit_bytes_for_hash, compute_commit_id, compute_sha256_digest_bytes,
-    empty_commit_events_digest, sha256_prefixed_hex_from_digest_bytes,
 };
 
 #[derive(Clone, Debug)]
@@ -96,7 +94,7 @@ pub struct CommitEnvelopeValidator {
     label: String,
     next_event_index: usize,
     refs_started: bool,
-    events_hasher: Sha256,
+    events_hasher: EventsDigest,
     findings: Vec<String>,
 }
 
@@ -143,7 +141,7 @@ impl CommitEnvelopeValidator {
             label,
             next_event_index: 0,
             refs_started: false,
-            events_hasher: Sha256::new(),
+            events_hasher: EventsDigest::default(),
             findings,
         }
     }
@@ -399,14 +397,7 @@ impl CommitEnvelopeValidator {
             self.findings
                 .push(format!("{}: event count mismatch", self.label));
         }
-        let events_digest = match self.commit.repo_seq {
-            Some(repo_seq) if self.next_event_index == 0 => empty_commit_events_digest(repo_seq),
-            _ => {
-                let digest_bytes: [u8; 32] = self.events_hasher.finalize().into();
-                Sha256Digest::parse(sha256_prefixed_hex_from_digest_bytes(digest_bytes))
-                    .expect("internal SHA-256 digest is valid")
-            }
-        };
+        let events_digest = self.events_hasher.finish(self.commit.repo_seq);
         if self.commit.events_digest.as_ref() != Some(&events_digest) {
             self.findings
                 .push(format!("{}: events digest mismatch", self.label));
@@ -446,8 +437,7 @@ impl CommitEnvelopeValidator {
             self.findings
                 .push(format!("{context}: payload digest mismatch"));
         }
-        self.events_hasher.update([event_family]);
-        self.events_hasher.update(payload_digest);
+        self.events_hasher.push(event_family, &payload_digest);
     }
 }
 
@@ -456,6 +446,7 @@ mod tests {
     use super::*;
     use crate::types::{
         CreateItem, canonical_commit_bytes_for_hash, canonical_event_proposal_bytes,
+        sha256_prefixed_hex_from_digest_bytes,
     };
 
     fn validate_proposals(

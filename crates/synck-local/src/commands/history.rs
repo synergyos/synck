@@ -1060,11 +1060,6 @@ impl Repository {
         let (output, calculated_events_digest) = self
             .present_commit_event_rows_in(store, &parsed_commit_id, repo_seq, 0, rows, true)
             .await?;
-        let calculated_events_digest = if event_count == 0 {
-            Some(synck_vcs::types::empty_commit_events_digest(repo_seq).to_string())
-        } else {
-            calculated_events_digest
-        };
         if calculated_events_digest.as_deref() != Some(events_digest) {
             return Err(LocalError::Integrity(format!(
                 "commit {commit_id} events digest disagrees with its ordered event payloads"
@@ -1096,7 +1091,7 @@ impl Repository {
             None => None,
         };
 
-        let mut commit_hasher = Sha256::new();
+        let mut commit_hasher = EventsDigest::default();
         let mut output = Vec::with_capacity(rows.len());
         for (offset, event) in rows.into_iter().enumerate() {
             let index = expected_start_index.checked_add(offset).ok_or_else(|| {
@@ -1149,8 +1144,7 @@ impl Repository {
                         )));
                     }
                     if calculate_commit_digest {
-                        commit_hasher.update([COMMIT_EVENT_FAMILY_ITEM]);
-                        commit_hasher.update(payload_digest);
+                        commit_hasher.push(COMMIT_EVENT_FAMILY_ITEM, &payload_digest);
                     }
                     let presentation =
                         commit_event_presentation(store, &root, previous.as_ref(), &proposal)
@@ -1229,8 +1223,7 @@ impl Repository {
                         )));
                     }
                     if calculate_commit_digest {
-                        commit_hasher.update([COMMIT_EVENT_FAMILY_REF]);
-                        commit_hasher.update(payload_digest);
+                        commit_hasher.push(COMMIT_EVENT_FAMILY_REF, &payload_digest);
                     }
                     let presentation =
                         ref_commit_event_presentation(store, &root, previous.as_ref(), &proposal)
@@ -1266,7 +1259,7 @@ impl Repository {
             }
         }
         let calculated_events_digest = calculate_commit_digest
-            .then(|| sha256_prefixed_hex_from_digest_bytes(commit_hasher.finalize().into()));
+            .then(|| commit_hasher.finish(Some(repo_seq)).to_string());
         Ok((output, calculated_events_digest))
     }
 
