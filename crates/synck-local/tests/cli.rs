@@ -3469,17 +3469,17 @@ fn history_reads_refresh_stale_checkout_cache() {
 
 #[cfg(unix)]
 #[test]
-fn fix_names_initializes_and_commits_selected_renamed_paths() {
+fn init_and_commit_rename_non_portable_names() {
     let temporary = tempfile::tempdir().unwrap();
     let root = temporary.path();
     fs::create_dir(root.join("folder?")).unwrap();
     fs::write(root.join("folder?/NUL.txt"), b"initial").unwrap();
-    let output = synck(root, &["init", "--author", "author", "--fix-names"]);
+    let output = synck(root, &["init", "--author", "author"]);
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     assert!(String::from_utf8_lossy(&output.stderr).contains("folder_/_NUL.txt"));
     assert_eq!(fs::read(root.join("folder_/_NUL.txt")).unwrap(), b"initial");
     fs::write(root.join("bad?name"), b"selected").unwrap();
-    let output = synck(root, &["commit", "--fix-names", "bad?name", "-m", "selected", "--json"]);
+    let output = synck(root, &["commit", "bad?name", "-m", "selected", "--json"]);
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     let value: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(value["renamed"][0]["from"], "bad?name");

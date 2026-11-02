@@ -196,7 +196,7 @@ synck-0.1 export-tree HEAD /path/to/new-work
 # Then use 0.2:
 synck-0.2 init /path/to/new-work --author "Alex"
 cd /path/to/new-work
-synck-0.2 commit --fix-names -m "Import working files from 0.1"
+synck-0.2 commit -m "Import working files from 0.1"
 ```
 
 These executable names denote separately installed versions. FILE bytes transfer;

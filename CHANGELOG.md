@@ -7,6 +7,9 @@ reads only its own repository format; see [Format and compatibility](docs/format
 
 ### CLI
 
+- `init` and `commit` rename files and folders whose names break the portable rules,
+  NFD names included, and report each rename; they no longer refuse them.
+  `--fix-names` is no longer needed, and is accepted and ignored.
 - `--json` works with every command. `restore`, `restore-tree`, `export`,
   `export-tree`, `recover`, `mv`, `gc`, `archive`, `init`, `storage optimize`,
   `instructions` and the `version` writes refused it before, although every

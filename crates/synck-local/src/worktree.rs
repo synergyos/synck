@@ -988,17 +988,13 @@ pub(crate) fn scan_canonical_without_ignore(
     scan_without_ignore(root, committed, true)
 }
 
-// Validate the destination with the ignore rules being initialized, before
-// publishing either its metadata or its ignore file.
-pub(crate) fn validate_initial_tree(
-    root: &Dir, ignore_root: &Dir, fix_names: bool,
-) -> Result<()> {
+// Scan the destination with the ignore rules being initialized, before
+// publishing either its metadata or its ignore file. Returns whether names
+// need repair.
+pub(crate) fn validate_initial_tree(root: &Dir, ignore_root: &Dir) -> Result<bool> {
     let (ignore, _) = load_ignore(ignore_root)?;
     let working = scan_tree_unvalidated(root, &BTreeMap::new(), &ignore, NativeHiddenMode::Ignore, true)?;
-    if !fix_names {
-        crate::name_repairs::validate(root, &working)?;
-    }
-    Ok(())
+    Ok(!crate::name_repairs::plan(root, &working)?.is_empty())
 }
 
 fn scan_without_ignore(

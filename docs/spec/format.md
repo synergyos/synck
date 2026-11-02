@@ -482,17 +482,10 @@ bytes, strips trailing ASCII spaces/dots, substitutes `_` for an empty result, a
 prefixes device and reserved names with `_`, truncating and stripping again when
 the prefix overflows. The order matters: truncation can expose a reserved name or
 leave nothing. For sibling collisions append
-` (2)`, ` (3)`, etc., reserving suffix bytes before truncation. Filesystem
-renaming requires explicit `--fix-names`; validation alone never renames files.
+` (2)`, ` (3)`, etc., reserving suffix bytes before truncation. A local writer
+renames a working-tree entry to this spelling, NFD names included, and reports the
+rename; history only ever holds the portable name.
 Non-UTF-8 names are errors, never guessed encodings.
-
-A working-tree name in NFD is not an error. macOS and Mac-made archives produce
-such names, and refusing or renaming them would fight the file system. The
-repository stores the NFC name, and the disposable local index records the
-on-disk spelling. Checkout writes new files as NFC and leaves an existing NFD file
-in place, never creating a twin. A file system that keeps the NFC and NFD spellings
-of one name apart holds two files with one repository name, and that is a name
-conflict. The other name rules still fail as they do for any file.
 
 Whole-path length is not a repository constraint: it depends on the checkout's
 location.

@@ -134,9 +134,9 @@ enum Command {
         /// Name recorded on your commits.
         #[arg(long)]
         author: String,
-        /// Rename non-portable names and report every change.
-        #[arg(long)]
-        fix_names: bool,
+        /// Accepted for 0.2.0 scripts: non-portable names are always renamed.
+        #[arg(long, hide = true)]
+        _fix_names: bool,
         /// CHUNKED (compact, the default) or WHOLE_FILE (one plain file per version).
         #[arg(long, default_value = "CHUNKED", value_parser = parse_storage_mode)]
         storage_mode: synck_local::StorageMode,
@@ -159,9 +159,9 @@ enum Command {
     },
     /// Commit the complete delta or only the selected paths.
     Commit {
-        /// Repair non-portable names throughout the observed checkout before committing.
-        #[arg(long)]
-        fix_names: bool,
+        /// Accepted for 0.2.0 scripts: non-portable names are always renamed.
+        #[arg(long, hide = true)]
+        _fix_names: bool,
         /// Commit message.
         #[arg(short = 'm', long)]
         message: Option<String>,
@@ -294,9 +294,9 @@ enum PortableCommand {
         /// Name recorded on your commits.
         #[arg(long)]
         author: String,
-        /// Rename non-portable names and report every change.
-        #[arg(long)]
-        fix_names: bool,
+        /// Accepted for 0.2.0 scripts: non-portable names are always renamed.
+        #[arg(long, hide = true)]
+        _fix_names: bool,
         /// CHUNKED (compact, the default) or WHOLE_FILE (one plain file per version).
         #[arg(long, default_value = "CHUNKED", value_parser = parse_storage_mode)]
         storage_mode: synck_local::StorageMode,
@@ -764,11 +764,11 @@ async fn run(cli: Cli) -> Result<ExitCode, (LocalError, bool)> {
         directory,
         author,
         storage_mode,
-        fix_names,
+        ..
     } = &cli.command
     {
         let (repo_id, repairs) = synck_local::portable::init_repository_with_name_repair(
-            directory, author, *storage_mode, *fix_names,
+            directory, author, *storage_mode,
         ).await.map_err(|error| (error, false))?;
         if !cli.json {
             print_name_repairs(&repairs);
@@ -1045,22 +1045,30 @@ async fn run_checkout(
             Ok(ExitCode::SUCCESS)
         }
         .await,
-        Command::Commit {
-            message,
-            paths,
-            fix_names,
-        } => async {
-                let (repairs, paths) = if fix_names {
-                    repository.fix_names_and_remap_paths(&current, &paths).await.map_err(|error| (error, false))?
-                } else { (Vec::new(), paths) };
-                if !json {
-                    print_name_repairs(&repairs);
-                }
-                let caller = if fix_names { repository.repository_root() } else { &current };
-                let outcome = repository
-                    .commit_selected(caller, &paths, message.as_deref())
+        Command::Commit { message, paths, .. } => async {
+                // Non-portable names are renamed and the commit retried. Checking
+                // first would scan the checkout twice on every commit.
+                let mut repairs = Vec::new();
+                let outcome = match repository
+                    .commit_selected(&current, &paths, message.as_deref())
                     .await
-                    .map_err(|error| (error, false))?;
+                {
+                    Err(LocalError::NonPortableNames(_)) => {
+                        let remapped;
+                        (repairs, remapped) = repository
+                            .fix_names_and_remap_paths(&current, &paths)
+                            .await
+                            .map_err(|error| (error, false))?;
+                        if !json {
+                            print_name_repairs(&repairs);
+                        }
+                        repository
+                            .commit_selected(repository.repository_root(), &remapped, message.as_deref())
+                            .await
+                    }
+                    outcome => outcome,
+                }
+                .map_err(|error| (error, false))?;
                 if json {
                     let commit_id = match &outcome {
                         CommitOutcome::Clean => None,
@@ -1070,7 +1078,7 @@ async fn run_checkout(
                         "schema_version": cli_json::SCHEMA_VERSION,
                         "commit_id": commit_id,
                     });
-                    if fix_names { result["renamed"] = json!(repairs); }
+                    if !repairs.is_empty() { result["renamed"] = json!(repairs); }
                     println!("{result}");
                 } else {
                     match outcome {
@@ -1750,13 +1758,12 @@ async fn run_portable(command: &PortableCommand, tokens: &[String]) -> synck_loc
             destination,
             author,
             storage_mode,
-            fix_names,
+            ..
         } => async {
             let (repo_id, repairs) = synck_local::portable::init_repository_with_name_repair(
                 destination,
                 author,
                 *storage_mode,
-                *fix_names,
             )
             .await?;
             print_name_repairs(&repairs);

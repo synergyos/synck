@@ -21,13 +21,11 @@ identity where detected; a case-only rename follows the same namespace rules.
 Names follow one portable rule set on every OS: NFC, at most 255 UTF-8 bytes,
 Unicode case-folded sibling uniqueness, no reserved device stems or forbidden
 characters, no code point unassigned in Unicode 18.0.0, and no trailing space/dot.
-A file whose on-disk name is NFD is accepted: the repository stores NFC, the local
-index remembers the spelling on disk, and the file is never renamed. New files are
-written as NFC. Invalid-name errors list every proposed
-repair. `init --fix-names` or `commit --fix-names` explicitly performs and reports
-deterministic renames before recording. Without that flag, names are not changed.
-Repair journals recover interrupted renames without overwriting a newly occupied
-destination. Non-UTF-8 names are refused rather than guessed.
+A repository and every checkout of it use one spelling for each name. `init` and
+`commit` rename a file or folder whose name breaks these rules, NFD names included,
+to its deterministic portable spelling, and report every rename. Repair journals
+recover interrupted renames without overwriting a newly occupied destination.
+Non-UTF-8 names are refused rather than guessed.
 
 Hidden files are ignored by default except explicit control policy. The chosen
 hidden-file setting lives in `.synck/checkout.json`, not scan cache. Ignore
@@ -51,15 +49,15 @@ spellings are repaired; equal valid case-fold keys keep the lexicographically fi
 spelling. Remaining conflicts receive ` (2)`, ` (3)`, and so on, with UTF-8
 truncation before the suffix when needed. Suggestions also avoid existing ignored
 entries, and a renamed ancestor is reflected in every reported descendant
-destination. Diagnostics rename nothing and publish no repository when
-initialization fails.
+destination.
 
-`init --fix-names` initializes repository metadata and then repairs non-portable
-names; as with ordinary initialization, existing files remain uncommitted.
-`commit --fix-names` repairs names throughout the observed checkout, remaps any
+`init` initializes repository metadata and then repairs non-portable names; as with
+ordinary initialization, existing files remain uncommitted. A `commit` whose scan
+finds non-portable names repairs them throughout the observed checkout, remaps any
 selected paths, and records the selected changes in one ordinary commit. Both report
-every rename, and the JSON commit result includes `renamed`. Ignored entries are
-never renamed or overwritten.
+every rename on stderr, and their JSON results include `renamed`. Ignored entries
+are never renamed or overwritten. `--fix-names`, which 0.2.0 required, is still
+accepted and changes nothing.
 
 Repairs are local filesystem operations, not history rewrites. A local journal
 records file and parent identities before mutation. Descendants move before

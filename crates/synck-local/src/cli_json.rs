@@ -168,7 +168,9 @@ pub(crate) fn error(value: &LocalError) -> Value {
         LocalError::Busy => "BUSY",
         LocalError::Locked { .. } => "LOCKED",
         LocalError::LockLost => "LOCK_LOST",
-        LocalError::Invalid(_) | LocalError::WorkingTree(_) => "INVALID",
+        LocalError::Invalid(_) | LocalError::NonPortableNames(_) | LocalError::WorkingTree(_) => {
+            "INVALID"
+        }
         LocalError::Integrity(_) => "INTEGRITY",
         LocalError::MonitorUnavailable(_) => "MONITOR_UNAVAILABLE",
         LocalError::AcceptedNeedsRecovery { .. } => "ACCEPTED_NEEDS_RECOVERY",

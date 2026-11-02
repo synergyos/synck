@@ -3161,7 +3161,7 @@ async fn atomic_commit_exceeds_old_event_cap_and_includes_a_rename() {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn init_reports_all_invalid_names_with_noncolliding_fixes() {
+async fn init_renames_all_invalid_names_with_noncolliding_fixes() {
     let temporary = tempfile::tempdir().unwrap();
     let root = temporary.path();
     fs::write(root.join(".synckignore"), b"ignored:entry\n").unwrap();
@@ -3170,20 +3170,28 @@ async fn init_reports_all_invalid_names_with_noncolliding_fixes() {
     }
     fs::create_dir(root.join("folder?")).unwrap();
     fs::write(root.join("folder?/NUL.txt"), b"keep").unwrap();
-    let error = init(root, "author").await.unwrap_err().to_string();
-    for diagnostic in [
-        "4 non-portable name(s)",
-        "\"bad:name\" -> \"bad_name (2)\"",
-        "\"bad?name\" -> \"bad_name (3)\"",
-        "\"folder?\" -> \"folder_\"",
-        "\"folder?/NUL.txt\" -> \"folder_/_NUL.txt\"",
+    let (_, repairs) =
+        synck_local::portable::init_repository_with_name_repair(root, "author", synck_local::StorageMode::Chunked)
+            .await
+            .unwrap();
+    let renamed = repairs
+        .iter()
+        .map(|repair| (repair.from.as_str(), repair.to.as_str()))
+        .collect::<Vec<_>>();
+    for expected in [
+        ("bad:name", "bad_name (2)"),
+        ("bad?name", "bad_name (3)"),
+        ("folder?", "folder_"),
+        ("folder?/NUL.txt", "folder_/_NUL.txt"),
     ] {
-        assert!(error.contains(diagnostic), "missing {diagnostic}: {error}");
+        assert!(renamed.contains(&expected), "missing {expected:?}: {renamed:?}");
     }
-    assert!(!error.contains("ignored:entry"));
-    assert!(!root.join(".synck").exists());
-    assert_eq!(fs::read(root.join("bad:name")).unwrap(), b"bad:name");
-    assert_eq!(fs::read(root.join("folder?/NUL.txt")).unwrap(), b"keep");
+    assert_eq!(repairs.len(), 4);
+    assert_eq!(fs::read(root.join("bad_name")).unwrap(), b"bad_name");
+    assert_eq!(fs::read(root.join("bad_name (2)")).unwrap(), b"bad:name");
+    assert_eq!(fs::read(root.join("bad_name (3)")).unwrap(), b"bad?name");
+    assert_eq!(fs::read(root.join("folder_/_NUL.txt")).unwrap(), b"keep");
+    assert_eq!(fs::read(root.join("ignored:entry")).unwrap(), b"ignored:entry");
 }
 
 #[cfg(unix)]

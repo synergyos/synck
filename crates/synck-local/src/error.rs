@@ -40,6 +40,10 @@ pub enum LocalError {
     Busy,
     #[error("{0}")]
     Invalid(String),
+    /// The checkout has names the portable rules refuse; repairing them
+    /// renames those entries.
+    #[error("{0}")]
+    NonPortableNames(String),
     #[error("{0}")]
     WorkingTree(#[from] WorkingTreeEditError),
     #[error("integrity error: {0}")]

@@ -31,7 +31,7 @@ pub(crate) fn validate(root: &Dir, working: &BTreeMap<String, WorkingNode>) -> R
             repair.from, repair.to, repair.reason
         ));
     }
-    Err(LocalError::Invalid(message))
+    Err(LocalError::NonPortableNames(message))
 }
 
 pub(crate) fn plan(root: &Dir, working: &BTreeMap<String, WorkingNode>) -> Result<Vec<NameRepair>> {
