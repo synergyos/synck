@@ -538,6 +538,9 @@ fn clones_share_one_history_and_never_overwrite_each_other() {
     assert_eq!(fs::read(full.join("docs/a.txt")).unwrap(), b"a\n");
     assert!(!docs.join("b.txt").exists());
     assert!(run(&docs, &["status"]).contains("working tree clean"));
+    // A clone's gc collects the origin's store and leaves its checkout alone.
+    run(&full, &["gc"]);
+    assert!(run(&origin, &["status"]).contains("working tree clean"));
 
     // Commits to different files land from both, with no action from either.
     fs::write(full.join("b.txt"), b"b full\n").unwrap();

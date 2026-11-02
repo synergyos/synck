@@ -189,6 +189,9 @@ pub struct PortableRepository {
     config: Config,
     storage: SqliteStorage,
     _lock: Arc<RepositoryLock>,
+    /// A clone's view of its origin: the origin's checkout files are the
+    /// origin's, though this view has no checkout.
+    origin_view: bool,
 }
 
 struct BoundedEmailSource<'a> { bytes: &'a mut Vec<u8>, limit: u64 }
@@ -480,6 +483,7 @@ impl PortableRepository {
             config,
             storage,
             _lock: lock,
+            origin_view: false,
         })
     }
 
@@ -505,6 +509,7 @@ impl PortableRepository {
             config: view,
             storage,
             _lock: lock,
+            origin_view: clone,
         })
     }
 
@@ -907,7 +912,7 @@ impl PortableRepository {
     /// Checkout files with no checkout are what a kill during `enable_checkout` left.
     /// A writer would read them, so a repository becoming one must not keep them.
     fn remove_abandoned_checkout(&self) -> Result<()> {
-        if self.config.checkout.is_some() {
+        if self.config.checkout.is_some() || self.origin_view {
             return Ok(());
         }
         for name in crate::checkout::CHECKOUT_FILES {
