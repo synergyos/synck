@@ -17,6 +17,19 @@ fn run(root: &Path, args: &[&str]) -> String {
 fn json(root: &Path, args: &[&str]) -> Value {
     serde_json::from_str(&run(root, args)).unwrap()
 }
+/// `cp -R` without the shell tool, which Windows lacks.
+fn copy_tree(from: &Path, to: &Path) {
+    fs::create_dir(to).unwrap();
+    for entry in fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let target = to.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_tree(&entry.path(), &target);
+        } else {
+            fs::copy(entry.path(), target).unwrap();
+        }
+    }
+}
 
 #[test]
 fn init_history_maintenance_and_copy_work_in_both_modes() {
@@ -649,7 +662,7 @@ async fn a_follower_ignores_checkout_state_until_its_config_names_a_writer() {
 
     let copy_of = |name: &str| {
         let copy = temp.path().join(name);
-        assert!(Command::new("cp").arg("-Rp").arg(&follower).arg(&copy).status().unwrap().success());
+        copy_tree(&follower, &copy);
         copy
     };
     // Nothing here is a checkout, so nothing here needs recovery.
