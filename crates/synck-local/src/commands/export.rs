@@ -104,7 +104,8 @@ impl Repository {
         }
         let temporary =
             self.copy_object_to_temporary(&parent_dir, &parent, &destination, &blob_id, size)?;
-        self.publish_temporary_file(&parent_dir, &parent, &temporary, &name, &destination, false)
+        self.publish_temporary_file(&parent_dir, &parent, &temporary, &name, &destination, false)?;
+        sync_directory(&parent)
     }
 
     pub async fn export_tree(
@@ -289,7 +290,7 @@ impl Repository {
                 LocalError::Integrity(format!("negative object size for {blob_id}"))
             })?;
             self.copy_blob(blob_id, expected_size, &mut temporary)?;
-            temporary.sync_all().at("sync", display)
+            sync_ordered(&temporary).at("sync", display)
         })() {
             parent_dir
                 .remove_file(&temporary_name)
@@ -322,7 +323,7 @@ impl Repository {
             } else {
                 rename_noreplace(&temporary, &destination).at("publish file", display)?;
             }
-            sync_directory(parent)
+            sync_directory_ordered(parent)
         })();
         if result.is_err() && path_exists_nofollow(&temporary)? {
             parent_dir

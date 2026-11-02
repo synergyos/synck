@@ -42,7 +42,7 @@ use crate::objects::verify_object_file;
 use crate::repository::windows_extended_length_path_units;
 use crate::repository::{
     Repository, is_cap_link_or_reparse, is_link_or_reparse, remove_tree_nofollow, rename_noreplace,
-    sync_directory,
+    sync_directory, sync_directory_ordered, sync_ordered,
 };
 use crate::tree_materialization::materialize_tree;
 use crate::working_tree_edit::{WORKING_TREE_EDIT_INTENT_NAME, WORKING_TREE_EDIT_STAGE_NAME};
@@ -380,7 +380,7 @@ fn path_exists_nofollow(path: &Path) -> Result<bool> {
     }
 }
 
-fn sync_display_parent(root: &Path, display: &str) -> Result<()> {
+pub(crate) fn sync_display_parent(root: &Path, display: &str) -> Result<()> {
     let relative = display_to_path(display);
     let parent = relative
         .parent()

@@ -258,6 +258,7 @@ impl Repository {
         let version = require_live_version(&state, version_id)?;
         self.guard_agent_paths(&[&display])?;
         self.write_working_file(&display, &version.blob_id, version.size, true)?;
+        crate::commands::sync_display_parent(self.root_path(), &display)?;
         self.refresh_worktree_identities().await
     }
 

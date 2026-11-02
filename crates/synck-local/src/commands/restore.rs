@@ -382,6 +382,7 @@ impl Repository {
             .await?;
         self.guard_agent_paths(&[&display])?;
         self.write_working_file(&display, &blob_id, size, true)?;
+        sync_display_parent(self.root_path(), &display)?;
         self.refresh_worktree_identities().await
     }
 

@@ -1603,6 +1603,62 @@ pub(crate) fn sync_open_directory(directory: &Dir, display: &Path) -> Result<()>
     }
 }
 
+/// Writes a file's data and orders it before every later write, without emptying
+/// the drive cache: about 0.5 ms on an Apple SSD against 4 ms for a full flush. It
+/// is durable after the operation's next full flush. Other systems sync in full.
+pub(crate) fn sync_ordered(file: &cap_std::fs::File) -> io::Result<()> {
+    #[cfg(target_vendor = "apple")]
+    {
+        use std::os::fd::{AsFd, AsRawFd};
+        // SAFETY: F_BARRIERFSYNC takes no argument and `file` keeps the descriptor open.
+        if unsafe { libc::fcntl(file.as_fd().as_raw_fd(), libc::F_BARRIERFSYNC) } != -1 {
+            return Ok(());
+        }
+        let error = io::Error::last_os_error();
+        if !barrier_unsupported(&error) {
+            return Err(error);
+        }
+    }
+    file.sync_all()
+}
+
+/// `sync_ordered` for a folder's entries.
+pub(crate) fn sync_directory_ordered(path: &Path) -> Result<()> {
+    #[cfg(target_vendor = "apple")]
+    {
+        use rustix::fd::AsRawFd;
+        use rustix::fs::{CWD, Mode, OFlags, openat};
+
+        let directory = openat(
+            CWD,
+            path,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+            Mode::empty(),
+        )
+        .map_err(std::io::Error::from)
+        .at("open directory", path)?;
+        // SAFETY: F_BARRIERFSYNC takes no argument and `directory` keeps the descriptor open.
+        if unsafe { libc::fcntl(directory.as_raw_fd(), libc::F_BARRIERFSYNC) } != -1 {
+            return Ok(());
+        }
+        let error = io::Error::last_os_error();
+        if !barrier_unsupported(&error) {
+            return Err(error).at("sync directory", path);
+        }
+        flush_directory(directory).at("sync directory", path)
+    }
+    #[cfg(not(target_vendor = "apple"))]
+    sync_directory(path)
+}
+
+#[cfg(target_vendor = "apple")]
+fn barrier_unsupported(error: &io::Error) -> bool {
+    matches!(
+        error.raw_os_error(),
+        Some(libc::ENOTSUP | libc::EOPNOTSUPP | libc::EINVAL | libc::ENOTTY)
+    )
+}
+
 pub(crate) fn sync_file(path: &Path) -> Result<()> {
     open_regular_file_with_access_nofollow(path, true)?
         .sync_all()

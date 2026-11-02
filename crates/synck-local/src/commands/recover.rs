@@ -641,7 +641,7 @@ impl Repository {
                 parent_dir
                     .create_dir(name)
                     .at("create recovered directory", display)?;
-                sync_directory(&self.root_path().join(parent))?;
+                sync_directory_ordered(&self.root_path().join(parent))?;
             }
             Err(source) => {
                 return Err(LocalError::Io {
