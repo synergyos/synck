@@ -18,6 +18,10 @@ pub(crate) struct Checkout {
     pub hidden_files: crate::repository::HiddenFilesMode,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending: Option<Transition>,
+    /// The repository sequence the working files are based on. Other working
+    /// trees commit to the same history, so HEAD may have moved past it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub baseline: Option<i64>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

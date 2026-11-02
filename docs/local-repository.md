@@ -125,6 +125,38 @@ projection caches and canonical history. Cache rebuilding preserves them;
 archives and repository imports omit them. Do not delete this database to clear
 locks. There is no canonical format change or server synchronization of leases.
 
+## Clones: one working tree per agent or person
+
+`synck clone <repository> <directory>` makes another working tree of a
+repository on this machine. It reads the origin's history and stored content in
+place, so it costs only its working files; `--include PATH` (repeatable) checks
+out only those files and folders, and `--author NAME` names its commits.
+
+```sh
+synck clone /work/matter /work/matter-agent-a --author agent-a --include Drafts
+cd /work/matter-agent-a
+synck commit -m "Revise the brief"   # lands in the origin's history at once
+synck pull                           # bring in everyone else's commits
+```
+
+Every working tree, the origin's included, is based on one commit, recorded in
+`checkout.json` as its baseline. `status` and `diff` compare with the baseline,
+so commits made from other working trees never look like local edits. `pull`
+writes what changed since the baseline to every file without a local change,
+keeps local changes, and then bases the tree on HEAD. A file changed both here
+and in history is reported with `CONFLICT` and the paths, and nothing is
+written. `commit`, `revert`, `mv`, `recover` and `version restore` pull first, so
+commits that touch different files land from every working tree with no extra
+step. `pull --include PATH` then changes the checked-out paths.
+
+A clone holds the origin's repository lock for each command, waiting for the
+other working trees' commands rather than returning `BUSY`. The origin must be on
+a local disk: `clone` refuses SMB, NFS, AFP and WebDAV, where SQLite cannot lock
+safely. Item and `repository` commands take the origin's path; `fsck` in a clone
+verifies the origin's history, its stored content and the clone's files, and
+`storage optimize` runs only in the origin. Moving or deleting the origin breaks
+its clones.
+
 ## Content and imported email
 
 FILE content is stored as its exact bytes, and its object ID is their SHA-256, so

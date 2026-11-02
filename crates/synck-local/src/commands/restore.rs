@@ -34,7 +34,7 @@ pub(crate) struct WorktreeRestoreEntry {
 
 /// Working paths that hold an item of the target tree. Any other working item,
 /// such as one created after an earlier target, is removed like an untracked entry.
-fn target_working_ids(
+pub(super) fn target_working_ids(
     target: &BTreeMap<String, CommittedNode>,
     mut working_ids: HashMap<String, ItemId>,
 ) -> HashMap<String, ItemId> {
@@ -436,9 +436,16 @@ impl Repository {
         &self,
         target_repo_seq: Option<i64>,
     ) -> Result<BTreeMap<String, CommittedNode>> {
-        let Some(repo_seq) = target_repo_seq else {
-            return self.committed_tree().await;
-        };
+        match target_repo_seq {
+            None => self.build_committed_tree(true).await,
+            Some(repo_seq) => self.selected_tree_at(repo_seq).await,
+        }
+    }
+
+    pub(crate) async fn selected_tree_at(
+        &self,
+        repo_seq: i64,
+    ) -> Result<BTreeMap<String, CommittedNode>> {
         let (_, mut tree) = self.historical_tree_at(&repo_seq.to_string()).await?;
         if let Some(paths) = self.checkout_paths() {
             tree.retain(|path, _| crate::checkout::selected(paths, path));
@@ -528,6 +535,7 @@ impl Repository {
         let stage = self.metadata_path().join(WORKTREE_RESTORE_STAGE_NAME);
         if !path_exists_nofollow(&stage)? {
             if self.record_restored_tree(&committed)? {
+                self.advance_baseline(intent.base_repo_seq)?;
                 return self.clear_intent(WORKTREE_RESTORE_INTENT_NAME);
             }
             if !source_validated {
@@ -548,6 +556,7 @@ impl Repository {
                 "restored working tree does not match accepted history".to_string(),
             ));
         }
+        self.advance_baseline(intent.base_repo_seq)?;
         self.remove_inverse_stage(WORKTREE_RESTORE_STAGE_NAME)?;
         self.clear_intent(WORKTREE_RESTORE_INTENT_NAME)
     }

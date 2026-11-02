@@ -60,6 +60,9 @@ pub enum LocalError {
         size: u64,
         expected: String,
     },
+    /// History and this working tree changed the same items since its baseline.
+    #[error("changed here and in the repository since this working tree was last updated: {}; commit or restore them, then pull", .paths.join(", "))]
+    ChangedOnBothSides { paths: Vec<String> },
     #[error("move from {from_path} to {to_path} is pending recovery: {detail}")]
     MoveNeedsRecovery {
         from_path: String,

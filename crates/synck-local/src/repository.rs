@@ -8,9 +8,9 @@ use std::sync::Arc;
 #[cfg(test)]
 use std::sync::{LazyLock, Mutex};
 
-use cap_fs_ext::{DirExt, FollowSymlinks, OpenOptionsFollowExt};
+use cap_fs_ext::DirExt;
 use cap_std::ambient_authority;
-use cap_std::fs::{Dir, OpenOptions as CapOpenOptions};
+use cap_std::fs::Dir;
 use rusqlite::{Connection, OptionalExtension, params, params_from_iter, types::Value};
 use serde::{Deserialize, Serialize};
 use synck_file_folder::{BlobRef, CurrentItem, Intent, Location, ProfileLifecycleState};
@@ -123,6 +123,10 @@ pub(crate) struct Config {
     /// A checkout needs keys this client does not hold, so only false is opened.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     encrypted: bool,
+    /// A clone names the repository root whose history and content objects it
+    /// reads in place. Its own `.synck` keeps only this working tree's state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) origin: Option<PathBuf>,
     /// Stored apart, in `checkout.json`.
     #[serde(skip)]
     pub(crate) checkout: Option<crate::checkout::Checkout>,
@@ -143,7 +147,22 @@ impl Config {
             author,
             authority: Some(authority),
             encrypted: false,
+            origin: None,
             checkout: Some(checkout),
+        }
+    }
+
+    pub(crate) fn clone_of(
+        origin: PathBuf,
+        repo_id: RepoId,
+        author: String,
+        authority: crate::portable::Authority,
+        checkout: crate::checkout::Checkout,
+        storage_mode: StorageMode,
+    ) -> Self {
+        Self {
+            origin: Some(origin),
+            ..Self::complete(repo_id, author, authority, checkout, storage_mode)
         }
     }
 
@@ -184,10 +203,22 @@ pub struct Repository {
     pub(crate) agent_lock_tokens: Vec<String>,
     root_path: PathBuf,
     metadata_path: PathBuf,
+    /// Where history and content objects live: `metadata_path`, or the
+    /// origin's `.synck` in a clone.
+    store_path: PathBuf,
     root: Dir,
     config: Config,
     _lock: Arc<RepositoryLock>,
+    /// A clone holds its origin's lock for the whole command, as the origin's
+    /// own commands do, so history has one writer at a time.
+    origin_lock: Option<Arc<RepositoryLock>>,
     storage: SqliteStorage,
+    local: crate::local_database::LocalDatabase,
+    /// The repository sequence this working tree's files are based on.
+    baseline: std::sync::atomic::AtomicI64,
+    /// The working tree was at HEAD when the command started, so every commit
+    /// the command itself appends advances its baseline.
+    at_head: std::sync::atomic::AtomicBool,
     repo: Repo,
     pub(crate) storage_mode: StorageMode,
     /// Idle connections to the history, local and object-store databases. While
@@ -216,42 +247,13 @@ impl Repository {
         let metadata_path = root_path.join(".synck");
         reject_bare_complete_repository(&metadata_path)?;
         validate_metadata_layout(&metadata_path)?;
-        let metadata_dir = Dir::open_ambient_dir(&metadata_path, ambient_authority())
-            .at("open repository metadata", &metadata_path)?;
         #[cfg(test)]
         run_open_lock_hook();
-        let lock_path = metadata_path.join("lock");
-        let mut lock_options = CapOpenOptions::new();
-        lock_options
-            .read(true)
-            .write(true)
-            .follow(FollowSymlinks::No);
-        let lock = metadata_dir
-            .open_with("lock", &lock_options)
-            .at("open", &lock_path)?
-            .into_std();
-        let lock = match RepositoryLock::acquire(lock) {
-            Ok(lock) => lock,
-            Err(std::fs::TryLockError::WouldBlock) => return Err(LocalError::Busy),
-            Err(std::fs::TryLockError::Error(source)) => {
-                return Err(LocalError::Io {
-                    action: "lock",
-                    path: lock_path,
-                    source,
-                });
-            }
-        };
-
+        let lock = acquire_lock(&metadata_path, false)?;
         let config_path = metadata_path.join("config.json");
-        let mut read_options = CapOpenOptions::new();
-        read_options.read(true).follow(FollowSymlinks::No);
-        let mut config_file = metadata_dir
-            .open_with("config.json", &read_options)
-            .at("open", &config_path)?;
         let mut config_bytes = Vec::new();
-        std::io::Read::read_to_end(&mut config_file, &mut config_bytes).at("read", &config_path)?;
-        // Close the reader before recovery replaces config.json on Windows.
-        drop(config_file);
+        std::io::Read::read_to_end(&mut open_regular_file_nofollow(&config_path)?, &mut config_bytes)
+            .at("read", &config_path)?;
         let mut config: Config = serde_json::from_slice(&config_bytes)?;
         config.checkout = crate::checkout::read_checkout(&metadata_path)?;
         if config.format_version != FORMAT_VERSION {
@@ -270,23 +272,41 @@ impl Repository {
         }
 
         ensure_monitor_lock(&metadata_path)?;
-
         cleanup_tmp(&metadata_path.join("tmp"))?;
+        let (store_path, origin_lock) = match &config.origin {
+            None => {
+                validate_store_layout(&metadata_path)?;
+                (metadata_path.clone(), None)
+            }
+            Some(origin) => {
+                let store_path = origin.join(".synck");
+                open_origin_store(&store_path, &config)?;
+                // Wait rather than fail: concurrent commits from clones are
+                // expected, and each holds the lock only for one command.
+                let origin_lock = acquire_lock(&store_path, true)?;
+                reject_unfinished_origin_operation(&store_path)?;
+                cleanup_tmp(&store_path.join("tmp"))?;
+                (store_path, Some(origin_lock))
+            }
+        };
 
-        let database_path = metadata_path.join("repository.sqlite3");
-        let storage = SqliteStorage::new(database_path);
+        let storage = SqliteStorage::new(store_path.join("repository.sqlite3"));
+        let local = crate::local_database::LocalDatabase::new(
+            storage.clone(),
+            metadata_path.join("repository.local.sqlite3"),
+        );
         let history = storage.open_readonly().map_err(|error| {
             LocalError::Integrity(format!("cannot read Core VCS schema: {error}"))
         })?;
-        initialize_checkout_schema(&storage)?;
-        validate_local_schema_version(&storage)?;
+        initialize_checkout_schema(&local)?;
+        validate_local_schema_version(&local)?;
         let mut keep_open = vec![
             std::sync::Mutex::new(history),
-            std::sync::Mutex::new(crate::local_database::open_readonly(&storage)?),
+            std::sync::Mutex::new(local.open_readonly()?),
         ];
         crate::checkout::validate_config(&config)?;
         let storage_mode = config.storage_mode.unwrap_or_default();
-        let object_store = ChunkStore::new(metadata_path.join(OBJECT_STORE_FILE), &config.repo_id);
+        let object_store = ChunkStore::new(store_path.join(OBJECT_STORE_FILE), &config.repo_id);
         match storage_mode {
             StorageMode::WholeFile => {
                 validate_optional_object_store_path(object_store.path())?;
@@ -306,14 +326,23 @@ impl Repository {
             agent_lock_tokens: Vec::new(),
             root_path,
             metadata_path,
+            store_path,
             root,
             config,
             _lock: lock,
+            origin_lock,
             storage,
+            local,
+            baseline: std::sync::atomic::AtomicI64::new(0),
+            at_head: std::sync::atomic::AtomicBool::new(false),
             repo,
             storage_mode,
             _keep_open: keep_open,
         };
+        // Publish whatever was accepted before this command, then decide whether
+        // this working tree is at HEAD. Nothing appended before now is its own.
+        repository.recover_current().await?;
+        repository.load_baseline()?;
         let _ = repository.validate_pending_operations()?;
         repository.recover_name_repairs()?;
         repository.finish_checkout_transition().await?;
@@ -322,6 +351,7 @@ impl Repository {
         repository.recover_pending_recover().await?;
         repository.recover_pending_revert().await?;
         repository.recover_pending_worktree_restore().await?;
+        repository.recover_pending_pull().await?;
         Ok(repository)
     }
 
@@ -356,11 +386,13 @@ impl Repository {
             .await
     }
 
+    /// The repository's history and objects. A clone's view is its origin's
+    /// store without any working tree.
     pub(crate) fn portable_view(&self) -> Result<crate::portable::PortableRepository> {
         crate::portable::PortableRepository::from_locked_checkout(
-            &self.root_path,
+            self.store_path.parent().expect("store path is inside a root"),
             self.storage.clone(),
-            Arc::clone(&self._lock),
+            Arc::clone(self.origin_lock.as_ref().unwrap_or(&self._lock)),
             &self.config,
             &self.agent_lock_tokens,
         )
@@ -372,8 +404,9 @@ impl Repository {
         lock: Arc<RepositoryLock>,
         config: Config,
     ) -> Result<Self> {
-        initialize_checkout_schema(&storage)?;
-        validate_local_schema_version(&storage)?;
+        let local = crate::local_database::LocalDatabase::beside(&storage);
+        initialize_checkout_schema(&local)?;
+        validate_local_schema_version(&local)?;
         let storage_mode = config.storage_mode.unwrap_or_default();
         let root_path = root_path
             .canonicalize()
@@ -385,25 +418,122 @@ impl Repository {
             Storage::new(Arc::new(storage.clone())),
             CoreConfig::default(),
         );
-        Ok(Self {
+        let repository = Self {
             agent_lock_tokens: Vec::new(),
             root_path,
+            store_path: metadata_path.clone(),
             metadata_path,
             root,
             config,
             _lock: lock,
+            origin_lock: None,
             storage,
+            local,
+            baseline: std::sync::atomic::AtomicI64::new(0),
+            at_head: std::sync::atomic::AtomicBool::new(false),
             repo,
             storage_mode,
             _keep_open: Vec::new(),
-        })
+        };
+        repository.load_baseline()?;
+        Ok(repository)
     }
 
     pub(crate) fn publish_checkout_config(&self) -> Result<()> {
-        crate::checkout::write_checkout(
-            &self.metadata_path,
-            self.config.checkout.as_ref().expect("checkout adapter"),
-        )
+        let mut checkout = self.config.checkout.clone().expect("checkout adapter");
+        checkout.baseline = Some(self.baseline());
+        crate::checkout::write_checkout(&self.metadata_path, &checkout)
+    }
+
+    /// The repository sequence this working tree's files are based on.
+    pub(crate) fn baseline(&self) -> i64 {
+        self.baseline.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    pub(crate) fn at_head(&self) -> bool {
+        self.at_head.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Read the recorded baseline from disk; an adapter's config may be older.
+    /// A working tree recorded before baselines existed had no other writer,
+    /// so it is at HEAD. A tree behind only by commits that change no file or
+    /// folder, such as imported email, is too.
+    fn load_baseline(&self) -> Result<()> {
+        let head = self.head_repo_seq()?;
+        let on_disk = crate::checkout::read_checkout(&self.metadata_path)?;
+        let recorded = on_disk.as_ref().and_then(|checkout| checkout.baseline);
+        let baseline = match recorded {
+            Some(baseline) if baseline > head => {
+                return Err(LocalError::Integrity(format!(
+                    "working tree is based on repository sequence {baseline}, past HEAD {head}"
+                )));
+            }
+            Some(baseline) if baseline < head && self.files_changed_after(baseline)? => baseline,
+            _ => head,
+        };
+        self.baseline.store(baseline, std::sync::atomic::Ordering::SeqCst);
+        self.at_head.store(baseline == head, std::sync::atomic::Ordering::SeqCst);
+        // A checkout being enabled is published later, with this baseline.
+        if on_disk.is_some() && recorded != Some(baseline) {
+            self.record_baseline(baseline)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn head_repo_seq(&self) -> Result<i64> {
+        let connection = self.storage.open_readonly().map_err(|error| {
+            LocalError::Integrity(format!("cannot read repository history: {error}"))
+        })?;
+        Ok(connection.query_row(
+            "SELECT COALESCE(max(repo_seq), 0) FROM vcs_commits WHERE repo_id = ?1",
+            [self.config.repo_id.as_str()],
+            |row| row.get(0),
+        )?)
+    }
+
+    fn files_changed_after(&self, repo_seq: i64) -> Result<bool> {
+        let connection = self.storage.open_readonly().map_err(|error| {
+            LocalError::Integrity(format!("cannot read repository history: {error}"))
+        })?;
+        Ok(connection.query_row(
+            "SELECT EXISTS(
+                 SELECT 1 FROM vcs_commits c JOIN vcs_events e
+                   ON e.repo_id = c.repo_id AND e.commit_pk = c.commit_pk
+                 WHERE c.repo_id = ?1 AND c.repo_seq > ?2
+                   AND (e.event_type GLOB 'FILE::*' OR e.event_type GLOB 'FOLDER::*'))",
+            params![self.config.repo_id.as_str(), repo_seq],
+            |row| row.get(0),
+        )?)
+    }
+
+    /// Base the working tree on `repo_seq`: HEAD after a commit made at HEAD,
+    /// a pull, or a restore of the whole tree.
+    pub(crate) fn advance_baseline(&self, repo_seq: i64) -> Result<()> {
+        self.at_head
+            .store(repo_seq == self.head_repo_seq()?, std::sync::atomic::Ordering::SeqCst);
+        if self.baseline() == repo_seq {
+            return Ok(());
+        }
+        self.record_baseline(repo_seq)?;
+        self.baseline.store(repo_seq, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    }
+
+    /// Change only the baseline on disk: a checkout transition may be holding
+    /// an unpublished selection in memory.
+    fn record_baseline(&self, repo_seq: i64) -> Result<()> {
+        let mut checkout = crate::checkout::read_checkout(&self.metadata_path)?
+            .ok_or_else(|| LocalError::Integrity("checkout state is missing".into()))?;
+        checkout.baseline = Some(repo_seq);
+        crate::checkout::write_checkout(&self.metadata_path, &checkout)
+    }
+
+    pub(crate) fn store_path(&self) -> &Path {
+        &self.store_path
+    }
+
+    pub(crate) fn local_db(&self) -> &crate::local_database::LocalDatabase {
+        &self.local
     }
 
     pub(crate) fn root_path(&self) -> &Path {
@@ -455,7 +585,7 @@ impl Repository {
         if mode == previous { return Ok(()); }
         // Invalidate before publishing the preference: an interrupted update
         // can cause an extra scan, but cannot reuse a scan under a new policy.
-        crate::local_database::open_writable(&self.storage)?.execute(
+        self.local.open_writable()?.execute(
             "DELETE FROM local_worktree_scan_state WHERE repo_id=?1",
             [self.config.repo_id.as_str()],
         )?;
@@ -469,7 +599,7 @@ impl Repository {
 
     pub(crate) fn object_store(&self) -> ChunkStore {
         ChunkStore::new(
-            self.metadata_path.join(OBJECT_STORE_FILE),
+            self.store_path.join(OBJECT_STORE_FILE),
             self.config.repo_id(),
         )
     }
@@ -526,6 +656,9 @@ impl Repository {
             }
         }
         self.catch_up_projection().await?;
+        if self.at_head() {
+            self.advance_baseline(self.head_repo_seq()?)?;
+        }
         Ok(())
     }
 
@@ -598,7 +731,7 @@ impl Repository {
         &self,
         intents: &mut [Intent],
     ) -> Result<BTreeMap<ItemId, CurrentItem>> {
-        let connection = crate::local_database::open_readonly(&self.storage).map_err(|error| {
+        let connection = self.local.open_readonly().map_err(|error| {
             LocalError::Invalid(format!("cannot read current FILE/FOLDER context: {error}"))
         })?;
         let created = intents
@@ -962,7 +1095,7 @@ impl Repository {
     }
 
     async fn catch_up_projection(&self) -> Result<()> {
-        let mut connection = crate::local_database::open_writable(&self.storage).map_err(|error| {
+        let mut connection = self.local.open_writable().map_err(|error| {
             LocalError::Invalid(format!("cannot open repository database: {error}"))
         })?;
         let transaction = connection.transaction()?;
@@ -1239,9 +1372,15 @@ pub(crate) fn discover_root(start: &Path) -> Result<PathBuf> {
     ))
 }
 
-fn validate_metadata_layout(metadata: &Path) -> Result<()> {
-    for name in ["config.json", "repository.sqlite3", "lock"] {
-        let path = metadata.join(name);
+/// History and content objects: a repository's own `.synck`, or a clone's origin.
+fn validate_store_layout(store: &Path) -> Result<()> {
+    validate_entries(store, &["repository.sqlite3", "lock"], &["objects", "tmp"])?;
+    validate_optional_object_store_path(&store.join(OBJECT_STORE_FILE))
+}
+
+fn validate_entries(directory: &Path, files: &[&str], directories: &[&str]) -> Result<()> {
+    for name in files {
+        let path = directory.join(name);
         let entry = fs::symlink_metadata(&path).at("inspect", &path)?;
         if !entry.file_type().is_file() || is_link_or_reparse(&entry) {
             return Err(LocalError::Invalid(format!(
@@ -1250,8 +1389,8 @@ fn validate_metadata_layout(metadata: &Path) -> Result<()> {
             )));
         }
     }
-    for name in ["objects", "tmp"] {
-        let path = metadata.join(name);
+    for name in directories {
+        let path = directory.join(name);
         let entry = fs::symlink_metadata(&path).at("inspect", &path)?;
         if !entry.file_type().is_dir() || is_link_or_reparse(&entry) {
             return Err(LocalError::Invalid(format!(
@@ -1260,7 +1399,68 @@ fn validate_metadata_layout(metadata: &Path) -> Result<()> {
             )));
         }
     }
-    validate_optional_object_store_path(&metadata.join(OBJECT_STORE_FILE))?;
+    Ok(())
+}
+
+pub(crate) fn acquire_lock(metadata: &Path, wait: bool) -> Result<Arc<RepositoryLock>> {
+    let lock_path = metadata.join("lock");
+    let file = open_regular_file_nofollow_writable(&lock_path)?;
+    let locked = if wait {
+        file.lock().map_err(std::fs::TryLockError::Error)
+    } else {
+        file.try_lock()
+    };
+    match locked {
+        Ok(()) => Ok(Arc::new(RepositoryLock { file })),
+        Err(std::fs::TryLockError::WouldBlock) => Err(LocalError::Busy),
+        Err(std::fs::TryLockError::Error(source)) => Err(LocalError::Io {
+            action: "lock",
+            path: lock_path,
+            source,
+        }),
+    }
+}
+
+/// A clone's origin must still be the repository it was cloned from.
+fn open_origin_store(store: &Path, clone: &Config) -> Result<()> {
+    let missing = |error: LocalError| {
+        LocalError::Invalid(format!(
+            "this clone's origin is not available at {}: {error}",
+            store.parent().expect("store path is inside a root").display()
+        ))
+    };
+    validate_store_layout(store).map_err(missing)?;
+    let path = store.join("config.json");
+    let bytes = fs::read(&path).at("read", &path).map_err(missing)?;
+    let origin: serde_json::Value = serde_json::from_slice(&bytes)?;
+    if origin.get("repo_id").and_then(serde_json::Value::as_str) != Some(clone.repo_id.as_str())
+        || origin.get("origin").is_some()
+    {
+        return Err(LocalError::Invalid(format!(
+            "{} is no longer this clone's origin repository",
+            store.parent().expect("store path is inside a root").display()
+        )));
+    }
+    Ok(())
+}
+
+/// The origin's own working tree finishes an interrupted operation against
+/// the HEAD it recorded. A commit from a clone first would strand it.
+fn reject_unfinished_origin_operation(store: &Path) -> Result<()> {
+    for name in crate::commands::INTENT_NAMES {
+        if store.join(name).symlink_metadata().is_ok() {
+            return Err(LocalError::Invalid(format!(
+                "the origin has an unfinished operation; run any synck command in {} first",
+                store.parent().expect("store path is inside a root").display()
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// This working tree's own state: a clone has no history or objects here.
+fn validate_metadata_layout(metadata: &Path) -> Result<()> {
+    validate_entries(metadata, &["config.json", "lock"], &["tmp"])?;
     let monitor_lock = metadata.join(MONITOR_LOCK_FILE);
     match fs::symlink_metadata(&monitor_lock) {
         Ok(entry) if entry.file_type().is_file() && !is_link_or_reparse(&entry) => {}
@@ -1407,8 +1607,8 @@ fn validate_local_schema(connection: &Connection) -> Result<()> {
     Ok(())
 }
 
-fn validate_local_schema_version(storage: &SqliteStorage) -> Result<()> {
-    let connection = crate::local_database::open_readonly(storage).map_err(|error| {
+fn validate_local_schema_version(local: &crate::local_database::LocalDatabase) -> Result<()> {
+    let connection = local.open_readonly().map_err(|error| {
         LocalError::Integrity(format!("cannot read local repository schema: {error}"))
     })?;
     let version: i64 = connection.query_row(
@@ -1667,6 +1867,10 @@ pub(crate) fn sync_file(path: &Path) -> Result<()> {
 
 pub(crate) fn open_regular_file_nofollow(path: &Path) -> Result<File> {
     open_regular_file_with_access_nofollow(path, false)
+}
+
+fn open_regular_file_nofollow_writable(path: &Path) -> Result<File> {
+    open_regular_file_with_access_nofollow(path, true)
 }
 
 fn open_regular_file_with_access_nofollow(path: &Path, writable: bool) -> Result<File> {
@@ -2230,7 +2434,7 @@ mod tests {
             .unwrap();
         repository.recover().await.unwrap();
 
-        let connection = crate::local_database::open_readonly(&repository.storage).unwrap();
+        let connection = repository.local.open_readonly().unwrap();
         let applied: i64 = connection
             .query_row(
                 "SELECT applied_repo_seq FROM local_projection_state WHERE repo_id = ?1",
@@ -2421,8 +2625,8 @@ mod tests {
 }
 
 /// Initialize the separate checkout database without modifying canonical history.
-pub(crate) fn initialize_checkout_schema(storage: &SqliteStorage) -> Result<()> {
-    let mut connection = crate::local_database::create(storage)?;
+pub(crate) fn initialize_checkout_schema(local: &crate::local_database::LocalDatabase) -> Result<()> {
+    let mut connection = local.create()?;
     let transaction = connection.transaction()?;
     let exists: bool = transaction.query_row(
         "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='local_schema_meta')",

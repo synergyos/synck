@@ -15,7 +15,6 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use synck_vcs::naming::compute_name_key;
 use synck_vcs::types::{ObjectId, ItemCursor, ItemId, ItemRow, LifecycleState};
-use synck_vcs_sqlite::SqliteStorage;
 use uuid::Uuid;
 
 use crate::error::{IoContext, LocalError, Result};
@@ -214,8 +213,14 @@ impl Repository {
         }
     }
 
+    /// The tree the working files are based on: HEAD's, or the baseline's when
+    /// another working tree has committed since.
     pub(crate) async fn committed_tree(&self) -> Result<BTreeMap<String, CommittedNode>> {
-        self.build_committed_tree(true).await
+        if self.at_head() {
+            self.build_committed_tree(true).await
+        } else {
+            self.selected_tree_at(self.baseline()).await
+        }
     }
 
     pub(crate) async fn build_committed_tree(
@@ -272,7 +277,7 @@ impl Repository {
             }
         }
 
-        let heads = load_file_heads(self.storage(), self.config().repo_id().as_str())?;
+        let heads = load_file_heads(self.local_db(), self.config().repo_id().as_str())?;
         let by_id: HashMap<ItemId, &ItemRow> = items
             .iter()
             .map(|item| (item.item_id.clone(), item))
@@ -364,7 +369,7 @@ impl Repository {
             .unwrap()
             .push(self.config().repo_id().to_string());
         let committed = self.committed_tree().await?;
-        let cache = load_worktree_cache(self.storage(), self.config().repo_id().as_str())?;
+        let cache = load_worktree_cache(self.local_db(), self.config().repo_id().as_str())?;
         let scan = self.scan_observed(&committed, &cache)?;
         let (changes, working_ids) = self.reconcile_observation(&committed, &scan)?;
         Ok((committed, scan.working, changes, working_ids))
@@ -385,7 +390,7 @@ impl Repository {
             .unwrap()
             .push(self.config().repo_id().to_string());
         let committed = self.committed_tree().await?;
-        let cache = load_worktree_cache(self.storage(), self.config().repo_id().as_str())?;
+        let cache = load_worktree_cache(self.local_db(), self.config().repo_id().as_str())?;
         let (mut complete, mut scan) = self.scan_inspection(&committed, &cache)?;
         self.filter_checkout_observation(&mut complete);
         self.filter_checkout_observation(&mut scan.working);
@@ -399,7 +404,7 @@ impl Repository {
         scan: &ScanResult,
     ) -> Result<(Vec<Change>, HashMap<String, ItemId>)> {
         let working = &scan.working;
-        let records = load_identity_records(self.storage(), self.config().repo_id().as_str())?;
+        let records = load_identity_records(self.local_db(), self.config().repo_id().as_str())?;
         let matched = reconcile_identities(committed, working, &records);
         let working_ids = matched
             .iter()
@@ -408,7 +413,7 @@ impl Repository {
         let changes = diff(committed, working, &matched, &working_ids);
         let identities = next_identity_records(committed, working, &records, &matched);
         publish_worktree_observation(
-            self.storage(),
+            self.local_db(),
             self.config().repo_id().as_str(),
             scan,
             &identities,
@@ -424,14 +429,14 @@ impl Repository {
             .unwrap()
             .push(self.config().repo_id().to_string());
         let committed = self.committed_tree().await?;
-        let cache = load_worktree_cache(self.storage(), self.config().repo_id().as_str())?;
+        let cache = load_worktree_cache(self.local_db(), self.config().repo_id().as_str())?;
         let scan = self.scan_observed(&committed, &cache)?;
         let working = &scan.working;
-        let records = load_identity_records(self.storage(), self.config().repo_id().as_str())?;
+        let records = load_identity_records(self.local_db(), self.config().repo_id().as_str())?;
         let matched = reconcile_identities(&committed, working, &records);
         let identities = next_identity_records(&committed, working, &records, &matched);
         publish_worktree_observation(
-            self.storage(),
+            self.local_db(),
             self.config().repo_id().as_str(),
             &scan,
             &identities,
@@ -449,7 +454,7 @@ impl Repository {
         target: &BTreeMap<String, CommittedNode>,
     ) -> Result<bool> {
         let repo_id = self.config().repo_id().as_str();
-        let cache = load_worktree_cache(self.storage(), repo_id)?;
+        let cache = load_worktree_cache(self.local_db(), repo_id)?;
         let scan = self.scan_observed(target, &cache)?;
         let matches = scan.working.len() == target.len()
             && target.iter().all(|(path, node)| {
@@ -462,7 +467,7 @@ impl Repository {
         if !matches {
             return Ok(false);
         }
-        let previous = load_identity_records(self.storage(), repo_id)?;
+        let previous = load_identity_records(self.local_db(), repo_id)?;
         let identities = target
             .iter()
             .map(|(path, node)| IdentityRecord {
@@ -472,7 +477,7 @@ impl Repository {
                 path: path.clone(),
             })
             .collect::<Vec<_>>();
-        publish_worktree_observation(self.storage(), repo_id, &scan, &identities, &previous)?;
+        publish_worktree_observation(self.local_db(), repo_id, &scan, &identities, &previous)?;
         Ok(true)
     }
 
@@ -538,7 +543,7 @@ impl Repository {
         deleted: &BTreeSet<ItemId>,
         updated: &BTreeMap<ItemId, IdentityRecord>,
     ) -> Result<()> {
-        let mut connection = crate::local_database::open_writable(self.storage()).map_err(|error| {
+        let mut connection = self.local_db().open_writable().map_err(|error| {
             LocalError::Invalid(format!("cannot update committed identities: {error}"))
         })?;
         let transaction = connection.transaction()?;
@@ -620,7 +625,7 @@ impl Repository {
                 .is_some_and(|c| c.pending.is_none())
             {
                 let records =
-                    load_identity_records(self.storage(), self.config().repo_id().as_str())?;
+                    load_identity_records(self.local_db(), self.config().repo_id().as_str())?;
                 let matched = reconcile_identities(committed, &scan.working, &records);
                 if let Some((item_id, moved_to)) = matched
                     .iter()
@@ -1310,10 +1315,10 @@ fn reconcile_windows_tunneled_relocations(
 }
 
 pub(crate) fn load_identity_records(
-    storage: &SqliteStorage,
+    local: &crate::local_database::LocalDatabase,
     repo_id: &str,
 ) -> Result<Vec<IdentityRecord>> {
-    let connection = crate::local_database::open_readonly(storage).map_err(|error| {
+    let connection = local.open_readonly().map_err(|error| {
         LocalError::Integrity(format!("cannot read worktree identities: {error}"))
     })?;
     let mut statement = connection.prepare(
@@ -1389,8 +1394,8 @@ fn validate_plain_digest(digest: &str) -> Result<()> {
     Ok(())
 }
 
-fn load_worktree_cache(storage: &SqliteStorage, repo_id: &str) -> Result<WorktreeCache> {
-    let connection = crate::local_database::open_readonly(storage)
+fn load_worktree_cache(local: &crate::local_database::LocalDatabase, repo_id: &str) -> Result<WorktreeCache> {
+    let connection = local.open_readonly()
         .map_err(|error| LocalError::Integrity(format!("cannot read worktree cache: {error}")))?;
     let mut statement = connection.prepare(
         "SELECT path, node_kind, device_id, file_id, birth_seconds, birth_nanos, size_bytes,
@@ -1595,7 +1600,7 @@ pub(crate) fn next_identity_records(
 }
 
 fn publish_worktree_observation(
-    storage: &SqliteStorage,
+    local: &crate::local_database::LocalDatabase,
     repo_id: &str,
     scan: &ScanResult,
     identities: &[IdentityRecord],
@@ -1603,7 +1608,7 @@ fn publish_worktree_observation(
 ) -> Result<()> {
     let working = &scan.working;
     let incremental_scopes = scan.incremental_scopes.as_deref();
-    let mut connection = crate::local_database::open_writable(storage)
+    let mut connection = local.open_writable()
         .map_err(|error| LocalError::Invalid(format!("cannot update worktree cache: {error}")))?;
     let transaction = connection.transaction()?;
     if let Some(scopes) = incremental_scopes {
@@ -1782,10 +1787,10 @@ fn build_item_path(
 }
 
 fn load_file_heads(
-    storage: &SqliteStorage,
+    local: &crate::local_database::LocalDatabase,
     repo_id: &str,
 ) -> Result<HashMap<ItemId, (i64, ObjectId, i64)>> {
-    let connection = crate::local_database::open_readonly(storage)
+    let connection = local.open_readonly()
         .map_err(|error| LocalError::Integrity(format!("cannot read file heads: {error}")))?;
     let mut statement = connection.prepare(
         "SELECT item_id, item_seq, blob_id, size_bytes

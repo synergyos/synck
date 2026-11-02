@@ -164,6 +164,7 @@ impl Repository {
         destination_input: &Path,
         message: &str,
     ) -> Result<String> {
+        self.pull_if_behind().await?;
         if message.is_empty() {
             return Err(LocalError::Invalid(
                 "move message must not be empty".to_string(),

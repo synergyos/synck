@@ -690,6 +690,7 @@ pub(super) fn entry_matches_revert_state(
 impl Repository {
     pub async fn revert(&self, revision: &str, message: &str) -> Result<String> {
         self.guard_agent_all()?;
+        self.pull_if_behind().await?;
         if message.is_empty() {
             return Err(LocalError::Invalid(
                 "revert message must not be empty".to_string(),
@@ -947,7 +948,13 @@ impl Repository {
             .map_err(Into::into)
     }
 
+    /// Read every object a materialization writes before it moves anything.
+    /// When it only creates entries, a failed write loses nothing and each
+    /// write verifies its bytes, so a whole extra read is skipped.
     pub(super) fn validate_inverse_objects(&self, items: &[RevertIntentItem]) -> Result<()> {
+        if items.iter().all(|item| !item.after.live) {
+            return Ok(());
+        }
         for item in items {
             let Some(before) = item.before.as_ref().filter(|state| state.live) else {
                 continue;
@@ -1113,10 +1120,34 @@ impl Repository {
                 .path
                 .cmp(&right.before.as_ref().expect("filtered revert file").path)
         });
-        for item in files {
-            self.publish_revert_file(&stage, item)?;
-        }
-        Ok(())
+        // Files are independent once their folders exist; decompressing and
+        // verifying one overlaps another's writes.
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let failed = std::sync::atomic::AtomicBool::new(false);
+        let publish = || -> Result<()> {
+            loop {
+                let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let Some(item) = files.get(index) else {
+                    return Ok(());
+                };
+                if failed.load(std::sync::atomic::Ordering::Relaxed) {
+                    return Ok(());
+                }
+                if let Err(error) = self.publish_revert_file(&stage, item) {
+                    failed.store(true, std::sync::atomic::Ordering::Relaxed);
+                    return Err(error);
+                }
+            }
+        };
+        std::thread::scope(|scope| {
+            let workers = (0..files.len().min(4))
+                .map(|_| scope.spawn(publish))
+                .collect::<Vec<_>>();
+            workers
+                .into_iter()
+                .map(|worker| worker.join().expect("file publication thread panicked"))
+                .fold(Ok(()), Result::and)
+        })
     }
 
     pub(super) fn ensure_inverse_stage(&self, stage_name: &str) -> Result<PathBuf> {

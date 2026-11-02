@@ -119,8 +119,8 @@ impl Repository {
         std::io::Seek::rewind(&mut source).at("rewind capture source", display)?;
         let store = self.object_store();
         let captured = crate::raw_object::capture(source, expected_size, regions,
-            &self.metadata_path().join("objects"),
-            &self.metadata_path().join("tmp"),
+            &self.store_path().join("objects"),
+            &self.store_path().join("tmp"),
             (self.storage_mode() == StorageMode::Chunked).then_some(&store), checkpoint_chunk_store)?;
         let after = root.symlink_metadata(relative).at("inspect", display)?;
         if !after.file_type().is_file() || is_cap_link_or_reparse(&after)

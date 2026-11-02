@@ -433,6 +433,11 @@ impl PortableRepository {
             &root.join(".synck/config.json"),
         )?;
         let value: serde_json::Value = serde_json::from_slice(&bytes)?;
+        if let Some(origin) = value.get("origin").and_then(serde_json::Value::as_str) {
+            return Err(invalid(format!(
+                "this is a clone of {origin}; give repository and item commands the origin's path"
+            )));
+        }
         let version = value.get("format_version").and_then(serde_json::Value::as_u64);
         if version != Some(u64::from(FORMAT_VERSION)) {
             return Err(unsupported_format(version));
@@ -485,9 +490,16 @@ impl PortableRepository {
         config: &crate::repository::Config,
         tokens: &[String],
     ) -> Result<Self> {
-        // `checkout` lives in its own file, so serde does not carry it.
-        let mut view: Config = serde_json::from_value(serde_json::to_value(config)?)?;
-        view.checkout = config.checkout.clone();
+        // `checkout` lives in its own file, so serde does not carry it. A
+        // clone's view is its origin's store, with no working tree.
+        let mut value = serde_json::to_value(config)?;
+        let clone = value
+            .as_object_mut()
+            .expect("config is an object")
+            .remove("origin")
+            .is_some();
+        let mut view: Config = serde_json::from_value(value)?;
+        view.checkout = if clone { None } else { config.checkout.clone() };
         Ok(Self {
             agent_lock_tokens: tokens.to_vec(),
             root: root.to_path_buf(),
@@ -751,13 +763,14 @@ impl PortableRepository {
             ));
         }
         self.staging_directory()?;
-        crate::repository::initialize_checkout_schema(&self.storage)?;
+        crate::repository::initialize_checkout_schema(&crate::local_database::LocalDatabase::beside(&self.storage))?;
         let checkout = crate::checkout::Checkout {
             hidden_files: Default::default(),
             paths,
             pending: Some(crate::checkout::Transition {
                 previous_paths: None,
             }),
+            baseline: None,
         };
         // Share this exact lock with the temporary adapter. No second opener
         // or lock gap is involved.
@@ -811,6 +824,25 @@ impl PortableRepository {
     pub fn repo_id(&self) -> &RepoId {
         &self.config.repo_id
     }
+    /// The authority and author a clone of this repository writes with.
+    pub(crate) fn clone_source(&self) -> Result<(Authority, Option<String>)> {
+        if self.config.authority == Authority::Follower || self.config.encrypted {
+            return Err(invalid(
+                "only an unencrypted repository that accepts local commits can be cloned",
+            ));
+        }
+        Ok((self.config.authority, self.config.author.clone()))
+    }
+
+    pub(crate) fn head_repo_seq(&self) -> Result<i64> {
+        let connection = self.storage.open_readonly().map_err(corrupt)?;
+        Ok(connection.query_row(
+            "SELECT COALESCE(max(repo_seq), 0) FROM vcs_commits WHERE repo_id = ?1",
+            [self.repo_id().as_str()],
+            |row| row.get(0),
+        )?)
+    }
+
     pub fn authority(&self) -> Authority {
         self.config.authority
     }
@@ -1792,7 +1824,7 @@ impl PortableRepository {
         if self.config.checkout.is_some() {
             let mut findings = crate::integrity::Findings::default();
             crate::integrity::verify_projection(
-                &crate::local_database::open_readonly(&self.storage)?,
+                &crate::local_database::LocalDatabase::beside(&self.storage).open_readonly()?,
                 self.repo_id().as_str(),
                 &expected_heads,
                 &mut findings,
@@ -2882,7 +2914,10 @@ pub async fn verify_complete_repository(start: &Path) -> Result<Option<Verificat
         &root.join(".synck/config.json"),
     )?;
     let value: serde_json::Value = serde_json::from_slice(&bytes)?;
-    if value.get("format_version").and_then(|v| v.as_u64()) != Some(u64::from(FORMAT_VERSION)) {
+    // A clone verifies its origin's history with its own working tree.
+    if value.get("format_version").and_then(|v| v.as_u64()) != Some(u64::from(FORMAT_VERSION))
+        || value.get("origin").is_some()
+    {
         return Ok(None);
     }
     let repository = PortableRepository::open(&root)?;
@@ -3106,7 +3141,7 @@ pub async fn init_repository_with_name_repair(
             .project_imported_history(&repo_id)
             .await
             .map_err(corrupt)?;
-        crate::repository::initialize_checkout_schema(&storage)?;
+        crate::repository::initialize_checkout_schema(&crate::local_database::LocalDatabase::beside(&storage))?;
         write_new(
             &metadata.join("config.json"),
             &serde_json::to_vec(&Config {
@@ -3125,6 +3160,7 @@ pub async fn init_repository_with_name_repair(
                 hidden_files: Default::default(),
                 paths: Vec::new(),
                 pending: None,
+                baseline: None,
             },
         )?;
         if storage_mode == StorageMode::Chunked {

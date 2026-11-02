@@ -81,18 +81,29 @@ symlinks outside the repository.
 Configuration is an object with required `format_version: 7`, `repo_id`,
 `authority` (`LOCAL`, `FOLLOWER`, or `INDEPENDENT_LOCAL`), optional
 `storage_mode` (`WHOLE_FILE`, the default, or `CHUNKED`), `author` (string, required
-unless `authority` is `FOLLOWER`), and optional `encrypted` (boolean, default false).
+unless `authority` is `FOLLOWER`), optional `encrypted` (boolean, default false) and
+optional `origin`.
 Unknown fields are rejected. `encrypted` is fixed when the repository is created and
 copies keep it. `author` is the default author ID for new commits, at most 256 bytes;
 it is not history.
 
 `.synck/checkout.json` holds mutable checkout state, apart from the file that
 identifies the repository. It is an object with `paths` (array of selected
-relative paths; empty means all), `hidden_files` (`ignore`, default, or `track`)
-and optional `pending`, which holds `previous_paths` (null or an array) while
-transitioning its materialized paths. A missing file means the repository has no
-working tree, and a `FOLLOWER` has none whatever the file says. It is not canonical
-history and copies do not carry it.
+relative paths; empty means all), `hidden_files` (`ignore`, default, or `track`),
+optional `pending`, which holds `previous_paths` (null or an array) while
+transitioning its materialized paths, and optional `baseline`: the `repo_seq` of
+the commit the working files are based on, which is HEAD unless another working
+tree has committed since. A missing `baseline` means HEAD. A missing file means
+the repository has no working tree, and a `FOLLOWER` has none whatever the file
+says. It is not canonical history and copies do not carry it.
+
+A clone is another working tree of a repository on the same machine. Its
+`config.json` names the absolute path of the origin's root in `origin`, and its
+`.synck/` holds `config.json`, `checkout.json`, `lock` and `tmp/` but no history
+or objects: it reads the origin's `repository.sqlite3`, `objects/` and
+`object-store.sqlite3` in place, holding the origin's `lock` while it does.
+A clone is not a repository a reader can open on its own, and it cannot be
+copied or cloned; archive it to get a repository.
 
 Authority is local operational configuration, not a cryptographic credential.
 `FOLLOWER` is an imported copy, and it refuses writes. `INDEPENDENT_LOCAL` accepts

@@ -144,9 +144,7 @@ fn help_exposes_only_supported_local_workflows() {
     let temp = tempfile::tempdir().unwrap();
     let help = run(temp.path(), &["--help"]);
     for command in [
-        "clone",
         "push",
-        "pull",
         "workspace",
         "import",
         "restore-archive",
@@ -510,6 +508,57 @@ fn restore_tree_visits_an_earlier_commit_and_commits_a_rollback() {
     assert!(run(&root, &["status"]).contains("working tree clean"));
     assert_eq!((id("plan.txt"), id("Docs/notes.txt")), (plan, notes));
     assert_eq!(fs::read(root.join("scratch.tmp")).unwrap(), b"ignored\n");
+}
+
+fn fails(root: &Path, args: &[&str]) -> Value {
+    let output = Command::new(env!("CARGO_BIN_EXE_synck"))
+        .current_dir(root)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "{args:?} succeeded");
+    serde_json::from_slice(&output.stderr).unwrap()
+}
+
+#[test]
+fn clones_share_one_history_and_never_overwrite_each_other() {
+    let temp = tempfile::tempdir().unwrap();
+    let origin = temp.path().join("origin");
+    fs::create_dir_all(origin.join("docs")).unwrap();
+    fs::write(origin.join("docs/a.txt"), b"a\n").unwrap();
+    fs::write(origin.join("b.txt"), b"b\n").unwrap();
+    run(&origin, &["init", "--author", "origin"]);
+    run(&origin, &["commit", "-m", "start"]);
+    run(temp.path(), &["clone", "origin", "full", "--author", "full"]);
+    run(temp.path(), &["clone", "origin", "docs", "--include", "docs"]);
+    let (full, docs) = (temp.path().join("full"), temp.path().join("docs"));
+    // History and content stay in the origin; a clone keeps its working state.
+    for name in ["repository.sqlite3", "objects", "object-store.sqlite3"] {
+        assert!(!full.join(".synck").join(name).exists(), "{name}");
+    }
+    assert_eq!(fs::read(full.join("docs/a.txt")).unwrap(), b"a\n");
+    assert!(!docs.join("b.txt").exists());
+    assert!(run(&docs, &["status"]).contains("working tree clean"));
+
+    // Commits to different files land from both, with no action from either.
+    fs::write(full.join("b.txt"), b"b full\n").unwrap();
+    run(&full, &["commit", "-m", "full"]);
+    fs::write(docs.join("docs/a.txt"), b"a docs\n").unwrap();
+    run(&docs, &["commit", "-m", "docs"]);
+    assert_eq!(fs::read(docs.join("docs/a.txt")).unwrap(), b"a docs\n");
+    // The origin's files are based on its own last commit; pull brings the rest.
+    assert!(run(&origin, &["status"]).contains("working tree clean"));
+    let pulled = json(&origin, &["pull", "--json"]);
+    assert_eq!(pulled["updated"], serde_json::json!(["b.txt", "docs/a.txt"]));
+    assert_eq!(fs::read(origin.join("b.txt")).unwrap(), b"b full\n");
+    assert!(run(&origin, &["status"]).contains("working tree clean"));
+
+    // A file changed on both sides is reported, never overwritten.
+    fs::write(full.join("docs/a.txt"), b"a mine\n").unwrap();
+    let error = fails(&full, &["commit", "-m", "mine", "--json"]);
+    assert_eq!(error["error"]["kind"], "CONFLICT");
+    assert_eq!(error["error"]["paths"], serde_json::json!(["docs/a.txt"]));
+    assert_eq!(fs::read(full.join("docs/a.txt")).unwrap(), b"a mine\n");
 }
 
 #[test]

@@ -31,6 +31,16 @@ moved and renamed. Modified moves have an M+ prefix.
     synck mv <source> <destination> -m "<reason>"
 An external move can instead be recorded by ordinary commit.
 
+CLONES
+
+Give each agent or person its own working tree of a local repository:
+    synck clone <repository> <directory> [--author <name>] [--include <path>]...
+    synck pull [--include <path>]...
+A clone reads the origin's history in place; its commits land in the origin at
+once. pull brings in commits made from other working trees and keeps local
+changes; commit pulls first. CONFLICT lists paths changed here and in history;
+nothing is written. Repository and item commands take the origin's path.
+
 LOCAL AGENT RESERVATIONS
 
 Reserve before reading/editing a tracked file or creating a new file:

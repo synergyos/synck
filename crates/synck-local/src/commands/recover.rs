@@ -410,6 +410,7 @@ impl Repository {
 
     pub async fn recover_item(&self, input: &str, message: &str) -> Result<String> {
         self.guard_agent_all()?;
+        self.pull_if_behind().await?;
         // A journaled intent must complete, so nothing it holds may be refused later.
         validate_commit_message(Some(message))?;
         let root_item_id = match ItemId::parse(input) {

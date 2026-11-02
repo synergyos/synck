@@ -141,6 +141,29 @@ enum Command {
         #[arg(long, default_value = "CHUNKED", value_parser = parse_storage_mode)]
         storage_mode: synck_local::StorageMode,
     },
+    /// Make another working tree of a repository on this machine.
+    ///
+    /// The clone reads the origin's history and stored content in place, so it
+    /// costs only its working files. Commits from every working tree go into
+    /// the same history; `pull` brings in the others'.
+    Clone {
+        /// Repository directory to clone; it must be on a local disk.
+        origin: PathBuf,
+        /// New or empty directory for the working tree.
+        destination: PathBuf,
+        /// Check out only this file or folder; repeat for more.
+        #[arg(long = "include")]
+        include: Vec<String>,
+        /// Name recorded on commits from the clone; the origin's by default.
+        #[arg(long)]
+        author: Option<String>,
+    },
+    /// Bring in commits made from other working trees, keeping local changes.
+    Pull {
+        /// Then check out only these files and folders; repeat for more.
+        #[arg(long = "include")]
+        include: Vec<String>,
+    },
     /// Show repository identity, format, author, and current head.
     Info,
     /// Summarize repository identity, current changes, and recent commits.
@@ -787,6 +810,32 @@ async fn run(cli: Cli) -> Result<ExitCode, (LocalError, bool)> {
         );
         return Ok(ExitCode::SUCCESS);
     }
+    if let Command::Clone {
+        origin,
+        destination,
+        include,
+        author,
+    } = &cli.command
+    {
+        let repository =
+            synck_local::clone_repository(origin, destination, author.as_deref(), include)
+                .await
+                .map_err(|error| (error, false))?;
+        print_outcome(
+            cli.json,
+            json!({
+                "repo_id": repository.repository_id(),
+                "path": repository.repository_root(),
+                "checkout_paths": repository.checkout_paths(),
+            }),
+            format_args!(
+                "cloned {} into {}",
+                origin.display(),
+                repository.repository_root().display()
+            ),
+        );
+        return Ok(ExitCode::SUCCESS);
+    }
     if matches!(
         cli.command,
         Command::Storage {
@@ -860,7 +909,7 @@ async fn run_checkout(
         Command::Repository { .. } | Command::Item { .. } => unreachable!(),
         Command::MonitorServer { .. } => unreachable!(),
         Command::Instructions => unreachable!(),
-        Command::Init { .. } => unreachable!(),
+        Command::Init { .. } | Command::Clone { .. } => unreachable!(),
         Command::Info => async {
             let info = repository.info();
             let head = repository
@@ -1504,6 +1553,38 @@ async fn run_checkout(
                 json,
                 json!({"restored": path, "item_seq": item_seq}),
                 format_args!("restored {}", path.display()),
+            );
+            Ok(ExitCode::SUCCESS)
+        }
+        .await,
+        Command::Pull { include } => async {
+            let outcome = repository.pull().await.map_err(|error| (error, false))?;
+            if !include.is_empty() {
+                repository
+                    .set_checkout_paths(&include)
+                    .await
+                    .map_err(|error| (error, false))?;
+            }
+            print_outcome(
+                json,
+                json!({
+                    "from_repo_seq": outcome.from_repo_seq,
+                    "to_repo_seq": outcome.to_repo_seq,
+                    "updated": outcome.updated,
+                    "checkout_paths": repository.checkout_paths(),
+                }),
+                format_args!(
+                    "{}",
+                    if outcome.from_repo_seq == outcome.to_repo_seq {
+                        "already up to date".to_string()
+                    } else {
+                        format!(
+                            "updated {} paths to sequence {}",
+                            outcome.updated.len(),
+                            outcome.to_repo_seq
+                        )
+                    }
+                ),
             );
             Ok(ExitCode::SUCCESS)
         }
@@ -2156,6 +2237,7 @@ fn uses_worktree(command: &Command) -> bool {
             Command::Recover { .. }
                 | Command::Restore { .. }
                 | Command::RestoreTree { .. }
+                | Command::Pull { .. }
                 | Command::Version {
                     command: VersionCommand::Restore { .. },
                 }

@@ -49,9 +49,10 @@ use crate::working_tree_edit::{WORKING_TREE_EDIT_INTENT_NAME, WORKING_TREE_EDIT_
 use crate::worktree::{Change, ChangeKind, CommittedNode, NodeKind, WorkingNode};
 
 /// Each is an interrupted operation that the next checkout open finishes.
-pub(crate) const INTENT_NAMES: [&str; 6] = [
+pub(crate) const INTENT_NAMES: [&str; 7] = [
     crate::name_repair_journal::JOURNAL,
     MOVE_INTENT_NAME,
+    PULL_INTENT_NAME,
     RECOVER_INTENT_NAME,
     REVERT_INTENT_NAME,
     WORKTREE_RESTORE_INTENT_NAME,
@@ -62,6 +63,7 @@ mod commit;
 mod export;
 mod history;
 mod moves;
+mod pull;
 mod recover;
 mod restore;
 mod revert;
@@ -70,6 +72,8 @@ mod tests;
 
 pub use commit::*;
 pub use history::*;
+pub use pull::PullOutcome;
+use pull::{PULL_INTENT_NAME, PULL_STAGE_NAME};
 use moves::*;
 pub use recover::*;
 pub(crate) use restore::*;
@@ -686,6 +690,7 @@ impl Repository {
         }
 
         let stage_names = [
+            PULL_STAGE_NAME,
             REVERT_STAGE_NAME,
             WORKTREE_RESTORE_STAGE_NAME,
             WORKING_TREE_EDIT_STAGE_NAME,

@@ -103,6 +103,15 @@ no history. See [Portable repositories](portable-repository.md#optional-editable
   waiting.
 - Writes require a FILE with local sequencing; federated items are refused.
 
+## One clone per agent
+
+Give each agent its own working tree with `synck clone REPO DIR --author AGENT`
+(add `--include PATH` for a part of the tree). Commits from every clone go into
+the origin's history at once; `synck pull` brings in the others'. A `CONFLICT`
+error from `commit` or `pull` carries `paths`: files changed both in this clone
+and in history since its last pull. Nothing was written; keep or restore the
+local file, then pull. See [clones](local-repository.md#clones-one-working-tree-per-agent-or-person).
+
 ## Agents sharing a local checkout
 
 Before loading or editing a path, use `synck --json lock acquire PATH --owner

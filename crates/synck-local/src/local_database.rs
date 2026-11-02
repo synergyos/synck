@@ -7,79 +7,99 @@ use synck_vcs_sqlite::{SqliteStorage, keep_wal_on_close, open_connection, valida
 
 use crate::error::{LocalError, Result};
 
-pub(crate) fn path(storage: &SqliteStorage) -> PathBuf {
-    storage.path().with_extension("local.sqlite3")
+/// One working tree's database. It attaches the history it is based on
+/// read-only: beside it in a repository, the origin's in a clone.
+#[derive(Clone)]
+pub(crate) struct LocalDatabase {
+    history: SqliteStorage,
+    path: PathBuf,
 }
 
-pub(crate) fn open_readonly(storage: &SqliteStorage) -> Result<Connection> {
-    open(storage, false, false)
-}
-
-pub(crate) fn open_writable(storage: &SqliteStorage) -> Result<Connection> {
-    open(storage, true, false)
-}
-
-pub(crate) fn create(storage: &SqliteStorage) -> Result<Connection> {
-    open(storage, true, true)
-}
-
-fn open(storage: &SqliteStorage, writable: bool, create: bool) -> Result<Connection> {
-    // Validate history independently. Local transactions can read it through the
-    // attachment, but cannot write it or couple acceptance to a cache update.
-    drop(
-        storage
-            .open_readonly()
-            .map_err(|e| LocalError::Integrity(e.to_string()))?,
-    );
-    let path = path(storage);
-    if create {
-        remove_stale_sidecars(&path)?;
+impl LocalDatabase {
+    pub(crate) fn beside(history: &SqliteStorage) -> Self {
+        Self::new(history.clone(), history.path().with_extension("local.sqlite3"))
     }
-    validate_database_family(&path, create).map_err(|e| LocalError::Integrity(e.to_string()))?;
-    let parent = path.parent().unwrap().canonicalize().map_err(|e| {
-        LocalError::Invalid(format!("cannot resolve local database directory: {e}"))
-    })?;
-    let path = parent.join(path.file_name().unwrap());
-    let mut flags = OpenFlags::SQLITE_OPEN_NO_MUTEX
-        | OpenFlags::SQLITE_OPEN_NOFOLLOW
-        | OpenFlags::SQLITE_OPEN_URI;
-    flags |= if writable {
-        OpenFlags::SQLITE_OPEN_READ_WRITE
-    } else {
-        OpenFlags::SQLITE_OPEN_READ_ONLY
-    };
-    if create {
-        flags |= OpenFlags::SQLITE_OPEN_CREATE;
+
+    pub(crate) fn new(history: SqliteStorage, path: PathBuf) -> Self {
+        Self { history, path }
     }
-    let connection = open_connection(&path, flags)?;
-    connection.busy_timeout(Duration::from_secs(5))?;
-    connection.pragma_update(None, "foreign_keys", "ON")?;
-    if writable {
-        connection.pragma_update(None, "journal_mode", "WAL")?;
-        // Disposable: power loss may drop its last transactions, never corrupt
-        // it, and a command catches it up from history.
-        connection.pragma_update(None, "synchronous", "NORMAL")?;
-        keep_wal_on_close(&connection)?;
+
+    #[cfg(test)]
+    pub(crate) fn path(&self) -> &std::path::Path {
+        &self.path
     }
-    let history = storage
-        .path()
-        .canonicalize()
-        .map_err(|e| LocalError::Invalid(format!("cannot resolve history path: {e}")))?;
-    let history = history
-        .to_str()
-        .ok_or_else(|| LocalError::Invalid("SQLite path is not UTF-8".into()))?;
-    #[cfg(windows)]
-    let history = windows_uri_path(history);
-    // URI syntax must not interpret characters from an ordinary filesystem path.
-    let history = history
-        .replace('%', "%25")
-        .replace('?', "%3F")
-        .replace('#', "%23");
-    connection.execute(
-        "ATTACH DATABASE ?1 AS history",
-        [format!("file://{history}?mode=ro")],
-    )?;
-    Ok(connection)
+
+    pub(crate) fn open_readonly(&self) -> Result<Connection> {
+        self.open(false, false)
+    }
+
+    pub(crate) fn open_writable(&self) -> Result<Connection> {
+        self.open(true, false)
+    }
+
+    pub(crate) fn create(&self) -> Result<Connection> {
+        self.open(true, true)
+    }
+
+    fn open(&self, writable: bool, create: bool) -> Result<Connection> {
+        // Validate history independently. Local transactions can read it through the
+        // attachment, but cannot write it or couple acceptance to a cache update.
+        drop(
+            self.history
+                .open_readonly()
+                .map_err(|e| LocalError::Integrity(e.to_string()))?,
+        );
+        let path = &self.path;
+        if create {
+            remove_stale_sidecars(path)?;
+        }
+        validate_database_family(path, create).map_err(|e| LocalError::Integrity(e.to_string()))?;
+        let parent = path.parent().unwrap().canonicalize().map_err(|e| {
+            LocalError::Invalid(format!("cannot resolve local database directory: {e}"))
+        })?;
+        let path = parent.join(path.file_name().unwrap());
+        let mut flags = OpenFlags::SQLITE_OPEN_NO_MUTEX
+            | OpenFlags::SQLITE_OPEN_NOFOLLOW
+            | OpenFlags::SQLITE_OPEN_URI;
+        flags |= if writable {
+            OpenFlags::SQLITE_OPEN_READ_WRITE
+        } else {
+            OpenFlags::SQLITE_OPEN_READ_ONLY
+        };
+        if create {
+            flags |= OpenFlags::SQLITE_OPEN_CREATE;
+        }
+        let connection = open_connection(&path, flags)?;
+        connection.busy_timeout(Duration::from_secs(5))?;
+        connection.pragma_update(None, "foreign_keys", "ON")?;
+        if writable {
+            connection.pragma_update(None, "journal_mode", "WAL")?;
+            // Disposable: power loss may drop its last transactions, never corrupt
+            // it, and a command catches it up from history.
+            connection.pragma_update(None, "synchronous", "NORMAL")?;
+            keep_wal_on_close(&connection)?;
+        }
+        let history = self
+            .history
+            .path()
+            .canonicalize()
+            .map_err(|e| LocalError::Invalid(format!("cannot resolve history path: {e}")))?;
+        let history = history
+            .to_str()
+            .ok_or_else(|| LocalError::Invalid("SQLite path is not UTF-8".into()))?;
+        #[cfg(windows)]
+        let history = windows_uri_path(history);
+        // URI syntax must not interpret characters from an ordinary filesystem path.
+        let history = history
+            .replace('%', "%25")
+            .replace('?', "%3F")
+            .replace('#', "%23");
+        connection.execute(
+            "ATTACH DATABASE ?1 AS history",
+            [format!("file://{history}?mode=ro")],
+        )?;
+        Ok(connection)
+    }
 }
 
 /// The database is disposable and keeps its WAL between commands, so deleting
@@ -142,8 +162,9 @@ mod tests {
         std::fs::create_dir(&root).unwrap();
         let storage = SqliteStorage::new(root.join("repository.sqlite3"));
         storage.init_schema().await.unwrap();
-        crate::repository::initialize_checkout_schema(&storage).unwrap();
-        let local = open_writable(&storage).unwrap();
+        let database = LocalDatabase::beside(&storage);
+        crate::repository::initialize_checkout_schema(&database).unwrap();
+        let local = database.open_writable().unwrap();
         local
             .execute("DELETE FROM local_worktree_entries", [])
             .unwrap();
@@ -173,8 +194,9 @@ mod tests {
         storage.init_schema().await.unwrap();
         let target = directory.path().join("target");
         std::fs::write(&target, b"untouched").unwrap();
-        std::os::unix::fs::symlink(&target, path(&storage)).unwrap();
-        assert!(create(&storage).is_err());
+        let database = LocalDatabase::beside(&storage);
+        std::os::unix::fs::symlink(&target, database.path()).unwrap();
+        assert!(database.create().is_err());
         assert_eq!(std::fs::read(&target).unwrap(), b"untouched");
     }
 }

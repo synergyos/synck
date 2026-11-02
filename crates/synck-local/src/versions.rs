@@ -253,6 +253,7 @@ impl Repository {
         version_id: &str,
     ) -> Result<()> {
         self.recover().await?;
+        self.pull_if_behind().await?;
         let (display, file_item_id) = self.resolve_live_file(caller, input).await?;
         let state = self.load_version_set(&file_item_id).await?;
         let version = require_live_version(&state, version_id)?;

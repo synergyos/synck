@@ -3,8 +3,10 @@
 mod agent_locks;
 mod archive;
 pub use agent_locks::{AgentLease, AgentLock};
+pub use clone::clone_repository;
 mod checkout;
 mod chunk_store;
+mod clone;
 mod commands;
 mod comparison;
 mod email_import;
@@ -28,7 +30,7 @@ mod working_tree_edit;
 mod worktree;
 
 pub use commands::{
-    CommitEvent, CommitEventPage, CommitOutcome, DeletedEntry,
+    PullOutcome, CommitEvent, CommitEventPage, CommitOutcome, DeletedEntry,
     DetailedEventLogEntry, DetailedLogEntry, EventHistoryCommit, HistoryCommit, LogEntry,
     VersionEntry,
 };

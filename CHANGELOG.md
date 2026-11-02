@@ -18,6 +18,13 @@ reads only its own repository format; see [Format and compatibility](docs/format
   every `--parent`, `--link` and `--merged-from` accept a repository path such as
   `Matters/brief.docx` as well as an item ID. Names match by their canonical key,
   so case and Unicode normalization do not matter.
+- `synck clone <repository> <directory>` makes another working tree of a local
+  repository, reading its history and stored content in place; `--include`
+  checks out part of the tree. Commits from every working tree go into the
+  origin's history. `synck pull` brings in the others' commits and keeps local
+  changes; `commit`, `revert`, `mv`, `recover` and `version restore` pull first.
+  A file changed on both sides is a `CONFLICT` with its `paths`, and nothing is
+  written. `checkout.json` records each working tree's `baseline` commit.
 - `restore-tree <revision>` writes an earlier commit's tree into the working
   tree. `status` shows it as changes against HEAD; `restore-tree` returns, and
   `commit` records a rollback that keeps every moved and edited item's identity.
