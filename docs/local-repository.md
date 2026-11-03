@@ -124,7 +124,8 @@ exporting into this checkout, and direct database access can bypass them. Every
 agent must acquire before reading/editing and stop editing when its lease is lost.
 For saves submitted through Synck, retain the `--base-content` check as well.
 The short repository OS lock serializes commands; it is not held during editing.
-Concurrent commands can return `BUSY`; retry after the other command finishes.
+Concurrent commands queue for it; one returns `BUSY` only after waiting 30
+seconds, and can then be retried.
 
 Reservations live in the origin's `.synck/agent-locks.sqlite3`, separate from
 disposable projection caches and canonical history, so they hold in every clone:

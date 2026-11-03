@@ -82,7 +82,7 @@ error, `{"schema_version":5,"error":{"kind":...,"message":...}}`. Branch on
 | Kind | Meaning |
 | --- | --- |
 | `CONFLICT` | The current content is not `--base-content`. `error.current` holds `item_id`, `head_seq`, `blob_id` and `size` of the current revision. Nothing was written. |
-| `BUSY` | Another process holds the repository. Nothing was written; retry the identical call. |
+| `BUSY` | Another process held the repository for 30 seconds. Nothing was written; retry the identical call. |
 | `INVALID` | Bad input: unknown or non-live item, invalid option, occupied name, reused operation ID, or a dirty file in a checkout. |
 | `FILE_FOLDER` | The FILE/FOLDER profile refused the write; the message carries its code. Saving unchanged bytes to a bare repository is `NO_OP`. |
 | `ACCEPTED_NEEDS_RECOVERY` | The commit was accepted but local finalization failed. Run `synck repository finalize <repo>`; do not repeat the write as a new one. |
@@ -99,8 +99,9 @@ no history. See [Portable repositories](portable-repository.md#optional-editable
 
 - A revision has one author. Co-authored revisions record their main author.
 - Source bytes are read from a file; standard input is not accepted.
-- One process writes at a time. `BUSY` is returned immediately rather than
-  waiting.
+- One command runs at a time in a repository. The CLI waits up to 30 seconds
+  for the one before it, then returns `BUSY`. The library returns `BUSY` at
+  once.
 - Writes require a FILE with local sequencing; federated items are refused.
 
 ## One clone per agent

@@ -16,6 +16,38 @@ const CLEAN_STATUS_MESSAGE: &str = "nothing to commit, working tree clean";
 mod cli_json;
 
 const CONTEXT_CHANGE_LIMIT: usize = 100;
+/// Each command holds the repository lock for its whole run, so commands
+/// started together, as agents do, queue for it instead of failing at once.
+const LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+const LOCK_POLL: std::time::Duration = std::time::Duration::from_millis(10);
+
+/// Open a repository, waiting up to `LOCK_WAIT` while another command holds it.
+fn open_waiting<T>(mut open: impl FnMut() -> synck_local::Result<T>) -> synck_local::Result<T> {
+    let deadline = std::time::Instant::now() + LOCK_WAIT;
+    loop {
+        match open() {
+            Err(LocalError::Busy) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(LOCK_POLL);
+            }
+            result => return result,
+        }
+    }
+}
+
+async fn open_waiting_async<T, F>(mut open: impl FnMut() -> F) -> synck_local::Result<T>
+where
+    F: std::future::Future<Output = synck_local::Result<T>>,
+{
+    let deadline = std::time::Instant::now() + LOCK_WAIT;
+    loop {
+        match open().await {
+            Err(LocalError::Busy) if std::time::Instant::now() < deadline => {
+                tokio::time::sleep(LOCK_POLL).await;
+            }
+            result => return result,
+        }
+    }
+}
 const CONTEXT_COMMIT_LIMIT: usize = 5;
 const INSTRUCTIONS: &str = include_str!("instructions.txt");
 const ADDED_STYLE: Style = Style::new()
@@ -892,7 +924,8 @@ async fn run(cli: Cli) -> Result<ExitCode, (LocalError, bool)> {
             rebuild_state_index: false
         }
     )
-        && let Some(report) = synck_local::portable::verify_complete_repository(&current)
+        && let Some(report) =
+            open_waiting_async(|| synck_local::portable::verify_complete_repository(&current))
             .await
             .map_err(|error| (error, true))?
         {
@@ -903,7 +936,7 @@ async fn run(cli: Cli) -> Result<ExitCode, (LocalError, bool)> {
             return Ok(ExitCode::SUCCESS);
         }
     let integrity_command = matches!(cli.command, Command::Fsck { .. });
-    let mut repository = Repository::discover_complete(&current)
+    let mut repository = open_waiting_async(|| Repository::discover_complete(&current))
         .await
         .map_err(|error| (error, integrity_command))?;
     repository.set_agent_lock_tokens(&cli.lock_token).map_err(|e| (e, false))?;
@@ -2003,7 +2036,7 @@ fn portable_item(
 async fn run_portable(command: &PortableCommand, tokens: &[String]) -> synck_local::Result<()> {
     use synck_local::portable::{PortableRepository, import_repository};
     let open = |path: &Path| -> synck_local::Result<PortableRepository> {
-        let mut repository = PortableRepository::open(path)?;
+        let mut repository = open_waiting(|| PortableRepository::open(path))?;
         repository.set_agent_lock_tokens(tokens)?;
         Ok(repository)
     };
@@ -2045,7 +2078,7 @@ async fn run_portable(command: &PortableCommand, tokens: &[String]) -> synck_loc
         }
         .await,
         PortableCommand::CheckoutSelection { path, paths, .. } => async {
-            let mut repository = Repository::discover(path).await?;
+            let mut repository = open_waiting_async(|| Repository::discover(path)).await?;
             repository.set_agent_lock_tokens(tokens)?;
             repository.set_checkout_paths(paths).await?;
             print_path_warnings(&repository.checkout_path_warnings().await?);
@@ -2072,7 +2105,11 @@ async fn run_portable(command: &PortableCommand, tokens: &[String]) -> synck_loc
         }
         .await,
         PortableCommand::Verify { path } => async {
-            let report = match synck_local::portable::verify_complete_repository(path).await? {
+            let report = match open_waiting_async(|| {
+                synck_local::portable::verify_complete_repository(path)
+            })
+            .await?
+            {
                 Some(report) => report,
                 None => open(path)?.verify().await?,
             };
@@ -2292,7 +2329,7 @@ async fn run_portable_item(command: &ItemCommand, tokens: &[String]) -> synck_lo
             destination,
             through,
         } => async {
-            let mut repository = PortableRepository::open(path)?;
+            let mut repository = open_waiting(|| PortableRepository::open(path))?;
             repository.set_agent_lock_tokens(tokens)?;
             let item = portable_item(&repository, item_id)?;
             let bytes = repository
@@ -2310,7 +2347,7 @@ async fn run_portable_item(command: &ItemCommand, tokens: &[String]) -> synck_lo
             item_id,
             through,
         } => async {
-            let repository = PortableRepository::open(path)?;
+            let repository = open_waiting(|| PortableRepository::open(path))?;
             let item = portable_item(&repository, item_id)?;
             println!(
                 "{}",
@@ -2327,7 +2364,7 @@ async fn run_portable_item(command: &ItemCommand, tokens: &[String]) -> synck_lo
             records,
             limit,
         } => async {
-            let repository = PortableRepository::open(path)?;
+            let repository = open_waiting(|| PortableRepository::open(path))?;
             let parent = parent
                 .as_deref()
                 .map(|parent| portable_item(&repository, parent))

@@ -74,6 +74,15 @@ store version 2: 0.3.0 upgrades a version 1 store when it opens one, after which
   `restore-tree` read stored files over one connection instead of one per file.
 - `--json log --oneline` returns commit metadata without change lists, as
   `--oneline` does without `--json`.
+- Commands started together queue for the repository instead of failing: the
+  CLI waits up to 30 seconds for the lock before returning `BUSY`. Agents running
+  `status`, `diff` or `log` side by side got `BUSY` at once. The library still
+  returns `BUSY` without waiting.
+- The filesystem monitor runs in checkouts deeper than a Unix socket address
+  (about 104 bytes): its socket moves to the user's private temporary directory
+  on macOS, or `XDG_RUNTIME_DIR` on Linux. Without it every `status` scanned the
+  whole tree. A monitor whose socket is removed now exits, and the next command
+  starts another.
 - A symbolic link, or another entry that is neither a file nor a folder, no
   longer stops `init`, `status` and `commit` for the whole tree. Untracked ones
   are skipped and listed (`skipped` in JSON); a tracked path that becomes one is

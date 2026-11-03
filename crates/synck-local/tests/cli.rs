@@ -392,9 +392,7 @@ fn cli_monitor_tracks_immediate_external_changes_and_stops_cleanly() {
 #[test]
 fn cli_monitor_sees_a_deletion_in_a_folder_beside_a_same_named_file() {
     let temporary = tempfile::tempdir().unwrap();
-    // The watcher reports resolved paths; a symlinked temporary directory
-    // would send every query to a full scan.
-    let root = &temporary.path().canonicalize().unwrap();
+    let root = temporary.path();
     fs::create_dir(root.join("Matter")).unwrap();
     fs::write(root.join("Matter/brief.txt"), b"brief").unwrap();
     fs::write(root.join("Matter/notes.txt"), b"notes").unwrap();
@@ -417,11 +415,60 @@ fn cli_monitor_sees_a_deletion_in_a_folder_beside_a_same_named_file() {
     assert!(synck(root, &["monitor", "stop"]).status.success());
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn cli_monitor_runs_in_a_checkout_deeper_than_a_socket_address() {
+    let temporary = tempfile::tempdir().unwrap();
+    let root = &temporary.path().join("a".repeat(120));
+    fs::create_dir(root).unwrap();
+    fs::write(root.join("brief.txt"), b"brief").unwrap();
+    assert!(synck(root, &["init", "--author", "author"]).status.success());
+    assert!(synck(root, &["commit", "-m", "brief"]).status.success());
+    assert_eq!(
+        json_stdout(root, &["monitor", "status", "--json"])["status"],
+        "running"
+    );
+    assert!(!root.join(".synck/monitor.sock").exists());
+    fs::remove_file(root.join("brief.txt")).unwrap();
+    let status = String::from_utf8(synck(root, &["status"]).stdout).unwrap();
+    assert_eq!(status, "D brief.txt\n");
+    assert!(synck(root, &["monitor", "stop"]).status.success());
+}
+
+#[test]
+fn cli_commands_wait_for_the_repository_lock() {
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path();
+    assert!(synck(root, &["init", "--author", "author"]).status.success());
+    let lock = fs::OpenOptions::new()
+        .write(true)
+        .open(root.join(".synck/lock"))
+        .unwrap();
+    lock.lock().unwrap();
+    let started = Instant::now();
+    let status = Command::new(env!("CARGO_BIN_EXE_synck"))
+        .current_dir(root)
+        .arg("status")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    lock.unlock().unwrap();
+    let output = status.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(started.elapsed() >= Duration::from_millis(300));
+}
+
 #[cfg(unix)]
 #[test]
 fn cli_reports_skipped_links_across_monitor_scans() {
     let temporary = tempfile::tempdir().unwrap();
-    let root = &temporary.path().canonicalize().unwrap();
+    let root = temporary.path();
     fs::create_dir(root.join("docs")).unwrap();
     fs::write(root.join("docs/brief.txt"), b"brief").unwrap();
     assert!(synck(root, &["init", "--author", "author"]).status.success());

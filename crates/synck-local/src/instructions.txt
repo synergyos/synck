@@ -79,7 +79,8 @@ never automatically break another agent's reservation. Release/break keep files.
 Reservations hold in every clone of the repository; status lists their holders.
 These are cooperative local locks, not OS access controls: raw filesystem writes
 bypass them. Every agent must participate. Cache rebuilding preserves locks;
-archives omit them. Concurrent commands may return BUSY; retry after completion.
+archives omit them. Concurrent commands wait for each other; BUSY means one
+waited 30 seconds, and the identical call can be retried.
 
 HISTORY AND RECOVERY
 

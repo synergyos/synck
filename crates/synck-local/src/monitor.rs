@@ -25,6 +25,56 @@ const REQUEST_DEADLINE: Duration = Duration::from_secs(2);
 const REPOSITORY_CHECK_INTERVAL: Duration = Duration::from_secs(1);
 const SOCKET_FILE: &str = "monitor.sock";
 
+/// The monitor's endpoint: `.synck/monitor.sock`. A Unix socket address holds
+/// about 104 bytes, so a deeper checkout puts it in the user's private runtime
+/// directory instead, named by a digest of the resolved metadata path. The server
+/// and its clients resolve the same path, so they choose the same endpoint.
+#[cfg(unix)]
+fn socket_path(metadata_path: &Path) -> Result<PathBuf> {
+    use sha2::{Digest, Sha256};
+    use std::os::unix::ffi::OsStrExt;
+
+    let resolved = metadata_path
+        .canonicalize()
+        .at("resolve repository metadata", metadata_path)?;
+    let local = resolved.join(SOCKET_FILE);
+    if rustix::net::SocketAddrUnix::new(&local).is_ok() {
+        return Ok(local);
+    }
+    let Some(directory) = user_runtime_directory() else {
+        return Ok(local);
+    };
+    let digest = Sha256::digest(resolved.as_os_str().as_bytes());
+    Ok(directory.join(format!("synck-{}.sock", hex::encode(&digest[..16]))))
+}
+
+/// The per-user temporary directory, private to the user (mode 0700).
+#[cfg(target_os = "macos")]
+fn user_runtime_directory() -> Option<PathBuf> {
+    use std::os::unix::ffi::OsStrExt;
+
+    let mut buffer = [0_u8; 1024];
+    // SAFETY: confstr writes at most `buffer.len()` bytes, its NUL included.
+    let length = unsafe {
+        libc::confstr(
+            libc::_CS_DARWIN_USER_TEMP_DIR,
+            buffer.as_mut_ptr().cast(),
+            buffer.len(),
+        )
+    };
+    (1..=buffer.len())
+        .contains(&length)
+        .then(|| PathBuf::from(std::ffi::OsStr::from_bytes(&buffer[..length - 1])))
+}
+
+/// `XDG_RUNTIME_DIR`, which is private to the user (mode 0700) where set.
+#[cfg(all(unix, not(target_os = "macos")))]
+fn user_runtime_directory() -> Option<PathBuf> {
+    std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MonitorStatus {
     Running { instance_id: Uuid },
@@ -189,13 +239,16 @@ impl Repository {
     }
 
     pub fn start_monitor(&self, executable: &Path) -> Result<MonitorStatus> {
-        // A checkout can be deeper than the Unix socket address limit. Refuse
-        // before spawning: the scanner can fall back immediately instead of
-        // waiting for a server that cannot bind its endpoint.
+        // Without a runtime directory, a checkout can be deeper than the Unix
+        // socket address limit. Refuse before spawning: the scanner can fall back
+        // immediately instead of waiting for a server that cannot bind its endpoint.
         #[cfg(unix)]
-        rustix::net::SocketAddrUnix::new(self.metadata_path().join(SOCKET_FILE))
-            .map_err(std::io::Error::from)
-            .at("address monitor connection", self.metadata_path().join(SOCKET_FILE))?;
+        {
+            let socket_path = socket_path(self.metadata_path())?;
+            rustix::net::SocketAddrUnix::new(&socket_path)
+                .map_err(std::io::Error::from)
+                .at("address monitor connection", &socket_path)?;
+        }
         if let MonitorStatus::Running { instance_id } = self.monitor_status() {
             return Ok(MonitorStatus::Running { instance_id });
         }
@@ -736,7 +789,7 @@ fn run_platform_server(root: &Path, metadata_path: &Path, repo_id: &RepoId) -> R
         }
     }
 
-    let socket_path = metadata_path.join(SOCKET_FILE);
+    let socket_path = socket_path(metadata_path)?;
     match fs::symlink_metadata(&socket_path) {
         Ok(entry) if entry.file_type().is_socket() => {
             fs::remove_file(&socket_path).at("remove stale monitor socket", &socket_path)?;
@@ -778,9 +831,15 @@ fn run_platform_server(root: &Path, metadata_path: &Path, repo_id: &RepoId) -> R
             LocalError::MonitorUnavailable(format!("cannot watch repository: {error}"))
         })?;
 
+    // A removed endpoint, such as one in a cleaned temporary directory, would
+    // leave the monitor running unreachable and holding its lock.
     let repository_replaced = || {
         path_identity(root).ok() != Some(root_identity)
             || path_identity(metadata_path).ok() != Some(metadata_identity)
+            || fs::symlink_metadata(&socket_path)
+                .map(|socket| (socket.dev(), socket.ino()))
+                .ok()
+                != Some(bound_identity)
     };
     let mut history = EventHistory::new();
     let mut checked_at = Instant::now();
@@ -978,7 +1037,7 @@ fn exchange(metadata_path: &Path, request: &Request) -> Result<Response> {
     use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd};
     use std::os::unix::net::UnixStream;
 
-    let socket_path = metadata_path.join(SOCKET_FILE);
+    let socket_path = socket_path(metadata_path)?;
     let deadline = Instant::now() + REQUEST_DEADLINE;
     let socket = rustix::net::socket(AddressFamily::UNIX, SocketType::STREAM, None)
         .map_err(std::io::Error::from)
@@ -1797,23 +1856,24 @@ mod tests {
     use super::*;
 
     #[cfg(unix)]
-    #[tokio::test]
-    async fn overlong_socket_path_is_rejected_before_spawning() {
+    #[test]
+    fn a_deep_checkout_uses_a_short_endpoint() {
         let temporary = tempfile::tempdir().unwrap();
-        let root = temporary.path().join("a".repeat(120));
-        fs::create_dir(&root).unwrap();
-        crate::portable::init_repository(&root, "author").await.unwrap();
-        let repository = Repository::discover(&root).await.unwrap();
-        // A nonexistent executable makes the ordering observable without a
-        // timing assertion: endpoint validation must precede process creation.
-        let error = repository.start_monitor(&root.join("does-not-exist")).unwrap_err();
-        assert!(error.to_string().contains("address monitor connection"), "{error}");
-        fs::write(root.join("file.txt"), b"one").unwrap();
-        assert_eq!(repository.status().await.unwrap().len(), 1);
-        repository.commit("record file").await.unwrap();
-        assert!(repository.status().await.unwrap().is_empty());
-        fs::write(root.join("file.txt"), b"two").unwrap();
-        assert_eq!(repository.status().await.unwrap().len(), 1);
+        let shallow = temporary.path().join(".synck");
+        let deep = temporary.path().join("a".repeat(120)).join(".synck");
+        fs::create_dir_all(&shallow).unwrap();
+        fs::create_dir_all(&deep).unwrap();
+        assert_eq!(
+            socket_path(&shallow).unwrap(),
+            shallow.canonicalize().unwrap().join(SOCKET_FILE)
+        );
+        let Some(directory) = user_runtime_directory() else {
+            return;
+        };
+        let endpoint = socket_path(&deep).unwrap();
+        assert_eq!(endpoint.parent(), Some(directory.as_path()));
+        assert!(rustix::net::SocketAddrUnix::new(&endpoint).is_ok());
+        assert_ne!(endpoint, socket_path(&shallow).unwrap());
     }
 
     #[test]
