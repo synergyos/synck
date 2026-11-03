@@ -1270,11 +1270,21 @@ async fn run_checkout(
                         print_detailed_event_log_entry(entry);
                     }
                 }
-            } else if oneline && !json {
+            } else if oneline {
                 let commits = repository
                     .log(limit)
                     .await
                     .map_err(|error| (error, false))?;
+                if json {
+                    println!(
+                        "{}",
+                        json!({
+                            "schema_version": cli_json::SCHEMA_VERSION,
+                            "commits": commits.iter().map(cli_json::log_metadata).collect::<Vec<_>>(),
+                        })
+                    );
+                    return Ok(ExitCode::SUCCESS);
+                }
                 for commit in commits {
                     let created_at = commit
                         .created_at

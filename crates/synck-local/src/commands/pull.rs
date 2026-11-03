@@ -416,14 +416,15 @@ impl Repository {
             && base.is_none_or(|node| small(node.size))
             && mine.size.is_some_and(|size| size <= TEXT_DIFF_MAX_BYTES)
         {
+            let objects = self.blob_reader()?;
             let base_text = match base {
-                Some(node) => text(self.read_object_bytes(node)?),
+                Some(node) => text(self.read_object_bytes(&objects, node)?),
                 None => Some(String::new()),
             };
             if let (Some(base), Some(mine), Some(theirs)) = (
                 base_text,
                 text(self.read_working_bytes(path, mine)?),
-                text(self.read_object_bytes(theirs)?),
+                text(self.read_object_bytes(&objects, theirs)?),
             ) {
                 let mut options = diffy::MergeOptions::new();
                 options.set_conflict_style(diffy::ConflictStyle::Merge);

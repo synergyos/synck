@@ -1957,13 +1957,14 @@ impl PortableRepository {
                 None => self.verify_object(&id, Form::Opaque, inventory.is_none())?,
             }
         }
-        let mut missing_metadata = Vec::new();
-        for name in &metadata {
-            let id = ObjectId::parse(format!("sha256:{name}")).map_err(corrupt)?;
-            if !self.storage.has_metadata(self.repo_id(), &id).map_err(corrupt)? {
-                missing_metadata.push(id);
-            }
-        }
+        let ids = metadata
+            .iter()
+            .map(|name| ObjectId::parse(format!("sha256:{name}")).map_err(corrupt))
+            .collect::<Result<Vec<_>>>()?;
+        let missing_metadata = self
+            .storage
+            .missing_metadata(self.repo_id(), ids)
+            .map_err(corrupt)?;
         Ok(VerificationReport {
             repo_id: self.repo_id().clone(), terminal_repo_seq: terminal,
             commits: count, items: item_count, objects: objects.len(), metadata: metadata.len(),

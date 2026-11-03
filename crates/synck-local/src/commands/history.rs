@@ -2024,8 +2024,10 @@ impl Repository {
                         e.event_payload_digest,
                         (SELECT m.payload FROM vcs_metadata_objects m WHERE m.repo_id=e.repo_id
                          AND m.object_id=unhex(substr(json_extract(CAST(e.payload AS TEXT), '$.metadata_id'),8)))
-                 FROM vcs_events e
-                 JOIN requested r
+                 FROM requested r
+                 -- CROSS JOIN keeps one index probe per requested row; SQLite
+                 -- otherwise may scan every event and compare it to each row.
+                 CROSS JOIN vcs_events e
                    ON r.item_id = e.item_id AND r.item_seq = e.item_seq
                  WHERE e.repo_id = ?
                  ORDER BY e.item_id"

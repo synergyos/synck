@@ -874,6 +874,7 @@ impl Repository {
 
         current.extend(self.load_current_file_folder_items(&connection, &missing)?);
 
+        let relocated = synck_file_folder::relocated_items(intents);
         for intent in intents.iter_mut() {
             let Intent::Trash {
                 root, descendants, ..
@@ -885,7 +886,14 @@ impl Repository {
                 .iter()
                 .filter_map(|item_id| {
                     let item = &current[item_id];
-                    (item.lifecycle_state == ProfileLifecycleState::Live).then(|| {
+                    (item.lifecycle_state == ProfileLifecycleState::Live
+                        && !synck_file_folder::leaves_subtree(
+                            &current,
+                            &root.item_id,
+                            item,
+                            &relocated,
+                        ))
+                    .then(|| {
                         synck_file_folder::ItemBase {
                             item_id: item_id.clone(),
                             base_seq: item.head_seq,

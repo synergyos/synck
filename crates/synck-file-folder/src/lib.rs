@@ -15,7 +15,8 @@ mod project;
 
 pub use error::{SemanticError, SemanticErrorCode};
 pub use materialize::{
-    MaterializedProposal, validate_and_materialize, validate_and_materialize_with_content_revisions,
+    MaterializedProposal, leaves_subtree, relocated_items, validate_and_materialize,
+    validate_and_materialize_with_content_revisions,
 };
 pub use model::{
     BlobRef, ChangeGroup, CurrentItem, FileFolderKind, ImmutableItemKind, Intent, IntentProposal,

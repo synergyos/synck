@@ -7,7 +7,7 @@ use cap_std::fs::OpenOptions;
 use sha2::{Digest, Sha256};
 use synck_vcs::types::ObjectId;
 
-use crate::chunk_store::StorageMode;
+use crate::chunk_store::{ChunkReader, StorageMode};
 use crate::error::{IoContext, LocalError, Result};
 use crate::ooxml::{OoxmlKind, chunk_region_lengths};
 use crate::repository::{
@@ -140,6 +140,28 @@ impl Repository {
         let actual = self.portable_view()?.copy_blob(blob_id, target)?;
         if actual != size { return Err(LocalError::Integrity("decoded object size mismatch".into())); }
         Ok(())
+    }
+
+    /// Use one reader for many blobs, as diff and tree export do.
+    pub(crate) fn blob_reader(&self) -> Result<BlobReader<'_>> {
+        Ok(match self.storage_mode() {
+            StorageMode::Chunked => BlobReader::Chunked(self.object_store().reader()?),
+            StorageMode::WholeFile => BlobReader::WholeFile(self),
+        })
+    }
+}
+
+pub(crate) enum BlobReader<'a> {
+    Chunked(ChunkReader),
+    WholeFile(&'a Repository),
+}
+
+impl BlobReader<'_> {
+    pub(crate) fn copy_blob<W: Write>(&self, blob_id: &ObjectId, size: u64, target: &mut W) -> Result<()> {
+        match self {
+            Self::Chunked(reader) => reader.copy_blob(blob_id, size, target),
+            Self::WholeFile(repository) => repository.copy_blob(blob_id, size, target),
+        }
     }
 }
 

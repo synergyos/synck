@@ -1,5 +1,6 @@
 use crate::commands::display_to_path;
 use crate::error::{IoContext, LocalError, Result};
+use crate::objects::BlobReader;
 use crate::repository::{Repository, is_link_or_reparse, sync_directory};
 use crate::worktree::{CommittedNode, NodeKind, WorkingNode};
 use std::collections::BTreeMap;
@@ -18,6 +19,7 @@ pub(crate) fn materialize_tree(
             fs::create_dir(&destination).at("create tree folder", &destination)?;
         }
     }
+    let objects = repository.blob_reader()?;
     for (path, node) in tree {
         if node.kind != NodeKind::File {
             continue;
@@ -30,7 +32,7 @@ pub(crate) fn materialize_tree(
             .size
             .ok_or_else(|| LocalError::Integrity(format!("tree FILE {path} has no size")))?;
         copy_blob_new(
-            repository,
+            &objects,
             blob_id,
             u64::try_from(size)
                 .map_err(|_| LocalError::Integrity(format!("tree FILE {path} has invalid size")))?,
@@ -67,7 +69,7 @@ pub(crate) fn validate_materialized_tree(
 }
 
 fn copy_blob_new(
-    repository: &Repository,
+    objects: &BlobReader,
     blob_id: &ObjectId,
     size: u64,
     destination: &Path,
@@ -77,7 +79,7 @@ fn copy_blob_new(
         .write(true)
         .open(destination)
         .at("create tree file", destination)?;
-    let result = repository.copy_blob(blob_id, size, &mut target);
+    let result = objects.copy_blob(blob_id, size, &mut target);
     if result.is_ok() {
         write_back(&target).at("sync tree file", destination)?;
     }

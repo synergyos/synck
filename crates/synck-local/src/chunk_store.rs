@@ -47,6 +47,24 @@ pub(crate) struct ChunkStore {
     repo_id: String,
 }
 
+/// Reads blobs through one open connection.
+pub(crate) struct ChunkReader {
+    store: ChunkStore,
+    connection: Connection,
+}
+
+impl ChunkReader {
+    pub(crate) fn copy_blob<W: Write>(
+        &self,
+        blob_id: &ObjectId,
+        expected_size: u64,
+        target: &mut W,
+    ) -> Result<()> {
+        self.store
+            .copy_blob_from(&self.connection, blob_id, expected_size, target)
+    }
+}
+
 struct PendingChunk {
     ordinal: i64,
     digest: [u8; 32],
@@ -467,6 +485,16 @@ impl ChunkStore {
     ) -> Result<()> {
         let connection = self.open_readonly()?;
         self.copy_blob_from(&connection, blob_id, expected_size, target)
+    }
+
+    /// Opening and validating the store costs about a millisecond, more than
+    /// reading a typical small file; a reader pays it once for many blobs.
+    pub(crate) fn reader(self) -> Result<ChunkReader> {
+        let connection = self.open_readonly()?;
+        Ok(ChunkReader {
+            store: self,
+            connection,
+        })
     }
 
     fn copy_blob_from<W: Write>(

@@ -10,6 +10,7 @@ use synck_vcs::types::ItemId;
 
 use crate::commands::{display_to_path, select_changes, sort_changes};
 use crate::error::{IoContext, LocalError, Result};
+use crate::objects::BlobReader;
 use crate::ooxml::OoxmlKind;
 use crate::repository::{Repository, is_cap_link_or_reparse};
 use crate::worktree::{Change, ChangeKind, CommittedNode, NodeKind, WorkingNode};
@@ -80,6 +81,7 @@ impl Repository {
             &working_ids,
             &all_changes,
         )?;
+        let objects = self.blob_reader()?;
         let mut output = Vec::new();
         for change in changes {
             let old = historical_file_for_change(&committed, &change);
@@ -90,7 +92,7 @@ impl Repository {
                 continue;
             }
             let old_bytes = old
-                .map(|(_, node)| self.read_object_bytes(node))
+                .map(|(_, node)| self.read_object_bytes(&objects, node))
                 .transpose()?;
             let new_bytes = new
                 .map(|node| self.read_working_bytes(&change.path, node))
@@ -110,6 +112,7 @@ impl Repository {
     pub async fn diff_revisions(&self, from: &str, to: &str) -> Result<Vec<TextDiffEntry>> {
         self.recover().await?;
         let delta = self.historical_changed_trees(from, to).await?;
+        let objects = self.blob_reader()?;
         let mut output = Vec::new();
         for change in compare_trees(&delta.from_tree, &delta.to_tree, &delta.changed_item_ids) {
             let old = historical_file_for_change(&delta.from_tree, &change);
@@ -121,9 +124,9 @@ impl Repository {
                 continue;
             }
             let old_bytes = old
-                .map(|(_, node)| self.read_object_bytes(node))
+                .map(|(_, node)| self.read_object_bytes(&objects, node))
                 .transpose()?;
-            let new_bytes = new.map(|node| self.read_object_bytes(node)).transpose()?;
+            let new_bytes = new.map(|node| self.read_object_bytes(&objects, node)).transpose()?;
             if let Some(entry) = text_diff_entry(
                 old.map(|(path, _)| path.to_string()),
                 new.map(|_| change.path.clone()),
@@ -136,7 +139,11 @@ impl Repository {
         Ok(output)
     }
 
-    pub(crate) fn read_object_bytes(&self, node: &CommittedNode) -> Result<FileBytes> {
+    pub(crate) fn read_object_bytes(
+        &self,
+        objects: &BlobReader,
+        node: &CommittedNode,
+    ) -> Result<FileBytes> {
         let size = u64::try_from(node.size.ok_or_else(|| {
             LocalError::Integrity("historical FILE has no content size".to_string())
         })?)
@@ -146,11 +153,11 @@ impl Repository {
             .as_ref()
             .ok_or_else(|| LocalError::Integrity("historical FILE has no object".to_string()))?;
         if size > TEXT_DIFF_MAX_BYTES {
-            self.verify_blob(blob_id, size)?;
+            objects.copy_blob(blob_id, size, &mut std::io::sink())?;
             return Ok(FileBytes::TooLarge);
         }
         let mut bytes = Vec::with_capacity(usize::try_from(size).expect("bounded diff size"));
-        self.copy_blob(blob_id, size, &mut bytes)?;
+        objects.copy_blob(blob_id, size, &mut bytes)?;
         Ok(FileBytes::Bytes(bytes))
     }
 

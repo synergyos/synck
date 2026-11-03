@@ -116,6 +116,7 @@ pub fn validate_and_materialize_with_content_revisions(
     let mut lifecycle_items = BTreeSet::new();
     let mut exposed_items = BTreeSet::new();
     let mut relocated_folders = BTreeSet::new();
+    let relocated = relocated_items(&intents);
 
     for intent in &intents {
         match intent {
@@ -211,9 +212,17 @@ pub fn validate_and_materialize_with_content_revisions(
                     kind,
                     &mut lifecycle_items,
                 )?;
-                let expected: Vec<ItemBase> = closure
+                // Items this proposal moves leave the folder with what they
+                // hold; the guard still covers the folder as it stands.
+                let trashed = closure
                     .iter()
-                    .filter(|(item, _)| item.lifecycle_state == ProfileLifecycleState::Live)
+                    .filter(|(item, _)| {
+                        item.lifecycle_state == ProfileLifecycleState::Live
+                            && !leaves_subtree(current, &root.item_id, item, &relocated)
+                    })
+                    .collect::<Vec<_>>();
+                let expected: Vec<ItemBase> = trashed
+                    .iter()
                     .map(|(item, _)| ItemBase {
                         item_id: item.item_id.clone(),
                         base_seq: item.head_seq,
@@ -223,9 +232,8 @@ pub fn validate_and_materialize_with_content_revisions(
                 if kind == FileFolderKind::Folder {
                     guards.push(make_guard(root, &closure));
                 }
-                let mut affected = closure
+                let mut affected = trashed
                     .iter()
-                    .filter(|(item, _)| item.lifecycle_state == ProfileLifecycleState::Live)
                     .map(|(item, depth)| (item.item_id.clone(), item.head_seq, *depth))
                     .collect::<Vec<_>>();
                 affected
@@ -715,6 +723,46 @@ fn lifecycle_closure<'a>(
     Ok(closure)
 }
 
+/// Items whose location this proposal sets.
+pub fn relocated_items(intents: &[Intent]) -> BTreeSet<ItemId> {
+    intents
+        .iter()
+        .filter_map(|intent| match intent {
+            Intent::UpdateFolder { item_id, .. }
+            | Intent::UpdateFile {
+                item_id,
+                location: Some(_),
+                ..
+            } => Some(item_id.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Whether `item`, or one of its ancestors below `root_id`, is relocated, so
+/// that trashing `root_id` leaves it live where its intent puts it. Moving it
+/// into the trashed folder still fails: its final parent is not live.
+pub fn leaves_subtree(
+    current: &BTreeMap<ItemId, CurrentItem>,
+    root_id: &ItemId,
+    item: &CurrentItem,
+    relocated: &BTreeSet<ItemId>,
+) -> bool {
+    let mut item = item;
+    loop {
+        if relocated.contains(&item.item_id) {
+            return true;
+        }
+        match item.parent_item_id.as_ref() {
+            Some(parent_id) if parent_id != root_id => match current.get(parent_id) {
+                Some(parent) => item = parent,
+                None => return false,
+            },
+            _ => return false,
+        }
+    }
+}
+
 fn require_exact_descendants(
     current: &BTreeMap<ItemId, CurrentItem>,
     root_id: &ItemId,
@@ -1128,6 +1176,94 @@ mod tests {
         assert_eq!(visits.exposure_nodes, DEEP_ITEMS);
         assert_eq!(visits.path_nodes, DEEP_ITEMS);
     }
+    #[test]
+    fn trashing_a_folder_leaves_items_moved_out_of_it() {
+        let item = |number: usize, kind: &str, parent: Option<usize>, name: &str| {
+            let id = item_id(number);
+            let current = CurrentItem {
+                item_id: id.clone(),
+                item_type: kind.to_string(),
+                parent_item_id: parent.map(item_id),
+                name: name.to_string(),
+                name_key: compute_name_key(name).unwrap(),
+                head_seq: 1,
+                lifecycle_state: ProfileLifecycleState::Live,
+                trash_commit_id: None,
+                content: None,
+            };
+            (id, current)
+        };
+        let current = BTreeMap::from([
+            item(0, "FOLDER", None, "old"),
+            item(1, "FOLDER", Some(0), "a"),
+            item(2, "FOLDER", Some(0), "sub"),
+            item(3, "FOLDER", Some(2), "inner"),
+            item(4, "FOLDER", Some(0), "rest"),
+        ]);
+        let base = |number: usize| ItemBase {
+            item_id: item_id(number),
+            base_seq: 1,
+        };
+        let to_root = |number: usize, name: &str| Intent::UpdateFolder {
+            item_id: item_id(number),
+            base_seq: 1,
+            location: Location {
+                parent_item_id: None,
+                name: name.to_string(),
+            },
+        };
+        let proposal = IntentProposal {
+            message: None,
+            intents: vec![
+                Intent::Trash {
+                    root: base(0),
+                    descendants: vec![base(4)],
+                },
+                to_root(1, "a"),
+                to_root(2, "sub"),
+            ],
+        };
+        let repo = RepoId::new();
+        let output = validate_and_materialize(&repo, &proposal, &current).unwrap();
+        let trashed = output
+            .events
+            .iter()
+            .filter(|event| event.event_type.ends_with("::TRASH"))
+            .filter_map(|event| event.item_id.clone())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(trashed, BTreeSet::from([item_id(0), item_id(4)]));
+        // The guard covers the folder as it stands before the commit.
+        assert_eq!(
+            output.subtree_guards[0]
+                .expected_non_tombstoned_descendants
+                .iter()
+                .map(|(id, _)| id.clone())
+                .collect::<BTreeSet<_>>(),
+            (1..5).map(item_id).collect()
+        );
+
+        // A move within the trashed folder would leave a live item under it.
+        let inside = IntentProposal {
+            message: None,
+            intents: vec![
+                Intent::Trash {
+                    root: base(0),
+                    descendants: vec![base(1), base(4)],
+                },
+                Intent::UpdateFolder {
+                    item_id: item_id(2),
+                    base_seq: 1,
+                    location: Location {
+                        parent_item_id: Some(item_id(0)),
+                        name: "renamed".to_string(),
+                    },
+                },
+            ],
+        };
+        let error = validate_and_materialize(&repo, &inside, &current).unwrap_err();
+        assert_eq!(error.code, SemanticErrorCode::ParentNotLive);
+    }
+
     #[test]
     fn complete_content_forces_equal_primary_revision_only_for_valid_file_updates() {
         let owner = item_id(1);

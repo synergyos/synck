@@ -58,6 +58,21 @@ refuses the object stores 0.3.0 creates (32 KiB pages).
 - The filesystem monitor answers at once on macOS and Linux. Its server checked
   for a connection only every 25 ms and both sides polled the socket every 2 ms;
   `status` takes about 35 ms instead of 70.
+- With the filesystem monitor running, `status` and `commit` missed a change
+  inside a folder that has a sibling sorting between the folder and its
+  contents, such as `Matter` beside `Matter.pdf` or `Matter-old`: a deleted
+  file stayed out of `status` and was left out of the commit.
+- A commit can move files or folders out of a folder it deletes. It failed
+  with `CONFLICTING_INTENT`; now the moved items stay live and only the rest
+  goes to the trash.
+- `log`, `show`, `history` and `diff` between revisions look up file contents
+  by index. SQLite scanned every event of the repository for each batch of 256
+  files, so their time grew with history length.
+- `fsck` checks metadata objects over one database connection instead of
+  opening and validating one per object. `diff`, `export-tree` and
+  `restore-tree` read stored files over one connection instead of one per file.
+- `--json log --oneline` returns commit metadata without change lists, as
+  `--oneline` does without `--json`.
 
 ### Storage
 

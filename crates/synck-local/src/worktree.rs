@@ -2200,9 +2200,13 @@ fn path_in_scope(path: &str, scope: &str) -> bool {
 }
 
 fn remove_scope(working: &mut BTreeMap<String, WorkingNode>, scope: &str) {
+    working.remove(scope);
+    // Descendants follow `scope/`, not `scope`: `a.txt` and `a-b` sort
+    // between `a` and `a/x`.
+    let prefix = format!("{scope}/");
     let paths = working
-        .range(scope.to_string()..)
-        .take_while(|(path, _)| path_in_scope(path, scope))
+        .range(prefix.clone()..)
+        .take_while(|(path, _)| path.starts_with(&prefix))
         .map(|(path, _)| path.clone())
         .collect::<Vec<_>>();
     for path in paths {
@@ -3111,6 +3115,32 @@ mod tests {
                 "root.txt".to_string(),
             ]),
             vec!["Folder".to_string(), "root.txt".to_string()]
+        );
+    }
+
+    #[test]
+    fn removing_a_scope_reaches_descendants_past_sibling_names() {
+        let node = WorkingNode {
+            kind: NodeKind::Folder,
+            digest_hex: None,
+            size: None,
+            identity: FileIdentity {
+                device_id: 1,
+                file_id: 1,
+                incarnation: None,
+            },
+            fingerprint: None,
+            stat_valid: false,
+            native_hidden: false,
+        };
+        let mut working = ["a", "a-b", "a.txt", "a/x", "a/y/z", "b"]
+            .into_iter()
+            .map(|path| (path.to_string(), node.clone()))
+            .collect::<BTreeMap<_, _>>();
+        remove_scope(&mut working, "a");
+        assert_eq!(
+            working.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["a-b", "a.txt", "b"]
         );
     }
 

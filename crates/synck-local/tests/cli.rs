@@ -128,6 +128,54 @@ fn cli_status_reports_a_clean_working_tree() {
 }
 
 #[test]
+fn cli_commits_moves_out_of_a_folder_deleted_in_the_same_commit() {
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path();
+    fs::create_dir_all(root.join("old/sub")).unwrap();
+    fs::write(root.join("old/keep.txt"), b"keep").unwrap();
+    fs::write(root.join("old/drop.txt"), b"drop").unwrap();
+    fs::write(root.join("old/sub/inner.txt"), b"inner").unwrap();
+    assert!(synck(root, &["init", "--author", "author"]).status.success());
+    assert!(synck(root, &["commit", "-m", "initial"]).status.success());
+
+    fs::rename(root.join("old/keep.txt"), root.join("keep.txt")).unwrap();
+    fs::rename(root.join("old/sub"), root.join("sub")).unwrap();
+    fs::remove_dir_all(root.join("old")).unwrap();
+    let committed = synck(root, &["commit", "-m", "tidy"]);
+    assert!(
+        committed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&committed.stderr)
+    );
+    assert_clean_status(root);
+
+    let deleted = json_stdout(root, &["--json", "deleted"]);
+    let mut paths = deleted["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["path"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    paths.sort_unstable();
+    assert_eq!(paths, ["old", "old/drop.txt"]);
+    let history = json_stdout(root, &["--json", "history", "keep.txt"]);
+    assert_eq!(history["commits"].as_array().unwrap().len(), 2);
+    assert!(synck(root, &["fsck"]).status.success());
+}
+
+#[test]
+fn cli_json_oneline_log_omits_change_lists() {
+    let temporary = committed_repository();
+    let log = json_stdout(temporary.path(), &["--json", "log", "--oneline"]);
+    let commits = log["commits"].as_array().unwrap();
+    assert_eq!(commits.len(), 2);
+    assert_keys(
+        &commits[0],
+        &["repo_seq", "commit_id", "created_at", "author", "message"],
+    );
+}
+
+#[test]
 fn cli_instructions_teach_the_complete_safe_workflow_without_a_repository() {
     let temporary = tempfile::tempdir().unwrap();
     let output = synck(temporary.path(), &["instructions"]);
@@ -339,6 +387,34 @@ fn cli_monitor_tracks_immediate_external_changes_and_stops_cleanly() {
         String::from_utf8(synck(root, &["monitor", "status"]).stdout).unwrap(),
         "monitor stopped\n"
     );
+}
+
+#[test]
+fn cli_monitor_sees_a_deletion_in_a_folder_beside_a_same_named_file() {
+    let temporary = tempfile::tempdir().unwrap();
+    // The watcher reports resolved paths; a symlinked temporary directory
+    // would send every query to a full scan.
+    let root = &temporary.path().canonicalize().unwrap();
+    fs::create_dir(root.join("Matter")).unwrap();
+    fs::write(root.join("Matter/brief.txt"), b"brief").unwrap();
+    fs::write(root.join("Matter/notes.txt"), b"notes").unwrap();
+    // `Matter.pdf` sorts between `Matter` and `Matter/brief.txt`.
+    fs::write(root.join("Matter.pdf"), b"pdf").unwrap();
+    assert!(synck(root, &["init", "--author", "author"]).status.success());
+    assert!(synck(root, &["commit", "-m", "matter"]).status.success());
+    assert_eq!(
+        json_stdout(root, &["monitor", "status", "--json"])["status"],
+        "running"
+    );
+
+    fs::remove_file(root.join("Matter/brief.txt")).unwrap();
+    let status = String::from_utf8(synck(root, &["status"]).stdout).unwrap();
+    assert_eq!(status, "D Matter/brief.txt\n");
+    // This status starts from the previous one's monitor token.
+    fs::remove_file(root.join("Matter/notes.txt")).unwrap();
+    let status = String::from_utf8(synck(root, &["status"]).stdout).unwrap();
+    assert_eq!(status, "D Matter/brief.txt\nD Matter/notes.txt\n");
+    assert!(synck(root, &["monitor", "stop"]).status.success());
 }
 
 #[cfg(unix)]

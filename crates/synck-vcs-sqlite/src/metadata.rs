@@ -57,12 +57,31 @@ impl SqliteStorage {
         }
     }
 
-    /// Whether a valid object is stored, in either form.
-    pub fn has_metadata(&self, repo: &RepoId, id: &ObjectId) -> Result<bool, StorageError> {
-        match self.stored_metadata(repo, id)? {
-            Some(bytes) => Metadata::verify_any(id, bytes).map(|_| true).map_err(error),
-            None => Ok(false),
+    /// The objects that are not stored, in either form. Corrupt present bytes
+    /// are an error.
+    pub fn missing_metadata(
+        &self,
+        repo: &RepoId,
+        ids: impl IntoIterator<Item = ObjectId>,
+    ) -> Result<Vec<ObjectId>, StorageError> {
+        let connection = self.open_readonly()?;
+        let mut statement = connection
+            .prepare("SELECT payload FROM vcs_metadata_objects WHERE repo_id=?1 AND object_id=?2")
+            .map_err(error)?;
+        let mut missing = Vec::new();
+        for id in ids {
+            let bytes: Option<Vec<u8>> = statement
+                .query_row(params![repo.as_str(), id.as_bytes().as_slice()], |row| row.get(0))
+                .optional()
+                .map_err(error)?;
+            match bytes {
+                Some(bytes) => {
+                    Metadata::verify_any(&id, bytes).map_err(error)?;
+                }
+                None => missing.push(id),
+            }
         }
+        Ok(missing)
     }
 
     fn stored_metadata(&self, repo: &RepoId, id: &ObjectId) -> Result<Option<Vec<u8>>, StorageError> {
