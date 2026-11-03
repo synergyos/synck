@@ -2380,7 +2380,7 @@ async fn repository_open_rejects_unknown_local_schema_objects() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(version, 15);
+    assert_eq!(version, 16);
     assert_eq!(storage_tables, 1);
     assert_eq!(foreign_views, 1);
 }
@@ -2420,6 +2420,35 @@ async fn repository_open_rejects_local_schema_versions_before_14() {
             .unwrap();
         assert_eq!(stored, version);
     }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn repository_open_migrates_local_schema_15_to_record_skipped_entries() {
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path();
+    fs::write(root.join("file.txt"), b"content").unwrap();
+    init(root, "author").await.unwrap();
+    Repository::discover(root).await.unwrap().commit("initial").await.unwrap();
+    let database = root.join(".synck/repository.local.sqlite3");
+    let connection = rusqlite::Connection::open(&database).unwrap();
+    connection
+        .execute_batch(
+            "DROP TABLE local_worktree_skipped;
+             UPDATE local_schema_meta SET version = 15;",
+        )
+        .unwrap();
+    drop(connection);
+
+    std::os::unix::fs::symlink("file.txt", root.join("link")).unwrap();
+    let repository = Repository::discover(root).await.unwrap();
+    assert!(repository.status().await.unwrap().is_empty());
+    assert_eq!(repository.skipped_entries().unwrap(), ["link"]);
+    let version: i64 = rusqlite::Connection::open(&database)
+        .unwrap()
+        .query_row("SELECT version FROM local_schema_meta", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, 16);
 }
 
 #[tokio::test]
@@ -2491,7 +2520,7 @@ async fn repository_open_migrates_local_schema_14_keeping_every_row() {
     let version: i64 = connection
         .query_row("SELECT version FROM local_schema_meta", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 15);
+    assert_eq!(version, 16);
     for (table, expected) in tables.into_iter().zip(counts) {
         assert_eq!(count(&connection, table), expected, "{table}");
     }
