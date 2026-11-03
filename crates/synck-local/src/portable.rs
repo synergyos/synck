@@ -2218,7 +2218,7 @@ impl PortableRepository {
         let store = self.object_store();
         let captured = crate::raw_object::capture(file, before.len(), regions, &self.root.join(".synck/objects"),
             &self.staging_directory()?,
-            (self.storage_mode() == StorageMode::Chunked).then_some(&store), true)?;
+            (self.storage_mode() == StorageMode::Chunked).then_some(&store), true, None)?;
         let after = fs::symlink_metadata(source).at("inspect capture source", source)?;
         if !after.is_file() || before.len() != after.len() || before.modified().ok() != after.modified().ok() {
             return Err(invalid("file changed while being captured"));

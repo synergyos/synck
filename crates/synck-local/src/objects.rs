@@ -63,15 +63,19 @@ impl Repository {
             expected_digest,
             expected_size,
             true,
+            None,
         )
     }
 
+    /// `base` is the file's previous version, which new content is stored
+    /// against.
     pub(crate) fn install_object_before_commit(
         &self,
         relative: &Path,
         display: &str,
         expected_digest: &str,
         expected_size: u64,
+        base: Option<&ObjectId>,
     ) -> Result<ObjectId> {
         self.install_object_from_inner(
             self.root(),
@@ -80,6 +84,7 @@ impl Repository {
             expected_digest,
             expected_size,
             false,
+            base,
         )
     }
 
@@ -98,6 +103,7 @@ impl Repository {
         expected_digest: &str,
         expected_size: u64,
         checkpoint_chunk_store: bool,
+        base: Option<&ObjectId>,
     ) -> Result<ObjectId> {
         let mut source_options = OpenOptions::new();
         source_options.read(true).follow(FollowSymlinks::No);
@@ -121,7 +127,7 @@ impl Repository {
         let captured = crate::raw_object::capture(source, expected_size, regions,
             &self.store_path().join("objects"),
             &self.store_path().join("tmp"),
-            (self.storage_mode() == StorageMode::Chunked).then_some(&store), checkpoint_chunk_store)?;
+            (self.storage_mode() == StorageMode::Chunked).then_some(&store), checkpoint_chunk_store, base)?;
         let after = root.symlink_metadata(relative).at("inspect", display)?;
         if !after.file_type().is_file() || is_cap_link_or_reparse(&after)
             || identity != metadata_identity(&after, display)?

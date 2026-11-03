@@ -432,6 +432,9 @@ pub(crate) fn materialize_events(
     })
 }
 
+/// A file to capture: its path, plaintext digest, size and previous version.
+type Capture<'a, 'b> = (&'a str, &'b str, u64, Option<&'b ObjectId>);
+
 impl Repository {
     pub async fn status(&self) -> Result<Vec<Change>> {
         let (_, _, changes, _) = self.changes().await?;
@@ -510,7 +513,7 @@ impl Repository {
             .flat_map(|c| std::iter::once(c.path.as_str()).chain(c.source_path.as_deref()))
             .collect();
         self.guard_agent_paths(&reserved_paths)?;
-        let captured = self.capture_changed_files(&working, &changes, captured_file)?;
+        let captured = self.capture_changed_files(&committed, &working, &changes, captured_file)?;
         let mut prepared = self.prepare_working_commit(&committed, &working, &changes, &working_ids, message, &captured)?;
         options.mark_file_write(&mut prepared.events);
         if !sources.is_empty() {
@@ -606,6 +609,7 @@ impl Repository {
 
     pub(super) fn capture_changed_files(
         &self,
+        committed: &BTreeMap<String, CommittedNode>,
         working: &BTreeMap<String, WorkingNode>,
         changes: &[Change],
         captured_file: Option<(&str, &BlobRef)>,
@@ -637,7 +641,12 @@ impl Repository {
                 objects.insert(change.path.clone(), content.blob_id.clone());
                 continue;
             }
-            captures.push((change.path.as_str(), digest, size));
+            // The previous version is the base new chunks are stored against.
+            let base = committed
+                .get(change.source_path.as_deref().unwrap_or(&change.path))
+                .filter(|_| change.kind != ChangeKind::Add)
+                .and_then(|node| node.blob_id.as_ref());
+            captures.push((change.path.as_str(), digest, size, base));
         }
         for (path, blob_id) in self.capture_in_parallel(&captures)? {
             objects.insert(path.to_string(), blob_id);
@@ -656,9 +665,9 @@ impl Repository {
     /// files with the same contents are captured in turn on one thread.
     fn capture_in_parallel<'a>(
         &self,
-        captures: &[(&'a str, &str, u64)],
+        captures: &[Capture<'a, '_>],
     ) -> Result<Vec<(&'a str, ObjectId)>> {
-        let mut groups: Vec<Vec<(&'a str, &str, u64)>> = Vec::new();
+        let mut groups: Vec<Vec<Capture<'a, '_>>> = Vec::new();
         let mut group_of = HashMap::new();
         for &capture in captures {
             let index = *group_of.entry(capture.1).or_insert_with(|| {
@@ -677,7 +686,7 @@ impl Repository {
                 let Some(group) = groups.get(index) else {
                     return Ok(captured);
                 };
-                for &(path, digest, size) in group {
+                for &(path, digest, size, base) in group {
                     if failed.load(std::sync::atomic::Ordering::Relaxed) {
                         return Ok(captured);
                     }
@@ -686,6 +695,7 @@ impl Repository {
                         path,
                         digest,
                         size,
+                        base,
                     );
                     match result {
                         Ok(blob_id) => captured.push((path, blob_id)),

@@ -28,3 +28,14 @@ CREATE TABLE blob_chunks (
     FOREIGN KEY (chunk_digest) REFERENCES chunks(digest)
 ) STRICT;
 CREATE INDEX idx_blob_chunks_chunk_digest ON blob_chunks(chunk_digest);
+-- A chunk listed here is compressed with its base chunk's bytes as a Zstd raw
+-- content dictionary: the base is the chunk in the same place in the previous
+-- version of the same file.
+CREATE TABLE chunk_bases (
+    chunk_digest BLOB PRIMARY KEY CHECK (length(chunk_digest) = 32),
+    base_digest BLOB NOT NULL CHECK (length(base_digest) = 32),
+    CHECK (chunk_digest <> base_digest),
+    FOREIGN KEY (chunk_digest) REFERENCES chunks(digest),
+    FOREIGN KEY (base_digest) REFERENCES chunks(digest)
+) STRICT, WITHOUT ROWID;
+CREATE INDEX idx_chunk_bases_base_digest ON chunk_bases(base_digest);

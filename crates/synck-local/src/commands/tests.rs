@@ -632,7 +632,7 @@ async fn accepted_commit_recovers_after_exact_identity_publication_fails() {
 async fn commit_captured_snapshot_then(repository: &Repository, mutate: impl FnOnce()) {
     let (committed, working, changes, working_ids) = repository.changes().await.unwrap();
     let objects = repository
-        .capture_changed_files(&working, &changes, None)
+        .capture_changed_files(&BTreeMap::new(), &working, &changes, None)
         .unwrap();
     let built_intents =
         super::build_intents(&committed, &working, &changes, &working_ids, &objects, None)

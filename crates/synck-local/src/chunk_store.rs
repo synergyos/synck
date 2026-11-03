@@ -21,11 +21,18 @@ thread_local! {
 
 pub(crate) const OBJECT_STORE_FILE: &str = "object-store.sqlite3";
 const APPLICATION_ID: i64 = 0x534f_424a;
-const USER_VERSION: i64 = 1;
+const USER_VERSION: i64 = 2;
 pub(super) const MIN_CHUNK: u32 = 32 * 1024;
 pub(super) const AVG_CHUNK: u32 = 64 * 1024;
 pub(crate) const MAX_CHUNK: usize = 256 * 1024;
 const ZSTD_LEVEL: i32 = 1;
+// Only changed files have a base, so level 3 costs a commit little. In a
+// prototype over the 311 git.git release tags it stored 12.4 MB of chunks where
+// level 1 stored 18.5 MB.
+const DELTA_ZSTD_LEVEL: i32 = 3;
+/// Reading a chunk decodes its whole chain. Replaying those tags, chains of up
+/// to 24 deltas stored 13.0 MB and `fsck` took 4.0 s; 49 stored 11.2 MB in 4.7 s.
+const MAX_DELTA_DEPTH: usize = 24;
 const MAX_BATCH_PAYLOAD: usize = 8 * 1024 * 1024;
 const MAX_BATCH_ROWS: usize = 1024;
 
@@ -33,6 +40,17 @@ const MAX_BATCH_ROWS: usize = 1024;
 mod ooxml_layout_tests;
 
 const SCHEMA: &str = include_str!("object-store.sql");
+/// Version 2 adds `chunk_bases`; a version 1 store has no deltas.
+const UPGRADE_VERSION_1: &str = "
+CREATE TABLE chunk_bases (
+    chunk_digest BLOB PRIMARY KEY CHECK (length(chunk_digest) = 32),
+    base_digest BLOB NOT NULL CHECK (length(base_digest) = 32),
+    CHECK (chunk_digest <> base_digest),
+    FOREIGN KEY (chunk_digest) REFERENCES chunks(digest),
+    FOREIGN KEY (base_digest) REFERENCES chunks(digest)
+) STRICT, WITHOUT ROWID;
+CREATE INDEX idx_chunk_bases_base_digest ON chunk_bases(base_digest);
+";
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -68,9 +86,10 @@ impl ChunkReader {
 struct PendingChunk {
     ordinal: i64,
     digest: [u8; 32],
-    raw_size: usize,
+    raw: Vec<u8>,
     codec: &'static str,
     payload: Vec<u8>,
+    base: Option<[u8; 32]>,
     insert_chunk: bool,
 }
 
@@ -143,6 +162,13 @@ impl ChunkStore {
                 | OpenFlags::SQLITE_OPEN_NO_MUTEX
                 | OpenFlags::SQLITE_OPEN_NOFOLLOW,
         )?;
+        let user_version: i64 =
+            connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        if user_version == 1 {
+            drop(connection);
+            drop(self.open_writable()?);
+            return self.open_readonly();
+        }
         self.validate_connection(&connection)?;
         Ok(connection)
     }
@@ -182,6 +208,7 @@ impl ChunkStore {
                 "object database connection pragmas were not applied".to_string(),
             ));
         }
+        upgrade_version_1(&connection)?;
         self.validate_connection(&connection)?;
         Ok(connection)
     }
@@ -289,15 +316,18 @@ impl ChunkStore {
         reader: R,
     ) -> Result<([u8; 32], u64)> {
         let mut chunker = StreamingChunker::new(reader);
-        self.stage_blob_chunks(expected_digest, expected_size, || chunker.next_chunk())
+        self.stage_blob_chunks(expected_digest, expected_size, None, || chunker.next_chunk())
     }
 
+    /// `base` is the previous version of the same file. Its chunks are the
+    /// delta bases for new chunks in the same places.
     pub(crate) fn stage_blob_regions<R: Read>(
         &self,
         expected_digest: [u8; 32],
         expected_size: u64,
         reader: R,
         region_lengths: &[u64],
+        base: Option<&[u8; 32]>,
     ) -> Result<([u8; 32], u64)> {
         let total = region_lengths.iter().try_fold(0_u64, |total, length| {
             if *length == 0 {
@@ -312,13 +342,14 @@ impl ChunkStore {
             ));
         }
         let mut chunker = RegionStreamingChunker::new(reader, region_lengths);
-        self.stage_blob_chunks(expected_digest, expected_size, || chunker.next_chunk())
+        self.stage_blob_chunks(expected_digest, expected_size, base, || chunker.next_chunk())
     }
 
     fn stage_blob_chunks<F>(
         &self,
         expected_digest: [u8; 32],
         expected_size: u64,
+        base: Option<&[u8; 32]>,
         mut next_chunk: F,
     ) -> Result<([u8; 32], u64)>
     where
@@ -341,11 +372,15 @@ impl ChunkStore {
             let _ = connection.execute_batch("ROLLBACK");
             return prepare_result.map(|()| (expected_digest, expected_size));
         }
+        let base_chunks = match base {
+            Some(base) => complete_blob_chunks(&connection, base)?,
+            None => Vec::new(),
+        };
 
         let mut full_hasher = Sha256::new();
         let mut full_size = 0_u64;
         let mut ordinal = 0_i64;
-        let mut batch = Vec::new();
+        let mut batch: Vec<PendingChunk> = Vec::new();
         let mut pending_chunks = HashMap::new();
         let mut batch_payload = 0_usize;
         while let Some(raw) = next_chunk()? {
@@ -355,35 +390,43 @@ impl ChunkStore {
                 .ok_or_else(|| LocalError::Invalid("file size overflow".to_string()))?;
             let digest: [u8; 32] = Sha256::digest(&raw).into();
             let pending_index: Option<usize> = pending_chunks.get(&digest).copied();
-            let (codec, payload, insert_chunk) = if let Some(index) = pending_index {
-                let pending: &PendingChunk = &batch[index];
-                if decode_chunk(pending.codec, pending.raw_size as i64, &pending.payload)? != raw {
+            let (codec, payload, chunk_base, insert_chunk) = if let Some(index) = pending_index {
+                if batch[index].raw != raw {
                     return Err(LocalError::Integrity(
                         "chunk digest collision within write batch".to_string(),
                     ));
                 }
-                ("RAW", Vec::new(), false)
+                ("RAW", Vec::new(), None, false)
+            } else if let Some((existing, _)) = read_chunk(&connection, &digest)? {
+                if existing != raw {
+                    return Err(LocalError::Integrity(
+                        "chunk digest collision or corrupt reused chunk".to_string(),
+                    ));
+                }
+                ("RAW", Vec::new(), None, false)
             } else {
-                let existing: Option<(i64, String, Vec<u8>)> = connection
-                    .query_row(
-                        "SELECT raw_size, codec, payload FROM chunks WHERE digest = ?1",
-                        [digest.as_slice()],
-                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-                    )
-                    .optional()?;
-                if let Some((raw_size, codec, payload)) = existing {
-                    if decode_chunk(&codec, raw_size, &payload)? != raw {
-                        return Err(LocalError::Integrity(
-                            "chunk digest collision or corrupt reused chunk".to_string(),
-                        ));
+                let delta = match base_chunks
+                    .get(ordinal as usize)
+                    .or(base_chunks.last())
+                {
+                    Some(base) => match read_chunk(&connection, base)? {
+                        Some((base_raw, depth)) if depth < MAX_DELTA_DEPTH => {
+                            encode_delta(&raw, &base_raw)?.map(|payload| (payload, *base))
+                        }
+                        _ => None,
+                    },
+                    None => None,
+                };
+                match delta {
+                    Some((payload, base)) => ("ZSTD", payload, Some(base), true),
+                    None => {
+                        let (codec, payload) = encode_chunk(&raw)?;
+                        (codec, payload, None, true)
                     }
-                    ("RAW", Vec::new(), false)
-                } else {
-                    let (codec, payload) = encode_chunk(&raw)?;
-                    (codec, payload, true)
                 }
             };
-            let stored_payload = payload.len();
+            // A pending chunk also holds its raw bytes.
+            let stored_payload = payload.len() + raw.len();
             if !batch.is_empty() && batch_must_flush(batch.len(), batch_payload, stored_payload) {
                 flush_batch(&connection, &expected_digest, &batch)?;
                 batch.clear();
@@ -394,9 +437,10 @@ impl ChunkStore {
             batch.push(PendingChunk {
                 ordinal,
                 digest,
-                raw_size: raw.len(),
+                raw,
                 codec,
                 payload,
+                base: chunk_base,
                 insert_chunk,
             });
             if insert_chunk {
@@ -525,9 +569,10 @@ impl ChunkStore {
             )));
         }
         let mut statement = connection.prepare(
-            "SELECT bc.ordinal, c.digest, c.raw_size, c.codec, c.payload
+            "SELECT bc.ordinal, c.digest, c.raw_size, c.codec, c.payload, cb.base_digest
              FROM blob_chunks bc
              JOIN chunks c ON c.digest = bc.chunk_digest
+             LEFT JOIN chunk_bases cb ON cb.chunk_digest = c.digest
              WHERE bc.blob_digest = ?1
              ORDER BY bc.ordinal",
         )?;
@@ -547,7 +592,8 @@ impl ChunkStore {
             let raw_size: i64 = row.get(2)?;
             let codec: String = row.get(3)?;
             let payload: Vec<u8> = row.get(4)?;
-            let raw = decode_chunk(&codec, raw_size, &payload)?;
+            let base: Option<Vec<u8>> = row.get(5)?;
+            let raw = decode_stored_chunk(connection, &codec, raw_size, &payload, base)?;
             let actual_digest: [u8; 32] = Sha256::digest(&raw).into();
             if chunk_digest.as_slice() != actual_digest {
                 return Err(LocalError::Integrity("chunk digest mismatch".to_string()));
@@ -647,7 +693,7 @@ impl ChunkStore {
         // Office inspection may move the shared file offset.
         file.rewind()
             .map_err(|e| LocalError::Invalid(e.to_string()))?;
-        let captured = self.stage_blob_regions(digest, size, file, &boundaries)?;
+        let captured = self.stage_blob_regions(digest, size, file, &boundaries, None)?;
         if captured != (digest, size) {
             return Err(LocalError::Invalid(
                 "file changed while being captured".into(),
@@ -692,7 +738,8 @@ impl ChunkStore {
         // Complete blobs verify their chunks below. Check the remaining chunks
         // here too, including those belonging only to interrupted writes.
         let mut chunks = connection.prepare(
-            "SELECT digest, raw_size, codec, payload FROM chunks
+            "SELECT digest, raw_size, codec, payload, cb.base_digest FROM chunks
+             LEFT JOIN chunk_bases cb ON cb.chunk_digest = chunks.digest
              WHERE NOT EXISTS (
                  SELECT 1 FROM blob_chunks bc JOIN blobs b ON b.digest = bc.blob_digest
                  WHERE bc.chunk_digest = chunks.digest AND b.complete = 1
@@ -704,11 +751,12 @@ impl ChunkStore {
                 row.get::<_, i64>(1)?,
                 row.get::<_, String>(2)?,
                 row.get::<_, Vec<u8>>(3)?,
+                row.get::<_, Option<Vec<u8>>>(4)?,
             ))
         })?;
         for row in rows {
-            let (digest, raw_size, codec, payload) = row?;
-            let raw = decode_chunk(&codec, raw_size, &payload)?;
+            let (digest, raw_size, codec, payload, base) = row?;
+            let raw = decode_stored_chunk(connection, &codec, raw_size, &payload, base)?;
             let actual_digest: [u8; 32] = Sha256::digest(&raw).into();
             if digest.as_slice() != actual_digest {
                 return Err(LocalError::Integrity("chunk digest mismatch".to_string()));
@@ -740,6 +788,8 @@ impl ChunkStore {
             "SELECT count(*) FROM chunks
              WHERE NOT EXISTS (
                  SELECT 1 FROM blob_chunks WHERE chunk_digest = chunks.digest
+             ) AND NOT EXISTS (
+                 SELECT 1 FROM chunk_bases WHERE base_digest = chunks.digest
              )",
             [],
             |row| row.get(0),
@@ -912,6 +962,8 @@ fn delete_orphan_chunks(connection: &Connection) -> Result<()> {
             "SELECT digest, length(payload) FROM chunks
              WHERE NOT EXISTS (
                  SELECT 1 FROM blob_chunks WHERE chunk_digest = chunks.digest
+             ) AND NOT EXISTS (
+                 SELECT 1 FROM chunk_bases WHERE base_digest = chunks.digest
              )
              ORDER BY digest LIMIT ?1",
         )?;
@@ -940,6 +992,8 @@ fn delete_orphan_chunks(connection: &Connection) -> Result<()> {
         connection.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> Result<()> {
             for digest in &digests {
+                // Its base becomes an orphan in turn, unless something else needs it.
+                connection.execute("DELETE FROM chunk_bases WHERE chunk_digest = ?1", [digest])?;
                 let deleted =
                     connection.execute("DELETE FROM chunks WHERE digest = ?1", [digest])?;
                 if deleted != 1 {
@@ -1036,26 +1090,26 @@ fn flush_batch(
     let result = (|| -> Result<()> {
         for chunk in batch {
             if chunk.insert_chunk {
-                let raw_size = i64::try_from(chunk.raw_size).expect("chunk size is bounded");
+                let raw_size = i64::try_from(chunk.raw.len()).expect("chunk size is bounded");
                 let inserted = connection.execute(
                     "INSERT INTO chunks(digest, raw_size, codec, payload)
                      VALUES (?1, ?2, ?3, ?4) ON CONFLICT(digest) DO NOTHING",
                     params![chunk.digest.as_slice(), raw_size, chunk.codec, &chunk.payload],
                 )?;
-                // Another capture in this commit stored it first.
-                if inserted == 0 {
-                    let (codec, payload): (String, Vec<u8>) = connection.query_row(
-                        "SELECT codec, payload FROM chunks WHERE digest = ?1 AND raw_size = ?2",
-                        params![chunk.digest.as_slice(), raw_size],
-                        |row| Ok((row.get(0)?, row.get(1)?)),
-                    )?;
-                    if decode_chunk(&codec, raw_size, &payload)?
-                        != decode_chunk(chunk.codec, raw_size, &chunk.payload)?
-                    {
-                        return Err(LocalError::Integrity(
-                            "chunk digest collision between captures".to_string(),
-                        ));
+                if inserted == 1 {
+                    if let Some(base) = chunk.base {
+                        connection.execute(
+                            "INSERT INTO chunk_bases(chunk_digest, base_digest) VALUES (?1, ?2)",
+                            params![chunk.digest.as_slice(), base.as_slice()],
+                        )?;
                     }
+                } else if read_chunk(connection, &chunk.digest)?.map(|(raw, _)| raw)
+                    != Some(chunk.raw.clone())
+                {
+                    // Another capture in this commit stored it first.
+                    return Err(LocalError::Integrity(
+                        "chunk digest collision between captures".to_string(),
+                    ));
                 }
             }
             connection.execute(
@@ -1077,12 +1131,95 @@ fn flush_batch(
     result
 }
 
-pub(crate) fn decode_chunk(codec: &str, raw_size: i64, payload: &[u8]) -> Result<Vec<u8>> {
+/// The chunk IDs of a complete blob, in order.
+fn complete_blob_chunks(connection: &Connection, blob: &[u8; 32]) -> Result<Vec<[u8; 32]>> {
+    let mut statement = connection.prepare(
+        "SELECT bc.chunk_digest FROM blob_chunks bc
+         JOIN blobs b ON b.digest = bc.blob_digest
+         WHERE bc.blob_digest = ?1 AND b.complete = 1
+         ORDER BY bc.ordinal",
+    )?;
+    let digests = statement
+        .query_map([blob.as_slice()], |row| row.get::<_, Vec<u8>>(0))?
+        .map(|digest| {
+            digest?.try_into().map_err(|_| {
+                LocalError::Integrity("object database contains an invalid digest".to_string())
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(digests)
+}
+
+/// A chunk's bytes and how many deltas lie between it and a full chunk.
+fn read_chunk(connection: &Connection, digest: &[u8; 32]) -> Result<Option<(Vec<u8>, usize)>> {
+    let mut statement = connection.prepare_cached(
+        "WITH RECURSIVE chain(digest, depth) AS (
+             SELECT ?1, 0
+             UNION ALL
+             SELECT cb.base_digest, chain.depth + 1
+             FROM chain JOIN chunk_bases cb ON cb.chunk_digest = chain.digest
+             WHERE chain.depth <= ?2
+         )
+         SELECT chain.depth, c.raw_size, c.codec, c.payload
+         FROM chain JOIN chunks c ON c.digest = chain.digest
+         ORDER BY chain.depth DESC",
+    )?;
+    let mut rows = statement.query(params![digest.as_slice(), MAX_DELTA_DEPTH as i64])?;
+    let mut raw: Option<Vec<u8>> = None;
+    let mut chain_depth = None;
+    let mut expected = 0;
+    while let Some(row) = rows.next()? {
+        let depth: usize = row.get::<_, i64>(0)? as usize;
+        let raw_size: i64 = row.get(1)?;
+        let codec: String = row.get(2)?;
+        let payload: Vec<u8> = row.get(3)?;
+        let chain_depth = *chain_depth.get_or_insert(depth);
+        if depth > MAX_DELTA_DEPTH || depth != chain_depth - expected {
+            return Err(LocalError::Integrity("invalid chunk delta chain".to_string()));
+        }
+        expected += 1;
+        raw = Some(decode_chunk(&codec, raw_size, &payload, raw.as_deref())?);
+    }
+    match (raw, chain_depth) {
+        (None, _) => Ok(None),
+        (Some(raw), Some(depth)) if expected == depth + 1 => Ok(Some((raw, depth))),
+        _ => Err(LocalError::Integrity("invalid chunk delta chain".to_string())),
+    }
+}
+
+fn decode_stored_chunk(
+    connection: &Connection,
+    codec: &str,
+    raw_size: i64,
+    payload: &[u8],
+    base: Option<Vec<u8>>,
+) -> Result<Vec<u8>> {
+    let Some(base) = base else {
+        return decode_chunk(codec, raw_size, payload, None);
+    };
+    let base: [u8; 32] = base
+        .try_into()
+        .map_err(|_| LocalError::Integrity("invalid chunk base digest".to_string()))?;
+    let (base, _) = read_chunk(connection, &base)?
+        .ok_or_else(|| LocalError::Integrity("chunk base is missing".to_string()))?;
+    decode_chunk(codec, raw_size, payload, Some(&base))
+}
+
+/// `dictionary` is the base chunk's bytes when the chunk is a delta.
+pub(crate) fn decode_chunk(
+    codec: &str,
+    raw_size: i64,
+    payload: &[u8],
+    dictionary: Option<&[u8]>,
+) -> Result<Vec<u8>> {
     let raw_size = usize::try_from(raw_size)
         .ok()
         .filter(|size| (1..=MAX_CHUNK).contains(size))
         .ok_or_else(|| LocalError::Integrity("invalid chunk raw size".to_string()))?;
     match codec {
+        "RAW" if dictionary.is_some() => Err(LocalError::Integrity(
+            "a delta chunk must be compressed".to_string(),
+        )),
         "RAW" => {
             if payload.len() != raw_size {
                 return Err(LocalError::Integrity(
@@ -1104,8 +1241,11 @@ pub(crate) fn decode_chunk(codec: &str, raw_size: i64, payload: &[u8]) -> Result
                     "compressed chunk contains trailing or concatenated frames".to_string(),
                 ));
             }
-            let mut decoder = zstd::stream::read::Decoder::new(Cursor::new(payload))
-                .map_err(|error| LocalError::Integrity(format!("invalid Zstd frame: {error}")))?;
+            let mut decoder = zstd::stream::read::Decoder::with_dictionary(
+                Cursor::new(payload),
+                dictionary.unwrap_or_default(),
+            )
+            .map_err(|error| LocalError::Integrity(format!("invalid Zstd frame: {error}")))?;
             decoder
                 .window_log_max(MAX_CHUNK.ilog2())
                 .map_err(|error| LocalError::Integrity(format!("invalid Zstd window: {error}")))?;
@@ -1135,6 +1275,37 @@ fn encode_chunk(raw: &[u8]) -> Result<(&'static str, Vec<u8>)> {
     } else {
         Ok(("RAW", raw.to_vec()))
     }
+}
+
+/// Compress `raw` with `base` as a raw content dictionary, when that pays.
+fn encode_delta(raw: &[u8], base: &[u8]) -> Result<Option<Vec<u8>>> {
+    let compressed = zstd::bulk::Compressor::with_dictionary(DELTA_ZSTD_LEVEL, base)
+        .and_then(|mut compressor| compressor.compress(raw))
+        .map_err(|error| LocalError::Invalid(format!("cannot compress chunk: {error}")))?;
+    Ok(compression_is_profitable(raw.len(), compressed.len()).then_some(compressed))
+}
+
+fn upgrade_version_1(connection: &Connection) -> Result<()> {
+    let user_version: i64 =
+        connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    if user_version != 1 {
+        return Ok(());
+    }
+    connection.execute_batch("BEGIN IMMEDIATE")?;
+    let result = (|| -> Result<()> {
+        let user_version: i64 =
+            connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        if user_version == 1 {
+            connection.execute_batch(UPGRADE_VERSION_1)?;
+            connection.pragma_update(None, "user_version", USER_VERSION)?;
+        }
+        connection.execute_batch("COMMIT")?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = connection.execute_batch("ROLLBACK");
+    }
+    result
 }
 
 fn compression_is_profitable(raw_size: usize, stored_size: usize) -> bool {
@@ -1521,29 +1692,30 @@ mod tests {
         let raw = vec![b'x'; 64 * 1024];
         let compressed = zstd::bulk::compress(&raw, ZSTD_LEVEL).unwrap();
         assert_eq!(
-            decode_chunk("ZSTD", raw.len() as i64, &compressed).unwrap(),
+            decode_chunk("ZSTD", raw.len() as i64, &compressed, None).unwrap(),
             raw
         );
 
         let mut trailing = compressed.clone();
         trailing.push(0);
-        assert!(decode_chunk("ZSTD", raw.len() as i64, &trailing).is_err());
+        assert!(decode_chunk("ZSTD", raw.len() as i64, &trailing, None).is_err());
 
         let mut concatenated = compressed.clone();
         concatenated.extend_from_slice(&compressed);
-        assert!(decode_chunk("ZSTD", raw.len() as i64, &concatenated).is_err());
-        assert!(decode_chunk("ZSTD", raw.len() as i64 + 1, &compressed).is_err());
-        assert!(decode_chunk("ZSTD", raw.len() as i64 - 1, &compressed).is_err());
+        assert!(decode_chunk("ZSTD", raw.len() as i64, &concatenated, None).is_err());
+        assert!(decode_chunk("ZSTD", raw.len() as i64 + 1, &compressed, None).is_err());
+        assert!(decode_chunk("ZSTD", raw.len() as i64 - 1, &compressed, None).is_err());
         assert!(
             decode_chunk(
                 "ZSTD",
                 raw.len() as i64,
-                &compressed[..compressed.len() - 1]
+                &compressed[..compressed.len() - 1],
+                None,
             )
             .is_err()
         );
-        assert!(decode_chunk("UNKNOWN", raw.len() as i64, &compressed).is_err());
-        assert!(decode_chunk("RAW", 0, &[]).is_err());
+        assert!(decode_chunk("UNKNOWN", raw.len() as i64, &compressed, None).is_err());
+        assert!(decode_chunk("RAW", 0, &[], None).is_err());
     }
 
     #[test]
@@ -1561,7 +1733,7 @@ mod tests {
         permissive.read_to_end(&mut decoded).unwrap();
         assert_eq!(decoded, raw);
 
-        let error = decode_chunk("ZSTD", raw.len() as i64, &compressed).unwrap_err();
+        let error = decode_chunk("ZSTD", raw.len() as i64, &compressed, None).unwrap_err();
         assert!(error.to_string().contains("too much memory"), "{error}");
     }
 
@@ -1577,7 +1749,7 @@ mod tests {
         assert_eq!(codec, "ZSTD");
         assert!(payload.len() * 100 < compressible.len() * 95);
         assert_eq!(
-            decode_chunk(codec, compressible.len() as i64, &payload).unwrap(),
+            decode_chunk(codec, compressible.len() as i64, &payload, None).unwrap(),
             compressible
         );
     }
@@ -1647,7 +1819,7 @@ mod tests {
         drop(connection);
 
         let connection = Connection::open(&path).unwrap();
-        connection.pragma_update(None, "user_version", 2).unwrap();
+        connection.pragma_update(None, "user_version", USER_VERSION + 1).unwrap();
         drop(connection);
         assert!(store.open_readonly().is_err());
 
@@ -1735,6 +1907,138 @@ mod tests {
             .query_row("SELECT count(*) FROM chunks", [], |row| row.get(0))
             .unwrap();
         assert_eq!(chunks, 0);
+    }
+
+    fn store_version(store: &ChunkStore, bytes: &[u8], base: Option<&[u8; 32]>) -> [u8; 32] {
+        let digest: [u8; 32] = Sha256::digest(bytes).into();
+        store
+            .stage_blob_regions(digest, bytes.len() as u64, bytes, &[bytes.len() as u64], base)
+            .unwrap();
+        store.complete_blob(&digest, bytes.len() as u64).unwrap();
+        digest
+    }
+
+    fn text_version(version: usize) -> Vec<u8> {
+        (0..2000)
+            .map(|line| format!("line {line} of version {}\n", if line == 1000 { version } else { 0 }))
+            .collect::<String>()
+            .into_bytes()
+    }
+
+    fn count(store: &ChunkStore, table: &str) -> i64 {
+        store
+            .open_readonly()
+            .unwrap()
+            .query_row(&format!("SELECT count(*) FROM {table}"), [], |row| row.get(0))
+            .unwrap()
+    }
+
+    #[test]
+    fn a_new_version_is_stored_against_the_previous_one_and_gc_keeps_its_base() {
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("objects.sqlite3");
+        let repo_id = RepoId::new();
+        ChunkStore::create(&path, &repo_id).unwrap();
+        let store = ChunkStore::new(path, &repo_id);
+        let (first, second) = (text_version(1), text_version(2));
+        let first_digest = store_version(&store, &first, None);
+        let second_digest = store_version(&store, &second, Some(&first_digest));
+        assert_eq!(count(&store, "chunk_bases"), 1);
+        let (full, delta): (i64, i64) = store
+            .open_readonly()
+            .unwrap()
+            .query_row(
+                "SELECT max(length(payload)), min(length(payload)) FROM chunks",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert!(delta * 20 < full, "delta {delta} bytes, full {full}");
+        store.verify_all().unwrap();
+
+        // The first version goes; its chunk stays as the second's base.
+        let second_id = ObjectId::from_digest(second_digest);
+        store
+            .gc(&BTreeSet::from([hex::encode(second_digest)]))
+            .unwrap();
+        assert_eq!(count(&store, "chunks"), 2);
+        let mut read = Vec::new();
+        store.copy_blob(&second_id, second.len() as u64, &mut read).unwrap();
+        assert_eq!(read, second);
+        store.verify_archive_closure().unwrap();
+
+        store.gc(&BTreeSet::new()).unwrap();
+        assert_eq!(count(&store, "chunks"), 0);
+        assert_eq!(count(&store, "chunk_bases"), 0);
+    }
+
+    #[test]
+    fn a_largest_delta_fits_the_frame_window() {
+        let text = |seed: u64| {
+            let mut state = seed;
+            let mut bytes = Vec::with_capacity(MAX_CHUNK);
+            while bytes.len() < MAX_CHUNK {
+                state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                bytes.extend_from_slice(format!("{:x} ", state >> 40).as_bytes());
+            }
+            bytes.truncate(MAX_CHUNK);
+            bytes
+        };
+        let base = text(1);
+        let mut raw = base.clone();
+        raw[MAX_CHUNK / 2..MAX_CHUNK / 2 + 8].copy_from_slice(b"changed!");
+        let payload = encode_delta(&raw, &base).unwrap().unwrap();
+        assert!(payload.len() < 1024, "{} bytes", payload.len());
+        assert_eq!(decode_chunk("ZSTD", raw.len() as i64, &payload, Some(&base)).unwrap(), raw);
+        assert!(decode_chunk("ZSTD", raw.len() as i64, &payload, None).is_err());
+    }
+
+    #[test]
+    fn delta_chains_restart_with_a_full_chunk() {
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("objects.sqlite3");
+        let repo_id = RepoId::new();
+        ChunkStore::create(&path, &repo_id).unwrap();
+        let store = ChunkStore::new(path, &repo_id);
+        let mut base = None;
+        for version in 0..=MAX_DELTA_DEPTH + 1 {
+            base = Some(store_version(&store, &text_version(version), base.as_ref()));
+        }
+        assert_eq!(count(&store, "chunk_bases"), MAX_DELTA_DEPTH as i64);
+        let connection = store.open_readonly().unwrap();
+        let latest = complete_blob_chunks(&connection, &base.unwrap()).unwrap();
+        assert_eq!(read_chunk(&connection, &latest[0]).unwrap().unwrap().1, 0);
+        store.verify_all().unwrap();
+    }
+
+    #[test]
+    fn a_version_1_store_gains_chunk_bases_when_opened() {
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("objects.sqlite3");
+        let repo_id = RepoId::new();
+        ChunkStore::create(&path, &repo_id).unwrap();
+        let store = ChunkStore::new(path.clone(), &repo_id);
+        let digest = store_version(&store, b"before the upgrade", None);
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "DROP INDEX idx_chunk_bases_base_digest;
+                 DROP TABLE chunk_bases;
+                 PRAGMA user_version = 1;",
+            )
+            .unwrap();
+        drop(connection);
+        let mut read = Vec::new();
+        store
+            .copy_blob(&ObjectId::from_digest(digest), 18, &mut read)
+            .unwrap();
+        assert_eq!(read, b"before the upgrade");
+        let version: i64 = store
+            .open_readonly()
+            .unwrap()
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, USER_VERSION);
     }
 
     #[test]

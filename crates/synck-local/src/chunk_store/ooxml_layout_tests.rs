@@ -1132,7 +1132,7 @@ fn production_regions_use_the_existing_verified_store_writer() {
     let digest: [u8; 32] = Sha256::digest(&bytes).into();
     assert_eq!(
         store
-            .stage_blob_regions(digest, bytes.len() as u64, bytes.as_slice(), &regions)
+            .stage_blob_regions(digest, bytes.len() as u64, bytes.as_slice(), &regions, None)
             .unwrap(),
         (digest, bytes.len() as u64)
     );

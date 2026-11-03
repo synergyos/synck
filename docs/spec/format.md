@@ -1091,7 +1091,7 @@ Metadata stays in `vcs_metadata_objects` in either storage mode.
 
 ### CHUNKED storage
 
-`object-store.sqlite3` uses `PRAGMA application_id = 0x534F424A`, `PRAGMA user_version = 1` and
+`object-store.sqlite3` uses `PRAGMA application_id = 0x534F424A`, `PRAGMA user_version = 2` and
 [object-store.sql](object-store.sql). `store_identity` contains exactly row
 `singleton = 1` with the same `repo_id` as configuration. `objects/` still exists
 but content is read from the object database.
@@ -1111,6 +1111,15 @@ stores exactly one Zstandard frame: no trailing bytes or concatenated frames,
 decoded output exactly `raw_size`, frame window at most 262144 bytes. A stored
 compressed payload is nonempty and its size multiplied by 100 is less than
 `raw_size * 95`. These chunk codecs are separate from a salted object's codec byte.
+
+A chunk with a `chunk_bases` row is a delta: its codec is `ZSTD`, and its frame
+is decoded with the decoded bytes of `base_digest` as a raw content dictionary.
+Decode the base first, which may itself be a delta. A chain holds at most 24
+deltas above a chunk without a base. A base is any stored chunk; a writer uses
+the chunk in the same place in the previous version of the same file. A chunk
+that is a base stays while any delta needs it, even when no blob lists it.
+Version 1 is version 2 without `chunk_bases` and its index; a writer adds them
+when it opens one.
 
 Chunk boundaries have no semantic meaning, and a reader never reproduces a writer's
 chunking. Copying or changing storage modes must preserve the exact stored

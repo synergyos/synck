@@ -6,8 +6,9 @@ reads only its own repository format; see [Format and compatibility](docs/format
 ## 0.3.0
 
 Repository format 7, commit format 6, object frame V1, history bundle format 5,
-Core SQLite schema 7, as in 0.2.0: 0.2.0 repositories open unchanged. 0.2.0
-refuses the object stores 0.3.0 creates (32 KiB pages).
+Core SQLite schema 7, as in 0.2.0: 0.2.0 repositories open unchanged. Object
+store version 2: 0.3.0 upgrades a version 1 store when it opens one, after which
+0.2.0 refuses it, as it refuses the stores 0.3.0 creates.
 
 ### CLI
 
@@ -114,6 +115,12 @@ refuses the object stores 0.3.0 creates (32 KiB pages).
   database. The table that cached it is unused.
 - Office files are chunked per ZIP member, with a large member's local header apart
   from its payload, so an edit stores only the members it changed.
+- A commit stores a changed chunk as a Zstd delta against the chunk in the same
+  place in the file's previous version, with chains of at most 24 deltas.
+  Object store version 2 records each delta's base in `chunk_bases`, and `gc`
+  keeps a base while a delta needs it. Replaying git.git's 311 release tags, the
+  object store holds 26.7 MB instead of 135.7 MB; a commit takes about 17% longer
+  and `fsck` 4.0 s instead of 2.2 s.
 
 ## 0.2.0
 

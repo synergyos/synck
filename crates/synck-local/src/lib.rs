@@ -62,7 +62,7 @@ pub use portable::init_repository as init;
 #[doc(hidden)]
 pub mod fuzz_entry {
     pub fn decode_chunk(codec: &str, raw_size: i64, payload: &[u8]) {
-        let _ = crate::chunk_store::decode_chunk(codec, raw_size, payload);
+        let _ = crate::chunk_store::decode_chunk(codec, raw_size, payload, None);
     }
 
     pub fn ooxml_regions(file: std::fs::File, size: u64) {

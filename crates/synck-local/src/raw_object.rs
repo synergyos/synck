@@ -39,6 +39,7 @@ pub(crate) fn capture<R: Read>(
     staging: &Path,
     store: Option<&ChunkStore>,
     checkpoint: bool,
+    base: Option<&ObjectId>,
 ) -> Result<Captured> {
     let mut reader = CountingReader { source, size: 0 };
     let digest = if let Some(store) = store {
@@ -48,8 +49,14 @@ pub(crate) fn capture<R: Read>(
         } else {
             Vec::new()
         };
-        let (digest, stored_size) =
-            store.stage_blob_regions(staging_key, size, &mut reader, &boundaries)?;
+        let base = base.map(crate::chunk_store::blob_digest).transpose()?;
+        let (digest, stored_size) = store.stage_blob_regions(
+            staging_key,
+            size,
+            &mut reader,
+            &boundaries,
+            base.as_ref(),
+        )?;
         if stored_size != size || reader.size != size {
             return Err(LocalError::Invalid(
                 "file changed while being captured".into(),
@@ -144,7 +151,7 @@ mod tests {
         ChunkStore::create(&path, &repo).unwrap();
         let store = ChunkStore::new(path, &repo);
         for mode in [None, Some(&store)] {
-            let captured = capture(&b""[..], 0, None, directory.path(), directory.path(), mode, true).unwrap();
+            let captured = capture(&b""[..], 0, None, directory.path(), directory.path(), mode, true, None).unwrap();
             assert!(stored(&captured, directory.path(), mode).is_empty());
             assert_eq!(captured.plain_digest, hex::encode(Sha256::digest(b"")));
             synck_vcs::object::verify_stored(&captured.id, synck_vcs::object::Form::Plain, b"")
@@ -162,7 +169,7 @@ mod tests {
         let bytes = (0..700_000).map(|i| (i * 17) as u8).collect::<Vec<_>>();
         for mode in [None, Some(&store)] {
             let capture_bytes = || {
-                capture(bytes.as_slice(), bytes.len() as u64, None, directory.path(), directory.path(), mode, true)
+                capture(bytes.as_slice(), bytes.len() as u64, None, directory.path(), directory.path(), mode, true, None)
                     .unwrap()
             };
             let (first, second) = (capture_bytes(), capture_bytes());
