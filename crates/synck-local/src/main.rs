@@ -1106,9 +1106,13 @@ async fn run_checkout(
             let held = repository.held_commits().await.map_err(|error| (error, false))?;
             let reservations = repository.agent_locks().map_err(|error| (error, false))?;
             let conflicts = repository.conflicts().map_err(|error| (error, false))?;
+            let skipped = repository.skipped_entries().map_err(|error| (error, false))?;
             print_path_warnings(&warnings);
             if json {
                 let mut status = status_json(&changes);
+                if !skipped.is_empty() {
+                    status["skipped"] = json!(skipped);
+                }
                 if let Some(held) = held {
                     status["held_commits"] = json!(held);
                 }
@@ -1121,6 +1125,7 @@ async fn run_checkout(
                 println!("{status}");
             } else {
                 print_status(&changes, align_change_markers);
+                print_skipped(&skipped);
                 if let Some(held) = held.filter(|held| !held.is_empty()) {
                     println!("{} commits held; push sends them", held.len());
                 }
@@ -1199,6 +1204,7 @@ async fn run_checkout(
                     outcome => outcome,
                 }
                 .map_err(|error| (error, false))?;
+                let skipped = repository.skipped_entries().map_err(|error| (error, false))?;
                 if json {
                     let commit_id = match &outcome {
                         CommitOutcome::Clean => None,
@@ -1209,8 +1215,10 @@ async fn run_checkout(
                         "commit_id": commit_id,
                     });
                     if !repairs.is_empty() { result["renamed"] = json!(repairs); }
+                    if !skipped.is_empty() { result["skipped"] = json!(skipped); }
                     println!("{result}");
                 } else {
+                    print_skipped(&skipped);
                     match outcome {
                         CommitOutcome::Clean => println!("nothing to commit"),
                         CommitOutcome::Committed(commit_id) => println!("committed {commit_id}"),
@@ -2390,6 +2398,12 @@ fn uses_worktree(command: &Command) -> bool {
                     command: VersionCommand::Restore { .. },
                 }
         )
+}
+
+fn print_skipped(skipped: &[String]) {
+    for path in skipped {
+        println!("skipped, not a file or folder: {}", visible(path));
+    }
 }
 
 fn print_monitor_status(status: &MonitorStatus, json_output: bool) {

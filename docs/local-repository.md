@@ -33,6 +33,12 @@ rules and subtree selection are visibility policy, not erasure of history.
 The `.synck` control directory and its aliases cannot be recorded as items, in
 any folder.
 
+History holds files and folders only. Scans skip an untracked symbolic link,
+Windows reparse point or other entry that is neither, without following it;
+`status` and `commit` list each one as skipped (`skipped` in JSON when any
+exist). A tracked path that becomes such an entry is refused, so it never reads
+as a deletion. Finder aliases and Windows shortcuts are ordinary files.
+
 Whole-path length is not a repository rule, because checkout locations vary by
 machine. The Windows MSVC CLI embeds a `longPathAware` manifest and uses extended
 absolute paths. Windows status and checkout commands warn on stderr for each path

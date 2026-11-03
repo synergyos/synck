@@ -27,7 +27,7 @@ use crate::chunk_store::{ChunkStore, OBJECT_STORE_FILE, StorageMode};
 use crate::error::{IoContext, LocalError, Result};
 
 use crate::portable::FORMAT_VERSION;
-const LOCAL_SCHEMA_VERSION: i64 = 15;
+const LOCAL_SCHEMA_VERSION: i64 = 16;
 pub(crate) const MONITOR_LOCK_FILE: &str = "monitor.lock";
 const PAGE_SIZE: usize = 1_024;
 const SQLITE_ITEM_ID_CHUNK_SIZE: usize = 900;
@@ -107,6 +107,15 @@ const LOCAL_SCHEMA_14_IN: &str = "
     DROP TABLE v14_worktree_identities;
     DROP TABLE v14_worktree_entries;
     DROP TABLE v14_worktree_scan_state;
+";
+
+/// Version 16 records the untracked links and other entries that are neither
+/// files nor folders, which scans skip. Version 15 refused them, so it had none.
+const LOCAL_SCHEMA_15_TO_16: &str = "
+    CREATE TABLE local_worktree_skipped (
+        path TEXT PRIMARY KEY CHECK (path <> '')
+    ) STRICT, WITHOUT ROWID;
+    UPDATE local_schema_meta SET version = 16;
 ";
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -2692,6 +2701,7 @@ pub(crate) fn initialize_checkout_schema(local: &crate::local_database::LocalDat
     };
     match version {
         LOCAL_SCHEMA_VERSION => {}
+        15 => transaction.execute_batch(LOCAL_SCHEMA_15_TO_16)?,
         14 => {
             transaction.execute_batch(LOCAL_SCHEMA_14_OUT)?;
             transaction.execute_batch(LOCAL_SCHEMA)?;

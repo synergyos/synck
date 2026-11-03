@@ -94,4 +94,8 @@ CREATE TABLE local_worktree_scan_state (
     )
 ) STRICT;
 
-INSERT INTO local_schema_meta(singleton, version) VALUES (1, 15);
+CREATE TABLE local_worktree_skipped (
+    path TEXT PRIMARY KEY CHECK (path <> '')
+) STRICT, WITHOUT ROWID;
+
+INSERT INTO local_schema_meta(singleton, version) VALUES (1, 16);

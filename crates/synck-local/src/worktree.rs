@@ -130,10 +130,13 @@ struct WorktreeCache {
     ignore_sha256: Option<String>,
     monitor_token: Option<MonitorToken>,
     initialized: bool,
+    skipped: BTreeSet<String>,
 }
 
 struct ScanResult {
     working: BTreeMap<String, WorkingNode>,
+    /// Untracked links and other entries that are neither files nor folders.
+    skipped: BTreeSet<String>,
     ignore_sha256: Option<String>,
     monitor_token: Option<MonitorToken>,
     incremental_scopes: Option<Vec<String>>,
@@ -204,6 +207,19 @@ impl Repository {
         scan_tree_unvalidated(
             self.root(), &committed, &ignore, self.discovery_hidden_mode(), true,
         )
+    }
+
+    /// Untracked links and other entries that are neither files nor folders,
+    /// as the last scan left them out. History never holds them.
+    pub fn skipped_entries(&self) -> Result<Vec<String>> {
+        let connection = self.local_db().open_readonly().map_err(|error| {
+            LocalError::Integrity(format!("cannot read worktree cache: {error}"))
+        })?;
+        let paths = connection
+            .prepare("SELECT path FROM local_worktree_skipped ORDER BY path")?
+            .query_map([], |row| row.get(0))?
+            .collect::<rusqlite::Result<Vec<String>>>()?;
+        Ok(paths)
     }
 
     fn discovery_hidden_mode(&self) -> NativeHiddenMode {
@@ -640,6 +656,7 @@ impl Repository {
                 }
             }
             self.filter_checkout_observation(&mut scan.working);
+            scan.skipped.retain(|path| self.checkout_observes(path));
         }
         Ok(scan)
     }
@@ -666,7 +683,7 @@ impl Repository {
                         return self.scan_baseline(committed, cache);
                     }
                     let scopes = incremental_scopes(paths);
-                    let working = self.scan_incremental(
+                    let (working, skipped) = self.scan_incremental(
                         committed,
                         cache,
                         &ignore,
@@ -675,6 +692,7 @@ impl Repository {
                     )?;
                     return Ok(ScanResult {
                         working,
+                        skipped,
                         ignore_sha256,
                         monitor_token: Some(MonitorToken {
                             instance_id,
@@ -688,7 +706,7 @@ impl Repository {
                 }
                 Err(_) => {
                     let (ignore, ignore_sha256) = load_ignore(self.root())?;
-                    let working = self.scan_complete(
+                    let (working, skipped) = self.scan_complete(
                         committed,
                         cache,
                         &ignore,
@@ -696,6 +714,7 @@ impl Repository {
                     )?;
                     return Ok(ScanResult {
                         working,
+                        skipped,
                         ignore_sha256,
                         monitor_token: None,
                         incremental_scopes: None,
@@ -730,16 +749,18 @@ impl Repository {
                 }),
                 Err(_) => None,
             };
-            let complete =
+            let (complete, skipped) =
                 self.scan_complete(committed, cache, &no_ignore, NativeHiddenMode::Observe)?;
             let Some(baseline) = baseline else {
                 let (ignore, ignore_sha256) = load_ignore(self.root())?;
                 let working =
                     filter_ignored_working(&complete, committed, &ignore, self.hidden_files_mode());
+                let skipped = filter_ignored_skipped(&skipped, &ignore, self.hidden_files_mode());
                 return Ok((
                     complete,
                     ScanResult {
                         working,
+                        skipped,
                         ignore_sha256,
                         monitor_token: None,
                         incremental_scopes: None,
@@ -757,9 +778,10 @@ impl Repository {
                         ignore_sha256: None,
                         monitor_token: Some(baseline),
                         initialized: true,
+                        skipped,
                     };
                     let scopes = incremental_scopes(paths);
-                    let complete = self.scan_incremental(
+                    let (complete, skipped) = self.scan_incremental(
                         committed,
                         &complete_cache,
                         &no_ignore,
@@ -773,10 +795,13 @@ impl Repository {
                         &ignore,
                         self.hidden_files_mode(),
                     );
+                    let skipped =
+                        filter_ignored_skipped(&skipped, &ignore, self.hidden_files_mode());
                     return Ok((
                         complete,
                         ScanResult {
                             working,
+                            skipped,
                             ignore_sha256,
                             monitor_token: Some(MonitorToken {
                                 instance_id,
@@ -795,10 +820,13 @@ impl Repository {
                         &ignore,
                         self.hidden_files_mode(),
                     );
+                    let skipped =
+                        filter_ignored_skipped(&skipped, &ignore, self.hidden_files_mode());
                     return Ok((
                         complete,
                         ScanResult {
                             working,
+                            skipped,
                             ignore_sha256,
                             monitor_token: None,
                             incremental_scopes: None,
@@ -832,11 +860,12 @@ impl Repository {
                 Err(_) => None,
             };
             let (ignore, ignore_sha256) = load_ignore(self.root())?;
-            let working =
+            let (working, skipped) =
                 self.scan_complete(committed, cache, &ignore, self.discovery_hidden_mode())?;
             let Some(baseline) = baseline else {
                 return Ok(ScanResult {
                     working,
+                    skipped,
                     ignore_sha256,
                     monitor_token: None,
                     incremental_scopes: None,
@@ -853,7 +882,7 @@ impl Repository {
                             continue;
                         }
                         let (ignore, ignore_sha256) = load_ignore(self.root())?;
-                        let working = self.scan_complete(
+                        let (working, skipped) = self.scan_complete(
                             committed,
                             cache,
                             &ignore,
@@ -861,6 +890,7 @@ impl Repository {
                         )?;
                         return Ok(ScanResult {
                             working,
+                            skipped,
                             ignore_sha256,
                             monitor_token: None,
                             incremental_scopes: None,
@@ -871,9 +901,10 @@ impl Repository {
                         ignore_sha256: ignore_sha256.clone(),
                         monitor_token: Some(baseline),
                         initialized: true,
+                        skipped,
                     };
                     let scopes = incremental_scopes(paths);
-                    let working = self.scan_incremental(
+                    let (working, skipped) = self.scan_incremental(
                         committed,
                         &complete_cache,
                         &ignore,
@@ -882,6 +913,7 @@ impl Repository {
                     )?;
                     return Ok(ScanResult {
                         working,
+                        skipped,
                         ignore_sha256,
                         monitor_token: Some(MonitorToken {
                             instance_id,
@@ -894,6 +926,7 @@ impl Repository {
                 _ => {
                     return Ok(ScanResult {
                         working,
+                        skipped,
                         ignore_sha256,
                         monitor_token: None,
                         incremental_scopes: None,
@@ -910,11 +943,12 @@ impl Repository {
         cache: &WorktreeCache,
         ignore: &Gitignore,
         native_hidden_mode: NativeHiddenMode,
-    ) -> Result<BTreeMap<String, WorkingNode>> {
+    ) -> Result<(BTreeMap<String, WorkingNode>, BTreeSet<String>)> {
         let tracked: BTreeSet<String> = committed.keys().cloned().collect();
         let scan_started_at = normalized_time(SystemTime::now())?;
         let cache_by_identity = unique_cache_entries_by_identity(&cache.entries);
         let mut working = BTreeMap::new();
+        let mut skipped = BTreeSet::new();
         scan_dir(
             self.root(),
             Path::new("."),
@@ -929,9 +963,10 @@ impl Repository {
             &cache_by_identity,
             scan_started_at,
             &mut working,
+            &mut skipped,
         )?;
         crate::name_repairs::validate(self.root(), &working)?;
-        Ok(working)
+        Ok((working, skipped))
     }
 
     fn scan_incremental(
@@ -941,13 +976,15 @@ impl Repository {
         ignore: &Gitignore,
         native_hidden_mode: NativeHiddenMode,
         scopes: &[String],
-    ) -> Result<BTreeMap<String, WorkingNode>> {
+    ) -> Result<(BTreeMap<String, WorkingNode>, BTreeSet<String>)> {
         let tracked: BTreeSet<String> = committed.keys().cloned().collect();
         let scan_started_at = normalized_time(SystemTime::now())?;
         let cache_by_identity = unique_cache_entries_by_identity(&cache.entries);
         let mut working = cache.entries.clone();
+        let mut skipped = cache.skipped.clone();
         for scope in scopes {
             remove_scope(&mut working, scope);
+            skipped.retain(|path| !path_in_scope(path, scope));
             scan_scope(
                 self.root(),
                 scope,
@@ -958,10 +995,11 @@ impl Repository {
                 &cache_by_identity,
                 scan_started_at,
                 &mut working,
+                &mut skipped,
             )?;
         }
         crate::name_repairs::validate(self.root(), &working)?;
-        Ok(working)
+        Ok((working, skipped))
     }
 }
 
@@ -973,6 +1011,7 @@ pub(crate) fn scan_entry_without_ignore(
         .build()
         .map_err(|error| LocalError::Invalid(format!("cannot build worktree scanner: {error}")))?;
     let mut working = BTreeMap::new();
+    let mut skipped = BTreeSet::new();
     scan_scope(
         root,
         path,
@@ -983,7 +1022,13 @@ pub(crate) fn scan_entry_without_ignore(
         &HashMap::new(),
         normalized_time(SystemTime::now())?,
         &mut working,
+        &mut skipped,
     )?;
+    if let Some(skipped) = skipped.first() {
+        return Err(LocalError::Invalid(format!(
+            "unsupported filesystem entry: {skipped}"
+        )));
+    }
     crate::name_repairs::validate(root, &working)?;
     Ok(working)
 }
@@ -1084,6 +1129,7 @@ fn scan_tree_unvalidated(
         &cache_by_identity,
         normalized_time(SystemTime::now())?,
         &mut working,
+        &mut BTreeSet::new(),
     )?;
     Ok(working)
 }
@@ -1513,9 +1559,14 @@ fn load_worktree_cache(local: &crate::local_database::LocalDatabase) -> Result<W
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .optional()?;
+    let skipped = connection
+        .prepare("SELECT path FROM local_worktree_skipped")?
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<BTreeSet<_>>>()?;
     let Some((ignore_sha256, monitor_instance_id, monitor_sequence)) = state else {
         return Ok(WorktreeCache {
             entries,
+            skipped,
             ..WorktreeCache::default()
         });
     };
@@ -1549,6 +1600,7 @@ fn load_worktree_cache(local: &crate::local_database::LocalDatabase) -> Result<W
         ignore_sha256,
         monitor_token,
         initialized: true,
+        skipped,
     })
 }
 
@@ -1665,6 +1717,10 @@ fn publish_worktree_observation(
                 stat_valid,
             ],
         )?;
+    }
+    transaction.execute("DELETE FROM local_worktree_skipped", [])?;
+    for path in &scan.skipped {
+        transaction.execute("INSERT INTO local_worktree_skipped(path) VALUES (?1)", [path])?;
     }
     transaction.execute(
         "INSERT INTO local_worktree_scan_state(
@@ -1983,6 +2039,7 @@ fn scan_dir(
     cache_by_identity: &HashMap<FileIdentity, &WorkingNode>,
     scan_started_at: FileTime,
     output: &mut BTreeMap<String, WorkingNode>,
+    skipped: &mut BTreeSet<String>,
 ) -> Result<()> {
     let directory = if is_root {
         root.try_clone().at("open", ".")?
@@ -2100,6 +2157,7 @@ fn scan_dir(
                 cache_by_identity,
                 scan_started_at,
                 output,
+                skipped,
             )?;
         } else if file_type.is_file() && !is_cap_link_or_reparse(&metadata) {
             let mut node = inspect_file(
@@ -2112,10 +2170,12 @@ fn scan_dir(
             )?;
             node.native_hidden = native_hidden;
             output.insert(display, node);
-        } else {
+        } else if exact || descendant {
             return Err(LocalError::Invalid(format!(
                 "unsupported filesystem entry: {display}"
             )));
+        } else {
+            skipped.insert(display);
         }
     }
     Ok(())
@@ -2192,6 +2252,26 @@ fn filter_ignored_working(
         .collect()
 }
 
+fn filter_ignored_skipped(
+    skipped: &BTreeSet<String>,
+    ignore: &Gitignore,
+    hidden_files_mode: HiddenFilesMode,
+) -> BTreeSet<String> {
+    skipped
+        .iter()
+        .filter(|path| {
+            !ignored_untracked_entry(
+                ignore,
+                Path::new(path.as_str()),
+                false,
+                path.split('/').any(|part| part.starts_with('.')),
+                hidden_files_mode,
+            )
+        })
+        .cloned()
+        .collect()
+}
+
 fn path_in_scope(path: &str, scope: &str) -> bool {
     path == scope
         || path
@@ -2225,6 +2305,7 @@ fn scan_scope(
     cache_by_identity: &HashMap<FileIdentity, &WorkingNode>,
     scan_started_at: FileTime,
     output: &mut BTreeMap<String, WorkingNode>,
+    skipped: &mut BTreeSet<String>,
 ) -> Result<()> {
     let relative = Path::new(scope);
     let metadata = match root.symlink_metadata(relative) {
@@ -2313,6 +2394,7 @@ fn scan_scope(
             cache_by_identity,
             scan_started_at,
             output,
+            skipped,
         )
     } else if file_type.is_file() && !is_cap_link_or_reparse(&metadata) {
         let mut node = inspect_file(
@@ -2326,10 +2408,13 @@ fn scan_scope(
         node.native_hidden = native_hidden;
         output.insert(scope.to_string(), node);
         Ok(())
-    } else {
+    } else if exact || descendant {
         Err(LocalError::Invalid(format!(
             "unsupported filesystem entry: {scope}"
         )))
+    } else {
+        skipped.insert(scope.to_string());
+        Ok(())
     }
 }
 

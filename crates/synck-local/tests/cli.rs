@@ -419,6 +419,30 @@ fn cli_monitor_sees_a_deletion_in_a_folder_beside_a_same_named_file() {
 
 #[cfg(unix)]
 #[test]
+fn cli_reports_skipped_links_across_monitor_scans() {
+    let temporary = tempfile::tempdir().unwrap();
+    let root = &temporary.path().canonicalize().unwrap();
+    fs::create_dir(root.join("docs")).unwrap();
+    fs::write(root.join("docs/brief.txt"), b"brief").unwrap();
+    assert!(synck(root, &["init", "--author", "author"]).status.success());
+    assert!(synck(root, &["commit", "-m", "docs"]).status.success());
+    let clean = "nothing to commit, working tree clean\n";
+    assert_eq!(String::from_utf8(synck(root, &["status"]).stdout).unwrap(), clean);
+
+    std::os::unix::fs::symlink("brief.txt", root.join("docs/alias")).unwrap();
+    let status = String::from_utf8(synck(root, &["status"]).stdout).unwrap();
+    assert_eq!(status, format!("{clean}skipped, not a file or folder: docs/alias\n"));
+    // A scan of other paths keeps reporting it.
+    fs::write(root.join("notes.txt"), b"notes").unwrap();
+    let status = String::from_utf8(synck(root, &["status"]).stdout).unwrap();
+    assert_eq!(status, "A notes.txt\nskipped, not a file or folder: docs/alias\n");
+    let commit = json_stdout(root, &["--json", "commit", "-m", "notes"]);
+    assert_eq!(commit["skipped"], serde_json::json!(["docs/alias"]));
+    assert!(synck(root, &["monitor", "stop"]).status.success());
+}
+
+#[cfg(unix)]
+#[test]
 fn cli_monitor_exits_when_its_repository_is_removed() {
     let temporary = tempfile::tempdir().unwrap();
     let root = temporary.path().join("repository");

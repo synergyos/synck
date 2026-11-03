@@ -73,6 +73,11 @@ refuses the object stores 0.3.0 creates (32 KiB pages).
   `restore-tree` read stored files over one connection instead of one per file.
 - `--json log --oneline` returns commit metadata without change lists, as
   `--oneline` does without `--json`.
+- A symbolic link, or another entry that is neither a file nor a folder, no
+  longer stops `init`, `status` and `commit` for the whole tree. Untracked ones
+  are skipped and listed (`skipped` in JSON); a tracked path that becomes one is
+  still refused. The local database records them in schema 16; a version 15
+  database gains the table when the repository opens.
 
 ### Storage
 

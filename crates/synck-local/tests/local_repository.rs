@@ -89,8 +89,8 @@ async fn windows_junctions_are_rejected_or_removed_without_traversal() {
     let working_junction = root.join("linked");
     create_junction(&working_junction, &external);
     let repository = Repository::discover(&root).await.unwrap();
-    let error = repository.status().await.unwrap_err();
-    assert!(error.to_string().contains("unsupported filesystem entry"));
+    assert!(repository.status().await.unwrap().is_empty());
+    assert_eq!(repository.skipped_entries().unwrap(), ["linked"]);
     drop(repository);
     fs::remove_dir(&working_junction).unwrap();
 
@@ -2739,18 +2739,31 @@ async fn repository_lock_fails_without_waiting() {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn scanner_rejects_discoverable_symlink() {
+async fn scanner_skips_untracked_symlinks_and_refuses_tracked_ones() {
     use std::os::unix::fs::symlink;
 
     let temporary = tempfile::tempdir().unwrap();
-    init(temporary.path(), "author").await.unwrap();
-    symlink("outside", temporary.path().join("link")).unwrap();
-    let repository = Repository::discover(temporary.path()).await.unwrap();
+    let root = temporary.path();
+    fs::create_dir(root.join("docs")).unwrap();
+    fs::write(root.join("docs/brief.txt"), b"brief").unwrap();
+    symlink("outside", root.join("link")).unwrap();
+    init(root, "author").await.unwrap();
+    let repository = Repository::discover(root).await.unwrap();
+    repository.commit("initial").await.unwrap();
+    assert_eq!(repository.skipped_entries().unwrap(), ["link"]);
+
+    symlink("brief.txt", root.join("docs/alias")).unwrap();
+    assert!(repository.status().await.unwrap().is_empty());
+    assert_eq!(repository.skipped_entries().unwrap(), ["docs/alias", "link"]);
+
+    fs::remove_file(root.join("docs/brief.txt")).unwrap();
+    symlink("alias", root.join("docs/brief.txt")).unwrap();
     let error = repository.status().await.unwrap_err();
     assert!(
         error
             .to_string()
-            .contains("unsupported filesystem entry: link")
+            .contains("unsupported filesystem entry: docs/brief.txt"),
+        "{error}"
     );
 }
 
