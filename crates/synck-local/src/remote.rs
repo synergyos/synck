@@ -9,7 +9,7 @@
 //! `.synck/remote-token`; it never appears in a URL.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::{Read as _, Write as _};
+use std::io::{Read, Write as _};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -17,9 +17,10 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use synck_sync::{
     Capabilities, CommitMetadata, Cursor, HistoryPage, HistoryRequest, HistoryVerifier, Lease,
-    LeasePaths, LeaseRenewal, LeaseRequest, LeaseToken, Leases, MAX_PAGE_BYTES, MAX_PAGE_RECORDS,
-    PageAck, ProposalPage, ProposalRecord, ProposalVerifier, Receipt, Released,
-    RepositoryIdentity, SubmitRequest, SubmitResult,
+    LeasePaths, LeaseRenewal, LeaseRequest, LeaseToken, Leases, MAX_PACK_OBJECTS, MAX_PAGE_BYTES,
+    MAX_PAGE_RECORDS, ObjectRequest, PACK_BYTES, PACK_HEADER_BYTES, PageAck, ProposalPage,
+    ProposalRecord, ProposalVerifier, Receipt, Released, RepositoryIdentity, SubmitRequest,
+    SubmitResult,
 };
 use synck_vcs::config::CoreConfig;
 use synck_vcs::metadata::Metadata;
@@ -91,6 +92,34 @@ pub(crate) struct Remote {
     agent: ureq::Agent,
     sync: String,
     authorization: String,
+    /// The server's `object_packs` capability, once asked.
+    packs: std::sync::OnceLock<bool>,
+}
+
+/// An object pack read from staged files, one open at a time.
+struct PackReader<'a> {
+    objects: std::slice::Iter<'a, (ObjectId, PathBuf, u64)>,
+    current: Option<Box<dyn Read + 'a>>,
+}
+
+impl Read for PackReader<'_> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        loop {
+            if let Some(current) = &mut self.current {
+                let count = current.read(buffer)?;
+                if count > 0 {
+                    return Ok(count);
+                }
+            }
+            let Some((id, path, size)) = self.objects.next() else {
+                return Ok(0);
+            };
+            let mut header = id.as_str().as_bytes().to_vec();
+            header.extend(size.to_be_bytes());
+            let file = std::fs::File::open(path)?.take(*size);
+            self.current = Some(Box::new(std::io::Cursor::new(header).chain(file)));
+        }
+    }
 }
 
 /// What a page upload or submission met besides its answer.
@@ -115,6 +144,7 @@ impl Remote {
             agent,
             sync: format!("{url}/sync"),
             authorization: format!("Bearer {}", token.trim()),
+            packs: std::sync::OnceLock::new(),
         })
     }
 
@@ -193,7 +223,17 @@ impl Remote {
     pub(crate) fn capabilities(&self) -> Result<Capabilities> {
         let capabilities: Capabilities = Self::json(self.get("capabilities")?)?;
         capabilities.validate().map_err(integrity)?;
+        let _ = self.packs.set(capabilities.object_packs);
         Ok(capabilities)
+    }
+
+    /// The server takes and serves object packs; otherwise each object
+    /// travels in a request of its own.
+    fn packs(&self) -> Result<bool> {
+        match self.packs.get() {
+            Some(packs) => Ok(*packs),
+            None => Ok(self.capabilities()?.object_packs),
+        }
     }
 
     fn history(&self, request: &HistoryRequest) -> Result<HistoryPage> {
@@ -251,6 +291,59 @@ impl Remote {
         Ok(())
     }
 
+    /// Upload one object pack of staged files.
+    fn put_objects(&self, objects: &[(ObjectId, PathBuf, u64)]) -> Result<()> {
+        let mut reader = PackReader { objects: objects.iter(), current: None };
+        let (status, body) = Self::read(self.put("objects", ureq::SendBody::from_reader(&mut reader))?)?;
+        if !status.is_success() {
+            return Err(Self::refusal(status, &body));
+        }
+        Ok(())
+    }
+
+    /// Download `ids` in packs, handing each object's bytes to `each` in
+    /// order. A pack may end early, at `PACK_BYTES`; the rest are asked for
+    /// again.
+    fn get_objects(&self, ids: &[ObjectId], mut each: impl FnMut(&ObjectId, &mut dyn Read) -> Result<()>) -> Result<()> {
+        let cut = |error: std::io::Error| LocalError::Unreachable(format!("object pack: {error}"));
+        let mut rest = ids;
+        while !rest.is_empty() {
+            let request = ObjectRequest { objects: rest[..rest.len().min(MAX_PACK_OBJECTS)].to_vec() };
+            let response = self.post("objects", &request, &[])?;
+            if !response.status().is_success() {
+                let (status, body) = Self::read(response)?;
+                return Err(Self::refusal(status, &body));
+            }
+            let mut reader = response.into_body().into_reader();
+            let mut received = 0;
+            let mut header = [0_u8; PACK_HEADER_BYTES];
+            loop {
+                let read = reader.read(&mut header).map_err(cut)?;
+                if read == 0 {
+                    break;
+                }
+                reader.read_exact(&mut header[read..]).map_err(cut)?;
+                let (id, size) = header.split_at(PACK_HEADER_BYTES - 8);
+                let id = request
+                    .objects
+                    .get(received)
+                    .filter(|expected| expected.as_str().as_bytes() == id)
+                    .ok_or_else(|| integrity("an object pack holds an object not asked for"))?;
+                let mut object = (&mut reader).take(u64::from_be_bytes(size.try_into().expect("eight bytes")));
+                each(id, &mut object)?;
+                if object.limit() != 0 {
+                    return Err(LocalError::Unreachable("object pack cut short".into()));
+                }
+                received += 1;
+            }
+            if received == 0 {
+                return Err(integrity("an object pack is empty"));
+            }
+            rest = &rest[received..];
+        }
+        Ok(())
+    }
+
     /// A metadata object's bytes, which the caller checks against its ID.
     fn get_metadata(&self, id: &ObjectId) -> Result<Vec<u8>> {
         let (status, body) = Self::read(self.get(&format!("objects/{}", id.as_str()))?)?;
@@ -260,16 +353,14 @@ impl Remote {
         Ok(body)
     }
 
-    /// Stream an object into `out`, which the caller checks against its ID.
-    fn get_object(&self, id: &ObjectId, out: &mut std::fs::File) -> Result<()> {
+    /// Hand an object's bytes to `each`, which checks them against its ID.
+    fn get_object(&self, id: &ObjectId, each: impl FnOnce(&mut dyn Read) -> Result<()>) -> Result<()> {
         let response = self.get(&format!("objects/{}", id.as_str()))?;
         if !response.status().is_success() {
             let (status, body) = Self::read(response)?;
             return Err(Self::refusal(status, &body));
         }
-        let mut reader = response.into_body().into_reader();
-        std::io::copy(&mut reader, out).map_err(|error| LocalError::Unreachable(error.to_string()))?;
-        Ok(())
+        each(&mut response.into_body().into_reader())
     }
 
     fn leases(&self) -> Result<Leases> {
@@ -330,50 +421,99 @@ impl Store<'_> {
         Ok((path, file))
     }
 
-    /// Download `id`, then store it only if its bytes hash to it.
-    fn download(&self, remote: &Remote, id: &ObjectId) -> Result<()> {
-        let (path, mut file) = self.temporary("download")?;
-        let result = (|| {
-            remote.get_object(id, &mut file)?;
-            file.flush().at("write", &path)?;
-            let size = file.metadata().at("inspect", &path)?.len();
-            let source = std::fs::File::open(&path).at("open", &path)?;
-            let metadata = self.metadata();
-            let captured = crate::raw_object::capture(
-                source,
-                size,
-                None,
-                &metadata.join("objects"),
-                &metadata.join("tmp"),
-                self.chunks.as_ref(),
-                // Durable at the checkpoint `install` takes before it applies.
-                false,
-                None,
-            )?;
-            if captured.id != *id {
-                return Err(integrity(format!("object {id} arrived as {}", captured.id)));
-            }
-            Ok(())
-        })();
-        let _ = std::fs::remove_file(&path);
-        result
+    /// Download the content objects `ids`, storing each only if its bytes
+    /// hash to its ID.
+    fn download(&self, remote: &Remote, ids: &[ObjectId]) -> Result<()> {
+        let store = |id: &ObjectId, bytes: &mut dyn Read| {
+            let (path, mut file) = self.temporary("download")?;
+            let result = (|| {
+                std::io::copy(bytes, &mut file).map_err(|error| LocalError::Unreachable(error.to_string()))?;
+                file.flush().at("write", &path)?;
+                let size = file.metadata().at("inspect", &path)?.len();
+                let source = std::fs::File::open(&path).at("open", &path)?;
+                let metadata = self.metadata();
+                let captured = crate::raw_object::capture(
+                    source,
+                    size,
+                    None,
+                    &metadata.join("objects"),
+                    &metadata.join("tmp"),
+                    self.chunks.as_ref(),
+                    // Durable at the checkpoint `install` takes before it applies.
+                    false,
+                    None,
+                )?;
+                if captured.id != *id {
+                    return Err(integrity(format!("object {id} arrived as {}", captured.id)));
+                }
+                Ok(())
+            })();
+            let _ = std::fs::remove_file(&path);
+            result
+        };
+        if remote.packs()? {
+            return remote.get_objects(ids, store);
+        }
+        for id in ids {
+            remote.get_object(id, |bytes| store(id, bytes))?;
+        }
+        Ok(())
     }
 
-    fn upload(&self, remote: &Remote, id: &ObjectId) -> Result<()> {
+    /// Write `id`'s exact bytes to a staging file. Metadata lives in history,
+    /// content in the object store.
+    fn stage_upload(&self, id: &ObjectId, metadata: Option<Vec<u8>>) -> Result<(PathBuf, u64)> {
         let (path, mut file) = self.temporary("upload")?;
         let result = (|| {
-            // Metadata lives in history, content in the object store.
-            if let Some(bytes) = self.storage.metadata_object(self.repo_id, id).map_err(integrity)? {
+            if let Some(bytes) = metadata {
                 file.write_all(&bytes).at("write", &path)?;
-                return remote.put_object(id, &path);
+                return Ok(bytes.len() as u64);
             }
             let metadata = cap_std::fs::Dir::open_ambient_dir(self.metadata(), cap_std::ambient_authority())
                 .at("open", self.metadata())?;
-            crate::portable::copy_stored(self.root, &metadata, self.chunks.as_ref(), id, &mut file)?;
+            let size = crate::portable::copy_stored(self.root, &metadata, self.chunks.as_ref(), id, &mut file)?;
             file.flush().at("write", &path)?;
-            remote.put_object(id, &path)
+            Ok(size)
         })();
-        let _ = std::fs::remove_file(&path);
+        match result {
+            Ok(size) => Ok((path, size)),
+            Err(error) => {
+                let _ = std::fs::remove_file(&path);
+                Err(error)
+            }
+        }
+    }
+
+    /// Upload `ids` in packs of at most `MAX_PACK_OBJECTS` and about
+    /// `PACK_BYTES`, or one by one to a server without packs.
+    fn upload(&self, remote: &Remote, ids: &[ObjectId]) -> Result<()> {
+        let packs = remote.packs()?;
+        let metadata = self.storage.metadata_objects(self.repo_id, ids).map_err(integrity)?;
+        let mut pack: Vec<(ObjectId, PathBuf, u64)> = Vec::new();
+        let result = (|| {
+            let mut bytes = 0;
+            for (index, (id, metadata)) in ids.iter().zip(metadata).enumerate() {
+                let (path, size) = self.stage_upload(id, metadata)?;
+                pack.push((id.clone(), path, size));
+                bytes += size;
+                let last = index + 1 == ids.len();
+                if !packs {
+                    remote.put_object(id, &pack[0].1)?;
+                } else if pack.len() == MAX_PACK_OBJECTS || bytes >= PACK_BYTES || last {
+                    remote.put_objects(&pack)?;
+                } else {
+                    continue;
+                }
+                for (_, path, _) in pack.drain(..) {
+                    let _ = std::fs::remove_file(path);
+                }
+                bytes = 0;
+            }
+            Ok(())
+        })();
+        for (_, path, _) in &pack {
+            let _ = std::fs::remove_file(path);
+        }
         result
     }
 
@@ -388,18 +528,32 @@ impl Store<'_> {
             .collect();
         let mut found = BTreeMap::new();
         let mut downloaded = Vec::new();
-        for id in ids {
-            let metadata = if missing.contains(&id) {
-                let bytes = remote.get_metadata(&id)?;
-                let metadata = Metadata::verify(&id, bytes.clone()).map_err(integrity)?;
-                downloaded.push((id.clone(), bytes));
-                metadata
-            } else {
-                self.storage
-                    .get_metadata(self.repo_id, &id)
-                    .map_err(integrity)?
-                    .ok_or_else(|| integrity(format!("metadata object {id} disappeared")))?
-            };
+        let mut keep = |id: &ObjectId, bytes: Vec<u8>| -> Result<()> {
+            found.insert(id.clone(), Metadata::verify(id, bytes.clone()).map_err(integrity)?);
+            downloaded.push((id.clone(), bytes));
+            Ok(())
+        };
+        if !missing.is_empty() && remote.packs()? {
+            let missing: Vec<ObjectId> = missing.iter().cloned().collect();
+            remote.get_objects(&missing, |id, bytes| {
+                let mut buffer = Vec::new();
+                bytes
+                    .take(MAX_REPLY_BYTES)
+                    .read_to_end(&mut buffer)
+                    .map_err(|error| LocalError::Unreachable(error.to_string()))?;
+                keep(id, buffer)
+            })?;
+        } else {
+            for id in &missing {
+                keep(id, remote.get_metadata(id)?)?;
+            }
+        }
+        for id in ids.into_iter().filter(|id| !missing.contains(id)) {
+            let metadata = self
+                .storage
+                .get_metadata(self.repo_id, &id)
+                .map_err(integrity)?
+                .ok_or_else(|| integrity(format!("metadata object {id} disappeared")))?;
             found.insert(id, metadata);
         }
         if !downloaded.is_empty() {
@@ -420,16 +574,19 @@ impl Store<'_> {
         }
         // Rows on the wire carry metadata by ID only.
         let mut references = Vec::with_capacity(events.len());
-        let mut downloaded = false;
+        let mut missing = BTreeSet::new();
         for row in &events {
             let found = synck_items::references::commit_event_references(row).map_err(integrity)?;
-            for id in &found.objects {
-                if !self.has_object(id)? {
-                    self.download(remote, id)?;
-                    downloaded = true;
+            for id in found.objects {
+                if !self.has_object(&id)? {
+                    missing.insert(id);
                 }
             }
             references.push(found.metadata);
+        }
+        let downloaded = !missing.is_empty();
+        if downloaded {
+            self.download(remote, &missing.into_iter().collect::<Vec<_>>())?;
         }
         let metadata = self.metadata_objects(remote, references.iter().flatten().cloned().collect())?;
         for (row, id) in events.iter_mut().zip(&references) {
@@ -439,8 +596,11 @@ impl Store<'_> {
                 CommitEventRow::Ref(row) => row.metadata = metadata,
             }
         }
-        if let Some(chunks) = self.chunks.as_ref().filter(|_| downloaded) {
-            chunks.checkpoint()?;
+        if downloaded {
+            match &self.chunks {
+                Some(chunks) => chunks.checkpoint()?,
+                None => crate::repository::sync_directory(&self.metadata().join("objects"))?,
+            }
         }
         let (proposal, ref_events) = proposal_from_rows(commit, events)?;
         apply(self.core, self.repo_id, commit, proposal, ref_events).await
@@ -773,9 +933,7 @@ impl Repository {
                     }
                     Submitted::Result(SubmitResult::PolicyLimit { .. }) => return Err(refused("POLICY_LIMIT")),
                     Submitted::Missing(objects) if !uploaded => {
-                        for id in &objects {
-                            store.upload(remote, id)?;
-                        }
+                        store.upload(remote, &objects)?;
                         uploaded = true;
                     }
                     Submitted::Missing(_) => return Err(integrity("objects stay missing after upload")),

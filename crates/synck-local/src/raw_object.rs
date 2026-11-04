@@ -97,8 +97,18 @@ pub(crate) fn capture<R: Read>(
                 ));
             }
             output.flush().at("flush object", &temporary)?;
-            output.get_ref().sync_all().at("sync object", &temporary)?;
-            drop(output);
+            let file = cap_std::fs::File::from_std(
+                output.into_inner().map_err(|error| error.into_error()).at("flush object", &temporary)?,
+            );
+            // Unchecked, a barrier orders the bytes before the caller's one
+            // full flush of the objects folder.
+            if checkpoint {
+                file.sync_all()
+            } else {
+                crate::repository::sync_ordered(&file)
+            }
+            .at("sync object", &temporary)?;
+            drop(file);
             let digest: [u8; 32] = hasher.finalize().into();
             let destination = objects.join(hex::encode(digest));
             match rename_noreplace(&temporary, &destination) {
@@ -111,7 +121,9 @@ pub(crate) fn capture<R: Read>(
                 Err(error) => return Err(error).at("publish object", &destination),
             }
             // An earlier writer may have published this object without syncing it.
-            sync_directory(objects)?;
+            if checkpoint {
+                sync_directory(objects)?;
+            }
             Ok(digest)
         })();
         if result.is_err() {

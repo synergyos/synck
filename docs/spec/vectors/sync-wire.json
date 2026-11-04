@@ -22,7 +22,8 @@
           "max_events_per_commit": 500,
           "max_object_bytes": null,
           "quota_bytes": null
-        }
+        },
+        "object_packs": true
       }
     },
     {

@@ -44,6 +44,12 @@ pub struct ServedRepository {
 }
 
 /// A verified protocol-1 upload, in stream order.
+/// One object of a pack.
+pub enum PackEntry {
+    Metadata(Vec<u8>),
+    Content(u64),
+}
+
 pub struct Proposal {
     pub operation_id: String,
     /// What the submission's digests say the commit is.
@@ -133,6 +139,7 @@ impl ServedRepository {
             encrypted: self.encrypted,
             latest,
             policy: synck_sync::ServerPolicy::default(),
+            object_packs: true,
         })
     }
 
@@ -141,8 +148,12 @@ impl ServedRepository {
     }
 
     pub fn has_object(&self, id: &ObjectId) -> Result<bool> {
+        self.holds_object(&self.object_store(), id)
+    }
+
+    fn holds_object(&self, store: &ChunkStore, id: &ObjectId) -> Result<bool> {
         if self.storage_mode == StorageMode::Chunked {
-            return self.object_store().holds_blob(id);
+            return store.holds_blob(id);
         }
         let name = id
             .as_str()
@@ -162,20 +173,88 @@ impl ServedRepository {
         self.storage.metadata_object(&self.repo_id, id).map_err(corrupt)
     }
 
+    /// What an object pack of `ids` holds, read through one connection to each
+    /// database: a metadata object's bytes, or a content object's size. `None`
+    /// when one of them is not stored. Blocking.
+    pub fn pack_entries(&self, ids: &[ObjectId]) -> Result<Option<Vec<PackEntry>>> {
+        let metadata = self.storage.metadata_objects(&self.repo_id, ids).map_err(corrupt)?;
+        let chunks = (self.storage_mode == StorageMode::Chunked)
+            .then(|| self.object_store().reader())
+            .transpose()?;
+        let objects = self.metadata.open_dir_nofollow("objects").map_err(corrupt)?;
+        let mut entries = Vec::with_capacity(ids.len());
+        for (id, metadata) in ids.iter().zip(metadata) {
+            if let Some(bytes) = metadata {
+                entries.push(PackEntry::Metadata(bytes));
+                continue;
+            }
+            let size = match &chunks {
+                Some(chunks) => chunks.blob_size(id)?,
+                None => {
+                    let name = id.as_str().strip_prefix("sha256:").ok_or_else(|| corrupt("object ID has no digest"))?;
+                    match objects.symlink_metadata(name) {
+                        Ok(entry) => Some(entry.len()),
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                        Err(error) => return Err(error).at("inspect object", self.root.join(".synck/objects").join(name)),
+                    }
+                }
+            };
+            match size {
+                Some(size) => entries.push(PackEntry::Content(size)),
+                None => return Ok(None),
+            }
+        }
+        Ok(Some(entries))
+    }
+
+    /// Write the object pack of `ids`, as `pack_entries` found them, ending
+    /// after the object that brings it to `budget` bytes. Blocking.
+    pub fn write_pack(&self, ids: &[ObjectId], entries: Vec<PackEntry>, budget: u64, out: &mut dyn Write) -> Result<()> {
+        let chunks = (self.storage_mode == StorageMode::Chunked)
+            .then(|| self.object_store().reader())
+            .transpose()?;
+        let mut sent = 0;
+        for (id, entry) in ids.iter().zip(entries) {
+            if sent >= budget {
+                break;
+            }
+            let size = match &entry {
+                PackEntry::Metadata(bytes) => bytes.len() as u64,
+                PackEntry::Content(size) => *size,
+            };
+            let mut header = id.as_str().as_bytes().to_vec();
+            header.extend(size.to_be_bytes());
+            out.write_all(&header).at("send object pack", &self.root)?;
+            match (entry, &chunks) {
+                (PackEntry::Metadata(bytes), _) => out.write_all(&bytes).at("send object pack", &self.root)?,
+                (PackEntry::Content(_), Some(chunks)) => chunks.copy_blob(id, size, &mut &mut *out)?,
+                (PackEntry::Content(_), None) => {
+                    if copy_stored(&self.root, &self.metadata, None, id, out)? != size {
+                        return Err(corrupt(format!("object {id} changed size while sent")));
+                    }
+                }
+            }
+            sent += size;
+        }
+        Ok(())
+    }
+
     /// Stream an object's exact stored bytes, refusing any other digest. Blocking.
     pub fn copy_object(&self, id: &ObjectId, out: &mut dyn Write) -> Result<u64> {
-        let store = self.object_store();
-        let chunked = (self.storage_mode == StorageMode::Chunked).then_some(&store);
+        self.copy_from(&self.object_store(), id, out)
+    }
+
+    fn copy_from(&self, store: &ChunkStore, id: &ObjectId, out: &mut dyn Write) -> Result<u64> {
+        let chunked = (self.storage_mode == StorageMode::Chunked).then_some(store);
         copy_stored(&self.root, &self.metadata, chunked, id, out)
     }
 
-    /// Store `source`'s bytes as `id`. Its form is checked when a commit names
-    /// it, since only the commit gives it a role. Blocking: waits for the lock.
-    pub fn install_object(&self, id: &ObjectId, source: &Path) -> Result<()> {
+    /// Store each source's bytes as its ID, under one repository lock. An
+    /// object's form is checked when a commit names it, since only the commit
+    /// gives it a role. Blocking: waits for the lock.
+    pub fn install_objects<'a>(&self, objects: impl IntoIterator<Item = (&'a ObjectId, &'a Path)>) -> Result<()> {
         let metadata = self.root.join(".synck");
         let _lock = crate::repository::acquire_lock(&metadata, true)?;
-        let file = open_regular_file_nofollow(source)?;
-        let size = file.metadata().at("inspect object upload", source)?.len();
         match self.metadata.create_dir("tmp") {
             Err(error) if error.kind() != std::io::ErrorKind::AlreadyExists => {
                 return Err(error).at("create staging directory", metadata.join("tmp"));
@@ -183,19 +262,23 @@ impl ServedRepository {
             _ => {}
         }
         let store = self.object_store();
-        let captured = crate::raw_object::capture(
-            file,
-            size,
-            None,
-            &metadata.join("objects"),
-            &metadata.join("tmp"),
-            (self.storage_mode == StorageMode::Chunked).then_some(&store),
-            // Durable at the checkpoint `accept` takes before it appends.
-            false,
-            None,
-        )?;
-        if captured.id != *id {
-            return Err(invalid(format!("object bytes are {}, not {id}", captured.id)));
+        for (id, source) in objects {
+            let file = open_regular_file_nofollow(source)?;
+            let size = file.metadata().at("inspect object upload", source)?.len();
+            let captured = crate::raw_object::capture(
+                file,
+                size,
+                None,
+                &metadata.join("objects"),
+                &metadata.join("tmp"),
+                (self.storage_mode == StorageMode::Chunked).then_some(&store),
+                // Durable at the checkpoint `accept` takes before it appends.
+                false,
+                None,
+            )?;
+            if captured.id != *id {
+                return Err(invalid(format!("object bytes are {}, not {id}", captured.id)));
+            }
         }
         Ok(())
     }
@@ -267,6 +350,8 @@ impl ServedRepository {
         // Uploads lost to a crash before this point answer OBJECTS_MISSING above.
         if self.storage_mode == StorageMode::Chunked {
             self.object_store().checkpoint()?;
+        } else {
+            crate::repository::sync_directory(&self.root.join(".synck/objects"))?;
         }
         let mut items: Vec<ItemId> = proposal
             .events
@@ -376,9 +461,10 @@ impl ServedRepository {
                 forms.entry(id.clone()).or_insert(Form::Opaque);
             }
         }
+        let store = self.object_store();
         let mut missing = Vec::new();
         for (id, form) in forms {
-            if !self.has_object(&id)? {
+            if !self.holds_object(&store, &id)? {
                 missing.push(id);
                 continue;
             }
@@ -386,14 +472,14 @@ impl ServedRepository {
                 Form::Plain | Form::Opaque => {}
                 Form::Salted => {
                     let mut frame = SaltedFrame::default();
-                    self.copy_object(&id, &mut frame)?;
+                    self.copy_from(&store, &id, &mut frame)?;
                     frame
                         .finish()
                         .map_err(|error| invalid(format!("object {id}: {error}")))?;
                 }
                 Form::Encrypted => {
                     let mut frame = FrameStart::default();
-                    self.copy_object(&id, &mut frame)?;
+                    self.copy_from(&store, &id, &mut frame)?;
                     synck_vcs::object::verify_encrypted_frame(&frame.0)
                         .map_err(|error| invalid(format!("object {id}: {error}")))?;
                 }
@@ -415,13 +501,14 @@ impl ServedRepository {
             .collect();
         let mut missing = Vec::new();
         let mut uploaded = Vec::new();
+        let store = self.object_store();
         for id in self.storage.missing_metadata(&self.repo_id, ids).map_err(corrupt)? {
-            if !self.has_object(&id)? {
+            if !self.holds_object(&store, &id)? {
                 missing.push(id);
                 continue;
             }
             let mut bytes = Bounded(Vec::new());
-            self.copy_object(&id, &mut bytes)?;
+            self.copy_from(&store, &id, &mut bytes)?;
             uploaded.push((id, bytes.0));
         }
         if !uploaded.is_empty() {

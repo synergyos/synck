@@ -91,24 +91,30 @@ impl SqliteStorage {
         repo: &RepoId,
         ids: impl IntoIterator<Item = ObjectId>,
     ) -> Result<Vec<ObjectId>, StorageError> {
+        let ids: Vec<ObjectId> = ids.into_iter().collect();
+        let stored = self.metadata_objects(repo, &ids)?;
+        Ok(ids.into_iter().zip(stored).filter(|(_, bytes)| bytes.is_none()).map(|(id, _)| id).collect())
+    }
+
+    /// Each of `ids`' exact bytes, verified, or `None` where it is not stored,
+    /// read through one connection.
+    pub fn metadata_objects(&self, repo: &RepoId, ids: &[ObjectId]) -> Result<Vec<Option<Vec<u8>>>, StorageError> {
         let connection = self.open_readonly()?;
         let mut statement = connection
             .prepare("SELECT payload FROM vcs_metadata_objects WHERE repo_id=?1 AND object_id=?2")
             .map_err(error)?;
-        let mut missing = Vec::new();
-        for id in ids {
-            let bytes: Option<Vec<u8>> = statement
-                .query_row(params![repo.as_str(), id.as_bytes().as_slice()], |row| row.get(0))
-                .optional()
-                .map_err(error)?;
-            match bytes {
-                Some(bytes) => {
-                    Metadata::verify_any(&id, bytes).map_err(error)?;
+        ids.iter()
+            .map(|id| {
+                let bytes: Option<Vec<u8>> = statement
+                    .query_row(params![repo.as_str(), id.as_bytes().as_slice()], |row| row.get(0))
+                    .optional()
+                    .map_err(error)?;
+                if let Some(bytes) = &bytes {
+                    Metadata::verify_any(id, bytes.clone()).map_err(error)?;
                 }
-                None => missing.push(id),
-            }
-        }
-        Ok(missing)
+                Ok(bytes)
+            })
+            .collect()
     }
 
     fn stored_metadata(&self, repo: &RepoId, id: &ObjectId) -> Result<Option<Vec<u8>>, StorageError> {

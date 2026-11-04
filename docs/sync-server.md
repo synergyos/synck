@@ -73,8 +73,9 @@ Git has two built-in ways to serve repositories:
   changed on the server meanwhile is not taken, and `pull` puts its changes
   back in the client's files, merged, to be committed again. Git commits
   offline too, but a refused push leaves the merge or rebase to the user.
-- **Transfer is one request per object**, where Git packs everything into one
-  stream. A first clone or a commit of many new files is slower than Git.
+- **Objects travel in packs** of up to 512 objects and about 64 MiB per
+  request, where Git sends one pack per fetch or push. A transfer cut off
+  resumes from the pack it was in.
 
 ## TLS
 
@@ -104,7 +105,8 @@ Leave the server on `127.0.0.1`: Caddy is the only listener on the network.
   Expired uploads are deleted when another page arrives. The streaming summary
   of each upload is in memory and rebuilt from its pages after a restart.
 - An object upload is written to `<state>/tmp`, checked against its ID, then
-  stored in the repository under the repository lock. Its form is checked
+  stored in the repository under the repository lock. A pack's objects are each
+  written and checked, then stored together under one lock. Its form is checked
   when a commit names it, since only the commit gives it a role. It is
   durable once a commit is accepted: acceptance checkpoints the object store
   first, so an upload lost to a crash answers `OBJECTS_MISSING` and is sent
@@ -168,8 +170,8 @@ All under `/v1/repositories/{repo_id}/sync`:
 | `PUT /uploads/{operation_id}/pages/{offset}` | write |
 | `POST /proposals` | write |
 | `GET /receipts/{operation_id}` | read |
-| `PUT /objects/{object_id}` | write |
-| `GET /objects/{object_id}` | read |
+| `PUT /objects/{object_id}`, `PUT /objects` | write |
+| `GET /objects/{object_id}`, `POST /objects` | read |
 | `POST /history` | read |
 | `GET /leases` | read |
 | `POST /leases`, `/leases/renew`, `/leases/release`, `/leases/break` | write |

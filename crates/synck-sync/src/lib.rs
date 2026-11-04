@@ -23,6 +23,15 @@ pub const PROTOCOL_VERSION: u16 = 1;
 /// any format-valid single event even with numeric-byte JSON history encoding.
 pub const MAX_PAGE_RECORDS: usize = 512;
 pub const MAX_PAGE_BYTES: usize = 8 * 1024 * 1024;
+/// Objects in one object pack, uploaded or requested.
+pub const MAX_PACK_OBJECTS: usize = 512;
+/// An object pack ends after the object that brings it to this many bytes,
+/// so one request stays bounded and a cut-off transfer resumes per pack. It
+/// bounds no object.
+pub const PACK_BYTES: u64 = 64 * 1024 * 1024;
+/// A pack entry's header: the object ID (`sha256:` and 64 hex digits), then
+/// its size as eight big-endian bytes. The object's exact bytes follow.
+pub const PACK_HEADER_BYTES: usize = 71 + 8;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProtocolError {
@@ -103,6 +112,10 @@ pub struct Capabilities {
     pub latest: Cursor,
     /// None for every field is the reference server's unrestricted policy.
     pub policy: ServerPolicy,
+    /// The server takes and serves object packs (`PUT /objects`, `POST
+    /// /objects`). Absent from servers that predate them.
+    #[serde(default)]
+    pub object_packs: bool,
 }
 impl Capabilities {
     pub fn validate(&self) -> Result<(), ProtocolError> {
@@ -342,6 +355,13 @@ pub struct LeaseToken {
 #[serde(deny_unknown_fields)]
 pub struct LeasePaths {
     pub paths: Vec<String>,
+}
+
+/// The objects a `POST /objects` asks for, at most `MAX_PACK_OBJECTS`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ObjectRequest {
+    pub objects: Vec<synck_vcs::types::ObjectId>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

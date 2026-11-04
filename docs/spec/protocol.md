@@ -66,6 +66,8 @@ All routes are under `/v1/repositories/{repo_id}/sync`:
 | `POST /history` | `HistoryRequest` / `HistoryPage` |
 | `PUT /objects/{object_id}` | exact stored bytes, immutable installation |
 | `GET /objects/{object_id}` | exact stored bytes, or explicit missing |
+| `PUT /objects` | an object pack, immutable installation of each object |
+| `POST /objects` | `ObjectRequest` / an object pack, or explicit missing |
 | `GET /leases` | `Leases` |
 | `POST /leases` | `LeaseRequest` / `Lease` |
 | `POST /leases/renew` | `LeaseRenewal` / 204 |
@@ -87,8 +89,21 @@ metadata object it names: missing ones are `OBJECTS_MISSING`, and the authority
 installs uploaded metadata through Core's metadata API before accepting the
 commit that points to it.
 
+A server whose `Capabilities` has `object_packs: true` also moves objects in
+packs, many per request. A pack is a sequence of entries, each the object ID's
+71 ASCII bytes, the object's size as 8 big-endian bytes, then its exact stored
+bytes; the body ends after the last entry. `PUT /objects` takes at most **512
+entries**, checks each against its ID, and stores them only when all are valid.
+`POST /objects` takes an `ObjectRequest` of 1 to 512 IDs and answers a pack of
+those objects in request order, ending after the entry that brings it to **64
+MiB**; the client asks again for the rest. One object that is not stored refuses
+the whole request with `OBJECT_MISSING`. Uploads aim for the same 64 MiB; neither
+bound limits an object's size. A client of a server without `object_packs` uses
+the per-object routes.
+
 `Capabilities` contains `protocol_version: 1`, `repository`, `encrypted` (a client
-needs it to compute the genesis value), `latest` complete cursor and `policy`. Fixed transfer bounds are **512 records per page** and
+needs it to compute the genesis value), `latest` complete cursor, `policy` and
+`object_packs`. Fixed transfer bounds are **512 records per page** and
 **8 MiB of serialized JSON per page**. These are not commit limits. The byte
 bound fits any format-valid individual event, with `payload_json` escaped.
 Producers stop a page before either bound, and paginate again. They
@@ -183,7 +198,8 @@ JSON integers.
 | --- | --- |
 | `RepositoryIdentity` | `repo_id`, `generation` |
 | `Cursor` | `repository`, `repo_seq`, `checkpoint` |
-| `Capabilities` | `protocol_version`, `repository`, `encrypted`, `latest` (`Cursor`), `policy` |
+| `Capabilities` | `protocol_version`, `repository`, `encrypted`, `latest` (`Cursor`), `policy`, `object_packs` (absent means false) |
+| `ObjectRequest` | `objects` (object IDs) |
 | `ServerPolicy` | `max_events_per_commit?`, `max_object_bytes?`, `quota_bytes?` |
 | `ItemHead` | `item_id`, `head_seq` |
 | `ProposalPage` | `repository`, `operation_id`, `offset`, `records` |
@@ -227,8 +243,8 @@ value is an event envelope with its `item_id`, a `ref` value is a ref envelope, 
 
 ## HTTP refusals
 
-`SubmitResult` values, `POLICY_LIMIT` included, are answers with status 200. A
-`PUT /objects` answers 204. A refused request has another status and the body
+`SubmitResult` values, `POLICY_LIMIT` included, are answers with status 200. Both
+`PUT /objects` routes answer 204. A refused request has another status and the body
 `{"status": CODE}`; a client acts on the code:
 
 | HTTP | `status` | Meaning and remedy |

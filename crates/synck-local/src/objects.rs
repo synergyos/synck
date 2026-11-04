@@ -89,10 +89,10 @@ impl Repository {
     }
 
     pub(crate) fn checkpoint_commit_objects(&self) -> Result<()> {
-        if self.storage_mode() == StorageMode::Chunked {
-            self.object_store().checkpoint()?;
+        match self.storage_mode() {
+            StorageMode::Chunked => self.object_store().checkpoint(),
+            StorageMode::WholeFile => crate::repository::sync_directory(&self.store_path().join("objects")),
         }
-        Ok(())
     }
 
     fn install_object_from_inner(

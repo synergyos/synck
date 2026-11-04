@@ -12,17 +12,18 @@ use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
-use http_body_util::BodyExt as _;
+use futures_util::TryStreamExt as _;
 use rand::RngCore as _;
 use serde::de::DeserializeOwned;
 use sha2::{Digest as _, Sha256};
 use synck_sync::{
     Capabilities, HistoryPage, HistoryRequest, Lease, LeasePaths, LeaseRenewal, LeaseRequest,
-    LeaseToken, LeasedPath, Leases, MAX_PAGE_BYTES, PageAck, ProposalPage, ProposalRecord,
-    ProtocolError, Receipt, Released, SubmitRequest, SubmitResult, validate_submit,
+    LeaseToken, LeasedPath, Leases, MAX_PACK_OBJECTS, MAX_PAGE_BYTES, ObjectRequest, PACK_BYTES,
+    PACK_HEADER_BYTES, PageAck, ProposalPage, ProposalRecord, ProtocolError, Receipt, Released,
+    SubmitRequest, SubmitResult, validate_submit,
 };
 use synck_vcs::types::{ObjectId, RepoId};
-use tokio::io::AsyncWriteExt as _;
+use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::runtime::Handle;
 
 use crate::portable::{Acceptance, Proposal, ServedRepository};
@@ -215,6 +216,10 @@ pub fn router(server: Arc<Server>) -> Router {
         .route(
             &format!("{sync}/leases/break"),
             post(break_leases).layer(DefaultBodyLimit::max(MAX_LEASE_BYTES)),
+        )
+        .route(
+            &format!("{sync}/objects"),
+            post(download_objects).layer(DefaultBodyLimit::max(MAX_SUBMIT_BYTES)).put(upload_objects),
         )
         .route(
             &format!("{sync}/objects/{{object_id}}"),
@@ -459,14 +464,14 @@ impl Drop for Staged {
     }
 }
 
-async fn upload_object(
-    State(server): State<Arc<Server>>,
-    UrlPath((repo_id, object_id_text)): UrlPath<(String, String)>,
-    headers: HeaderMap,
-    body: Body,
-) -> Result<StatusCode> {
-    let repository = server.authorize(&headers, &repo_id, Access::Write).await?;
-    let id = object_id(&object_id_text)?;
+/// The request body as one reader.
+fn body_reader(body: Body) -> impl AsyncRead + Unpin {
+    tokio_util::io::StreamReader::new(body.into_data_stream().map_err(std::io::Error::other))
+}
+
+/// Write an object upload to the state root's `tmp`, refusing bytes that
+/// do not hash to `id`.
+async fn stage(server: &Server, mut bytes: impl AsyncRead + Unpin, id: &ObjectId) -> Result<Staged> {
     let mut name = [0_u8; 16];
     rand::rng().fill_bytes(&mut name);
     let staged = Staged(
@@ -479,33 +484,120 @@ async fn upload_object(
         .await
         .map_err(|error| Error::filesystem("create object upload", &staged.0, error))?;
     let mut digest = Sha256::new();
-    let mut body = body;
-    while let Some(frame) = body.frame().await {
-        let frame = frame.map_err(|error| Error::Invalid(format!("object upload: {error}")))?;
-        if let Ok(data) = frame.into_data() {
-            digest.update(&data);
-            file.write_all(&data)
-                .await
-                .map_err(|error| Error::filesystem("write object upload", &staged.0, error))?;
+    let mut buffer = vec![0; 64 * 1024];
+    loop {
+        let count = bytes
+            .read(&mut buffer)
+            .await
+            .map_err(|error| Error::Invalid(format!("object upload: {error}")))?;
+        if count == 0 {
+            break;
         }
+        digest.update(&buffer[..count]);
+        file.write_all(&buffer[..count])
+            .await
+            .map_err(|error| Error::filesystem("write object upload", &staged.0, error))?;
     }
     // Read once and removed: durability comes from the repository store.
     file.flush()
         .await
         .map_err(|error| Error::filesystem("write object upload", &staged.0, error))?;
-    drop(file);
     if format!("sha256:{}", hex(&digest.finalize())) != id.as_str() {
         return Err(Error::Invalid("object bytes do not match its ID".into()));
     }
+    Ok(staged)
+}
+
+async fn upload_object(
+    State(server): State<Arc<Server>>,
+    UrlPath((repo_id, object_id_text)): UrlPath<(String, String)>,
+    headers: HeaderMap,
+    body: Body,
+) -> Result<StatusCode> {
+    let repository = server.authorize(&headers, &repo_id, Access::Write).await?;
+    let id = object_id(&object_id_text)?;
+    let staged = stage(&server, body_reader(body), &id).await?;
     server
         .jobs
         .run(move || {
-            repository.install_object(&id, &staged.0)?;
+            repository.install_objects([(&id, staged.0.as_path())])?;
             drop(staged);
             Ok(())
         })
         .await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// An object pack: entries of `PACK_HEADER_BYTES` and the object's bytes.
+/// All are checked before any is stored, then stored under one lock.
+async fn upload_objects(
+    State(server): State<Arc<Server>>,
+    UrlPath(repo_id): UrlPath<String>,
+    headers: HeaderMap,
+    body: Body,
+) -> Result<StatusCode> {
+    let repository = server.authorize(&headers, &repo_id, Access::Write).await?;
+    let mut body = body_reader(body);
+    let mut staged = Vec::new();
+    let mut header = [0_u8; PACK_HEADER_BYTES];
+    loop {
+        let read = body
+            .read(&mut header)
+            .await
+            .map_err(|error| Error::Invalid(format!("object pack: {error}")))?;
+        if read == 0 {
+            break;
+        }
+        body.read_exact(&mut header[read..])
+            .await
+            .map_err(|error| Error::Invalid(format!("object pack: {error}")))?;
+        if staged.len() == MAX_PACK_OBJECTS {
+            return Err(Error::Invalid(format!("an object pack holds at most {MAX_PACK_OBJECTS} objects")));
+        }
+        let (id, size) = header.split_at(PACK_HEADER_BYTES - 8);
+        let id = object_id(std::str::from_utf8(id).map_err(|error| Error::Invalid(error.to_string()))?)?;
+        let size = u64::from_be_bytes(size.try_into().expect("eight bytes"));
+        let file = stage(&server, (&mut body).take(size), &id).await?;
+        staged.push((id, file));
+    }
+    server
+        .jobs
+        .run(move || {
+            repository.install_objects(staged.iter().map(|(id, file)| (id, file.0.as_path())))?;
+            drop(staged);
+            Ok(())
+        })
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// The requested objects as one pack, in order, ending after the object that
+/// reaches `PACK_BYTES`. One missing object refuses the request.
+async fn download_objects(
+    State(server): State<Arc<Server>>,
+    UrlPath(repo_id): UrlPath<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response> {
+    let repository = server.authorize(&headers, &repo_id, Access::Read).await?;
+    let request: ObjectRequest = json(&body)?;
+    if request.objects.is_empty() || request.objects.len() > MAX_PACK_OBJECTS {
+        return Err(Error::Invalid(format!("ask for 1 to {MAX_PACK_OBJECTS} objects")));
+    }
+    let checked = repository.clone();
+    let ids = request.objects;
+    let (ids, entries) = server
+        .jobs
+        .run(move || match checked.pack_entries(&ids)? {
+            Some(entries) => Ok((ids, entries)),
+            None => Err(Error::ObjectMissing),
+        })
+        .await?;
+    let body = server
+        .jobs
+        .stream(move |out| Ok(repository.write_pack(&ids, entries, PACK_BYTES, out)?))
+        .await?;
+    Ok(([(header::CONTENT_TYPE, "application/octet-stream")], body).into_response())
 }
 
 fn hex(bytes: &[u8]) -> String {

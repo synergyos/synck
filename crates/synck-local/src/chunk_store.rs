@@ -3,6 +3,7 @@ use std::fs::{self, OpenOptions};
 use std::io::{BufReader, Cursor, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use fastcdc::v2020::{FastCDC, Normalization};
@@ -63,6 +64,9 @@ pub enum StorageMode {
 pub(crate) struct ChunkStore {
     path: PathBuf,
     repo_id: String,
+    /// The schema was checked by an earlier open of this value. Comparing it
+    /// reads the whole catalog, and a commit or a pack opens per object.
+    schema_checked: AtomicBool,
 }
 
 /// Reads blobs through one open connection.
@@ -81,6 +85,21 @@ impl ChunkReader {
         self.store
             .copy_blob_from(&self.connection, blob_id, expected_size, target)
     }
+
+    /// A complete blob's size, or `None` when it is not stored.
+    pub(crate) fn blob_size(&self, id: &ObjectId) -> Result<Option<u64>> {
+        let digest = blob_digest(id)?;
+        let size: Option<i64> = self
+            .connection
+            .query_row(
+                "SELECT size_bytes FROM blobs WHERE digest=?1 AND complete=1",
+                [digest.as_slice()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        size.map(|size| u64::try_from(size).map_err(|_| LocalError::Integrity("negative blob size".into())))
+            .transpose()
+    }
 }
 
 struct PendingChunk {
@@ -98,6 +117,7 @@ impl ChunkStore {
         Self {
             path,
             repo_id: repo_id.as_str().to_string(),
+            schema_checked: AtomicBool::new(false),
         }
     }
 
@@ -234,7 +254,10 @@ impl ChunkStore {
                 "invalid object database format pragmas".to_string(),
             ));
         }
-        validate_schema(connection)?;
+        if !self.schema_checked.load(Ordering::Relaxed) {
+            validate_schema(connection)?;
+            self.schema_checked.store(true, Ordering::Relaxed);
+        }
         let identities: i64 =
             connection.query_row("SELECT count(*) FROM store_identity", [], |row| row.get(0))?;
         let repo_id: Option<String> = connection

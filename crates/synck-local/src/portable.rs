@@ -51,7 +51,7 @@ use crate::repository::{
 };
 
 mod served;
-pub use served::{Acceptance, Accepted, Proposal, ServedRepository};
+pub use served::{Acceptance, Accepted, PackEntry, Proposal, ServedRepository};
 
 pub const FORMAT_VERSION: u32 = 7;
 const MAX_PAYLOAD_BYTES: usize = HEADER_BYTES + synck_items::body_events::MAX_BODY_BYTES;

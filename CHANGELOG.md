@@ -155,6 +155,16 @@ store version 2: 0.3.0 upgrades a version 1 store when it opens one, after which
 - Metadata objects travel through the object routes: a proposal needs every
   one it names, and `GET /objects` serves them from history.
   `SqliteStorage` gains `metadata_object` and `put_metadata_objects`.
+- Object packs: `PUT /objects` uploads up to 512 objects in one request and
+  `POST /objects` downloads them, up to 64 MiB per answer. `Capabilities`
+  gains `object_packs` (absent means false); HTTPS clones use packs where it
+  is true and one request per object elsewhere. `ObjectRequest` is new, and
+  `SqliteStorage` gains `metadata_objects`. A clone of 3,100 small files fell
+  from 47 s to 11–16 s and a push of 600 from 15 s to about 7 s (debug
+  build, macOS, loopback): objects written for a later checkpoint are ordered
+  with a barrier instead of each fully flushed, a pack is read through one
+  connection per database, and an object store checks its schema at its
+  first connection, not at each.
 - `portable::ServedRepository` opens a repository for a sync server without
   taking its lock and reports its protocol-1 `Capabilities`. `SqliteStorage`
   gains `history_identity`, `history_head` and `history_cursor`.

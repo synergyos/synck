@@ -460,13 +460,19 @@ fn transfer_bounds_and_unknown_fields_are_rejected() {
     let mut wire = serde_json::to_value(&request).unwrap();
     wire["extension"] = true.into();
     assert!(serde_json::from_value::<SubmitRequest>(wire).is_err());
-    let caps = Capabilities { encrypted: false,
+    let caps = Capabilities {
+        encrypted: false,
         protocol_version: PROTOCOL_VERSION,
         repository: repository(),
         latest: Cursor::genesis(repository(), false).unwrap(),
         policy: ServerPolicy::default(),
+        object_packs: true,
     };
     caps.validate().unwrap();
+    // A server from before object packs leaves the field out.
+    let mut wire = serde_json::to_value(&caps).unwrap();
+    wire.as_object_mut().unwrap().remove("object_packs");
+    assert!(!serde_json::from_value::<Capabilities>(wire).unwrap().object_packs);
 }
 
 #[test]

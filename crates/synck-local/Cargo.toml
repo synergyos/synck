@@ -32,7 +32,6 @@ diffy = "0.4"
 fastcdc = "3.2.1"
 futures-util = { version = "0.3", default-features = false }
 hex.workspace = true
-http-body-util = "0.1"
 ignore.workspace = true
 miniz_oxide = "0.9"
 notify = "8.2.0"
@@ -48,6 +47,7 @@ uuid.workspace = true
 zstd = "0.14"
 
 [dev-dependencies]
+http-body-util = "0.1"
 tempfile = "3"
 tower = { version = "0.5", features = ["util"] }
 
