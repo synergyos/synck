@@ -173,6 +173,9 @@ Core SQLite schema 7. Repositories from 0.1 are refused. Copy files across with
   from a repository it opens.
 - Repository text is escaped before it reaches a terminal.
 - A monitor exits when its repository disappears.
+- `portable::ServedRepository` opens a repository for a sync server without
+  taking its lock and reports its protocol-1 `Capabilities`. `SqliteStorage`
+  gains `history_identity` and `history_head`.
 
 ### Testing
 

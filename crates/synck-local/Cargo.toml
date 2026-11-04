@@ -17,6 +17,7 @@ synck-vcs = { path = "../synck-vcs" }
 synck-items = { path = "../synck-items" }
 synck-vcs-sqlite = { path = "../synck-vcs-sqlite" }
 synck-file-folder = { path = "../synck-file-folder" }
+synck-sync = { path = "../synck-sync" }
 anstream = "1"
 anstyle = "1"
 clap = { version = "4", features = ["derive"] }

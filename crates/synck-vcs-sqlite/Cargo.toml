@@ -10,11 +10,13 @@ rust-version.workspace = true
 
 [dependencies]
 synck-vcs = { path = "../synck-vcs" }
+synck-sync = { path = "../synck-sync" }
 async-trait.workspace = true
 chrono.workspace = true
 rusqlite = { workspace = true, features = ["blob"] }
 serde_json.workspace = true
 hex.workspace = true
+uuid.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }

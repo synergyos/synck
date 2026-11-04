@@ -2,6 +2,7 @@
 
 pub mod bundle;
 mod connection;
+mod history;
 pub mod schema;
 mod state;
 mod storage;

@@ -531,7 +531,7 @@ fn schema_objects(conn: &Connection) -> Result<SchemaShape, StorageError> {
     crate::schema::inspect(conn, "").map_err(map_sqlite_error)
 }
 
-fn map_sqlite_error(error: rusqlite::Error) -> StorageError {
+pub(crate) fn map_sqlite_error(error: rusqlite::Error) -> StorageError {
     use rusqlite::ErrorCode;
 
     if let rusqlite::Error::SqliteFailure(native, message) = &error {

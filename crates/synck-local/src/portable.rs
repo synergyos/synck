@@ -411,6 +411,90 @@ impl WriteOptions {
     }
 }
 
+/// A clone's config names its origin and is refused: history is the origin's.
+fn read_config(metadata: &Dir, root: &Path) -> Result<Config> {
+    let bytes = read_small(
+        metadata,
+        "config.json",
+        64 * 1024,
+        &root.join(".synck/config.json"),
+    )?;
+    let value: serde_json::Value = serde_json::from_slice(&bytes)?;
+    if let Some(origin) = value.get("origin").and_then(serde_json::Value::as_str) {
+        return Err(invalid(format!(
+            "this is a clone of {origin}; give repository and item commands the origin's path"
+        )));
+    }
+    let version = value.get("format_version").and_then(serde_json::Value::as_u64);
+    if version != Some(u64::from(FORMAT_VERSION)) {
+        return Err(unsupported_format(version));
+    }
+    Ok(serde_json::from_value(value)?)
+}
+
+/// A repository published by a sync server. Opening and reading it take no
+/// lock and write nothing: published history is immutable and each read is one
+/// SQLite snapshot, so the repository's own working tree keeps working. Only a
+/// repository that orders its own history can be served.
+pub struct ServedRepository {
+    root: PathBuf,
+    repo_id: RepoId,
+    storage: SqliteStorage,
+}
+
+impl ServedRepository {
+    pub fn open(root: &Path) -> Result<Self> {
+        let root_dir = directory(root)?;
+        let metadata = root_dir
+            .open_dir_nofollow(".synck")
+            .at("open portable metadata", root.join(".synck"))?;
+        let config = read_config(&metadata, root)?;
+        if config.authority == Authority::Follower {
+            return Err(invalid(
+                "a follower does not order its history; serve the repository it follows",
+            ));
+        }
+        regular(
+            &metadata,
+            "repository.sqlite3",
+            &root.join(".synck/repository.sqlite3"),
+        )?;
+        let storage = SqliteStorage::new(root.join(".synck/repository.sqlite3"))
+            .with_encrypted(config.encrypted);
+        storage.open_readonly().map_err(corrupt)?;
+        Ok(Self {
+            root: root.to_path_buf(),
+            repo_id: config.repo_id,
+            storage,
+        })
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    pub fn repository_id(&self) -> &RepoId {
+        &self.repo_id
+    }
+
+    /// Blocking SQLite reads: call it off async worker threads.
+    pub fn capabilities(&self) -> Result<synck_sync::Capabilities> {
+        let repository = self
+            .storage
+            .history_identity(&self.repo_id)
+            .map_err(corrupt)?
+            .ok_or_else(|| corrupt("repository has no history generation"))?;
+        let latest = self.storage.history_head(&repository).map_err(corrupt)?;
+        Ok(synck_sync::Capabilities {
+            protocol_version: synck_sync::PROTOCOL_VERSION,
+            repository,
+            encrypted: self.storage.encrypted(),
+            latest,
+            policy: synck_sync::ServerPolicy::default(),
+        })
+    }
+}
+
 /// Caller operation IDs share the namespace of other direct repository writes.
 pub(crate) fn stored_operation_id(id: &Uuid) -> String {
     format!("portable:{id}")
@@ -432,23 +516,7 @@ impl PortableRepository {
             Err(std::fs::TryLockError::WouldBlock) => return Err(LocalError::Busy),
             Err(std::fs::TryLockError::Error(error)) => return Err(invalid(error)),
         };
-        let bytes = read_small(
-            &metadata,
-            "config.json",
-            64 * 1024,
-            &root.join(".synck/config.json"),
-        )?;
-        let value: serde_json::Value = serde_json::from_slice(&bytes)?;
-        if let Some(origin) = value.get("origin").and_then(serde_json::Value::as_str) {
-            return Err(invalid(format!(
-                "this is a clone of {origin}; give repository and item commands the origin's path"
-            )));
-        }
-        let version = value.get("format_version").and_then(serde_json::Value::as_u64);
-        if version != Some(u64::from(FORMAT_VERSION)) {
-            return Err(unsupported_format(version));
-        }
-        let mut config: Config = serde_json::from_value(value)?;
+        let mut config = read_config(&metadata, root)?;
         // A checkout takes effect with the config that names its writer.
         if config.authority != Authority::Follower {
             config.checkout = crate::checkout::read_checkout(&root.join(".synck"))?;

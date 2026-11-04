@@ -1448,6 +1448,7 @@ dependencies = [
  "sha2",
  "synck-file-folder",
  "synck-items",
+ "synck-sync",
  "synck-vcs",
  "synck-vcs-sqlite",
  "tempfile",
@@ -1501,9 +1502,11 @@ dependencies = [
  "rusqlite",
  "serde_json",
  "sha2",
+ "synck-sync",
  "synck-vcs",
  "tempfile",
  "tokio",
+ "uuid",
  "windows-sys 0.61.2",
 ]
 
