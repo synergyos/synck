@@ -141,6 +141,7 @@ async fn https_clones_send_hold_push_and_lease() {
     assert!(json(&phone, token, &["status"])["held_commits"].as_array().unwrap().is_empty());
     ok(&laptop, token, &["pull"]);
     assert_eq!(std::fs::read_to_string(laptop.join("brief.txt")).unwrap(), "second draft\n");
+    ok(&laptop, token, &["fsck"]);
 
     // A server lease fences every clone and the served repository's own tree.
     let lease = json(&laptop, token, &["lock", "acquire", "notes.txt", "--owner", "agent-a"]);

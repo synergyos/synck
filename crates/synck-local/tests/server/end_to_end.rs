@@ -211,6 +211,7 @@ async fn an_upload_resumes_after_the_server_restarts() {
     assert_eq!(staged(), 0);
     ok(&fixture.origin, "", &["pull"]);
     assert_eq!(std::fs::read_dir(fixture.origin.join("notes")).unwrap().count(), 513);
+    ok(&fixture.origin, "", &["fsck"]);
 }
 
 #[tokio::test]

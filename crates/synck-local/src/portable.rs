@@ -2962,7 +2962,10 @@ pub async fn optimize_complete_repository(start: &Path) -> Result<Option<bool>> 
         &root.join(".synck/config.json"),
     )?;
     let value: serde_json::Value = serde_json::from_slice(&bytes)?;
-    if value.get("format_version").and_then(|v| v.as_u64()) != Some(u64::from(FORMAT_VERSION)) {
+    // An HTTPS clone's store is its own, behind its working tree.
+    if value.get("format_version").and_then(|v| v.as_u64()) != Some(u64::from(FORMAT_VERSION))
+        || value.get("remote").is_some()
+    {
         return Ok(None);
     }
     Ok(Some(
@@ -2981,9 +2984,11 @@ pub async fn verify_complete_repository(start: &Path) -> Result<Option<Verificat
         &root.join(".synck/config.json"),
     )?;
     let value: serde_json::Value = serde_json::from_slice(&bytes)?;
-    // A clone verifies its origin's history with its own working tree.
+    // A clone verifies its origin's history, and an HTTPS clone its own,
+    // with its working tree.
     if value.get("format_version").and_then(|v| v.as_u64()) != Some(u64::from(FORMAT_VERSION))
         || value.get("origin").is_some()
+        || value.get("remote").is_some()
     {
         return Ok(None);
     }

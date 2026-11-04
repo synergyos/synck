@@ -35,7 +35,14 @@ synck serve ~/synck-state --listen 127.0.0.1:8740 ~/Documents/personal ~/Documen
   of each upload is in memory and rebuilt from its pages after a restart.
 - An object upload is written to `<state>/tmp`, checked against its ID, then
   stored in the repository under the repository lock. Its form is checked
-  when a commit names it, since only the commit gives it a role.
+  when a commit names it, since only the commit gives it a role. It is
+  durable once a commit is accepted: acceptance checkpoints the object store
+  first, so an upload lost to a crash answers `OBJECTS_MISSING` and is sent
+  again.
+- The server keeps an idle connection to each repository's history and
+  object databases. They keep their WAL when a connection closes, and a
+  database with no connection open rebuilds its WAL index from the whole WAL
+  at the next open.
 - A submission is verified again from its pages, then its request digest is
   recorded before acceptance, so a receipt always has its digest. Acceptance
   is `portable::ServedRepository::accept`: the repository lock (waited for, as
@@ -48,8 +55,8 @@ synck serve ~/synck-state --listen 127.0.0.1:8740 ~/Documents/personal ~/Documen
   object uploaded for a commit not yet submitted; the submission then answers
   `OBJECTS_MISSING` and the client uploads it again.
 - A proposal needs every metadata object it names, uploaded through `PUT
-  /objects` like content; acceptance installs it in the repository's history,
-  and `GET /objects` serves it from there.
+  /objects` like content; acceptance installs them in the repository's
+  history in one transaction, and `GET /objects` serves them from there.
 - An object download holds one of the 16 blocking-job slots while the client
   reads it.
 

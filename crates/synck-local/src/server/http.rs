@@ -489,9 +489,10 @@ async fn upload_object(
                 .map_err(|error| Error::filesystem("write object upload", &staged.0, error))?;
         }
     }
-    file.sync_all()
+    // Read once and removed: durability comes from the repository store.
+    file.flush()
         .await
-        .map_err(|error| Error::filesystem("sync object upload", &staged.0, error))?;
+        .map_err(|error| Error::filesystem("write object upload", &staged.0, error))?;
     drop(file);
     if format!("sha256:{}", hex(&digest.finalize())) != id.as_str() {
         return Err(Error::Invalid("object bytes do not match its ID".into()));

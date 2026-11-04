@@ -35,6 +35,12 @@ pub struct ServedRepository {
     encrypted: bool,
     storage_mode: StorageMode,
     storage: SqliteStorage,
+    /// Idle connections to the history and object databases, held so their
+    /// WAL indexes survive between requests. The databases keep their WAL
+    /// when a connection closes, and the first connection to open one
+    /// rebuilds its index from the whole WAL. Object uploads leave their
+    /// frames in the WAL until `accept` checkpoints.
+    _wal_indexes: std::sync::Mutex<Vec<rusqlite::Connection>>,
 }
 
 /// A verified protocol-1 upload, in stream order.
@@ -86,7 +92,11 @@ impl ServedRepository {
         )?;
         let storage = SqliteStorage::new(root.join(".synck/repository.sqlite3"))
             .with_encrypted(config.encrypted);
-        storage.open_readonly().map_err(corrupt)?;
+        let mut wal_indexes = vec![storage.open_readonly().map_err(corrupt)?];
+        if config.storage_mode == StorageMode::Chunked {
+            let store = ChunkStore::new(root.join(".synck").join(OBJECT_STORE_FILE), &config.repo_id);
+            wal_indexes.push(store.open_readonly()?);
+        }
         Ok(Self {
             root: root.to_path_buf(),
             metadata,
@@ -94,6 +104,7 @@ impl ServedRepository {
             encrypted: config.encrypted,
             storage_mode: config.storage_mode,
             storage,
+            _wal_indexes: std::sync::Mutex::new(wal_indexes),
         })
     }
 
@@ -179,7 +190,8 @@ impl ServedRepository {
             &metadata.join("objects"),
             &metadata.join("tmp"),
             (self.storage_mode == StorageMode::Chunked).then_some(&store),
-            true,
+            // Durable at the checkpoint `accept` takes before it appends.
+            false,
             None,
         )?;
         if captured.id != *id {
@@ -251,6 +263,10 @@ impl ServedRepository {
         missing.extend(self.install_metadata(&proposal)?);
         if !missing.is_empty() {
             return Ok(Acceptance::MissingObjects(missing));
+        }
+        // Uploads lost to a crash before this point answer OBJECTS_MISSING above.
+        if self.storage_mode == StorageMode::Chunked {
+            self.object_store().checkpoint()?;
         }
         let mut items: Vec<ItemId> = proposal
             .events
@@ -398,6 +414,7 @@ impl ServedRepository {
             .map(|metadata| metadata.id())
             .collect();
         let mut missing = Vec::new();
+        let mut uploaded = Vec::new();
         for id in self.storage.missing_metadata(&self.repo_id, ids).map_err(corrupt)? {
             if !self.has_object(&id)? {
                 missing.push(id);
@@ -405,9 +422,12 @@ impl ServedRepository {
             }
             let mut bytes = Bounded(Vec::new());
             self.copy_object(&id, &mut bytes)?;
+            uploaded.push((id, bytes.0));
+        }
+        if !uploaded.is_empty() {
             self.storage
-                .put_metadata_object(&self.repo_id, &id, bytes.0)
-                .map_err(|error| invalid(format!("metadata object {id}: {error}")))?;
+                .put_metadata_objects(&self.repo_id, &uploaded)
+                .map_err(|error| invalid(error.to_string()))?;
         }
         Ok(missing)
     }

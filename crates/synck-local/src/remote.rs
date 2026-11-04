@@ -8,6 +8,7 @@
 //! retry after a lost receipt finds the accepted commit. The token lives in
 //! `.synck/remote-token`; it never appears in a URL.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -343,7 +344,8 @@ impl Store<'_> {
                 &metadata.join("objects"),
                 &metadata.join("tmp"),
                 self.chunks.as_ref(),
-                true,
+                // Durable at the checkpoint `install` takes before it applies.
+                false,
                 None,
             )?;
             if captured.id != *id {
@@ -373,18 +375,38 @@ impl Store<'_> {
         result
     }
 
-    /// Install one verified server commit unless it is here already.
-    /// The metadata object `id`, downloaded and stored through Core's
-    /// metadata storage when this history lacks it.
-    fn metadata_object(&self, remote: &Remote, id: &ObjectId) -> Result<Metadata> {
-        if let Some(metadata) = self.storage.get_metadata(self.repo_id, id).map_err(integrity)? {
-            return Ok(metadata);
+    /// The metadata objects `ids`, downloading those this history lacks and
+    /// storing them through Core's metadata storage in one transaction.
+    fn metadata_objects(&self, remote: &Remote, ids: BTreeSet<ObjectId>) -> Result<BTreeMap<ObjectId, Metadata>> {
+        let missing: BTreeSet<ObjectId> = self
+            .storage
+            .missing_metadata(self.repo_id, ids.iter().cloned())
+            .map_err(integrity)?
+            .into_iter()
+            .collect();
+        let mut found = BTreeMap::new();
+        let mut downloaded = Vec::new();
+        for id in ids {
+            let metadata = if missing.contains(&id) {
+                let bytes = remote.get_metadata(&id)?;
+                let metadata = Metadata::verify(&id, bytes.clone()).map_err(integrity)?;
+                downloaded.push((id.clone(), bytes));
+                metadata
+            } else {
+                self.storage
+                    .get_metadata(self.repo_id, &id)
+                    .map_err(integrity)?
+                    .ok_or_else(|| integrity(format!("metadata object {id} disappeared")))?
+            };
+            found.insert(id, metadata);
         }
-        let metadata = Metadata::verify(id, remote.get_metadata(id)?).map_err(integrity)?;
-        self.storage.put_metadata(self.repo_id, &metadata).map_err(integrity)?;
-        Ok(metadata)
+        if !downloaded.is_empty() {
+            self.storage.put_metadata_objects(self.repo_id, &downloaded).map_err(integrity)?;
+        }
+        Ok(found)
     }
 
+    /// Install one verified server commit unless it is here already.
     async fn install(
         &self,
         remote: &Remote,
@@ -395,20 +417,28 @@ impl Store<'_> {
             return Ok(Ok(()));
         }
         // Rows on the wire carry metadata by ID only.
-        for row in &mut events {
-            let references = synck_items::references::commit_event_references(row).map_err(integrity)?;
-            for id in &references.objects {
+        let mut references = Vec::with_capacity(events.len());
+        let mut downloaded = false;
+        for row in &events {
+            let found = synck_items::references::commit_event_references(row).map_err(integrity)?;
+            for id in &found.objects {
                 if !self.has_object(id)? {
                     self.download(remote, id)?;
+                    downloaded = true;
                 }
             }
-            if let Some(id) = &references.metadata {
-                let metadata = Some(self.metadata_object(remote, id)?);
-                match row {
-                    CommitEventRow::Item(row) => row.metadata = metadata,
-                    CommitEventRow::Ref(row) => row.metadata = metadata,
-                }
+            references.push(found.metadata);
+        }
+        let metadata = self.metadata_objects(remote, references.iter().flatten().cloned().collect())?;
+        for (row, id) in events.iter_mut().zip(&references) {
+            let metadata = id.as_ref().map(|id| metadata[id].clone());
+            match row {
+                CommitEventRow::Item(row) => row.metadata = metadata,
+                CommitEventRow::Ref(row) => row.metadata = metadata,
             }
+        }
+        if let Some(chunks) = self.chunks.as_ref().filter(|_| downloaded) {
+            chunks.checkpoint()?;
         }
         let (proposal, ref_events) = proposal_from_rows(commit, events)?;
         apply(self.core, self.repo_id, commit, proposal, ref_events).await
@@ -420,6 +450,11 @@ impl Store<'_> {
     async fn fetch(&self, remote: &Remote, held: &mut Held) -> Result<std::result::Result<(), Vec<ItemId>>> {
         let start = held.remote.clone().ok_or_else(|| integrity("held.json has no server cursor"))?;
         let repository = start.repository.clone();
+        // Idle connections keep each database's WAL index from being rebuilt
+        // from the whole WAL at every open. Downloads leave their frames in
+        // the object store's WAL until `install` checkpoints.
+        let _history = self.storage.open_readonly().map_err(integrity)?;
+        let _objects = self.chunks.as_ref().map(ChunkStore::open_readonly).transpose()?;
         let mut verifier = HistoryVerifier::new(start).map_err(integrity)?;
         let mut partial: Option<(CommitRow, synck_vcs::types::Sha256Digest, Vec<CommitEventRow>)> = None;
         loop {

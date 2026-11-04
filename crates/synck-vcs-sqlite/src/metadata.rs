@@ -57,16 +57,20 @@ impl SqliteStorage {
         }
     }
 
-    /// Store a metadata object received in either form, as a sync server
-    /// receives one with a proposal that names it.
-    pub fn put_metadata_object(&self, repo: &RepoId, id: &ObjectId, payload: Vec<u8>) -> Result<(), StorageError> {
-        if payload.starts_with(ENCRYPTED_PREFIX) != self.encrypted() {
-            return Err(error("metadata object has the wrong form for this repository"));
+    /// Store metadata objects received in either form, as a sync server
+    /// receives those a proposal names, in one transaction.
+    pub fn put_metadata_objects(&self, repo: &RepoId, objects: &[(ObjectId, Vec<u8>)]) -> Result<(), StorageError> {
+        for (id, payload) in objects {
+            if payload.starts_with(ENCRYPTED_PREFIX) != self.encrypted() {
+                return Err(error(format!("metadata object {id} has the wrong form for this repository")));
+            }
+            Metadata::verify_any(id, payload.clone()).map_err(|source| error(format!("metadata object {id}: {source}")))?;
         }
-        Metadata::verify_any(id, payload.clone()).map_err(error)?;
         let mut connection = self.open_writable()?;
         let transaction = connection.transaction().map_err(error)?;
-        insert_payload(&transaction, repo, id, &payload)?;
+        for (id, payload) in objects {
+            insert_payload(&transaction, repo, id, payload)?;
+        }
         transaction.commit().map_err(error)
     }
 
