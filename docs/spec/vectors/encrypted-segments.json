@@ -1,0 +1,99 @@
+{
+  "key_hex": "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",
+  "nonce_hex": "404142434445464748494a4b4c4d4e4f505152",
+  "repo_id": "019a2900-0000-7000-8000-000000000001",
+  "item_id": "019a2900-0000-7000-8000-000000000003",
+  "role": "bytes",
+  "key_epoch": 1,
+  "plaintext": "byte i is i mod 251",
+  "objects": [
+    {
+      "name": "one full segment",
+      "plaintext_length": 65536,
+      "segments": 1,
+      "stored_length": 65597,
+      "id": "sha256:27e19966f3016467d90aacda6e21bf2bdfda936c17d629546768739b2978895d"
+    },
+    {
+      "name": "one byte into a second segment",
+      "plaintext_length": 65537,
+      "segments": 2,
+      "stored_length": 65614,
+      "id": "sha256:da1e465ebcedf3766f4cbfe7014213914ddeac77cee853588afdac7b0901ad86"
+    },
+    {
+      "name": "two full segments and part of a third",
+      "plaintext_length": 131372,
+      "segments": 3,
+      "stored_length": 131465,
+      "id": "sha256:1ded8291285ff8b4380ae5b475b82837420343c287c1fb38a77f99f47a6de281"
+    }
+  ],
+  "lengths": [
+    {
+      "ciphertext_length": 0,
+      "frame_valid": false,
+      "plaintext_length": null
+    },
+    {
+      "ciphertext_length": 15,
+      "frame_valid": false,
+      "plaintext_length": null
+    },
+    {
+      "ciphertext_length": 16,
+      "frame_valid": true,
+      "plaintext_length": 0
+    },
+    {
+      "ciphertext_length": 17,
+      "frame_valid": true,
+      "plaintext_length": 1
+    },
+    {
+      "ciphertext_length": 32,
+      "frame_valid": true,
+      "plaintext_length": 16
+    },
+    {
+      "ciphertext_length": 65552,
+      "frame_valid": true,
+      "plaintext_length": 65536
+    },
+    {
+      "ciphertext_length": 65553,
+      "frame_valid": false,
+      "plaintext_length": null
+    },
+    {
+      "ciphertext_length": 65567,
+      "frame_valid": false,
+      "plaintext_length": null
+    },
+    {
+      "ciphertext_length": 65568,
+      "frame_valid": false,
+      "plaintext_length": null
+    },
+    {
+      "ciphertext_length": 65569,
+      "frame_valid": true,
+      "plaintext_length": 65537
+    },
+    {
+      "ciphertext_length": 131104,
+      "frame_valid": true,
+      "plaintext_length": 131072
+    },
+    {
+      "ciphertext_length": 131105,
+      "frame_valid": false,
+      "plaintext_length": null
+    },
+    {
+      "ciphertext_length": 131121,
+      "frame_valid": true,
+      "plaintext_length": 131073
+    }
+  ]
+}

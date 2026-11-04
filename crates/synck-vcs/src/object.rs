@@ -14,8 +14,14 @@ const UTF8_CODEC: u8 = 1;
 pub const ENCRYPTED_PREFIX: &[u8; 16] = b"SYNCK_ENCRYPTED\0";
 const ENCRYPTED_AAD_PREFIX: &[u8; 18] = b"synck-encrypted-v1";
 pub const SCHEME_XCHACHA20_POLY1305: u16 = 1;
+/// Scheme 1's cipher over [`SEGMENT_BYTES`] segments, for objects read or
+/// written in pieces.
+pub const SCHEME_XCHACHA20_POLY1305_SEGMENTS: u16 = 2;
+pub const SEGMENT_BYTES: usize = 65_536;
 const XCHACHA_NONCE_BYTES: usize = 24;
+const SEGMENT_NONCE_BYTES: usize = 19;
 const POLY1305_TAG_BYTES: usize = 16;
+const FRAME_HEADER_BYTES: usize = ENCRYPTED_PREFIX.len() + 2 + 8;
 /// The role of an event's metadata object; no `set_content` map may use it.
 pub const METADATA_ROLE: &str = "metadata";
 /// A one-item key sealed to the repository's ingest key. Opaque, and unframed.
@@ -91,9 +97,77 @@ pub fn verify_stored(id: &ObjectId, form: Form, stored: &[u8]) -> Result<(), Obj
 /// Check an encrypted frame without any key. An unknown scheme is unreadable,
 /// not corrupt: its nonce and tag belong to the scheme.
 pub fn verify_encrypted_frame(stored: &[u8]) -> Result<(), ObjectError> {
-    match EncryptedFrame::parse(stored) {
-        Ok(_) | Err(ObjectError::Scheme) => Ok(()),
-        Err(error) => Err(error),
+    frame_check(stored, stored.len() as u64)
+}
+
+/// The key-free check from an object's first bytes and its total length,
+/// which is all any scheme's frame rule reads.
+fn frame_check(start: &[u8], length: u64) -> Result<(), ObjectError> {
+    match frame_scheme(start)? {
+        SCHEME_XCHACHA20_POLY1305 => {
+            if length < (FRAME_HEADER_BYTES + XCHACHA_NONCE_BYTES + POLY1305_TAG_BYTES) as u64 {
+                return Err(ObjectError::Framing);
+            }
+            Ok(())
+        }
+        SCHEME_XCHACHA20_POLY1305_SEGMENTS => {
+            let ciphertext = length
+                .checked_sub((FRAME_HEADER_BYTES + SEGMENT_NONCE_BYTES) as u64)
+                .ok_or(ObjectError::Framing)?;
+            segmented_plaintext_len(ciphertext).map(|_| ())
+        }
+        _ => Ok(()),
+    }
+}
+
+/// The scheme in a frame's header; scheme 0 and a missing header are invalid.
+fn frame_scheme(start: &[u8]) -> Result<u16, ObjectError> {
+    let rest = start
+        .strip_prefix(ENCRYPTED_PREFIX.as_slice())
+        .filter(|rest| rest.len() >= 10)
+        .ok_or(ObjectError::Framing)?;
+    match u16::from_be_bytes([rest[0], rest[1]]) {
+        0 => Err(ObjectError::Framing),
+        scheme => Ok(scheme),
+    }
+}
+
+/// The plaintext length of a scheme 2 ciphertext of `length` bytes: full
+/// segments, then a last one of 1 to [`SEGMENT_BYTES`] bytes, or one empty
+/// segment for an empty plaintext. Each segment adds a tag.
+pub fn segmented_plaintext_len(length: u64) -> Result<u64, ObjectError> {
+    let sealed = (SEGMENT_BYTES + POLY1305_TAG_BYTES) as u64;
+    let tag = POLY1305_TAG_BYTES as u64;
+    let remainder = length % sealed;
+    if length < tag || (remainder != 0 && remainder <= tag && length != tag) {
+        return Err(ObjectError::Framing);
+    }
+    Ok(length - tag * length.div_ceil(sealed))
+}
+
+/// Checks an encrypted frame in constant memory as its stored bytes pass,
+/// like [`SaltedFrame`]. It says nothing about the object's ID.
+#[derive(Default)]
+pub struct EncryptedFrameCheck {
+    start: Vec<u8>,
+    length: u64,
+}
+
+impl EncryptedFrameCheck {
+    pub fn finish(self) -> Result<(), ObjectError> {
+        frame_check(&self.start, self.length)
+    }
+}
+
+impl std::io::Write for EncryptedFrameCheck {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        let room = FRAME_HEADER_BYTES.saturating_sub(self.start.len());
+        self.start.extend_from_slice(&bytes[..bytes.len().min(room)]);
+        self.length += bytes.len() as u64;
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
     }
 }
 
@@ -206,25 +280,16 @@ pub struct EncryptedFrame<'a> {
 
 impl<'a> EncryptedFrame<'a> {
     pub fn parse(stored: &'a [u8]) -> Result<Self, ObjectError> {
-        let rest = stored
-            .strip_prefix(ENCRYPTED_PREFIX.as_slice())
-            .ok_or(ObjectError::Framing)?;
-        if rest.len() < 10 {
-            return Err(ObjectError::Framing);
-        }
-        let (scheme, rest) = rest.split_at(2);
+        let scheme = frame_scheme(stored)?;
+        let nonce_bytes = match scheme {
+            SCHEME_XCHACHA20_POLY1305 => XCHACHA_NONCE_BYTES,
+            SCHEME_XCHACHA20_POLY1305_SEGMENTS => SEGMENT_NONCE_BYTES,
+            _ => return Err(ObjectError::Scheme),
+        };
+        frame_check(stored, stored.len() as u64)?;
+        let rest = &stored[ENCRYPTED_PREFIX.len() + 2..];
         let (key_epoch, rest) = rest.split_at(8);
-        let scheme = u16::from_be_bytes(scheme.try_into().expect("two bytes"));
-        if scheme == 0 {
-            return Err(ObjectError::Framing);
-        }
-        if scheme != SCHEME_XCHACHA20_POLY1305 {
-            return Err(ObjectError::Scheme);
-        }
-        if rest.len() < XCHACHA_NONCE_BYTES + POLY1305_TAG_BYTES {
-            return Err(ObjectError::Framing);
-        }
-        let (nonce, ciphertext) = rest.split_at(XCHACHA_NONCE_BYTES);
+        let (nonce, ciphertext) = rest.split_at(nonce_bytes);
         Ok(Self {
             scheme,
             key_epoch: u64::from_be_bytes(key_epoch.try_into().expect("eight bytes")),
@@ -234,7 +299,7 @@ impl<'a> EncryptedFrame<'a> {
     }
 }
 
-/// Scheme 1 associated data: an object is valid at only one place.
+/// The associated data of schemes 1 and 2: an object is valid at only one place.
 pub fn encrypted_aad(
     scheme: u16,
     key_epoch: u64,

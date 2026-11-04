@@ -478,9 +478,10 @@ impl ServedRepository {
                         .map_err(|error| invalid(format!("object {id}: {error}")))?;
                 }
                 Form::Encrypted => {
-                    let mut frame = FrameStart::default();
+                    let mut frame = EncryptedFrameCheck::default();
                     self.copy_from(&store, &id, &mut frame)?;
-                    synck_vcs::object::verify_encrypted_frame(&frame.0)
+                    frame
+                        .finish()
                         .map_err(|error| invalid(format!("object {id}: {error}")))?;
                 }
             }

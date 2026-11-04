@@ -139,6 +139,14 @@ store version 2: 0.3.0 upgrades a version 1 store when it opens one, after which
   object store holds 26.7 MB instead of 135.7 MB; a commit takes about 17% longer
   and `fsck` 4.0 s instead of 2.2 s.
 
+### Format
+
+- Encryption scheme 2 is XChaCha20-Poly1305 in 64 KiB segments, so a large
+  encrypted file is written and read a segment at a time instead of whole. Its
+  frame is checked without a key from the header and length alone;
+  `EncryptedFrameCheck` does that as bytes stream past. Vectors:
+  `encrypted.json` and `encrypted-segments.json`.
+
 ### Sync server
 
 - `synck serve` serves repositories to other devices and agents over protocol 1,

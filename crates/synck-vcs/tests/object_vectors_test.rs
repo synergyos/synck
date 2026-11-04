@@ -1,7 +1,8 @@
 use sha2::{Digest, Sha256};
 use synck_vcs::object::{
-    EncryptedFrame, Form, HEADER_BYTES, Header, Object, PREFIX, content_form, encrypted_aad,
-    plain_id, verify_encrypted_frame, verify_stored,
+    ENCRYPTED_PREFIX, EncryptedFrame, EncryptedFrameCheck, Form, HEADER_BYTES, Header, Object,
+    PREFIX, content_form, encrypted_aad, plain_id, segmented_plaintext_len,
+    verify_encrypted_frame, verify_stored,
 };
 use synck_vcs::types::{ItemId, ObjectId, RepoId};
 
@@ -72,6 +73,44 @@ fn external_encrypted_frame_and_aad_vectors() {
             .unwrap();
             assert_eq!(hex::encode(computed), aad, "{name}");
         }
+    }
+}
+
+#[test]
+fn segmented_frames_check_from_their_length() {
+    let path = format!(
+        "{}/../../docs/spec/vectors/encrypted-segments.json",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let vectors: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    let mut header = ENCRYPTED_PREFIX.to_vec();
+    header.extend_from_slice(&2u16.to_be_bytes());
+    header.extend_from_slice(&1u64.to_be_bytes());
+    header.extend_from_slice(&[0x40; 19]);
+    for case in vectors["lengths"].as_array().unwrap() {
+        let length = case["ciphertext_length"].as_u64().unwrap();
+        let valid = case["frame_valid"].as_bool().unwrap();
+        let mut stored = header.clone();
+        stored.resize(header.len() + length as usize, 0);
+        assert_eq!(verify_encrypted_frame(&stored).is_ok(), valid, "{length}");
+        let mut check = EncryptedFrameCheck::default();
+        for piece in stored.chunks(7) {
+            std::io::Write::write_all(&mut check, piece).unwrap();
+        }
+        assert_eq!(check.finish().is_ok(), valid, "{length}");
+        assert_eq!(
+            segmented_plaintext_len(length).ok(),
+            case["plaintext_length"].as_u64(),
+            "{length}"
+        );
+    }
+    for object in vectors["objects"].as_array().unwrap() {
+        let stored = object["stored_length"].as_u64().unwrap() - header.len() as u64;
+        assert_eq!(
+            segmented_plaintext_len(stored).unwrap(),
+            object["plaintext_length"].as_u64().unwrap()
+        );
     }
 }
 

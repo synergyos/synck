@@ -11,6 +11,7 @@ synthetic, and an example ID never means the object exists.
 | `json.json` | Hashed JSON | List: `text`, `valid` |
 | `objects.json` | PLAIN and SALTED objects | List: `form`, `bytes_hex`, `payload_hex`, `id`, `valid` |
 | `encrypted.json` | The encrypted frame and associated data | List: `frame_valid` needs no key; `opens` needs `key_hex` |
+| `encrypted-segments.json` | Scheme 2 objects too large for hex, and its length rule | `objects`: `plaintext_length`, `stored_length`, `id` of the plaintext described by `plaintext`; `lengths`: `ciphertext_length`, `frame_valid`, `plaintext_length` |
 | `metadata.json` | One metadata payload | `value`, `canonical_json`, `payload_hex`, `id` |
 | `events.json` | Canonical envelopes, event digests and commit hashes | List: `event`, `canonical_event`, `event_digest`, `commit`, `commit_id` |
 | `commits.json` | Commit identity | List: `header`, `events`, `canonical`, `commit_id` |

@@ -204,7 +204,27 @@ def encrypted_aad(scheme, epoch, repo_id, item_id, role):
 def encrypted_object(scheme, epoch, key, nonce, repo_id, item_id, role, plaintext):
     aad = encrypted_aad(scheme, epoch, repo_id, item_id, role)
     head = ENCRYPTED_PREFIX + scheme.to_bytes(2, "big") + epoch.to_bytes(8, "big") + nonce
+    if scheme == 2:
+        return head + segmented_seal(key, nonce, plaintext, aad), aad
     return head + xchacha_seal(key, nonce, plaintext, aad), aad
+
+
+SEGMENT = 65536
+
+
+def segmented_seal(key, prefix, plaintext, aad):
+    """Scheme 2: scheme 1's cipher over 64 KiB segments."""
+    assert len(prefix) == 19
+    parts = [plaintext[i:i + SEGMENT] for i in range(0, len(plaintext), SEGMENT)] or [b""]
+    return b"".join(
+        xchacha_seal(key, prefix + i.to_bytes(4, "big") + bytes([i == len(parts) - 1]), part, aad)
+        for i, part in enumerate(parts)
+    )
+
+
+def segmented_frame_valid(n):
+    r = n % (SEGMENT + 16)
+    return n >= 16 and (r == 0 or r >= 17 or n == 16)
 
 
 # --- Unicode 18.0.0 --------------------------------------------------------
@@ -485,11 +505,12 @@ def new_encrypted():
     nonce = bytes(range(0x40, 0x58))
     entries = []
 
-    def valid(name, epoch, role, plaintext):
-        payload, aad = encrypted_object(1, epoch, key, nonce, repo, item, role, plaintext)
+    def valid(name, epoch, role, plaintext, scheme=1):
+        stored_nonce = nonce if scheme == 1 else nonce[:19]
+        payload, aad = encrypted_object(scheme, epoch, key, stored_nonce, repo, item, role, plaintext)
         entries.append({
-            "name": name, "frame_valid": True, "opens": True, "scheme": 1, "key_epoch": epoch,
-            "key_hex": key.hex(), "nonce_hex": nonce.hex(), "repo_id": repo,
+            "name": name, "frame_valid": True, "opens": True, "scheme": scheme, "key_epoch": epoch,
+            "key_hex": key.hex(), "nonce_hex": stored_nonce.hex(), "repo_id": repo,
             "item_id": item, "role": role, "plaintext_hex": plaintext.hex(),
             "aad_hex": aad.hex(), "payload_hex": payload.hex(), "id": sha_id(payload),
         })
@@ -514,13 +535,69 @@ def new_encrypted():
     invalid("wrong role", {"role": "body"})
     invalid("wrong epoch in the header", {"key_epoch": 2, "payload_hex": (
         good[:18] + (2).to_bytes(8, "big") + good[26:]).hex()})
-    invalid("unknown scheme", {"scheme": 2, "payload_hex": (
-        good[:16] + (2).to_bytes(2, "big") + good[18:]).hex()})
+    invalid("unknown scheme", {"scheme": 3, "payload_hex": (
+        good[:16] + (3).to_bytes(2, "big") + good[18:]).hex()})
     invalid("scheme 0 is not defined", {"scheme": 0, "payload_hex": (
         good[:16] + (0).to_bytes(2, "big") + good[18:]).hex()}, False)
     invalid("truncated tag", {"payload_hex": good[:-1].hex()})
     invalid("no room for a tag", {"payload_hex": good[:66 - 1].hex()}, False)
+
+    valid("segmented file bytes", 1, "bytes", bytes.fromhex("00ff0180"), scheme=2)
+    valid("segmented empty file", 1, "bytes", b"", scheme=2)
+    base = entries[-2]
+    short = bytes.fromhex(base["payload_hex"])
+
+    def segmented_invalid(name, payload, frame_valid=True):
+        vector = dict(base, name=name, frame_valid=frame_valid, opens=False)
+        vector.pop("aad_hex")
+        vector.pop("plaintext_hex")
+        vector["payload_hex"] = payload.hex()
+        vector["id"] = sha_id(payload)
+        entries.append(vector)
+
+    # A one-segment object whose segment claims not to be the last.
+    prefix = short[26:45]
+    aad = encrypted_aad(2, 1, repo, item, "bytes")
+    segmented_invalid("segment not marked last", short[:45] + xchacha_seal(
+        key, prefix + (0).to_bytes(4, "big") + b"\0", bytes.fromhex("00ff0180"), aad))
+    segmented_invalid("segment with the wrong index", short[:45] + xchacha_seal(
+        key, prefix + (1).to_bytes(4, "big") + b"\1", bytes.fromhex("00ff0180"), aad))
+    segmented_invalid("segmented, no room for a tag", short[:45 + 15], False)
     save("encrypted.json", entries)
+
+
+def new_encrypted_segments():
+    """Scheme 2 objects too large to list in hex, and its key-free length rule."""
+    repo = "019a2900-0000-7000-8000-000000000001"
+    item = "019a2900-0000-7000-8000-000000000003"
+    key = bytes(range(0x80, 0xA0))
+    nonce = bytes(range(0x40, 0x53))
+    objects = []
+    for name, length in [
+        ("one full segment", SEGMENT),
+        ("one byte into a second segment", SEGMENT + 1),
+        ("two full segments and part of a third", 2 * SEGMENT + 300),
+    ]:
+        plaintext = bytes(i % 251 for i in range(length))
+        payload, _ = encrypted_object(2, 1, key, nonce, repo, item, "bytes", plaintext)
+        objects.append({
+            "name": name, "plaintext_length": length, "segments": -(-length // SEGMENT),
+            "stored_length": len(payload), "id": sha_id(payload),
+        })
+    lengths = []
+    for n in [0, 15, 16, 17, 32, SEGMENT + 16, SEGMENT + 17, SEGMENT + 31, SEGMENT + 32,
+              SEGMENT + 33, 2 * (SEGMENT + 16), 2 * (SEGMENT + 16) + 1, 2 * (SEGMENT + 16) + 17]:
+        valid = segmented_frame_valid(n)
+        lengths.append({
+            "ciphertext_length": n, "frame_valid": valid,
+            "plaintext_length": n - 16 * -(-n // (SEGMENT + 16)) if valid else None,
+        })
+    save("encrypted-segments.json", {
+        "key_hex": key.hex(), "nonce_hex": nonce.hex(), "repo_id": repo, "item_id": item,
+        "role": "bytes", "key_epoch": 1,
+        "plaintext": "byte i is i mod 251",
+        "objects": objects, "lengths": lengths,
+    })
 
 
 def new_checkpoints():
@@ -1952,6 +2029,7 @@ def main():
     new_json()
     new_objects()
     new_encrypted()
+    new_encrypted_segments()
     new_events()
     new_commits()
     new_sync()

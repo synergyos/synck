@@ -766,6 +766,25 @@ data is the concatenation of:
 An object is therefore valid at only one place: it cannot move to another
 repository, item, role or epoch. Deduplication does not apply.
 
+Scheme 2 is XChaCha20-Poly1305 in segments, for objects written or read in pieces,
+such as large file bytes: a reader holds one segment, not the whole object. Its
+nonce is 19 random bytes. Its ciphertext is a sequence of segments, each sealed
+with scheme 1's cipher and associated data (with scheme 2 in it), and the 24-byte
+nonce made of the stored 19 bytes, the segment's index from zero as an unsigned
+32-bit big-endian integer, and one byte that is 1 for the last segment and 0
+otherwise. Every segment holds 65,536 plaintext bytes except the last, which
+holds 1 to 65,536; an empty plaintext is one empty last segment. Each segment
+adds a 16-byte tag. A reader releases a segment's plaintext only after its tag
+verifies, and has the whole plaintext only after the last segment verifies; the
+index and the last flag refuse reordered, dropped, truncated or extended
+segments.
+
+A verifier checks a scheme 2 frame from its header and total length alone. Let
+`n` be the ciphertext's length and `r` its remainder modulo 65,552. The frame is
+valid when `n` is at least 16, `r` is 0 or at least 17, and `r` is 16 only when `n`
+is 16. The plaintext is `n - 16 * ceil(n / 65,552)` bytes. Writers may use either
+scheme for any object; readers support both.
+
 Key epoch 1 is the first repository key. Key epoch 0 means the object does not use
 a repository key: its item has a `sealed_key` role, whose bytes are a sealed key
 for that item alone, so that a writer can store an object it can never read
@@ -776,10 +795,12 @@ rotation and sealing belong to the product's key specification, not to this form
 An encrypted repository exposes item IDs, types, tree-item [tags](#tagged-names) and parents,
 record keys and links, item sources, lifecycle, operation IDs, federation stream IDs, times,
 actors, order, object IDs and exact sizes, since a scheme 1 object is 66 bytes longer
-than its plaintext. Operation IDs and stream IDs must hold no content. A commit
+than its plaintext and a scheme 2 object 45 bytes plus 16 per segment. Operation IDs and stream IDs must hold no content. A commit
 message in an encrypted repository must be null. `vectors/encrypted.json` fixes the
 frame, associated data and ciphertext, and lists rejected variants. It gives two
 verdicts: `frame_valid` needs no key, and `opens` needs one.
+`vectors/encrypted-segments.json` adds scheme 2 objects of several segments and the
+length rule.
 
 ### Object use
 

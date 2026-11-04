@@ -19,7 +19,9 @@ use sha2::{Digest, Sha256};
 use synck_file_folder::{
     BlobRef, CurrentItem, Intent, IntentProposal, Location, ProfileLifecycleState,
 };
-use synck_vcs::object::{Form, HEADER_BYTES, Object, SaltedFrame, content_form};
+use synck_vcs::object::{
+    EncryptedFrameCheck, Form, HEADER_BYTES, Object, SaltedFrame, content_form,
+};
 use synck_items::reader::{ItemReader, ReadContext, ReadableItem, RefReadContext};
 use synck_vcs::bundle::{
     BundleReader, validate_bundle_event_payload_json_and_digest,
@@ -68,21 +70,6 @@ pub(crate) fn unsupported_format(version: Option<u64>) -> LocalError {
 }
 
 const PAGE: usize = 512;
-
-/// Enough of a stored object to parse an encrypted frame without loading it.
-#[derive(Default)]
-struct FrameStart(Vec<u8>);
-
-impl Write for FrameStart {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        let count = bytes.len().min(66usize.saturating_sub(self.0.len()));
-        self.0.extend_from_slice(&bytes[..count]);
-        Ok(bytes.len())
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -2185,9 +2172,9 @@ impl PortableRepository {
                 frame.finish().map_err(corrupt)
             }
             Form::Encrypted => {
-                let mut frame = FrameStart::default();
+                let mut frame = EncryptedFrameCheck::default();
                 self.copy_blob(id, &mut frame)?;
-                synck_vcs::object::verify_encrypted_frame(&frame.0).map_err(corrupt)
+                frame.finish().map_err(corrupt)
             }
         }
     }
