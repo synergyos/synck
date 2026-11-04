@@ -1,0 +1,139 @@
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
+use axum::Router;
+use axum::http::{Method, StatusCode};
+use serde_json::Value;
+use synck_local::server::Server;
+use synck_local::server::tokens::{self, Access};
+use synck_sync::{
+    Capabilities, ItemHead, PageAck, ProposalPage, ProposalRecord, Receipt, SubmitResult,
+};
+use synck_vcs::types::ItemId;
+
+use super::common::{create_file, object_id, send, status_of, upload};
+
+#[tokio::test]
+async fn proposals_stage_check_objects_and_return_one_receipt() {
+    let parent = tempfile::tempdir().unwrap();
+    let state = parent.path().join("state");
+    synck_local::server::init(&state).unwrap();
+    let root = parent.path().join("personal");
+    let repo_id = synck_local::init(&root, "owner").await.unwrap();
+    let writer = tokens::add(&state, "laptop", Access::Write, &[repo_id.clone()]).unwrap();
+    let reader = tokens::add(&state, "phone", Access::Read, &[repo_id.clone()]).unwrap();
+    let router = synck_local::server::router(Arc::new(Server::open(&state, &[root.clone()]).unwrap()));
+    let sync = format!("/v1/repositories/{}/sync", repo_id.as_str());
+
+    let (_, body) = send(&router, Method::GET, &format!("{sync}/capabilities"), &reader, vec![]).await;
+    let repository = serde_json::from_slice::<Capabilities>(&body).unwrap().repository;
+    let (a, event) = create_file(&repo_id, "a.txt", b"hello");
+    let (pages, request) = upload(&repository, "op-1", vec![ProposalRecord::Item(event)]);
+    let page_uri = format!("{sync}/uploads/op-1/pages/0");
+    let page = serde_json::to_vec(&pages[0]).unwrap();
+    let submission = serde_json::to_vec(&request).unwrap();
+
+    let (status, body) = send(&router, Method::POST, &format!("{sync}/proposals"), &writer, submission.clone()).await;
+    assert_eq!((status, status_of(&body).as_str()), (StatusCode::GONE, "UPLOAD_EXPIRED"));
+    assert_eq!(send(&router, Method::PUT, &page_uri, &reader, page.clone()).await.0, StatusCode::FORBIDDEN);
+    let (status, body) = send(&router, Method::PUT, &page_uri, &writer, page.clone()).await;
+    assert_eq!(status, StatusCode::OK);
+    let ack: PageAck = serde_json::from_slice(&body).unwrap();
+    assert_eq!(ack.next_offset, 1);
+    // A retry gets the same acknowledgement; other contents at that offset do not.
+    let (status, body) = send(&router, Method::PUT, &page_uri, &writer, page).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(serde_json::from_slice::<PageAck>(&body).unwrap().expires_at, ack.expires_at);
+    let (_, other) = create_file(&repo_id, "other.txt", b"hello");
+    let mut changed = pages[0].clone();
+    changed.records = vec![ProposalRecord::Item(other)];
+    let changed = serde_json::to_vec(&changed).unwrap();
+    assert_eq!(send(&router, Method::PUT, &page_uri, &writer, changed).await.0, StatusCode::BAD_REQUEST);
+
+    let (status, body) = send(&router, Method::POST, &format!("{sync}/proposals"), &writer, submission.clone()).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    let missing: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(missing["status"], "OBJECTS_MISSING");
+    assert_eq!(missing["objects"][0], object_id(b"hello").as_str());
+
+    let object_uri = format!("{sync}/objects/{}", object_id(b"hello").as_str());
+    assert_eq!(send(&router, Method::PUT, &object_uri, &writer, b"other".to_vec()).await.0, StatusCode::BAD_REQUEST);
+    assert_eq!(send(&router, Method::PUT, &object_uri, &writer, b"hello".to_vec()).await.0, StatusCode::NO_CONTENT);
+    let (status, body) = send(&router, Method::GET, &object_uri, &reader, vec![]).await;
+    assert_eq!((status, body.as_slice()), (StatusCode::OK, &b"hello"[..]));
+    let absent = format!("{sync}/objects/{}", object_id(b"absent").as_str());
+    let (status, body) = send(&router, Method::GET, &absent, &reader, vec![]).await;
+    assert_eq!((status, status_of(&body).as_str()), (StatusCode::NOT_FOUND, "OBJECT_MISSING"));
+
+    let (status, body) = send(&router, Method::POST, &format!("{sync}/proposals"), &writer, submission.clone()).await;
+    assert_eq!(status, StatusCode::OK);
+    let SubmitResult::Accepted { receipt } = serde_json::from_slice(&body).unwrap() else {
+        panic!("not accepted: {}", String::from_utf8_lossy(&body));
+    };
+    receipt.validate_for(&request).unwrap();
+    assert_eq!(receipt.published.as_ref().unwrap().repo_seq, 2);
+    // Retried after its pages are gone, the submission gets the same receipt.
+    let (_, body) = send(&router, Method::POST, &format!("{sync}/proposals"), &writer, submission).await;
+    let SubmitResult::Accepted { receipt: again } = serde_json::from_slice(&body).unwrap() else {
+        panic!("retry not accepted");
+    };
+    assert_eq!(again.commit_id, receipt.commit_id);
+    let (status, body) = send(&router, Method::GET, &format!("{sync}/receipts/op-1"), &reader, vec![]).await;
+    assert_eq!(status, StatusCode::OK);
+    let stored: Receipt = serde_json::from_slice(&body).unwrap();
+    stored.validate_for(&request).unwrap();
+    assert_eq!(stored.accepted_at, receipt.accepted_at);
+    assert_eq!(send(&router, Method::GET, &format!("{sync}/receipts/op-2"), &reader, vec![]).await.0, StatusCode::NOT_FOUND);
+    let (_, body) = send(&router, Method::GET, &format!("{sync}/capabilities"), &reader, vec![]).await;
+    assert_eq!(serde_json::from_slice::<Capabilities>(&body).unwrap().latest.repo_seq, 2);
+
+    // A head guard that no longer holds is a conflict, never a merge.
+    let (b, event) = create_file(&repo_id, "b.txt", b"hello");
+    let guard = ItemHead { item_id: a.clone(), head_seq: 5 };
+    let (pages, request) = upload(&repository, "op-2", vec![ProposalRecord::Item(event), ProposalRecord::Guard(guard)]);
+    for page in &pages {
+        let uri = format!("{sync}/uploads/op-2/pages/{}", page.offset);
+        assert_eq!(send(&router, Method::PUT, &uri, &writer, serde_json::to_vec(page).unwrap()).await.0, StatusCode::OK);
+    }
+    let (_, body) = send(&router, Method::POST, &format!("{sync}/proposals"), &writer, serde_json::to_vec(&request).unwrap()).await;
+    let SubmitResult::Conflict { items } = serde_json::from_slice(&body).unwrap() else {
+        panic!("not a conflict: {}", String::from_utf8_lossy(&body));
+    };
+    let heads: BTreeMap<ItemId, i64> = items.into_iter().map(|head| (head.item_id, head.head_seq)).collect();
+    assert_eq!(heads, BTreeMap::from([(a, 1), (b, 0)]));
+}
+
+#[tokio::test]
+async fn an_upload_continues_after_a_restart() {
+    let parent = tempfile::tempdir().unwrap();
+    let state = parent.path().join("state");
+    synck_local::server::init(&state).unwrap();
+    let root = parent.path().join("personal");
+    let repo_id = synck_local::init(&root, "owner").await.unwrap();
+    let writer = tokens::add(&state, "laptop", Access::Write, &[repo_id.clone()]).unwrap();
+    let sync = format!("/v1/repositories/{}/sync", repo_id.as_str());
+    let open = || synck_local::server::router(Arc::new(Server::open(&state, &[root.clone()]).unwrap()));
+
+    let router = open();
+    let (_, body) = send(&router, Method::GET, &format!("{sync}/capabilities"), &writer, vec![]).await;
+    let repository = serde_json::from_slice::<Capabilities>(&body).unwrap().repository;
+    let records = ["c.txt", "d.txt"]
+        .map(|name| ProposalRecord::Item(create_file(&repo_id, name, b"two files").1))
+        .to_vec();
+    let (pages, request) = upload(&repository, "op-1", records);
+    let put = |router: Router, page: ProposalPage| {
+        let uri = format!("{sync}/uploads/op-1/pages/{}", page.offset);
+        let writer = writer.clone();
+        async move { send(&router, Method::PUT, &uri, &writer, serde_json::to_vec(&page).unwrap()).await.0 }
+    };
+    let object_uri = format!("{sync}/objects/{}", object_id(b"two files").as_str());
+    assert_eq!(send(&router, Method::PUT, &object_uri, &writer, b"two files".to_vec()).await.0, StatusCode::NO_CONTENT);
+    assert_eq!(put(router.clone(), pages[0].clone()).await, StatusCode::OK);
+    drop(router);
+
+    let router = open();
+    assert_eq!(put(router.clone(), pages[1].clone()).await, StatusCode::OK);
+    let (status, body) = send(&router, Method::POST, &format!("{sync}/proposals"), &writer, serde_json::to_vec(&request).unwrap()).await;
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    assert!(matches!(serde_json::from_slice(&body).unwrap(), SubmitResult::Accepted { .. }));
+}

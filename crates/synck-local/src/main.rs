@@ -14,6 +14,7 @@ use synck_local::{
 const CLEAN_STATUS_MESSAGE: &str = "nothing to commit, working tree clean";
 
 mod cli_json;
+mod serve_cli;
 
 const CONTEXT_CHANGE_LIMIT: usize = 100;
 /// Each command holds the repository lock for its whole run, so commands
@@ -156,6 +157,8 @@ enum Command {
         #[arg(long)]
         repo_id: String,
     },
+    /// Serve repositories to other devices and agents over protocol 1.
+    Serve(serve_cli::ServeArgs),
     /// Explain local Synck workflows.
     Instructions,
     /// Create a complete repository in a directory and commit its default .synckignore.
@@ -804,6 +807,26 @@ async fn main() -> ExitCode {
         }
     };
     let json = cli.json;
+    if let Command::Serve(args) = cli.command {
+        if json {
+            // A long-running administrator command; it has no JSON result.
+            eprintln!(
+                "{}",
+                json!({
+                    "schema_version": cli_json::SCHEMA_VERSION,
+                    "error": {"kind": "USAGE", "message": "synck serve does not support --json"}
+                })
+            );
+            return ExitCode::from(2);
+        }
+        return match serve_cli::run(args).await {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("synck: {error}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     match run(cli).await {
         Ok(code) => code,
         Err((error, integrity_command)) => {
@@ -977,7 +1000,7 @@ async fn run_checkout(
         }
         .await.map_err(|error| (error, false)),
         Command::Repository { .. } | Command::Item { .. } => unreachable!(),
-        Command::MonitorServer { .. } => unreachable!(),
+        Command::MonitorServer { .. } | Command::Serve(_) => unreachable!(),
         Command::Instructions => unreachable!(),
         Command::Init { .. } | Command::Clone { .. } => unreachable!(),
         Command::Info => async {

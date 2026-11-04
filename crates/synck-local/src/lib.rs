@@ -25,6 +25,7 @@ mod office_text;
 mod ooxml;
 pub mod portable;
 mod repository;
+pub mod server;
 mod tree_materialization;
 mod versions;
 mod working_tree_edit;

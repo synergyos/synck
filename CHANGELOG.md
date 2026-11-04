@@ -131,6 +131,25 @@ store version 2: 0.3.0 upgrades a version 1 store when it opens one, after which
   object store holds 26.7 MB instead of 135.7 MB; a commit takes about 17% longer
   and `fsck` 4.0 s instead of 2.2 s.
 
+### Sync server
+
+- `synck serve` serves repositories to other devices and agents over protocol 1,
+  with named read and write tokens (`synck serve init`, `synck serve token`). It
+  listens on loopback behind a TLS proxy. See
+  [the sync server](docs/sync-server.md).
+- `portable::ServedRepository` opens a repository for a sync server without
+  taking its lock and reports its protocol-1 `Capabilities`. `SqliteStorage`
+  gains `history_identity`, `history_head` and `history_cursor`.
+- `ServedRepository` stores and streams objects and accepts a verified
+  protocol-1 proposal with the checks a local commit gets, waiting for the
+  repository lock as a clone does. A retry returns the original commit; stale
+  heads come back as a conflict, absent content as missing objects.
+- `ServedRepository` serves packed history pages
+  (`SqliteStorage::history_page`) and takes, renews, releases and breaks
+  reservations for remote writers in the repository's own reservation table.
+  A proposal that writes a reserved path needs the lease's token. Lease wire
+  values are in `synck-sync`.
+
 ## 0.2.0
 
 Repository format 7, commit format 6, object frame V1, history bundle format 5,
@@ -173,18 +192,6 @@ Core SQLite schema 7. Repositories from 0.1 are refused. Copy files across with
   from a repository it opens.
 - Repository text is escaped before it reaches a terminal.
 - A monitor exits when its repository disappears.
-- `portable::ServedRepository` opens a repository for a sync server without
-  taking its lock and reports its protocol-1 `Capabilities`. `SqliteStorage`
-  gains `history_identity`, `history_head` and `history_cursor`.
-- `ServedRepository` stores and streams objects and accepts a verified
-  protocol-1 proposal with the checks a local commit gets, waiting for the
-  repository lock as a clone does. A retry returns the original commit; stale
-  heads come back as a conflict, absent content as missing objects.
-- `ServedRepository` serves packed history pages
-  (`SqliteStorage::history_page`) and takes, renews, releases and breaks
-  reservations for remote writers in the repository's own reservation table.
-  A proposal that writes a reserved path needs the lease's token. Lease wire
-  values are in `synck-sync`.
 
 ### Testing
 

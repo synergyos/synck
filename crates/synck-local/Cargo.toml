@@ -5,7 +5,7 @@ version.workspace = true
 edition.workspace = true
 license = "Apache-2.0"
 repository.workspace = true
-description = "Synck repositories, checkouts, verified copies and the synck command-line tool"
+description = "Synck repositories, checkouts, verified copies, a reference sync server and the synck command-line tool"
 rust-version.workspace = true
 
 [[bin]]
@@ -20,18 +20,23 @@ synck-file-folder = { path = "../synck-file-folder" }
 synck-sync = { path = "../synck-sync" }
 anstream = "1"
 anstyle = "1"
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
+base64 = "0.22"
 clap = { version = "4", features = ["derive"] }
-tokio = { workspace = true, features = ["signal", "time"] }
-tokio-util = { version = "0.7", features = ["io"] }
+tokio = { workspace = true, features = ["fs", "io-util", "net", "signal", "sync", "time"] }
+tokio-util = { version = "0.7", features = ["io", "rt"] }
 cap-std.workspace = true
 cap-fs-ext.workspace = true
 chrono.workspace = true
 diffy = "0.4"
 fastcdc = "3.2.1"
+futures-util = { version = "0.3", default-features = false }
 hex.workspace = true
+http-body-util = "0.1"
 ignore.workspace = true
 miniz_oxide = "0.9"
 notify = "8.2.0"
+rand = "0.9"
 rawzip = "0.5.1"
 rusqlite.workspace = true
 serde.workspace = true
@@ -42,8 +47,8 @@ uuid.workspace = true
 zstd = "0.14"
 
 [dev-dependencies]
-base64 = "0.22"
 tempfile = "3"
+tower = { version = "0.5", features = ["util"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = [
