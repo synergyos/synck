@@ -1900,6 +1900,8 @@ pub(crate) fn sync_open_directory(directory: &Dir, display: &Path) -> Result<()>
     }
     #[cfg(windows)]
     {
+        use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt};
+        use cap_std::fs::OpenOptions as CapOpenOptions;
         use cap_std::fs::OpenOptionsExt;
         use windows_sys::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE};
         use windows_sys::Win32::Storage::FileSystem::{
@@ -2124,6 +2126,8 @@ fn rename_between_noreplace_windows(
     destination_dir: &Dir,
     destination_name: &OsStr,
 ) -> io::Result<()> {
+    use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt};
+    use cap_std::fs::OpenOptions as CapOpenOptions;
     use cap_std::fs::OpenOptionsExt;
     use std::mem::{offset_of, size_of};
     use std::os::windows::ffi::OsStrExt;

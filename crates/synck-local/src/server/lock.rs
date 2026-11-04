@@ -44,7 +44,7 @@ impl LifetimeLock {
             std::io::ErrorKind::WouldBlock => Error::Locked(path.clone()),
             _ => Error::filesystem("lock server state", &path, error),
         })?;
-        validate_lock_identity(&path, &metadata)?;
+        validate_lock_identity(&path, &file, &metadata)?;
         Ok(Self { _file: file })
     }
 }
@@ -118,7 +118,7 @@ fn validate_single_link(_metadata: &fs::Metadata) -> Result<()> {
 }
 
 #[cfg(unix)]
-fn validate_lock_identity(path: &Path, opened: &fs::Metadata) -> Result<()> {
+fn validate_lock_identity(path: &Path, _file: &File, opened: &fs::Metadata) -> Result<()> {
     use std::os::unix::fs::MetadataExt as _;
 
     let current = fs::symlink_metadata(path)
@@ -134,16 +134,37 @@ fn validate_lock_identity(path: &Path, opened: &fs::Metadata) -> Result<()> {
     Ok(())
 }
 
+/// Stable Rust has no file index in `Metadata` on Windows, so both handles
+/// are asked directly.
 #[cfg(windows)]
-fn validate_lock_identity(path: &Path, opened: &fs::Metadata) -> Result<()> {
-    use std::os::windows::fs::MetadataExt as _;
+fn validate_lock_identity(path: &Path, file: &File, _opened: &fs::Metadata) -> Result<()> {
+    use std::os::windows::fs::OpenOptionsExt as _;
+    use std::os::windows::io::AsRawHandle as _;
+    use windows_sys::Win32::Storage::FileSystem::{
+        BY_HANDLE_FILE_INFORMATION, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES,
+        GetFileInformationByHandle,
+    };
 
-    let current = fs::symlink_metadata(path)
+    let identity = |file: &File| -> Result<(u32, u32, u32, u32)> {
+        // SAFETY: the handle is open for the call and `info` is a plain struct.
+        let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+        if unsafe { GetFileInformationByHandle(file.as_raw_handle() as _, &mut info) } == 0 {
+            let error = std::io::Error::last_os_error();
+            return Err(Error::filesystem("reinspect server lock", path, error));
+        }
+        Ok((
+            info.dwFileAttributes,
+            info.dwVolumeSerialNumber,
+            info.nFileIndexHigh,
+            info.nFileIndexLow,
+        ))
+    };
+    let current = OpenOptions::new()
+        .access_mode(FILE_READ_ATTRIBUTES)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
         .map_err(|error| Error::filesystem("reinspect server lock", path, error))?;
-    if current.file_attributes() != opened.file_attributes()
-        || current.volume_serial_number() != opened.volume_serial_number()
-        || current.file_index() != opened.file_index()
-    {
+    if identity(&current)? != identity(file)? {
         return Err(Error::State(
             "server.lock changed while it was being acquired".to_string(),
         ));

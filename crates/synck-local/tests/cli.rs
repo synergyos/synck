@@ -7,7 +7,6 @@ use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 #[cfg(unix)]
 use std::sync::mpsc;
-#[cfg(unix)]
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
