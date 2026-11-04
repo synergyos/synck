@@ -411,6 +411,7 @@ impl Repo {
             let item = items.get(item_id).expect("event item id must exist in items map");
             validate_event_for_item(item_id, item.item_type.as_str(), ev)?;
             self.require_metadata_form(ev.set_metadata.as_ref())?;
+            self.require_name_form(ev)?;
             let event_hash = compute_sha256_digest_bytes(&payload);
             digest.push(COMMIT_EVENT_FAMILY_ITEM, &event_hash);
             let transition = &placement.transitions[idx];

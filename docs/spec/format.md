@@ -293,7 +293,9 @@ content. Trash is reversible and retains history.
 Parents, sibling names, keys and links are checked at the end of each commit, on the
 state after all its events. So a child may precede its parent in one commit, and a
 name swap is legal. A parent must exist in this repository and be a FOLDER; root is null, and
-parent cycles are forbidden. Live tree-item siblings have distinct name keys.
+parent cycles are forbidden. Live tree-item siblings have distinct name keys. A
+[tagged name](#tagged-names) is its own name key, so replay needs no key and no
+configuration.
 
 `vcs_items` must reach that final state in one step. Its unique indexes are checked
 per statement, so a writer replaying a swap deletes the touched rows and reinserts
@@ -338,7 +340,8 @@ history holds both, or it needs a new repository format.
 A tree item is what a file system holds. It has a parent folder or the root, and
 a required portable name, unique among live siblings. Its name is exactly its
 on-disk name: a checkout writes it under that name or skips it, and never renames
-it. Tree-item names are visible in every repository and stay in history for ever.
+it. Tree-item names stay in history for ever. They are visible in an unencrypted
+repository; an encrypted one holds [tagged names](#tagged-names).
 
 A record is not on disk. It has no parent and no name, and its identity is its
 item ID. A title is family metadata: erasable, encrypted where the repository is,
@@ -419,8 +422,12 @@ reader reports any other event type on these items as unsupported, and never gue
 
 Each event holds only the fields the core table gives it, with these additions:
 
-- `SET_NAME`, `SET_PARENT`, `TRASH`, `RESTORE` and `TOMBSTONE` carry no metadata.
-  A move and a rename are two events, which may share a commit.
+- `SET_PARENT`, `TRASH`, `RESTORE` and `TOMBSTONE` carry no metadata, and neither
+  does `SET_NAME` in an unencrypted repository. A move and a rename are two
+  events, which may share a commit.
+- In an encrypted repository, `SET_NAME` and both `CREATE` events carry metadata
+  holding `name`, the display name its [tag](#tagged-names) was made from; a
+  `SET_NAME` holds nothing else.
 - `FILE::CREATE` and `FILE::SET_CONTENT` carry `set_content` with exactly `bytes`, and
   metadata with `content` holding exactly `size`.
 - `FILE::SET_CONTENT` metadata may also hold `upload_intent_id` (nonempty string),
@@ -516,6 +523,31 @@ Non-UTF-8 names are errors, never guessed encodings.
 
 Whole-path length is not a repository constraint: it depends on the checkout's
 location.
+
+### Tagged names
+
+An encrypted repository never stores a tree-item name in plain. Its `name` and
+`set_name` hold the name's tag: `tag:` followed by the 64 lowercase hexadecimal
+digits of `HMAC-SHA256(K, name_key(name))`, with HMAC from RFC 2104 and `K` the
+repository's 32-byte name tag key. The display name is in that event's metadata,
+under `name`. `K` comes from the product's key specification, like the epoch
+keys, and never rotates: a tag must keep meaning the same name.
+
+- A tag is its own name key. Names whose keys are equal have equal tags, so
+  sibling uniqueness, case-only renames and moves keep their meaning.
+- `:` is never in a portable name, so a tag and a name never meet. A tag in an
+  unencrypted repository is invalid, and so is a plain name in an encrypted one.
+- The event that sets a tag carries metadata. That is a replay rule. That its
+  `name` is a valid portable name whose tag is the one set is an admission
+  rule, checked only with `K`: a writer checks before writing, and a reader
+  refuses a mismatch and never repairs it.
+- A verifier without `K` verifies structure, tags included, but not names.
+  Erasing the metadata leaves the tag and makes the name unavailable.
+- Equal names have equal tags anywhere in the repository, and the size of the
+  metadata object shows the name's length.
+
+`vectors/name-tags.json` gives tags under a fixed key and histories that replay
+without it.
 
 ## Source attribution
 
@@ -741,7 +773,7 @@ afterwards. A `sealed_key`
 object is opaque and is the one stored object that is not in a frame. Keys, epochs,
 rotation and sealing belong to the product's key specification, not to this format.
 
-An encrypted repository exposes item IDs, types, tree-item names and parents,
+An encrypted repository exposes item IDs, types, tree-item [tags](#tagged-names) and parents,
 record keys and links, item sources, lifecycle, operation IDs, federation stream IDs, times,
 actors, order, object IDs and exact sizes, since a scheme 1 object is 66 bytes longer
 than its plaintext. Operation IDs and stream IDs must hold no content. A commit

@@ -221,6 +221,11 @@ impl Repo {
         Ok(())
     }
 
+    fn require_name_form(&self, event: &EventProposal) -> Result<(), CoreError> {
+        crate::naming::check_name_form(event, self.config.encrypted)
+            .map_err(|message| CoreError::InvalidProposal(message.to_string()))
+    }
+
     pub fn new(storage: Storage, config: CoreConfig) -> Self {
         Self {
             storage,

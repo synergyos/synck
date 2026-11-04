@@ -1,0 +1,256 @@
+{
+  "key_hex": "0707070707070707070707070707070707070707070707070707070707070707",
+  "tags": [
+    {
+      "name": "Notes.txt",
+      "tag": "tag:50674f53201cd260728c9179d3b2179460f54e0b78ec08dc6f42fc2106f8becc"
+    },
+    {
+      "name": "NOTES.TXT",
+      "tag": "tag:50674f53201cd260728c9179d3b2179460f54e0b78ec08dc6f42fc2106f8becc"
+    },
+    {
+      "name": "Straße",
+      "tag": "tag:b805f52ae50b06566d79bb89dd9255ad975da4ce76f51c8c50c88c0f724fb19f"
+    },
+    {
+      "name": "STRASSE",
+      "tag": "tag:b805f52ae50b06566d79bb89dd9255ad975da4ce76f51c8c50c88c0f724fb19f"
+    },
+    {
+      "name": "Plans",
+      "tag": "tag:faf8731729f265650eacf6c69f4ce0c89b2df98f4c619fa3258051e3bc9a64ca"
+    },
+    {
+      "name": "a/b",
+      "tag": null
+    },
+    {
+      "name": ".synck",
+      "tag": null
+    }
+  ],
+  "histories": [
+    {
+      "name": "tagged tree items",
+      "encrypted": true,
+      "commits": [
+        {
+          "events": [
+            {
+              "item_id": "019a2900-0000-7000-8000-000000000301",
+              "event_type": "FOLDER::CREATE",
+              "create_item": {
+                "item_type": "FOLDER",
+                "name": "tag:faf8731729f265650eacf6c69f4ce0c89b2df98f4c619fa3258051e3bc9a64ca"
+              },
+              "metadata_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+            },
+            {
+              "item_id": "019a2900-0000-7000-8000-000000000302",
+              "event_type": "FILE::CREATE",
+              "create_item": {
+                "item_type": "FILE",
+                "parent_folder_id": "019a2900-0000-7000-8000-000000000301",
+                "name": "tag:50674f53201cd260728c9179d3b2179460f54e0b78ec08dc6f42fc2106f8becc"
+              },
+              "set_content": {
+                "bytes": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+              },
+              "metadata_id": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+            }
+          ],
+          "valid": true,
+          "state_digest": "sha256:79445b0475626d0ce741bf113caef8664b4c8cefd6ca9b3844dd9f0e96495c4d"
+        },
+        {
+          "events": [
+            {
+              "item_id": "019a2900-0000-7000-8000-000000000302",
+              "event_type": "FILE::SET_NAME",
+              "base_seq": 1,
+              "set_name": "tag:0000000000000000000000000000000000000000000000000000000000000000",
+              "metadata_id": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+            }
+          ],
+          "valid": true,
+          "state_digest": "sha256:5d577e1d4cbcea08e860afadbb83ae3028bbb556340fb1316e1ef7dd717f8829"
+        },
+        {
+          "events": [
+            {
+              "item_id": "019a2900-0000-7000-8000-000000000303",
+              "event_type": "FILE::CREATE",
+              "create_item": {
+                "item_type": "FILE",
+                "parent_folder_id": "019a2900-0000-7000-8000-000000000301",
+                "name": "tag:50674f53201cd260728c9179d3b2179460f54e0b78ec08dc6f42fc2106f8becc"
+              },
+              "set_content": {
+                "bytes": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+              },
+              "metadata_id": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+            }
+          ],
+          "valid": true,
+          "state_digest": "sha256:35726742076b60e24015920929fe89bb7826d71d79f5eed9e14c539cdb88fde8"
+        }
+      ]
+    },
+    {
+      "name": "sibling tag clash",
+      "encrypted": true,
+      "commits": [
+        {
+          "events": [
+            {
+              "item_id": "019a2900-0000-7000-8000-000000000301",
+              "event_type": "FOLDER::CREATE",
+              "create_item": {
+                "item_type": "FOLDER",
+                "name": "tag:faf8731729f265650eacf6c69f4ce0c89b2df98f4c619fa3258051e3bc9a64ca"
+              },
+              "metadata_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+            },
+            {
+              "item_id": "019a2900-0000-7000-8000-000000000302",
+              "event_type": "FILE::CREATE",
+              "create_item": {
+                "item_type": "FILE",
+                "parent_folder_id": "019a2900-0000-7000-8000-000000000301",
+                "name": "tag:50674f53201cd260728c9179d3b2179460f54e0b78ec08dc6f42fc2106f8becc"
+              },
+              "set_content": {
+                "bytes": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+              },
+              "metadata_id": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+            },
+            {
+              "item_id": "019a2900-0000-7000-8000-000000000303",
+              "event_type": "FILE::CREATE",
+              "create_item": {
+                "item_type": "FILE",
+                "parent_folder_id": "019a2900-0000-7000-8000-000000000301",
+                "name": "tag:50674f53201cd260728c9179d3b2179460f54e0b78ec08dc6f42fc2106f8becc"
+              },
+              "set_content": {
+                "bytes": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+              },
+              "metadata_id": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+            }
+          ],
+          "valid": false,
+          "reason": "two live siblings share a tag"
+        }
+      ]
+    },
+    {
+      "name": "plain name in an encrypted repository",
+      "encrypted": true,
+      "commits": [
+        {
+          "events": [
+            {
+              "item_id": "019a2900-0000-7000-8000-000000000301",
+              "event_type": "FOLDER::CREATE",
+              "create_item": {
+                "item_type": "FOLDER",
+                "name": "tag:faf8731729f265650eacf6c69f4ce0c89b2df98f4c619fa3258051e3bc9a64ca"
+              },
+              "metadata_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+            },
+            {
+              "item_id": "019a2900-0000-7000-8000-000000000302",
+              "event_type": "FILE::CREATE",
+              "create_item": {
+                "item_type": "FILE",
+                "parent_folder_id": "019a2900-0000-7000-8000-000000000301",
+                "name": "Notes.txt"
+              },
+              "set_content": {
+                "bytes": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+              },
+              "metadata_id": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+            }
+          ],
+          "valid": false,
+          "reason": "an encrypted repository names tree items by their tags"
+        }
+      ]
+    },
+    {
+      "name": "tag without its name",
+      "encrypted": true,
+      "commits": [
+        {
+          "events": [
+            {
+              "item_id": "019a2900-0000-7000-8000-000000000301",
+              "event_type": "FOLDER::CREATE",
+              "create_item": {
+                "item_type": "FOLDER",
+                "name": "tag:faf8731729f265650eacf6c69f4ce0c89b2df98f4c619fa3258051e3bc9a64ca"
+              },
+              "metadata_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+            },
+            {
+              "item_id": "019a2900-0000-7000-8000-000000000302",
+              "event_type": "FILE::CREATE",
+              "create_item": {
+                "item_type": "FILE",
+                "parent_folder_id": "019a2900-0000-7000-8000-000000000301",
+                "name": "tag:50674f53201cd260728c9179d3b2179460f54e0b78ec08dc6f42fc2106f8becc"
+              },
+              "set_content": {
+                "bytes": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+              }
+            }
+          ],
+          "valid": false,
+          "reason": "the event that sets a tag carries the name in its metadata"
+        }
+      ]
+    },
+    {
+      "name": "tag in an unencrypted repository",
+      "encrypted": false,
+      "commits": [
+        {
+          "events": [
+            {
+              "item_id": "019a2900-0000-7000-8000-000000000301",
+              "event_type": "FOLDER::CREATE",
+              "create_item": {
+                "item_type": "FOLDER",
+                "name": "tag:faf8731729f265650eacf6c69f4ce0c89b2df98f4c619fa3258051e3bc9a64ca"
+              }
+            }
+          ],
+          "valid": false,
+          "reason": "a name tag needs an encrypted repository"
+        }
+      ]
+    },
+    {
+      "name": "malformed tag",
+      "encrypted": true,
+      "commits": [
+        {
+          "events": [
+            {
+              "item_id": "019a2900-0000-7000-8000-000000000301",
+              "event_type": "FOLDER::CREATE",
+              "create_item": {
+                "item_type": "FOLDER",
+                "name": "tag:FAF8731729F265650EACF6C69F4CE0C89B2DF98F4C619FA3258051E3BC9A64CA"
+              },
+              "metadata_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+            }
+          ],
+          "valid": false,
+          "reason": "a tag is lowercase, and `:` is not in a portable name"
+        }
+      ]
+    }
+  ]
+}

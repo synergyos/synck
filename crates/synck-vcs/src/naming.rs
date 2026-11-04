@@ -240,6 +240,63 @@ fn fit_name(name: &mut String) {
     name.truncate(name.trim_end_matches([' ', '.']).len());
 }
 
+/// In an encrypted repository a tree item's name is its tag: `tag:` and the 64
+/// lowercase hexadecimal digits of `HMAC-SHA256(K, name_key(name))`, with `K`
+/// the repository's name tag key. `:` is never in a portable name, so the two
+/// forms never meet and replay needs no configuration to tell them apart.
+pub const NAME_TAG_PREFIX: &str = "tag:";
+
+/// Tags `name` under the repository's name tag key. Names whose keys are equal
+/// have equal tags, so siblings compare tags as they compare name keys.
+pub fn name_tag(key: &[u8; 32], name: &str) -> Result<String, NameError> {
+    let name_key = compute_name_key(name)?;
+    let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, key);
+    let tag = ring::hmac::sign(&key, name_key.as_bytes());
+    Ok(format!("{NAME_TAG_PREFIX}{}", hex::encode(tag.as_ref())))
+}
+
+pub fn is_name_tag(name: &str) -> bool {
+    name.strip_prefix(NAME_TAG_PREFIX).is_some_and(|digits| {
+        digits.len() == 64
+            && digits
+                .bytes()
+                .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+    })
+}
+
+/// What live siblings compare: a portable name's key, or a tag itself.
+pub fn namespace_key(name: &str) -> Result<String, NameError> {
+    if is_name_tag(name) {
+        return Ok(name.to_string());
+    }
+    compute_name_key(name)
+}
+
+/// An encrypted repository names tree items by their tags, and the event that
+/// sets one carries the name in its encrypted metadata, under `name`. Any other
+/// repository names them plainly.
+pub fn check_name_form(
+    event: &crate::types::EventProposal,
+    encrypted: bool,
+) -> Result<(), &'static str> {
+    let name = event
+        .create_item
+        .as_ref()
+        .and_then(|create| create.name.as_deref())
+        .or(event.set_name.as_deref());
+    match name {
+        Some(name) if is_name_tag(name) != encrypted => Err(if encrypted {
+            "an encrypted repository names tree items by their tags"
+        } else {
+            "a name tag needs an encrypted repository"
+        }),
+        Some(_) if encrypted && event.set_metadata.is_none() => {
+            Err("an event that sets a name tag carries the name in its metadata")
+        }
+        _ => Ok(()),
+    }
+}
+
 /// Reserve the suffix's bytes before truncating a colliding portable name.
 pub fn suffixed_name(name: &str, ordinal: usize) -> String {
     let suffix = format!(" ({ordinal})");

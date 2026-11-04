@@ -7,6 +7,7 @@ synthetic, and an example ID never means the object exists.
 | File | Fixes | Shape |
 | --- | --- | --- |
 | `names.json` | Portable names, keys and proposed spellings | `cases`: `name`, `valid`, `key`, `fixed` |
+| `name-tags.json` | Tagged names in encrypted repositories | `key_hex`; `tags`: `name`, `tag` (null when the name is invalid); `histories`: replay cases as in `records.json`, each with `encrypted` |
 | `json.json` | Hashed JSON | List: `text`, `valid` |
 | `objects.json` | PLAIN and SALTED objects | List: `form`, `bytes_hex`, `payload_hex`, `id`, `valid` |
 | `encrypted.json` | The encrypted frame and associated data | List: `frame_valid` needs no key; `opens` needs `key_hex` |

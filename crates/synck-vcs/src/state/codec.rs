@@ -7,7 +7,7 @@ use super::{
     MAX_INDEX_NODE_BYTES, NamespaceKey, RootHeader, StateError, StateNode, StateNodeId,
     item_id_bytes,
 };
-use crate::naming::compute_name_key;
+use crate::naming::namespace_key;
 use crate::types::{
     CommitId, ItemId, LifecycleState, RepoId, SequencingMode, sha256_prefixed_hex_from_digest_bytes,
 };
@@ -200,7 +200,7 @@ fn decode_item_value(decoder: &mut Decoder<'_>) -> Result<ItemValue, StateError>
 fn validate_item_value(value: &ItemValue) -> Result<(), StateError> {
     match (&value.name, &value.name_key) {
         (Some(name), Some(name_key)) => {
-            let computed_name_key = compute_name_key(name)
+            let computed_name_key = namespace_key(name)
                 .map_err(|error| invalid(format!("invalid item name: {error}")))?;
             if computed_name_key != *name_key {
                 return Err(invalid("item name key does not match its display name"));

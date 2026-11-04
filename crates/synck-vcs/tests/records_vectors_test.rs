@@ -15,9 +15,38 @@ use synck_vcs::verify::{
 fn external_record_vectors() {
     let vectors: Vec<serde_json::Value> =
         serde_json::from_str(include_str!("../../../docs/spec/vectors/records.json")).unwrap();
-    for vector in vectors {
+    for vector in &vectors {
+        replay(vector, false);
+    }
+}
+
+/// `name-tags.json`: tags under a given key, and histories that replay
+/// them without it.
+#[test]
+fn external_name_tag_vectors() {
+    let vectors: serde_json::Value =
+        serde_json::from_str(include_str!("../../../docs/spec/vectors/name-tags.json")).unwrap();
+    let key: [u8; 32] = hex::decode(vectors["key_hex"].as_str().unwrap())
+        .unwrap()
+        .try_into()
+        .unwrap();
+    for case in vectors["tags"].as_array().unwrap() {
+        let name = case["name"].as_str().unwrap();
+        let tag = synck_vcs::naming::name_tag(&key, name).ok();
+        assert_eq!(tag.as_deref(), case["tag"].as_str(), "{name}");
+        if let Some(tag) = tag {
+            assert!(synck_vcs::naming::is_name_tag(&tag));
+        }
+    }
+    for vector in vectors["histories"].as_array().unwrap() {
+        replay(vector, vector["encrypted"].as_bool().unwrap());
+    }
+}
+
+fn replay(vector: &serde_json::Value, encrypted: bool) {
+    {
         let name = vector["name"].as_str().unwrap();
-        let mut verifier = SemanticVerifier::new(false);
+        let mut verifier = SemanticVerifier::new(encrypted);
         let mut item_seq: HashMap<ItemId, i64> = HashMap::new();
         let mut ref_seq: HashMap<ItemId, i64> = HashMap::new();
         let mut parents: HashMap<ItemId, Option<ItemId>> = HashMap::new();

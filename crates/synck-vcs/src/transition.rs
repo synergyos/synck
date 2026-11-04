@@ -1,6 +1,6 @@
 //! Pure item-state transition shared by acceptance, verification, and state projection.
 
-use crate::naming::{NameError, compute_name_key};
+use crate::naming::{NameError, namespace_key};
 use crate::state::ItemValue;
 use crate::types::{CreateItem, EventProposal, ItemId, ItemRevision, ItemRow, LifecycleState, SequencingMode};
 
@@ -35,7 +35,7 @@ impl ItemState {
             item_type: create.item_type.clone(),
             parent_folder_id: create.parent_folder_id.clone(),
             name: create.name.clone(),
-            name_key: create.name.as_deref().map(compute_name_key).transpose()?,
+            name_key: create.name.as_deref().map(namespace_key).transpose()?,
             record_key: create.key.clone(),
             link_folder_id: create.link.clone(),
             lifecycle_state: LifecycleState::Live,
@@ -161,7 +161,7 @@ pub fn apply_event(
         state.parent_folder_id.clone_from(parent);
     }
     if let Some(name) = proposal.set_name.as_ref() {
-        state.name_key = Some(compute_name_key(name)?);
+        state.name_key = Some(namespace_key(name)?);
         state.name = Some(name.clone());
     }
     if let Some(link) = proposal.set_link.as_ref() {

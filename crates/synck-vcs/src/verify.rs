@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 
 use crate::envelope::{CommitEnvelopeValidator, EnvelopeItemState, EnvelopeRefState};
 pub use crate::envelope::{VerifyCommit, VerifyEvent, VerifyRefEvent};
-use crate::naming::compute_name_key;
+use crate::naming::namespace_key;
 use crate::transition::{ItemState, apply_event as apply_item_event, check_source_revision};
 use crate::content::EventContent;
 use crate::types::{
@@ -107,6 +107,11 @@ impl SemanticVerifier {
                     });
                     if let Some(proposal) = validator.validate_event(event, item) {
                         let context = format!("{label} event {}", event.commit_event_idx);
+                        if let Err(error) =
+                            crate::naming::check_name_form(&proposal, self.encrypted)
+                        {
+                            replay_findings.push(format!("{context}: {error}"));
+                        }
                         if let Some(source) = proposal.source_revision()
                             && let Err(error) = check_source_revision(
                                 &event.item_id,
@@ -255,7 +260,7 @@ impl SemanticVerifier {
             if self.last_ref_seq.get(&item.item_id).copied().unwrap_or(0) != item.ref_head_seq {
                 push(format!("item {}: ref head sequence mismatch", item.item_id));
             }
-            match item.name.as_deref().map(compute_name_key) {
+            match item.name.as_deref().map(namespace_key) {
                 None if item.name_key.is_none() => {}
                 Some(Ok(key)) if Some(&key) == item.name_key.as_ref() => {}
                 None | Some(Ok(_)) => push(format!("item {}: name key mismatch", item.item_id)),
