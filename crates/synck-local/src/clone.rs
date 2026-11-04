@@ -26,6 +26,11 @@ pub async fn clone_repository(
     let config_path = store.join("config.json");
     let bytes = std::fs::read(&config_path).at("read", &config_path)?;
     let value: serde_json::Value = serde_json::from_slice(&bytes)?;
+    if value.get("remote").is_some() {
+        return Err(LocalError::Invalid(
+            "an HTTPS clone cannot be cloned; clone its server URL instead".into(),
+        ));
+    }
     if value.get("origin").is_some() {
         return Err(LocalError::Invalid(
             "a clone cannot be cloned; clone its origin instead".into(),
@@ -85,6 +90,7 @@ pub async fn clone_repository(
             &crate::commands::Held {
                 origin_seq: head,
                 pushed_seq: head,
+                remote: None,
             },
         )?;
     }
@@ -118,7 +124,7 @@ pub async fn clone_repository(
     Ok(repository)
 }
 
-fn create_empty_directory(path: &Path) -> Result<()> {
+pub(crate) fn create_empty_directory(path: &Path) -> Result<()> {
     match std::fs::create_dir(path) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {

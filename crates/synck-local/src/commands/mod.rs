@@ -75,7 +75,10 @@ mod tests;
 pub use commit::*;
 pub use history::*;
 pub use held::PushOutcome;
-pub(crate) use held::{HELD_FILE, Held, PINS_DIRECTORY, Pin, is_conflict, pin_path, write_held};
+pub(crate) use held::{
+    HELD_FILE, Held, PINS_DIRECTORY, Pin, apply, is_conflict, pin_path, proposal_from_rows, read_held,
+    stored_proposal, write_held,
+};
 pub use pull::{Conflict, PullOutcome};
 use pull::{PULL_INTENT_NAME, PULL_STAGE_NAME};
 use moves::*;

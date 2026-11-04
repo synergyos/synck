@@ -260,7 +260,7 @@ fn directory(path: &Path) -> Result<Dir> {
 }
 
 /// Both stores hash the bytes they write and refuse a digest other than `id`.
-fn copy_stored(
+pub(crate) fn copy_stored(
     root: &Path,
     metadata: &Dir,
     chunked: Option<&ChunkStore>,
@@ -549,6 +549,7 @@ impl PortableRepository {
         let mut value = serde_json::to_value(config)?;
         let fields = value.as_object_mut().expect("config is an object");
         fields.remove("hold");
+        fields.remove("remote");
         let clone = fields.remove("origin").is_some();
         let mut view: Config = serde_json::from_value(value)?;
         view.checkout = if clone { None } else { config.checkout.clone() };

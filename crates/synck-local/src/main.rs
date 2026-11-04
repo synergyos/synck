@@ -182,7 +182,8 @@ enum Command {
     /// costs only its working files. Commits from every working tree go into
     /// the same history; `pull` brings in the others'.
     Clone {
-        /// Repository directory to clone; it must be on a local disk.
+        /// Repository directory on a local disk, or a sync server's
+        /// https://HOST/v1/repositories/REPO_ID with the token in SYNCK_TOKEN.
         origin: PathBuf,
         /// New or empty directory for the working tree.
         destination: PathBuf,
@@ -908,10 +909,20 @@ async fn run(cli: Cli) -> Result<ExitCode, (LocalError, bool)> {
         hold,
     } = &cli.command
     {
-        let repository =
-            synck_local::clone_repository(origin, destination, author.as_deref(), include, *hold)
-                .await
-                .map_err(|error| (error, false))?;
+        let url = origin.to_str().filter(|text| text.starts_with("https://") || text.starts_with("http://"));
+        let repository = match url {
+            Some(url) => {
+                let token = std::env::var("SYNCK_TOKEN").map_err(|_| {
+                    (LocalError::Invalid("give the server token in SYNCK_TOKEN".into()), false)
+                })?;
+                let author = author.as_deref().ok_or_else(|| {
+                    (LocalError::Invalid("an HTTPS clone needs --author".into()), false)
+                })?;
+                synck_local::clone_remote(url, &token, destination, author, include, *hold).await
+            }
+            None => synck_local::clone_repository(origin, destination, author.as_deref(), include, *hold).await,
+        }
+        .map_err(|error| (error, false))?;
         print_outcome(
             cli.json,
             json!({
@@ -968,12 +979,34 @@ async fn run(cli: Cli) -> Result<ExitCode, (LocalError, bool)> {
     {
         let _ = repository.start_monitor(&executable);
     }
-    run_checkout(cli, repository, current, align_change_markers).await
+    let sends = repository.sends_at_once() && makes_commits(&cli.command);
+    let code = run_checkout(cli, &mut repository, current, align_change_markers).await?;
+    if sends && repository.held_commits().await.map_err(|error| (error, false))?.is_some_and(|held| !held.is_empty()) {
+        // The commit stands here either way; what was not sent stays held.
+        if let Err(error) = repository.push().await {
+            eprintln!("synck: held here, not sent: {}", visible_lines(&error.to_string()));
+        }
+    }
+    Ok(code)
+}
+
+/// Commands that may add commits, which an HTTPS clone sends at once.
+fn makes_commits(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::Commit { .. }
+            | Command::Revert { .. }
+            | Command::Mv { .. }
+            | Command::Recover { .. }
+            | Command::Duplicate { .. }
+            | Command::Adopt { .. }
+            | Command::Version { .. }
+    )
 }
 
 async fn run_checkout(
     cli: Cli,
-    mut repository: Repository,
+    repository: &mut Repository,
     current: PathBuf,
     align_change_markers: bool,
 ) -> Result<ExitCode, (LocalError, bool)> {
@@ -1160,7 +1193,11 @@ async fn run_checkout(
         Command::Status => async {
             let (changes, warnings) = repository.status_with_path_warnings().await.map_err(|error| (error, false))?;
             let held = repository.held_commits().await.map_err(|error| (error, false))?;
-            let reservations = repository.agent_locks().map_err(|error| (error, false))?;
+            // An HTTPS clone's leases are on the server; status works offline.
+            let reservations = match repository.agent_locks() {
+                Err(LocalError::Unreachable(_)) => Vec::new(),
+                result => result.map_err(|error| (error, false))?,
+            };
             let conflicts = repository.conflicts().map_err(|error| (error, false))?;
             let skipped = repository.skipped_entries().map_err(|error| (error, false))?;
             print_path_warnings(&warnings);

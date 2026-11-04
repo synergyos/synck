@@ -11,7 +11,7 @@ use synck_sync::{
 };
 use synck_vcs::types::RepoId;
 
-use super::common::{create_file, object_id, send, send_with, status_of, upload};
+use super::common::{create_file, metadata_object, object_id, send, send_with, status_of, upload};
 
 struct Fixture {
     _parent: tempfile::TempDir,
@@ -48,6 +48,9 @@ impl Fixture {
         let (_, event) = create_file(&self.repo_id, name, name.as_bytes());
         let object = format!("{}/objects/{}", self.sync, object_id(name.as_bytes()).as_str());
         send(&self.router, Method::PUT, &object, &self.writer, name.as_bytes().to_vec()).await;
+        let (metadata_id, metadata) = metadata_object(&event);
+        let object = format!("{}/objects/{}", self.sync, metadata_id.as_str());
+        send(&self.router, Method::PUT, &object, &self.writer, metadata).await;
         let (pages, request) = upload(self.repository(), operation_id, vec![ProposalRecord::Item(event)]);
         let page_uri = format!("{}/uploads/{operation_id}/pages/0", self.sync);
         send(&self.router, Method::PUT, &page_uri, &self.writer, serde_json::to_vec(&pages[0]).unwrap()).await;

@@ -282,6 +282,14 @@ impl Repository {
     /// working trees' commits first, or stops at an item changed on both sides:
     /// merging is for `pull`, where the result is looked at before a commit.
     pub(crate) async fn pull_if_behind(&self) -> Result<()> {
+        // An HTTPS clone that sends at once builds on the server's HEAD when
+        // it can reach it, and on its own when it cannot.
+        if self.sends_at_once() {
+            match self.take_in_remote().await {
+                Err(LocalError::Unreachable(_)) => {}
+                result => result?,
+            }
+        }
         if !self.at_head() {
             self.pull_with(false).await?;
         }
@@ -291,7 +299,12 @@ impl Repository {
     async fn pull_with(&self, merge: bool) -> Result<PullOutcome> {
         self.guard_agent_all()?;
         self.recover_pending_pull().await?;
-        if self.held() {
+        if self.remote().is_some() {
+            // A writer's own fetch is in `pull_if_behind`.
+            if merge {
+                self.take_in_remote().await?;
+            }
+        } else if self.held() {
             self.take_in_origin().await?;
         }
         let from = self.baseline();

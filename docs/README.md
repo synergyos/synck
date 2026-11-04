@@ -28,8 +28,8 @@ language-neutral vectors are the authoritative persisted-format contract.
 Typed readers cover FILE/FOLDER, CHAT and EMAIL; unsupported families remain
 structurally verifiable. The [central synchronization protocol](spec/protocol.md)
 and `synck-sync` library define shared requests, receipts and verified history
-paging. `synck serve` is a [reference server](sync-server.md) for it; CLI
-clone, pull and push over HTTPS are not yet included.
+paging. `synck serve` is a [reference server](sync-server.md) for it, and
+`synck clone https://…` makes working trees that pull and push over it.
 
 - [The sync server](sync-server.md): `synck serve`, its tokens, state root and
   routes.

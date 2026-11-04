@@ -57,6 +57,29 @@ impl SqliteStorage {
         }
     }
 
+    /// Store a metadata object received in either form, as a sync server
+    /// receives one with a proposal that names it.
+    pub fn put_metadata_object(&self, repo: &RepoId, id: &ObjectId, payload: Vec<u8>) -> Result<(), StorageError> {
+        if payload.starts_with(ENCRYPTED_PREFIX) != self.encrypted() {
+            return Err(error("metadata object has the wrong form for this repository"));
+        }
+        Metadata::verify_any(id, payload.clone()).map_err(error)?;
+        let mut connection = self.open_writable()?;
+        let transaction = connection.transaction().map_err(error)?;
+        insert_payload(&transaction, repo, id, &payload)?;
+        transaction.commit().map_err(error)
+    }
+
+    /// A metadata object's exact stored bytes, in either form, for a sync
+    /// server to send. Corrupt present bytes are an error.
+    pub fn metadata_object(&self, repo: &RepoId, id: &ObjectId) -> Result<Option<Vec<u8>>, StorageError> {
+        let Some(bytes) = self.stored_metadata(repo, id)? else {
+            return Ok(None);
+        };
+        Metadata::verify_any(id, bytes.clone()).map_err(error)?;
+        Ok(Some(bytes))
+    }
+
     /// The objects that are not stored, in either form. Corrupt present bytes
     /// are an error.
     pub fn missing_metadata(

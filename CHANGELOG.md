@@ -137,6 +137,15 @@ store version 2: 0.3.0 upgrades a version 1 store when it opens one, after which
   with named read and write tokens (`synck serve init`, `synck serve token`). It
   listens on loopback behind a TLS proxy. See
   [the sync server](docs/sync-server.md).
+- `synck clone https://HOST/v1/repositories/REPO_ID` makes an HTTPS clone with
+  the token in `SYNCK_TOKEN`: the server's verified history and content, kept
+  locally. Commits are sent at once, or held while the server cannot be
+  reached and sent by `push`; `--hold` keeps them until `push`. `lock` uses
+  the server's leases. New error kinds `UNREACHABLE` and `SERVER`. See
+  [HTTPS clones](docs/local-repository.md).
+- Metadata objects travel through the object routes: a proposal needs every
+  one it names, and `GET /objects` serves them from history.
+  `SqliteStorage` gains `metadata_object` and `put_metadata_object`.
 - `portable::ServedRepository` opens a repository for a sync server without
   taking its lock and reports its protocol-1 `Capabilities`. `SqliteStorage`
   gains `history_identity`, `history_head` and `history_cursor`.

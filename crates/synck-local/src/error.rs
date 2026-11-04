@@ -38,6 +38,12 @@ pub enum LocalError {
     LockLost,
     #[error("repository busy")]
     Busy,
+    /// Nothing was sent to or taken in from the sync server.
+    #[error("cannot reach the sync server: {0}")]
+    Unreachable(String),
+    /// The sync server answered with a protocol refusal.
+    #[error("the sync server refused the request: {status}")]
+    Server { status: String },
     #[error("{0}")]
     Invalid(String),
     /// The checkout has names the portable rules refuse; repairing them

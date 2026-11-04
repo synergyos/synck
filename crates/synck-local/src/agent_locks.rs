@@ -455,6 +455,10 @@ impl Repository {
     }
     /// A write to history and files: every working tree's reservations count.
     pub(crate) fn guard_agent_paths(&self, paths: &[&str]) -> Result<()> {
+        if self.remote().is_some() {
+            // The server checks an HTTPS clone's leases and tokens.
+            return Ok(());
+        }
         guard(
             &self.lock_scope(None),
             self.repository_id().as_str(),
@@ -464,6 +468,10 @@ impl Repository {
     }
     /// A write to this tree's files only.
     pub(crate) fn guard_agent_files(&self, paths: &[&str]) -> Result<()> {
+        if self.remote().is_some() {
+            // The server checks an HTTPS clone's leases and tokens.
+            return Ok(());
+        }
         let tree = self.lock_tree();
         guard(
             &self.lock_scope(Some(&tree)),
@@ -474,6 +482,10 @@ impl Repository {
     }
     /// A rewrite of this tree's files anywhere: its own reservations count.
     pub(crate) fn guard_agent_all(&self) -> Result<()> {
+        if self.remote().is_some() {
+            // The server checks an HTTPS clone's leases and tokens.
+            return Ok(());
+        }
         let tree = self.lock_tree();
         guard(
             &self.lock_scope(Some(&tree)),
@@ -485,6 +497,10 @@ impl Repository {
     /// A history write whose paths are not known up front: every reservation
     /// in every working tree counts.
     pub(crate) fn guard_agent_everywhere(&self) -> Result<()> {
+        if self.remote().is_some() {
+            // The server checks an HTTPS clone's leases and tokens.
+            return Ok(());
+        }
         guard(
             &self.lock_scope(None),
             self.repository_id().as_str(),
@@ -510,6 +526,9 @@ impl Repository {
         Ok(path)
     }
     pub fn agent_locks(&self) -> Result<Vec<AgentLock>> {
+        if self.remote().is_some() {
+            return self.remote_locks();
+        }
         list(self.store_path(), self.repository_id().as_str())
     }
     pub async fn acquire_agent_locks(
@@ -586,6 +605,11 @@ impl Repository {
                 )));
             }
         }
+        // An HTTPS clone's reservations live on the server, which cannot see
+        // these files: the checks above are the client's half.
+        if self.remote().is_some() {
+            return self.remote_reserve(paths, owner, ttl);
+        }
         reserve(
             self.store_path(),
             self.repository_id().as_str(),
@@ -596,9 +620,15 @@ impl Repository {
         )
     }
     pub fn renew_agent_locks(&self, token: &str, ttl: u64) -> Result<()> {
+        if self.remote().is_some() {
+            return self.remote_renew(token, ttl);
+        }
         renew(self.store_path(), self.repository_id().as_str(), token, ttl)
     }
     pub fn release_agent_locks(&self, token: &str) -> Result<usize> {
+        if self.remote().is_some() {
+            return self.remote_release(token);
+        }
         release(self.store_path(), self.repository_id().as_str(), token)
     }
     pub fn break_agent_locks(&self, caller: &Path, paths: &[PathBuf]) -> Result<usize> {
@@ -606,6 +636,9 @@ impl Repository {
             .iter()
             .map(|p| self.agent_path(caller, p))
             .collect::<Result<Vec<_>>>()?;
+        if self.remote().is_some() {
+            return self.remote_break(paths);
+        }
         break_paths(self.store_path(), self.repository_id().as_str(), &paths)
     }
 }

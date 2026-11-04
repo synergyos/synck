@@ -5,7 +5,7 @@
 //! working tree takes in a commit accepted here at its next `pull`, as it takes
 //! in a clone's. Only a repository that orders its own history can be served.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use synck_sync::{CommitMetadata, Cursor, HistoryPage, HistoryRequest, ItemHead};
 use synck_vcs::types::{CommitRow, RefEventProposal};
@@ -145,6 +145,12 @@ impl ServedRepository {
         }
     }
 
+    /// A metadata object's exact bytes from history, which protocol 1 serves
+    /// at the same route as content. Blocking.
+    pub fn metadata_object(&self, id: &ObjectId) -> Result<Option<Vec<u8>>> {
+        self.storage.metadata_object(&self.repo_id, id).map_err(corrupt)
+    }
+
     /// Stream an object's exact stored bytes, refusing any other digest. Blocking.
     pub fn copy_object(&self, id: &ObjectId, out: &mut dyn Write) -> Result<u64> {
         let store = self.object_store();
@@ -241,7 +247,8 @@ impl ServedRepository {
             let scope = agent_locks::Scope { metadata: &metadata, tree: None };
             agent_locks::guard(&scope, repo_id, tokens, Some(&paths))?;
         }
-        let missing = self.unusable_objects(&core, &proposal).await?;
+        let mut missing = self.unusable_objects(&core, &proposal).await?;
+        missing.extend(self.install_metadata(&proposal)?);
         if !missing.is_empty() {
             return Ok(Acceptance::MissingObjects(missing));
         }
@@ -379,6 +386,32 @@ impl ServedRepository {
         Ok(missing)
     }
 
+    /// Metadata a proposal names arrives as an uploaded object and is
+    /// installed through Core's metadata storage before the commit that
+    /// points to it. Returns the IDs neither stored nor uploaded.
+    fn install_metadata(&self, proposal: &Proposal) -> Result<Vec<ObjectId>> {
+        let ids: BTreeSet<ObjectId> = proposal
+            .events
+            .iter()
+            .filter_map(|event| event.set_metadata.as_ref())
+            .chain(proposal.ref_events.iter().filter_map(|event| event.set_metadata.as_ref()))
+            .map(|metadata| metadata.id())
+            .collect();
+        let mut missing = Vec::new();
+        for id in self.storage.missing_metadata(&self.repo_id, ids).map_err(corrupt)? {
+            if !self.has_object(&id)? {
+                missing.push(id);
+                continue;
+            }
+            let mut bytes = Bounded(Vec::new());
+            self.copy_object(&id, &mut bytes)?;
+            self.storage
+                .put_metadata_object(&self.repo_id, &id, bytes.0)
+                .map_err(|error| invalid(format!("metadata object {id}: {error}")))?;
+        }
+        Ok(missing)
+    }
+
     /// The repository paths a proposal writes: each item it touches where it
     /// is now and where the proposal puts it. Records outside the tree have
     /// none.
@@ -504,5 +537,23 @@ impl ServedRepository {
             .validate()
             .map_err(|error| invalid(error.to_string()))?;
         self.storage.history_page(request).await.map_err(corrupt)
+    }
+}
+
+/// Collects an uploaded metadata object, refusing anything larger than one.
+struct Bounded(Vec<u8>);
+
+impl Write for Bounded {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        // An encrypted object's frame around the largest plain payload.
+        if self.0.len() + bytes.len() > synck_vcs::metadata::MAX_METADATA_BYTES + 1024 {
+            return Err(std::io::Error::other("too large for a metadata object"));
+        }
+        self.0.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
     }
 }

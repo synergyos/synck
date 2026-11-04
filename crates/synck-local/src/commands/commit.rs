@@ -534,7 +534,7 @@ impl Repository {
             }
         }
         self.guard_agent_paths(&reserved_paths)?;
-        if self.held() {
+        if self.held() && self.remote().is_none() {
             self.pin_held_objects(&captured.values().collect::<Vec<_>>()).await?;
         }
         let accepted = self

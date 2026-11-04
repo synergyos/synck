@@ -225,6 +225,44 @@ the push or pull fails with `CONFLICT` and the paths. Held commits are not
 backed up and nobody else sees them until pushed. `gc` in the origin keeps
 their content; delete a held clone only after pushing it.
 
+### HTTPS clones: a sync server as the origin
+
+`synck clone https://HOST/v1/repositories/REPO_ID DIRECTORY --author NAME`
+clones a repository from a [sync server](sync-server.md), with a read or write
+token in `SYNCK_TOKEN`; `http://` is accepted only to this machine. The clone
+verifies the server's whole history from its first commit, page by page, and
+keeps it and the content it names in its own `.synck`, so it works offline.
+The token is kept in `.synck/remote-token` (mode 0600); replace that file to
+change it.
+
+```sh
+SYNCK_TOKEN=... synck clone https://sync.example/v1/repositories/0190... matter --author laptop
+cd matter
+synck commit -m "Revise the brief"   # sent to the server at once
+synck pull                           # take in everyone else's commits
+```
+
+- `commit`, `revert`, `mv`, `recover`, `duplicate`, `adopt` and `version` take
+  in the server's newer commits first, then send theirs. When the server cannot
+  be reached the commit stays here, held, and the command says so; `status`
+  lists held commits and `push` sends them. `--hold` keeps every commit until
+  `push`, as in a held clone.
+- A commit keeps its ID on the server. Its operation ID there is its commit ID,
+  so a push repeated after a lost reply finds the accepted commit instead of
+  adding it again.
+- An item changed both in a held commit and on the server is `CONFLICT` for
+  `push` and `pull`, as in a held clone.
+- `lock` commands take, list, renew, release and break the server's leases,
+  after the same local check that the paths are clean. Local commands do not
+  check leases in an HTTPS clone: the server checks them when a commit arrives,
+  with the tokens given by `--lock-token`. A commit to a path someone else
+  reserved is refused there (`LOCKED`) and stays held.
+- `UNREACHABLE` means nothing was sent or taken in; `SERVER` carries the
+  server's refusal in `status` (for instance `FORBIDDEN` for a commit sent with
+  a read token, which stays held).
+- Encrypted repositories cannot be cloned over HTTPS yet. An HTTPS clone cannot
+  be cloned again or served; clone the server URL instead.
+
 ## Alternatives instead of branches
 
 An alternative is a copy of a file or folder inside the same history: a design

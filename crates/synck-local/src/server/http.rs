@@ -433,6 +433,10 @@ async fn download_object(
     let repository = server.authorize(&headers, &repo_id, Access::Read).await?;
     let id = object_id(&object_id_text)?;
     let (checked, checked_id) = (repository.clone(), id.clone());
+    if let Some(bytes) = server.jobs.run(move || Ok(checked.metadata_object(&checked_id)?)).await? {
+        return Ok(([(header::CONTENT_TYPE, "application/octet-stream")], bytes).into_response());
+    }
+    let (checked, checked_id) = (repository.clone(), id.clone());
     if !server.jobs.run(move || Ok(checked.has_object(&checked_id)?)).await? {
         return Err(Error::ObjectMissing);
     }

@@ -175,6 +175,10 @@ pub(crate) struct Config {
     /// to it until `push`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(crate) hold: bool,
+    /// An HTTPS clone's repository URL on a sync server. It keeps its own
+    /// history and content, like a held clone with a store of its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) remote: Option<String>,
     /// Stored apart, in `checkout.json`.
     #[serde(skip)]
     pub(crate) checkout: Option<crate::checkout::Checkout>,
@@ -197,6 +201,7 @@ impl Config {
             encrypted: false,
             origin: None,
             hold: false,
+            remote: None,
             checkout: Some(checkout),
         }
     }
@@ -214,6 +219,21 @@ impl Config {
             origin: Some(origin),
             hold,
             ..Self::complete(repo_id, author, authority, checkout, storage_mode)
+        }
+    }
+
+    pub(crate) fn remote_clone(
+        remote: String,
+        repo_id: RepoId,
+        author: String,
+        checkout: crate::checkout::Checkout,
+        storage_mode: StorageMode,
+        hold: bool,
+    ) -> Self {
+        Self {
+            remote: Some(remote),
+            hold,
+            ..Self::complete(repo_id, author, crate::portable::Authority::Local, checkout, storage_mode)
         }
     }
 
@@ -341,7 +361,7 @@ impl Repository {
             }
         };
 
-        let history_path = if config.hold {
+        let history_path = if config.hold || config.remote.is_some() {
             validate_entries(&metadata_path, &[crate::commands::HELD_FILE], &[])?;
             &metadata_path
         } else {
@@ -545,8 +565,19 @@ impl Repository {
         SqliteStorage::new(self.store_path.join("repository.sqlite3"))
     }
 
+    /// Commits may stay here unsent: a held clone, or any HTTPS clone.
     pub(crate) fn held(&self) -> bool {
-        self.config.hold
+        self.config.hold || self.config.remote.is_some()
+    }
+
+    /// The sync server URL of an HTTPS clone.
+    pub(crate) fn remote(&self) -> Option<&str> {
+        self.config.remote.as_deref()
+    }
+
+    /// An HTTPS clone without `--hold` sends each commit when it is made.
+    pub fn sends_at_once(&self) -> bool {
+        self.config.remote.is_some() && !self.config.hold
     }
 
     /// Commits are being added that the working files do not have yet.

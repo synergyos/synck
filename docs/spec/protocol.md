@@ -77,7 +77,15 @@ including receipts and immutable object downloads. IDs are not access tokens.
 Operations/staging are scoped to repository, generation and authenticated owner.
 Operation IDs use the format's 256-byte nonblank UTF-8 rule, not an ASCII-only
 subset. Encode an operation ID as one URL path segment; it is never a filesystem
-path. Install object metadata through Core's metadata API. Do not log content.
+path. Do not log content.
+
+An object ID names content or a metadata object, and both travel through the
+object routes. History rows carry metadata by ID only, so a client fetches each
+metadata object it lacks from `GET /objects` and installs it through Core's
+metadata API before replaying the commit. A proposal requires every content and
+metadata object it names: missing ones are `OBJECTS_MISSING`, and the authority
+installs uploaded metadata through Core's metadata API before accepting the
+commit that points to it.
 
 `Capabilities` contains `protocol_version: 1`, `repository`, `encrypted` (a client
 needs it to compute the genesis value), `latest` complete cursor and `policy`. Fixed transfer bounds are **512 records per page** and
@@ -355,8 +363,8 @@ The authority refuses a submission that writes a path another lease holds
 (`LOCKED`), or, when tokens are presented, one that writes a path they do not
 cover or that presents a dead token (`LOCK_LOST`). A proposal writes each item it
 touches where the item is and where the proposal puts it. A retry of an accepted
-operation returns its receipt without these checks. Clone command integration
-is a pending plan step.
+operation returns its receipt without these checks. `synck clone https://…`
+uses these routes; see `docs/local-repository.md` ("HTTPS clones").
 
 ## Evidence
 

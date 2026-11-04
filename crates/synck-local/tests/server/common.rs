@@ -80,6 +80,12 @@ pub fn create_file(repo_id: &RepoId, name: &str, bytes: &[u8]) -> (ItemId, Event
     (item_id, event)
 }
 
+/// The metadata object an event names, which a client uploads like content.
+pub fn metadata_object(event: &EventProposal) -> (ObjectId, Vec<u8>) {
+    let metadata = event.set_metadata.as_ref().unwrap().payload().unwrap();
+    (metadata.id(), metadata.payload().to_vec())
+}
+
 pub fn object_id(bytes: &[u8]) -> ObjectId {
     ObjectId::from_digest(Sha256::digest(bytes).into())
 }

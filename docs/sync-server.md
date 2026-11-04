@@ -47,8 +47,18 @@ synck serve ~/synck-state --listen 127.0.0.1:8740 ~/Documents/personal ~/Documen
   next `synck pull`, as it does a clone's. `synck gc` there may remove an
   object uploaded for a commit not yet submitted; the submission then answers
   `OBJECTS_MISSING` and the client uploads it again.
+- A proposal needs every metadata object it names, uploaded through `PUT
+  /objects` like content; acceptance installs it in the repository's history,
+  and `GET /objects` serves it from there.
 - An object download holds one of the 16 blocking-job slots while the client
   reads it.
+
+## Clients
+
+`synck clone https://HOST/v1/repositories/REPO_ID` makes a working tree that
+pulls and pushes over these routes ([HTTPS clones](local-repository.md)). The
+server's own repository directory keeps working as before; its working tree
+takes in remote commits at its next `synck pull`.
 
 ## History and leases
 

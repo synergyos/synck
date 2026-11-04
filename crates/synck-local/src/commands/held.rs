@@ -23,13 +23,16 @@ const PAGE: usize = 256;
 /// SQLite limits are signed.
 const UNBOUNDED: usize = i64::MAX as usize;
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Held {
     /// The origin's commits through this sequence are in the copy.
     pub(crate) origin_seq: i64,
     /// The copy's commits through this sequence are in the origin.
     pub(crate) pushed_seq: i64,
+    /// An HTTPS clone's verified position in the server's history.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) remote: Option<synck_sync::Cursor>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -80,19 +83,29 @@ pub(crate) fn is_conflict(error: &CoreError) -> bool {
 }
 
 /// The proposal a stored commit was accepted from.
-async fn stored_proposal(
+pub(crate) async fn stored_proposal(
     source: &Repo,
     repo_id: &RepoId,
     commit: &CommitRow,
 ) -> Result<(CommitProposal, Vec<RefEventProposal>)> {
     let count = usize::try_from(commit.event_count)
         .map_err(|_| LocalError::Integrity("negative commit event count".into()))?;
+    let rows = source
+        .list_commit_events(repo_id.clone(), commit.commit_id.clone(), count)
+        .await?;
+    proposal_from_rows(commit, rows)
+}
+
+/// The proposal `commit` was accepted from, given its stored events in order.
+pub(crate) fn proposal_from_rows(
+    commit: &CommitRow,
+    rows: Vec<CommitEventRow>,
+) -> Result<(CommitProposal, Vec<RefEventProposal>)> {
+    let count = usize::try_from(commit.event_count)
+        .map_err(|_| LocalError::Integrity("negative commit event count".into()))?;
     let mut events = Vec::new();
     let mut ref_events = Vec::new();
-    for row in source
-        .list_commit_events(repo_id.clone(), commit.commit_id.clone(), count)
-        .await?
-    {
+    for row in rows {
         match row {
             CommitEventRow::Item(row) => {
                 let mut event: EventProposal = serde_json::from_slice(&row.payload)?;
@@ -133,7 +146,7 @@ async fn stored_proposal(
 /// Items the proposal changes that `target` has moved past: an item at
 /// another head, or a folder it deletes that holds a live item the proposal
 /// does not delete too.
-async fn stale_items(target: &Repo, repo_id: &RepoId, events: &[EventProposal]) -> Result<Vec<ItemId>> {
+pub(crate) async fn stale_items(target: &Repo, repo_id: &RepoId, events: &[EventProposal]) -> Result<Vec<ItemId>> {
     let bases: BTreeMap<&ItemId, i64> = events
         .iter()
         .filter_map(|event| Some((event.item_id.as_ref()?, event.base_seq?)))
@@ -174,6 +187,38 @@ async fn stale_items(target: &Repo, repo_id: &RepoId, events: &[EventProposal]) 
     Ok(stale)
 }
 
+/// Append and sequence `commit` in `target` with its ID, or return the items
+/// `target` has moved past.
+pub(crate) async fn apply(
+    target: &Repo,
+    repo_id: &RepoId,
+    commit: &CommitRow,
+    proposal: CommitProposal,
+    ref_events: Vec<RefEventProposal>,
+) -> Result<std::result::Result<(), Vec<ItemId>>> {
+    let stale = stale_items(target, repo_id, &proposal.events).await?;
+    if !stale.is_empty() {
+        return Ok(Err(stale));
+    }
+    let items: Vec<ItemId> = proposal.events.iter().filter_map(|event| event.item_id.clone()).collect();
+    let accepted = match target
+        .append_file_folder_checked_with_refs(repo_id.clone(), proposal, ref_events, &[], &[])
+        .await
+    {
+        Ok(accepted) => accepted,
+        Err(error) if is_conflict(&error) => return Ok(Err(items)),
+        Err(error) => return Err(error.into()),
+    };
+    if accepted.commit_id != commit.commit_id {
+        return Err(LocalError::Integrity(format!(
+            "commit {} was replayed as {}",
+            commit.commit_id, accepted.commit_id
+        )));
+    }
+    while target.sequence_repo_activity(repo_id.clone(), PAGE).await? == PAGE {}
+    Ok(Ok(()))
+}
+
 /// Append `source`'s commits after sequence `after` that `target` lacks, in
 /// order and with their IDs. Returns the last source sequence replayed, or
 /// the items of the first commit `target` cannot take.
@@ -195,26 +240,9 @@ async fn replay(
                 .ok_or_else(|| LocalError::Integrity("unsequenced commit in history".into()))?;
             if target.get_commit(repo_id.clone(), commit.commit_id.clone()).await?.is_none() {
                 let (proposal, ref_events) = stored_proposal(source, repo_id, &commit).await?;
-                let stale = stale_items(target, repo_id, &proposal.events).await?;
-                if !stale.is_empty() {
-                    return Ok(Err(stale));
+                if let Err(items) = apply(target, repo_id, &commit, proposal, ref_events).await? {
+                    return Ok(Err(items));
                 }
-                let items: Vec<ItemId> = proposal.events.iter().filter_map(|event| event.item_id.clone()).collect();
-                let accepted = match target
-                    .append_file_folder_checked_with_refs(repo_id.clone(), proposal, ref_events, &[], &[])
-                    .await
-                {
-                    Ok(accepted) => accepted,
-                    Err(error) if is_conflict(&error) => return Ok(Err(items)),
-                    Err(error) => return Err(error.into()),
-                };
-                if accepted.commit_id != commit.commit_id {
-                    return Err(LocalError::Integrity(format!(
-                        "commit {} was replayed as {}",
-                        commit.commit_id, accepted.commit_id
-                    )));
-                }
-                while target.sequence_repo_activity(repo_id.clone(), PAGE).await? == PAGE {}
             }
             last = seq;
         }
@@ -230,7 +258,7 @@ impl Repository {
     }
 
     /// Paths of `items` at this clone's HEAD, for a conflict report.
-    async fn item_paths(&self, items: &[ItemId]) -> Result<Vec<String>> {
+    pub(crate) async fn item_paths(&self, items: &[ItemId]) -> Result<Vec<String>> {
         let items: HashSet<&ItemId> = items.iter().collect();
         let mut paths: Vec<String> = self
             .build_committed_tree(true)
@@ -286,7 +314,17 @@ impl Repository {
             let done = page.len() < PAGE;
             for commit in page {
                 from = commit.repo_seq.unwrap_or(from) + 1;
-                if origin.get_commit(repo_id.clone(), commit.commit_id.clone()).await?.is_none() {
+                let sent = if self.remote().is_some() {
+                    // Commits taken in from the server were appended with
+                    // their commit ID as operation ID; local ones never are.
+                    self.core()
+                        .get_commit_by_operation_id(repo_id.clone(), commit.commit_id.as_str())
+                        .await?
+                        .is_some_and(|replayed| replayed.commit_id == commit.commit_id)
+                } else {
+                    origin.get_commit(repo_id.clone(), commit.commit_id.clone()).await?.is_some()
+                };
+                if !sent {
                     commits.push(commit.commit_id.to_string());
                 }
             }
@@ -301,6 +339,9 @@ impl Repository {
     pub async fn push(&self) -> Result<PushOutcome> {
         if !self.held() {
             return Ok(PushOutcome::default());
+        }
+        if self.remote().is_some() {
+            return self.push_remote().await;
         }
         self.pull().await?;
         let pushed = self.held_commits().await?.unwrap_or_default();
