@@ -73,8 +73,11 @@ pub enum LocalError {
     #[error("changed here and in the repository in ways pull cannot merge (moved, renamed, deleted, or a file against a folder): {}; make the repository's change here too, or synck restore them, then pull", .paths.join(", "))]
     CannotMerge { paths: Vec<String> },
     /// A held commit changes items the repository changed too.
-    #[error("held commits change items the repository changed too: {}; push cannot send them. Copy these files aside, clone again, and commit them there", .paths.join(", "))]
+    #[error("held commits change items the repository changed too: {}; synck pull puts their changes back in the working files and merges them", .paths.join(", "))]
     HeldConflict { paths: Vec<String> },
+    /// A pull took conflicting held commits back into the working files.
+    #[error("held commits change items the repository changed too: {}; their changes are back in the working files, merged with the repository's. Check them, synck resolve any conflicts, then commit and push", .paths.join(", "))]
+    HeldMerged { paths: Vec<String> },
     /// Files a pull merged with conflicts or kept both versions of.
     #[error("unresolved conflicts: {}; edit them, then run synck resolve with their paths", .paths.join(", "))]
     Unresolved { paths: Vec<String> },

@@ -198,7 +198,9 @@ a local disk: `clone` refuses SMB, NFS, AFP and WebDAV, where SQLite cannot lock
 safely. Item and `repository` commands take the origin's path; `fsck` in a clone
 verifies the origin's history, its stored content and the clone's files, and
 `storage optimize` runs only in the origin. Moving or deleting the origin breaks
-its clones.
+its clones. `info` starts with `origin` or `clone of /work/matter`; `status` in
+a clone starts with the same line, counting the commits waiting to be sent
+(`origin` and `held_commits` in JSON).
 
 ### Held clones: private until pushed
 
@@ -207,7 +209,8 @@ a draft of the real files, for instance one folder with `--include`, that
 nobody else sees until it is ready. The clone keeps its own copy of the
 origin's history (about 1.5 MB for a 900 MB repository) and stores content in
 the origin, so `status`, `log`, `diff`, `restore` and `revert` work as in any
-clone. `status` lists the held commits.
+clone. `status` counts the held commits and `log` shows `held` in place of
+their sequence (`"held": true` in JSON).
 
 ```sh
 synck clone /work/matter /work/matter-draft --hold --include Drafts
@@ -219,11 +222,21 @@ synck push                         # both land in the origin, in order
 
 `pull` takes in the origin's newer commits. `push` pulls, then appends the
 held commits to the origin in order. A commit's ID does not depend on where it
-lands, so each keeps the ID it was given when committed. Nothing changes on
-either side when an item was changed both in a held commit and in the origin:
-the push or pull fails with `CONFLICT` and the paths. Held commits are not
-backed up and nobody else sees them until pushed. `gc` in the origin keeps
-their content; delete a held clone only after pushing it.
+lands, so each keeps the ID it was given when committed.
+
+Held commits are proposals: the origin decides. When the origin changed an item
+that a held commit changes too, `pull` takes the held commits back out of the
+clone's history and leaves their changes in the working files, merged with the
+origin's as [above](#clones-one-working-tree-per-agent-or-person): text
+three-way with markers, any other file kept with the origin's version beside
+it. `log` shows the origin's history again and `pull` names the paths
+(`unwound` in JSON). Check the files, `synck resolve` any conflicts and commit;
+`push` sends the new commit. `push` makes the same pull, then stops with
+`CONFLICT` and the paths, sending nothing. A move or deletion against an edit
+stops the pull as in any clone, with the held changes already in the working
+files. Held commits are not backed up and nobody else sees them until pushed.
+`gc` in the origin keeps their content; delete a held clone only after pushing
+it.
 
 ### HTTPS clones: a sync server as the origin
 
@@ -250,8 +263,9 @@ synck pull                           # take in everyone else's commits
 - A commit keeps its ID on the server. Its operation ID there is its commit ID,
   so a push repeated after a lost reply finds the accepted commit instead of
   adding it again.
-- An item changed both in a held commit and on the server is `CONFLICT` for
-  `push` and `pull`, as in a held clone.
+- A held commit that changes an item the server changed too goes back into the
+  working files at `pull` or `push`, merged, as in a held clone. Until then
+  `commit` stops with `CONFLICT`.
 - `lock` commands take, list, renew, release and break the server's leases,
   after the same local check that the paths are clean. Local commands do not
   check leases in an HTTPS clone: the server checks them when a commit arrives,

@@ -5,17 +5,25 @@
 //! so `status`, `log`, `diff` and `restore` see them like any other. `pull`
 //! replays the origin's newer commits into the copy and `push` replays the held
 //! ones into the origin. A commit ID hashes neither the commit's sequence nor
-//! its parents, so a replayed commit keeps its ID. A commit that changes an
-//! item the other side changed too is refused, and nothing moves.
+//! its parents, so a replayed commit keeps its ID.
+//!
+//! Held commits are proposals: the origin decides. When the origin changed an
+//! item a held commit changes too, `pull` takes the held commits out of the
+//! copy, leaving their changes in the working files as changes not yet
+//! committed, and merges them with the origin's like any other. Committing the
+//! result makes new proposals.
 
 use super::*;
 use synck_vcs::config::CoreConfig;
 use synck_vcs::errors::CoreError;
 use synck_vcs::repo::Repo;
-use synck_vcs::storage::Storage;
+use synck_vcs::storage::{Storage, StorageBackend as _};
 use synck_vcs_sqlite::SqliteStorage;
 
 pub(crate) const HELD_FILE: &str = "held.json";
+/// Held commits taken out of the copy, until the working tree is based on
+/// what remains.
+const UNWIND_INTENT_NAME: &str = "unwind.json";
 /// In the origin's `.synck`: one file per held clone naming the objects its
 /// unpushed commits reference.
 pub(crate) const PINS_DIRECTORY: &str = "pins";
@@ -40,6 +48,15 @@ pub(crate) struct Held {
 pub(crate) struct Pin {
     pub(crate) clone: PathBuf,
     pub(crate) objects: BTreeSet<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct Unwind {
+    commits: Vec<String>,
+    /// The working tree's baseline in the copy without them.
+    baseline: i64,
+    held: Held,
 }
 
 /// What a push sent.
@@ -70,6 +87,18 @@ pub(crate) fn pin_path(store: &Path, clone: &Path) -> PathBuf {
 
 fn core(storage: SqliteStorage) -> Repo {
     Repo::new(Storage::new(std::sync::Arc::new(storage)), CoreConfig::default())
+}
+
+/// A history at `path` with no commits yet, for commits to be replayed into.
+pub(crate) async fn empty_history(path: PathBuf, repo_id: &RepoId) -> Result<SqliteStorage> {
+    let storage = SqliteStorage::new(path);
+    storage.init_schema().await.map_err(|error| LocalError::Integrity(error.to_string()))?;
+    core(storage.clone()).sequence_repo_activity(repo_id.clone(), 1).await?;
+    storage
+        .project_imported_history(repo_id)
+        .await
+        .map_err(|error| LocalError::Integrity(error.to_string()))?;
+    Ok(storage)
 }
 
 pub(crate) fn is_conflict(error: &CoreError) -> bool {
@@ -298,6 +327,102 @@ impl Repository {
         Ok(())
     }
 
+    /// Take the held commits out of this clone's history copy, leaving their
+    /// changes in the working files, which are then based on the last commit
+    /// below them that the origin has.
+    pub(super) async fn unwind_held(&self) -> Result<()> {
+        let commits = self.held_commits().await?.unwrap_or_default();
+        if commits.is_empty() {
+            return Ok(());
+        }
+        let skip: HashSet<&str> = commits.iter().map(String::as_str).collect();
+        let repo_id = self.repository_id();
+        let directory = self.metadata_path().join("tmp").join(format!("unwind-{}", Uuid::new_v4()));
+        std::fs::create_dir(&directory).at("create", &directory)?;
+        let result = async {
+            let storage = empty_history(directory.join("repository.sqlite3"), repo_id).await?;
+            let target = core(storage.clone());
+            let old_baseline = self.baseline();
+            let mut baseline = None;
+            let mut from = 1;
+            loop {
+                let page = self.core().list_commits_by_repo_seq(repo_id.clone(), from, None, PAGE).await?;
+                let done = page.len() < PAGE;
+                for commit in page {
+                    let seq = commit
+                        .repo_seq
+                        .ok_or_else(|| LocalError::Integrity("unsequenced commit in history".into()))?;
+                    from = seq + 1;
+                    if seq > old_baseline && baseline.is_none() {
+                        baseline = Some(crate::repository::head_repo_seq(&storage, repo_id)?);
+                    }
+                    if skip.contains(commit.commit_id.as_str()) {
+                        continue;
+                    }
+                    let (proposal, ref_events) = stored_proposal(self.core(), repo_id, &commit).await?;
+                    if apply(&target, repo_id, &commit, proposal, ref_events).await?.is_err() {
+                        return Err(LocalError::Integrity(format!(
+                            "commit {} does not replay without the held commits",
+                            commit.commit_id
+                        )));
+                    }
+                }
+                if done {
+                    break;
+                }
+            }
+            let head = crate::repository::head_repo_seq(&storage, repo_id)?;
+            let unwind = Unwind {
+                commits: commits.clone(),
+                baseline: baseline.unwrap_or(head),
+                held: Held { pushed_seq: head, ..read_held(self.metadata_path())? },
+            };
+            rusqlite::Connection::open(storage.path())?.query_row("PRAGMA journal_mode=WAL", [], |_| Ok(()))?;
+            self.write_json_intent(UNWIND_INTENT_NAME, "unwind", &unwind)?;
+            // One transaction replaces the copy's content; the connections
+            // this process holds read the new content from their next query.
+            let source = rusqlite::Connection::open(storage.path())?;
+            let mut destination = rusqlite::Connection::open(self.storage().path())?;
+            let step = rusqlite::backup::Backup::new(&source, &mut destination)?.step(-1)?;
+            if step != rusqlite::backup::StepResult::Done {
+                return Err(LocalError::Integrity(format!("history copy was not replaced: {step:?}")));
+            }
+            Ok(unwind)
+        }
+        .await;
+        let _ = std::fs::remove_dir_all(&directory);
+        self.finish_unwind(&result?)?;
+        self.recover_current().await?;
+        if self.remote().is_none() {
+            self.pin_held_objects(&[]).await?;
+        }
+        Ok(())
+    }
+
+    /// Base the working tree on the copy without the held commits. The file
+    /// projection is rebuilt from the new copy at the next recovery.
+    fn finish_unwind(&self, unwind: &Unwind) -> Result<()> {
+        write_held(self.metadata_path(), &unwind.held)?;
+        self.local_db().open_writable()?.execute("DELETE FROM local_projection_state", [])?;
+        self.advance_baseline(unwind.baseline)?;
+        self.clear_intent(UNWIND_INTENT_NAME)
+    }
+
+    /// Finish an unwind cut short, before anything reads the projection.
+    /// While a held commit is still in the copy, the copy was not replaced.
+    pub(crate) async fn recover_pending_unwind(&self) -> Result<()> {
+        let Some(unwind) = self.read_json_intent::<Unwind>(UNWIND_INTENT_NAME, "unwind")? else {
+            return Ok(());
+        };
+        for commit_id in &unwind.commits {
+            let commit_id = CommitId::parse(commit_id).map_err(|error| LocalError::Integrity(error.to_string()))?;
+            if self.core().get_commit(self.repository_id().clone(), commit_id).await?.is_some() {
+                return self.clear_intent(UNWIND_INTENT_NAME);
+            }
+        }
+        self.finish_unwind(&unwind)
+    }
+
     /// A held clone's commits that the origin does not have, oldest first;
     /// `None` in any other working tree.
     pub async fn held_commits(&self) -> Result<Option<Vec<String>>> {
@@ -343,7 +468,10 @@ impl Repository {
         if self.remote().is_some() {
             return self.push_remote().await;
         }
-        self.pull().await?;
+        let pulled = self.pull().await?;
+        if !pulled.unwound.is_empty() {
+            return Err(LocalError::HeldMerged { paths: pulled.unwound });
+        }
         let pushed = self.held_commits().await?.unwrap_or_default();
         // A reservation from any working tree refuses these commits as it
         // would have refused them unheld.

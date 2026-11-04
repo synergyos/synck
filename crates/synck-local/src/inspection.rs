@@ -31,6 +31,10 @@ pub struct RepositoryInfo {
     pub format_version: u32,
     pub repo_id: String,
     pub author: String,
+    /// What a clone was made from: a repository root or a sync server URL.
+    pub origin: Option<String>,
+    /// A clone that keeps its commits until `push`.
+    pub hold: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -126,6 +130,12 @@ impl Repository {
             format_version: self.config().format_version(),
             repo_id: self.config().repo_id().to_string(),
             author: self.config().author().to_string(),
+            origin: self
+                .config()
+                .remote
+                .clone()
+                .or_else(|| self.config().origin.as_ref().map(|path| path.display().to_string())),
+            hold: self.config().hold,
         }
     }
 

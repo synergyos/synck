@@ -111,6 +111,9 @@ pub struct PullOutcome {
     pub updated: Vec<String>,
     /// Files left with conflicts to resolve.
     pub conflicts: Vec<String>,
+    /// Paths that held commits changed and the origin changed too: the held
+    /// commits were taken back into the working files and merged.
+    pub unwound: Vec<String>,
 }
 
 fn item_states(
@@ -299,13 +302,17 @@ impl Repository {
     async fn pull_with(&self, merge: bool) -> Result<PullOutcome> {
         self.guard_agent_all()?;
         self.recover_pending_pull().await?;
-        if self.remote().is_some() {
-            // A writer's own fetch is in `pull_if_behind`.
-            if merge {
-                self.take_in_remote().await?;
+        let mut unwound = Vec::new();
+        // A writer's own fetch from a server is in `pull_if_behind`.
+        if self.held() && (merge || self.remote().is_none()) {
+            match self.take_in().await {
+                Err(LocalError::HeldConflict { paths }) if merge => {
+                    self.unwind_held().await?;
+                    self.take_in().await?;
+                    unwound = paths;
+                }
+                result => result?,
             }
-        } else if self.held() {
-            self.take_in_origin().await?;
         }
         let from = self.baseline();
         if self.at_head() {
@@ -314,6 +321,7 @@ impl Repository {
                 to_repo_seq: from,
                 updated: Vec::new(),
                 conflicts: self.conflicts()?.into_iter().map(|conflict| conflict.path).collect(),
+                unwound,
             });
         }
         let (base, working, _, working_ids) = self.changes().await?;
@@ -412,7 +420,13 @@ impl Repository {
             to_repo_seq: target,
             updated,
             conflicts: self.conflicts()?.into_iter().map(|conflict| conflict.path).collect(),
+            unwound,
         })
+    }
+
+    /// Take in the origin's or the server's newer commits.
+    async fn take_in(&self) -> Result<()> {
+        if self.remote().is_some() { self.take_in_remote().await } else { self.take_in_origin().await }
     }
 
     /// Merge one file changed on both sides. `base` is absent when both sides

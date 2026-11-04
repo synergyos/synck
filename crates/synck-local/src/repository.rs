@@ -417,6 +417,7 @@ impl Repository {
         };
         // Publish whatever was accepted before this command, then decide whether
         // this working tree is at HEAD. Nothing appended before now is its own.
+        repository.recover_pending_unwind().await?;
         repository.recover_current().await?;
         repository.load_baseline()?;
         let _ = repository.validate_pending_operations()?;

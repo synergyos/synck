@@ -24,14 +24,16 @@ use synck_sync::{
 use synck_vcs::config::CoreConfig;
 use synck_vcs::metadata::Metadata;
 use synck_vcs::repo::Repo;
-use synck_vcs::storage::{Storage, StorageBackend as _};
+use synck_vcs::storage::Storage;
 use synck_vcs::types::{CommitEventRow, CommitId, CommitRow, ItemId, ObjectId, RepoId};
 use synck_vcs_sqlite::SqliteStorage;
 use ureq::http::{Response, StatusCode, Uri};
 use ureq::tls::{RootCerts, TlsConfig};
 
 use crate::chunk_store::{ChunkStore, OBJECT_STORE_FILE, StorageMode};
-use crate::commands::{Held, PushOutcome, apply, proposal_from_rows, read_held, stored_proposal, write_held};
+use crate::commands::{
+    Held, PushOutcome, apply, empty_history, proposal_from_rows, read_held, stored_proposal, write_held,
+};
 use crate::error::{IoContext, LocalError, Result};
 use crate::repository::{Config, Repository};
 use crate::{AgentLease, AgentLock};
@@ -564,14 +566,8 @@ async fn make_clone(
         std::fs::write(&path, b"").at("create", &path)?;
     }
     write_token(metadata, token)?;
-    let storage = SqliteStorage::new(metadata.join("repository.sqlite3"));
-    storage.init_schema().await.map_err(|error| LocalError::Integrity(error.to_string()))?;
+    let storage = empty_history(metadata.join("repository.sqlite3"), &repo_id).await?;
     let history = core(storage.clone());
-    history.sequence_repo_activity(repo_id.clone(), 1).await?;
-    storage
-        .project_imported_history(&repo_id)
-        .await
-        .map_err(|error| LocalError::Integrity(error.to_string()))?;
     let chunks = (storage_mode == StorageMode::Chunked).then(|| {
         ChunkStore::create(&metadata.join(OBJECT_STORE_FILE), &repo_id)
             .map(|()| ChunkStore::new(metadata.join(OBJECT_STORE_FILE), &repo_id))
@@ -705,7 +701,10 @@ impl Repository {
     /// Send the held commits to the server, oldest first, after taking in
     /// its newer ones. Each keeps its commit ID.
     pub(crate) async fn push_remote(&self) -> Result<PushOutcome> {
-        self.pull().await?;
+        let pulled = self.pull().await?;
+        if !pulled.unwound.is_empty() {
+            return Err(LocalError::HeldMerged { paths: pulled.unwound });
+        }
         let pushed = self.held_commits().await?.unwrap_or_default();
         if pushed.is_empty() {
             return Ok(PushOutcome::default());

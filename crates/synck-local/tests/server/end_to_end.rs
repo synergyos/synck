@@ -165,15 +165,24 @@ async fn clones_commit_different_items_and_meet_over_one() {
     ok(&fixture.origin, "", &["pull"]);
     assert_eq!(read(fixture.origin.join("brief.txt")), "both drafts, merged\n");
 
-    // A held commit to an item the server changed since: push refuses it,
-    // and nothing moves on either side.
+    // A held commit to an item the server changed since: push merges it
+    // back into the working files and sends nothing until it is committed.
     std::fs::write(draft.join("brief.txt"), "a held draft\n").unwrap();
     ok(&draft, token, &["commit", "-m", "Held draft"]);
+    assert!(ok(&draft, token, &["info"]).starts_with("clone of http://"));
+    assert!(ok(&draft, token, &["status"]).contains("1 commit waiting to be sent"));
     let head = json(&fixture.origin, "", &["info"])["head"].clone();
     assert_eq!(error_kind(&draft, token, &["push"]), "CONFLICT");
-    assert_eq!(held(&draft, token), 1);
-    assert_eq!(read(draft.join("brief.txt")), "a held draft\n");
+    assert_eq!(held(&draft, token), 0);
+    assert!(read(draft.join("brief.txt")).contains("a held draft"));
     assert_eq!(json(&fixture.origin, "", &["info"])["head"], head);
+    std::fs::write(draft.join("brief.txt"), "merged with the held draft\n").unwrap();
+    ok(&draft, token, &["resolve", "brief.txt"]);
+    ok(&draft, token, &["commit", "-m", "Merge the held draft"]);
+    ok(&draft, token, &["push"]);
+    ok(&fixture.origin, "", &["pull"]);
+    assert_eq!(read(fixture.origin.join("brief.txt")), "merged with the held draft\n");
+    ok(&draft, token, &["fsck"]);
 }
 
 #[tokio::test]

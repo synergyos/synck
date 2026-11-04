@@ -718,16 +718,32 @@ fn held_clones_keep_commits_until_push_with_their_ids() {
     assert_eq!(fs::read(origin.join("docs/c.txt")).unwrap(), b"c held\n");
     run(&origin, &["fsck"]);
 
-    // An item changed on both sides stops the push, and nothing moves.
+    // An item changed on both sides: the held commit goes back into the
+    // working files, merged with the origin's, and is sent once committed.
     fs::write(held.join("docs/a.txt"), b"a mine\n").unwrap();
     run(&held, &["commit", "-m", "mine"]);
+    assert!(run(&held, &["log", "--oneline"]).starts_with("held | "));
     fs::write(origin.join("docs/a.txt"), b"a theirs\n").unwrap();
     run(&origin, &["commit", "-m", "theirs"]);
     let error = fails(&held, &["push", "--json"]);
     assert_eq!(error["error"]["kind"], "CONFLICT");
     assert_eq!(error["error"]["paths"], serde_json::json!(["docs/a.txt"]));
-    assert_eq!(fs::read(held.join("docs/a.txt")).unwrap(), b"a mine\n");
-    assert_eq!(json(&held, &["status", "--json"])["held_commits"].as_array().unwrap().len(), 1);
+    let merged = String::from_utf8(fs::read(held.join("docs/a.txt")).unwrap()).unwrap();
+    assert!(merged.contains("a mine") && merged.contains("a theirs") && merged.contains("<<<<<<<"));
+    let status = json(&held, &["status", "--json"]);
+    assert_eq!(status["held_commits"], serde_json::json!([]));
+    assert_eq!(status["conflicts"][0]["path"], "docs/a.txt");
+    assert!(!run(&held, &["log", "--oneline"]).contains("mine"));
+    fs::write(held.join("docs/a.txt"), b"a both\n").unwrap();
+    run(&held, &["resolve", "docs/a.txt"]);
+    run(&held, &["commit", "-m", "both"]);
+    assert_eq!(json(&held, &["push", "--json"])["pushed"].as_array().unwrap().len(), 1);
+    run(&origin, &["pull"]);
+    assert_eq!(fs::read(origin.join("docs/a.txt")).unwrap(), b"a both\n");
+    assert!(run(&held, &["status"]).starts_with("clone of "));
+    assert!(run(&origin, &["info"]).starts_with("origin\n"));
+    run(&held, &["fsck"]);
+    run(&origin, &["fsck"]);
 }
 
 #[test]

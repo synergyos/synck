@@ -114,7 +114,9 @@ history since its last pull. Nothing was written; run `synck pull`, which merges
 them, fix each file it lists in `conflicts`, run `synck resolve PATH...`, and
 commit. A `CONFLICT` from `pull` itself is a move or deletion against an edit. See [clones](local-repository.md#clones-one-working-tree-per-agent-or-person).
 An agent whose work should land only when finished clones with `--hold` and runs
-`synck push` at the end; its commits keep their IDs.
+`synck push` at the end; its commits keep their IDs. If the origin changed the
+same files meanwhile, `push` puts the held changes back in the working files,
+merged, and stops with `CONFLICT`: resolve, commit and push again.
 
 An agent on another machine clones from a [sync server](sync-server.md) the same
 way: `SYNCK_TOKEN=TOKEN synck clone https://HOST/v1/repositories/REPO_ID DIR

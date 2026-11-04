@@ -67,8 +67,12 @@ Git has two built-in ways to serve repositories:
   twice.
 - **Leases** let an agent reserve a file that cannot be merged, such as a Word
   document. Git servers have no locks (Git LFS adds them).
-- **Clients keep a complete, verified copy** and keep committing while the
-  server is away; the commits are sent later. A Git clone is likewise complete.
+- **Offline commits are proposals.** A client keeps a complete, verified copy
+  and keeps committing while the server is away; `push` sends those commits
+  later, each with its ID. The server decides: a commit that touches a file
+  changed on the server meanwhile is not taken, and `pull` puts its changes
+  back in the client's files, merged, to be committed again. Git commits
+  offline too, but a refused push leaves the merge or rebase to the user.
 - **Transfer is one request per object**, where Git packs everything into one
   stream. A first clone or a commit of many new files is slower than Git.
 

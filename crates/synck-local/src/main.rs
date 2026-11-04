@@ -1052,6 +1052,7 @@ async fn run_checkout(
         Command::Init { .. } | Command::Clone { .. } => unreachable!(),
         Command::Info => async {
             let info = repository.info();
+            let held = repository.held_commits().await.map_err(|error| (error, false))?;
             let head = repository
                 .log(Some(1))
                 .await
@@ -1059,21 +1060,26 @@ async fn run_checkout(
                 .into_iter()
                 .next();
             if json {
-                println!(
-                    "{}",
-                    json!({
-                        "schema_version": cli_json::SCHEMA_VERSION,
-                        "root": info.root.display().to_string(),
-                        "format_version": info.format_version,
-                        "repo_id": info.repo_id,
-                        "author": info.author,
-                        "head": head.as_ref().map(|commit| json!({
-                            "repo_seq": commit.repo_seq,
-                            "commit_id": commit.commit_id,
-                        })),
-                    })
-                );
+                let mut value = json!({
+                    "schema_version": cli_json::SCHEMA_VERSION,
+                    "root": info.root.display().to_string(),
+                    "format_version": info.format_version,
+                    "repo_id": info.repo_id,
+                    "author": info.author,
+                    "head": head.as_ref().map(|commit| json!({
+                        "repo_seq": commit.repo_seq,
+                        "commit_id": commit.commit_id,
+                    })),
+                });
+                if let Some(origin) = &info.origin {
+                    value["origin"] = json!(origin);
+                }
+                if let Some(held) = &held {
+                    value["held_commits"] = json!(held);
+                }
+                println!("{value}");
             } else {
+                println!("{}", role(&info, held.as_deref()));
                 println!("root {}", info.root.display());
                 println!("format_version {}", info.format_version);
                 println!("repo_id {}", info.repo_id);
@@ -1207,6 +1213,7 @@ async fn run_checkout(
         Command::Status => async {
             let (changes, warnings) = repository.status_with_path_warnings().await.map_err(|error| (error, false))?;
             let held = repository.held_commits().await.map_err(|error| (error, false))?;
+            let info = repository.info();
             // An HTTPS clone's leases are on the server; status works offline.
             let reservations = match repository.agent_locks() {
                 Err(LocalError::Unreachable(_)) => Vec::new(),
@@ -1220,6 +1227,9 @@ async fn run_checkout(
                 if !skipped.is_empty() {
                     status["skipped"] = json!(skipped);
                 }
+                if let Some(origin) = &info.origin {
+                    status["origin"] = json!(origin);
+                }
                 if let Some(held) = held {
                     status["held_commits"] = json!(held);
                 }
@@ -1231,11 +1241,11 @@ async fn run_checkout(
                 }
                 println!("{status}");
             } else {
+                if info.origin.is_some() {
+                    println!("{}", role(&info, held.as_deref()));
+                }
                 print_status(&changes, align_change_markers);
                 print_skipped(&skipped);
-                if let Some(held) = held.filter(|held| !held.is_empty()) {
-                    println!("{} commits held; push sends them", held.len());
-                }
                 for conflict in &conflicts {
                     match &conflict.theirs {
                         Some(theirs) => println!(
@@ -1361,6 +1371,20 @@ async fn run_checkout(
             oneline,
             events,
         } => async {
+            // Held commits are proposals: their place in the history is not settled.
+            let held: std::collections::HashSet<String> = repository
+                .held_commits()
+                .await
+                .map_err(|error| (error, false))?
+                .unwrap_or_default()
+                .into_iter()
+                .collect();
+            let mark = |mut value: serde_json::Value, commit_id: &str| {
+                if held.contains(commit_id) {
+                    value["held"] = json!(true);
+                }
+                value
+            };
             if events {
                 let commits = repository
                     .detailed_event_log(limit)
@@ -1373,7 +1397,7 @@ async fn run_checkout(
                             "schema_version": cli_json::SCHEMA_VERSION,
                             "commits": commits
                                 .iter()
-                                .map(cli_json::detailed_event_log_entry)
+                                .map(|entry| mark(cli_json::detailed_event_log_entry(entry), &entry.entry.commit.commit_id))
                                 .collect::<Vec<_>>(),
                         })
                     );
@@ -1382,7 +1406,7 @@ async fn run_checkout(
                         if index != 0 {
                             println!();
                         }
-                        print_detailed_event_log_entry(entry);
+                        print_detailed_event_log_entry(entry, held.contains(&entry.entry.commit.commit_id));
                     }
                 }
             } else if oneline {
@@ -1395,7 +1419,10 @@ async fn run_checkout(
                         "{}",
                         json!({
                             "schema_version": cli_json::SCHEMA_VERSION,
-                            "commits": commits.iter().map(cli_json::log_metadata).collect::<Vec<_>>(),
+                            "commits": commits
+                                .iter()
+                                .map(|commit| mark(cli_json::log_metadata(commit), &commit.commit_id))
+                                .collect::<Vec<_>>(),
                         })
                     );
                     return Ok(ExitCode::SUCCESS);
@@ -1406,7 +1433,7 @@ async fn run_checkout(
                         .with_timezone(&chrono::Local)
                         .format("%Y-%m-%d %H:%M %:z")
                         .to_string();
-                    let sequence = styled(COMMIT_STYLE, &commit.repo_seq.to_string());
+                    let sequence = styled(COMMIT_STYLE, &sequence_label(&commit, held.contains(&commit.commit_id)));
                     let mut header = format!("{sequence} | {created_at} | {}", visible(&commit.author));
                     if let Some(message) = commit.message.as_deref() {
                         header.push_str(" | ");
@@ -1426,7 +1453,7 @@ async fn run_checkout(
                             "schema_version": cli_json::SCHEMA_VERSION,
                             "commits": commits
                                 .iter()
-                                .map(cli_json::detailed_log_entry)
+                                .map(|entry| mark(cli_json::detailed_log_entry(entry), &entry.commit.commit_id))
                                 .collect::<Vec<_>>(),
                         })
                     );
@@ -1435,7 +1462,7 @@ async fn run_checkout(
                         if index != 0 {
                             println!();
                         }
-                        print_detailed_log_entry(entry, align_change_markers);
+                        print_detailed_log_entry(entry, align_change_markers, held.contains(&entry.commit.commit_id));
                     }
                 }
             }
@@ -1771,6 +1798,7 @@ async fn run_checkout(
                     "to_repo_seq": outcome.to_repo_seq,
                     "updated": outcome.updated,
                     "conflicts": outcome.conflicts,
+                    "unwound": outcome.unwound,
                     "checkout_paths": repository.checkout_paths(),
                 }),
                 format_args!(
@@ -1786,6 +1814,12 @@ async fn run_checkout(
                     }
                 ),
             );
+            if !json && !outcome.unwound.is_empty() {
+                println!(
+                    "held commits changed {}, which the repository changed too; their changes are back in the working files, merged with the repository's: check them, then commit and push",
+                    visible(&outcome.unwound.join(", "))
+                );
+            }
             if !json && !outcome.conflicts.is_empty() {
                 println!(
                     "conflicts in {}; edit them, then run synck resolve with their paths",
@@ -2645,8 +2679,8 @@ fn escape_terminal_text(text: &str, keep: impl Fn(char) -> bool) -> String {
     escaped
 }
 
-fn print_detailed_log_entry(entry: &DetailedLogEntry, align_change_markers: bool) {
-    print_log_header(entry, Some(entry.changes.len()), None);
+fn print_detailed_log_entry(entry: &DetailedLogEntry, align_change_markers: bool, held: bool) {
+    print_log_header(entry, Some(entry.changes.len()), None, held);
     let marker_width = change_marker_width(&entry.changes, align_change_markers);
     for change in &entry.changes {
         anstream::println!("    {}", format_change(change, marker_width));
@@ -2659,8 +2693,8 @@ fn print_detailed_log_entry(entry: &DetailedLogEntry, align_change_markers: bool
     }
 }
 
-fn print_detailed_event_log_entry(entry: &DetailedEventLogEntry) {
-    print_log_header(&entry.entry, None, Some(entry.events.len()));
+fn print_detailed_event_log_entry(entry: &DetailedEventLogEntry, held: bool) {
+    print_log_header(&entry.entry, None, Some(entry.events.len()), held);
     print_commit_events(&entry.events);
 }
 
@@ -2668,13 +2702,14 @@ fn print_log_header(
     entry: &DetailedLogEntry,
     changes_shown: Option<usize>,
     event_count: Option<usize>,
+    held: bool,
 ) {
     let commit = &entry.commit;
     let created_at = commit
         .created_at
         .with_timezone(&chrono::Local)
         .format("%Y-%m-%d %H:%M %:z");
-    let sequence = styled(COMMIT_STYLE, &commit.repo_seq.to_string());
+    let sequence = styled(COMMIT_STYLE, &sequence_label(commit, held));
     let mut header = format!(
         "{sequence} | {created_at} | {} | {}",
         visible(&commit.author),
@@ -2699,6 +2734,27 @@ fn change_summary(total: usize, shown: Option<usize>) -> String {
         summary.push_str(&format!(" ({shown} shown)"));
     }
     summary
+}
+
+/// A commit's place in the history, or `held` for a proposal not yet sent.
+fn sequence_label(commit: &LogEntry, held: bool) -> String {
+    if held { "held".to_string() } else { commit.repo_seq.to_string() }
+}
+
+/// `origin`, or what a clone was made from and what it has not sent yet.
+fn role(info: &RepositoryInfo, held: Option<&[String]>) -> String {
+    let Some(origin) = &info.origin else {
+        return "origin".to_string();
+    };
+    let mut line = format!("clone of {}", visible(origin));
+    match held {
+        Some(held) if !held.is_empty() => {
+            line.push_str(&format!(", {} waiting to be sent; push sends them", counted(held.len(), "commit", "commits")));
+        }
+        _ if info.hold => line.push_str(", holding commits until push"),
+        _ => {}
+    }
+    line
 }
 
 fn counted(count: usize, singular: &str, plural: &str) -> String {

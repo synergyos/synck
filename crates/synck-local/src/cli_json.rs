@@ -181,6 +181,7 @@ pub(crate) fn error(value: &LocalError) -> Value {
         | LocalError::ChangedOnBothSides { .. }
         | LocalError::CannotMerge { .. }
         | LocalError::HeldConflict { .. }
+        | LocalError::HeldMerged { .. }
         | LocalError::Unresolved { .. } => "CONFLICT",
         LocalError::MoveNeedsRecovery { .. } => "MOVE_NEEDS_RECOVERY",
         LocalError::PublishedNeedsDurability { .. } => "PUBLISHED_NEEDS_DURABILITY",
@@ -204,6 +205,7 @@ pub(crate) fn error(value: &LocalError) -> Value {
     if let LocalError::ChangedOnBothSides { paths }
     | LocalError::CannotMerge { paths }
     | LocalError::HeldConflict { paths }
+    | LocalError::HeldMerged { paths }
     | LocalError::Unresolved { paths } = value
     {
         error["paths"] = json!(paths);

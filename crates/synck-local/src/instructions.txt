@@ -48,8 +48,11 @@ Moves and deletions against edits are not merged: pull fails with CONFLICT and
 writes nothing. Repository and item commands take the origin's path.
     synck clone <repository> <directory> --hold
     synck push
-A held clone keeps its commits, each with its final commit ID, until push sends
-them in order; status lists them. push pulls first and stops at CONFLICT.
+A held clone keeps its commits as proposals until push sends them in order,
+each with its commit ID; status counts them and log marks them held. When the
+origin changed the same files, pull (and push, which pulls first and then stops
+with CONFLICT) puts their changes back in the working files, merged as above;
+resolve, commit, then push. info and status say origin or clone of <origin>.
 
 Clone from another machine's sync server with a token from its owner:
     SYNCK_TOKEN=<token> synck clone https://<host>/v1/repositories/<repo-id> <directory> --author <name>

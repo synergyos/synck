@@ -49,7 +49,15 @@ store version 2: 0.3.0 upgrades a version 1 store when it opens one, after which
 - `synck clone --hold` keeps commits in the clone until `synck push`, which
   pulls and then sends them in order, each with the commit ID it was given;
   `status` lists them. A held clone keeps its own copy of the history; the
-  origin's `gc` keeps the content of unpushed commits.
+  origin's `gc` keeps the content of unpushed commits. Held commits are
+  proposals: one that changes an item the origin changed too is taken back
+  into the working files by `pull`, merged with the origin's, to be committed
+  again (`unwound` in `pull --json`); `push` does the same and stops with
+  `CONFLICT`. `log` shows `held` in place of a held commit's sequence
+  (`"held": true` in JSON).
+- `info` starts with `origin` or `clone of <origin>`, and a clone's `status`
+  with the same line and the commits waiting to be sent. A clone's `info` and
+  `status` JSON carry `origin`, and `held_commits` when it can hold commits.
 - `synck diff` compares Word, Excel and PowerPoint files by their text:
   paragraphs, slide text and sheet cells with formulas, instead of reporting
   a binary difference. JSON marks these entries `DOCUMENT`.
@@ -146,7 +154,7 @@ store version 2: 0.3.0 upgrades a version 1 store when it opens one, after which
   [HTTPS clones](docs/local-repository.md).
 - Metadata objects travel through the object routes: a proposal needs every
   one it names, and `GET /objects` serves them from history.
-  `SqliteStorage` gains `metadata_object` and `put_metadata_object`.
+  `SqliteStorage` gains `metadata_object` and `put_metadata_objects`.
 - `portable::ServedRepository` opens a repository for a sync server without
   taking its lock and reports its protocol-1 `Capabilities`. `SqliteStorage`
   gains `history_identity`, `history_head` and `history_cursor`.

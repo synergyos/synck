@@ -503,3 +503,49 @@ fn chunked_gc_survives_a_kill_at_every_mutation() {
         ["gc"].map(str::to_string).to_vec()
     });
 }
+
+/// A held commit to a file the origin changed too. Wherever a kill stops the
+/// pull that takes it back into the working files, the clone verifies and
+/// the next pull ends where an uninterrupted one does.
+#[test]
+#[ignore = "kills a real process at every mutation"]
+fn held_pull_survives_a_kill_at_every_mutation() {
+    let directory = tempfile::tempdir().unwrap();
+    // A clone names its origin by absolute path, so every run puts the pair
+    // back in the same place.
+    let work = directory.path().join("work");
+    let saved = directory.path().join("saved");
+    let (origin, held) = (work.join("origin"), work.join("held"));
+    fs::create_dir(&work).unwrap();
+    base(&origin);
+    ok(&work, &["clone", "origin", "held", "--hold"]);
+    fs::write(held.join("edit.txt"), "held\n").unwrap();
+    ok(&held, &["commit", "-m", "held"]);
+    fs::write(origin.join("edit.txt"), "origin\n").unwrap();
+    ok(&origin, &["commit", "-m", "origin"]);
+    copy(&work, &saved);
+    ok(&held, &["pull"]);
+    let expected = tree(&held);
+
+    let mut point = 1;
+    loop {
+        fs::remove_dir_all(&work).unwrap();
+        copy(&saved, &work);
+        let output = synck(&held, &["pull"], Some(point));
+        if output.status.success() {
+            break;
+        }
+        let context = format!("held pull killed at mutation {point}");
+        assert_eq!(output.status.signal(), Some(SIGKILL), "{context}: {}", String::from_utf8_lossy(&output.stderr));
+        let fsck = synck(&held, &["fsck"], None);
+        assert!(fsck.status.success(), "{context}: {}", String::from_utf8_lossy(&fsck.stderr));
+        ok(&held, &["pull"]);
+        assert_eq!(tree(&held), expected, "{context}");
+        let status: serde_json::Value = serde_json::from_str(&ok(&held, &["status", "--json"])).unwrap();
+        assert_eq!(status["held_commits"], serde_json::json!([]), "{context}");
+        assert_eq!(status["conflicts"][0]["path"], "edit.txt", "{context}");
+        point += 1;
+    }
+    assert!(point > 5, "the pull reached only {point} mutations, so the interposer is not loaded");
+    eprintln!("held pull: {} mutations", point - 1);
+}
