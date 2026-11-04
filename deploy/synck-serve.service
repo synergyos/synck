@@ -1,0 +1,15 @@
+# `synck serve` for one owner, behind Caddy (deploy/Caddyfile). Edit User, the
+# binary, the state root and the repository directories before installing.
+[Unit]
+Description=Synck sync server
+After=network.target
+
+[Service]
+User=owner
+ExecStart=/home/owner/.local/bin/synck serve /home/owner/synck-state --listen 127.0.0.1:8740 /home/owner/Documents/personal
+Restart=on-failure
+# On SIGTERM the server stops accepting and finishes the requests it holds.
+TimeoutStopSec=60
+
+[Install]
+WantedBy=multi-user.target

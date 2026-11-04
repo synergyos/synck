@@ -23,9 +23,30 @@ synck serve ~/synck-state --listen 127.0.0.1:8740 ~/Documents/personal ~/Documen
   history (not clones or followers) and routes each by its repository ID. It
   reads them without their lock, so their working trees keep working. One
   server per state root.
-- It listens on loopback only. Protocol 1 requires TLS on any network, so a
-  proxy on the same host (Caddy, nginx) terminates it.
+- It listens on loopback only. Protocol 1 requires TLS on any network;
+  Caddy on the same host terminates it ([TLS](#tls)).
 - `synck serve` has no JSON output; `--json` is refused.
+
+## TLS
+
+[`deploy/Caddyfile`](../deploy/Caddyfile) puts Caddy in front of the server.
+Caddy obtains and renews a public certificate by itself, and clients check it
+against the system's trusted roots. On a Linux host with a DNS name pointing at
+it and ports 80 and 443 open:
+
+1. Install Synck ([cli-install.md](cli-install.md)) and Caddy (its package
+   runs it as the `caddy` service), then run `synck serve init` and `synck
+   serve token add` as the owner.
+2. Copy [`deploy/synck-serve.service`](../deploy/synck-serve.service) to
+   `/etc/systemd/system/`, set the owner, the paths and the repositories, and
+   run `systemctl enable --now synck-serve`.
+3. Put the host's name in `deploy/Caddyfile`, copy it to `/etc/caddy/Caddyfile`
+   and run `systemctl reload caddy`.
+4. On each device: `SYNCK_TOKEN=<token> synck clone
+   https://sync.example.com/v1/repositories/<repo_id> <directory> --author
+   <name>`. `synck info` in a served repository prints its ID.
+
+Leave the server on `127.0.0.1`: Caddy is the only listener on the network.
 
 ## Write path
 

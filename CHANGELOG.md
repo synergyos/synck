@@ -135,7 +135,8 @@ store version 2: 0.3.0 upgrades a version 1 store when it opens one, after which
 
 - `synck serve` serves repositories to other devices and agents over protocol 1,
   with named read and write tokens (`synck serve init`, `synck serve token`). It
-  listens on loopback behind a TLS proxy. See
+  listens on loopback; `deploy/Caddyfile` and `deploy/synck-serve.service` put
+  Caddy in front for TLS with an automatic certificate. See
   [the sync server](docs/sync-server.md).
 - `synck clone https://HOST/v1/repositories/REPO_ID` makes an HTTPS clone with
   the token in `SYNCK_TOKEN`: the server's verified history and content, kept

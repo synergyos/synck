@@ -1,0 +1,5 @@
+# TLS in front of `synck serve` (docs/sync-server.md). Caddy obtains and renews
+# a public certificate for this name, so ports 80 and 443 must reach this host.
+sync.example.com {
+	reverse_proxy 127.0.0.1:8740
+}
