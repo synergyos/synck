@@ -50,6 +50,9 @@ use crate::repository::{
     sync_file, sync_open_directory,
 };
 
+mod served;
+pub use served::{Acceptance, Accepted, Proposal, ServedRepository};
+
 pub const FORMAT_VERSION: u32 = 7;
 const MAX_PAYLOAD_BYTES: usize = HEADER_BYTES + synck_items::body_events::MAX_BODY_BYTES;
 pub(crate) fn unsupported_format(version: Option<u64>) -> LocalError {
@@ -256,6 +259,45 @@ fn directory(path: &Path) -> Result<Dir> {
     Dir::open_ambient_dir(path, ambient_authority()).at("open portable directory", path)
 }
 
+/// Both stores hash the bytes they write and refuse a digest other than `id`.
+fn copy_stored(
+    root: &Path,
+    metadata: &Dir,
+    chunked: Option<&ChunkStore>,
+    id: &ObjectId,
+    mut out: &mut dyn Write,
+) -> Result<u64> {
+    if let Some(store) = chunked {
+        let size = store.blob_size(id)?;
+        store.copy_blob(id, size, &mut out)?;
+        return Ok(size);
+    }
+    let name = id
+        .as_str()
+        .strip_prefix("sha256:")
+        .ok_or_else(|| corrupt("blob ID has no digest"))?;
+    let dir = metadata.open_dir_nofollow("objects").map_err(corrupt)?;
+    let mut file = regular(&dir, name, &root.join(".synck/objects").join(name))?;
+    let mut hasher = Sha256::new();
+    let mut size = 0u64;
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let count = file.read(&mut buffer).map_err(invalid)?;
+        if count == 0 {
+            break;
+        }
+        out.write_all(&buffer[..count]).map_err(invalid)?;
+        hasher.update(&buffer[..count]);
+        size = size
+            .checked_add(count as u64)
+            .ok_or_else(|| corrupt("blob size overflow"))?;
+    }
+    if hex::encode(hasher.finalize()) != name {
+        return Err(corrupt("blob digest mismatch"));
+    }
+    Ok(size)
+}
+
 fn entries(dir: &Dir) -> Result<BTreeSet<String>> {
     dir.entries()
         .map_err(invalid)?
@@ -430,69 +472,6 @@ fn read_config(metadata: &Dir, root: &Path) -> Result<Config> {
         return Err(unsupported_format(version));
     }
     Ok(serde_json::from_value(value)?)
-}
-
-/// A repository published by a sync server. Opening and reading it take no
-/// lock and write nothing: published history is immutable and each read is one
-/// SQLite snapshot, so the repository's own working tree keeps working. Only a
-/// repository that orders its own history can be served.
-pub struct ServedRepository {
-    root: PathBuf,
-    repo_id: RepoId,
-    storage: SqliteStorage,
-}
-
-impl ServedRepository {
-    pub fn open(root: &Path) -> Result<Self> {
-        let root_dir = directory(root)?;
-        let metadata = root_dir
-            .open_dir_nofollow(".synck")
-            .at("open portable metadata", root.join(".synck"))?;
-        let config = read_config(&metadata, root)?;
-        if config.authority == Authority::Follower {
-            return Err(invalid(
-                "a follower does not order its history; serve the repository it follows",
-            ));
-        }
-        regular(
-            &metadata,
-            "repository.sqlite3",
-            &root.join(".synck/repository.sqlite3"),
-        )?;
-        let storage = SqliteStorage::new(root.join(".synck/repository.sqlite3"))
-            .with_encrypted(config.encrypted);
-        storage.open_readonly().map_err(corrupt)?;
-        Ok(Self {
-            root: root.to_path_buf(),
-            repo_id: config.repo_id,
-            storage,
-        })
-    }
-
-    pub fn root(&self) -> &Path {
-        &self.root
-    }
-
-    pub fn repository_id(&self) -> &RepoId {
-        &self.repo_id
-    }
-
-    /// Blocking SQLite reads: call it off async worker threads.
-    pub fn capabilities(&self) -> Result<synck_sync::Capabilities> {
-        let repository = self
-            .storage
-            .history_identity(&self.repo_id)
-            .map_err(corrupt)?
-            .ok_or_else(|| corrupt("repository has no history generation"))?;
-        let latest = self.storage.history_head(&repository).map_err(corrupt)?;
-        Ok(synck_sync::Capabilities {
-            protocol_version: synck_sync::PROTOCOL_VERSION,
-            repository,
-            encrypted: self.storage.encrypted(),
-            latest,
-            policy: synck_sync::ServerPolicy::default(),
-        })
-    }
 }
 
 /// Caller operation IDs share the namespace of other direct repository writes.
@@ -1525,40 +1504,10 @@ impl PortableRepository {
         self.copy_stored_object(id, out)
     }
 
-    /// Both stores hash the bytes they write and refuse a digest other than `id`.
-    pub(crate) fn copy_stored_object(&self, id: &ObjectId, mut out: &mut dyn Write) -> Result<u64> {
-        if self.storage_mode() == StorageMode::Chunked {
-            let size = self.object_store().blob_size(id)?;
-            self.object_store().copy_blob(id, size, &mut out)?;
-            return Ok(size);
-        }
-        let name = id
-            .as_str()
-            .strip_prefix("sha256:")
-            .ok_or_else(|| corrupt("blob ID has no digest"))?;
-        let dir = self
-            .metadata
-            .open_dir_nofollow("objects")
-            .map_err(corrupt)?;
-        let mut file = regular(&dir, name, &self.root.join(".synck/objects").join(name))?;
-        let mut hasher = Sha256::new();
-        let mut size = 0u64;
-        let mut buffer = [0u8; 64 * 1024];
-        loop {
-            let count = file.read(&mut buffer).map_err(invalid)?;
-            if count == 0 {
-                break;
-            }
-            out.write_all(&buffer[..count]).map_err(invalid)?;
-            hasher.update(&buffer[..count]);
-            size = size
-                .checked_add(count as u64)
-                .ok_or_else(|| corrupt("blob size overflow"))?;
-        }
-        if hex::encode(hasher.finalize()) != name {
-            return Err(corrupt("blob digest mismatch"));
-        }
-        Ok(size)
+    pub(crate) fn copy_stored_object(&self, id: &ObjectId, out: &mut dyn Write) -> Result<u64> {
+        let store = self.object_store();
+        let chunked = (self.storage_mode() == StorageMode::Chunked).then_some(&store);
+        copy_stored(&self.root, &self.metadata, chunked, id, out)
     }
 
     /// Export FILE primary bytes or an imported EMAIL's exact original source.

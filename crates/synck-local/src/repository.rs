@@ -1524,7 +1524,7 @@ fn open_origin_store(store: &Path, clone: &Config) -> Result<()> {
 
 /// The origin's own working tree finishes an interrupted operation against
 /// the HEAD it recorded. A commit from a clone first would strand it.
-fn reject_unfinished_origin_operation(store: &Path) -> Result<()> {
+pub(crate) fn reject_unfinished_origin_operation(store: &Path) -> Result<()> {
     for name in crate::commands::INTENT_NAMES {
         if store.join(name).symlink_metadata().is_ok() {
             return Err(LocalError::Invalid(format!(

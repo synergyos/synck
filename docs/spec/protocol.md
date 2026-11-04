@@ -202,6 +202,25 @@ A proposal record is `{"kind": "item" | "ref" | "guard", "value": ...}`. An `ite
 value is an event envelope with its `item_id`, a `ref` value is a ref envelope, and a
 `guard` value is an `ItemHead`.
 
+## HTTP refusals
+
+`SubmitResult` values, `POLICY_LIMIT` included, are answers with status 200. A
+`PUT /objects` answers 204. A refused request has another status and the body
+`{"status": CODE}`; a client acts on the code:
+
+| HTTP | `status` | Meaning and remedy |
+| --- | --- | --- |
+| 400 | `INVALID` | Malformed request, page or object, or different contents at an installed page offset |
+| 401 | `UNAUTHENTICATED` | No valid credential |
+| 403 | `FORBIDDEN` | The credential may only read |
+| 404 | `NOT_FOUND` | No such route, no such repository for this credential, or no receipt |
+| 404 | `OBJECT_MISSING` | The object is not stored |
+| 409 | `GENERATION` | The repository's generation is not the request's; reconcile first |
+| 409 | `OPERATION_REUSED` | The operation ID was submitted with another request digest |
+| 409 | `OBJECTS_MISSING` | The submission names content that is not stored; the body's `objects` lists it. Upload it and submit again |
+| 410 | `UPLOAD_EXPIRED` | No live upload for the operation; upload its pages again from offset 0 |
+| 503 | `SERVER_OVERLOADED` | Retry later |
+
 ## Expiry, receipts and restart
 
 A staging session has an explicit server-issued `expires_at`. Every page and

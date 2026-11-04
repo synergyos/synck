@@ -41,27 +41,47 @@ impl SqliteStorage {
 
     /// The last published position, or genesis when nothing is published.
     pub fn history_head(&self, identity: &RepositoryIdentity) -> Result<Cursor, StorageError> {
+        match self.checkpoint(identity, None)? {
+            Some(cursor) => Ok(cursor),
+            None => Cursor::genesis(identity.clone(), self.encrypted()).map_err(other),
+        }
+    }
+
+    /// The published position at `repo_seq`, or `None` if it is not published.
+    pub fn history_cursor(
+        &self,
+        identity: &RepositoryIdentity,
+        repo_seq: i64,
+    ) -> Result<Option<Cursor>, StorageError> {
+        self.checkpoint(identity, Some(repo_seq))
+    }
+
+    fn checkpoint(
+        &self,
+        identity: &RepositoryIdentity,
+        repo_seq: Option<i64>,
+    ) -> Result<Option<Cursor>, StorageError> {
         let conn = self.open_readonly()?;
         let row: Option<(i64, Vec<u8>)> = conn
             .query_row(
                 "SELECT repo_seq,checkpoint FROM vcs_checkpoints WHERE repo_id=?1 \
-                 ORDER BY repo_seq DESC LIMIT 1",
-                [identity.repo_id.as_str()],
+                 AND (?2 IS NULL OR repo_seq=?2) ORDER BY repo_seq DESC LIMIT 1",
+                rusqlite::params![identity.repo_id.as_str(), repo_seq],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()
             .map_err(map_sqlite_error)?;
         let Some((repo_seq, checkpoint)) = row else {
-            return Cursor::genesis(identity.clone(), self.encrypted()).map_err(other);
+            return Ok(None);
         };
         let checkpoint: [u8; 32] = checkpoint
             .try_into()
             .map_err(|_| other("invalid checkpoint digest length"))?;
-        Ok(Cursor {
+        Ok(Some(Cursor {
             repository: identity.clone(),
             repo_seq: u64::try_from(repo_seq).map_err(other)?,
             checkpoint: Sha256Digest::parse(sha256_prefixed_hex_from_digest_bytes(checkpoint))
                 .map_err(other)?,
-        })
+        }))
     }
 }

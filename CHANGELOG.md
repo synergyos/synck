@@ -175,7 +175,11 @@ Core SQLite schema 7. Repositories from 0.1 are refused. Copy files across with
 - A monitor exits when its repository disappears.
 - `portable::ServedRepository` opens a repository for a sync server without
   taking its lock and reports its protocol-1 `Capabilities`. `SqliteStorage`
-  gains `history_identity` and `history_head`.
+  gains `history_identity`, `history_head` and `history_cursor`.
+- `ServedRepository` stores and streams objects and accepts a verified
+  protocol-1 proposal with the checks a local commit gets, waiting for the
+  repository lock as a clone does. A retry returns the original commit; stale
+  heads come back as a conflict, absent content as missing objects.
 
 ### Testing
 

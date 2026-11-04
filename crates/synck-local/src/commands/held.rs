@@ -69,7 +69,7 @@ fn core(storage: SqliteStorage) -> Repo {
     Repo::new(Storage::new(std::sync::Arc::new(storage)), CoreConfig::default())
 }
 
-fn is_conflict(error: &CoreError) -> bool {
+pub(crate) fn is_conflict(error: &CoreError) -> bool {
     matches!(
         error,
         CoreError::BaseSeqMismatch { .. }

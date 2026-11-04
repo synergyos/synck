@@ -1,0 +1,363 @@
+//! A repository published by a sync server. Reads take no lock and write
+//! nothing: published history is immutable and each read is one SQLite
+//! snapshot, so the repository's own working tree keeps working. Writes wait for
+//! the repository lock, as a clone's commands wait for their origin's, and the
+//! working tree takes in a commit accepted here at its next `pull`, as it takes
+//! in a clone's. Only a repository that orders its own history can be served.
+
+use std::collections::BTreeMap;
+
+use synck_sync::{CommitMetadata, Cursor, ItemHead};
+use synck_vcs::types::{CommitRow, RefEventProposal};
+
+use super::*;
+
+/// Commits accepted here are found again by this operation ID; the prefix keeps
+/// a client's IDs apart from the repository's other writes.
+fn sync_operation_id(operation_id: &str) -> String {
+    format!("sync:{}", hex::encode(Sha256::digest(operation_id.as_bytes())))
+}
+
+/// Core sequences in pages of this many commits.
+const SEQUENCE_PAGE: usize = 256;
+
+pub struct ServedRepository {
+    root: PathBuf,
+    metadata: Dir,
+    repo_id: RepoId,
+    encrypted: bool,
+    storage_mode: StorageMode,
+    storage: SqliteStorage,
+}
+
+/// A verified protocol-1 upload, in stream order.
+pub struct Proposal {
+    pub operation_id: String,
+    /// What the submission's digests say the commit is.
+    pub commit_id: CommitId,
+    pub metadata: CommitMetadata,
+    pub events: Vec<EventProposal>,
+    pub ref_events: Vec<RefEventProposal>,
+    pub guards: Vec<ItemHead>,
+}
+
+#[derive(Debug)]
+pub enum Acceptance {
+    Accepted(Accepted),
+    /// The heads of every item the proposal touches; zero for an absent item.
+    Conflict(Vec<ItemHead>),
+    /// Content the proposal names that the store does not hold.
+    MissingObjects(Vec<ObjectId>),
+}
+
+#[derive(Debug)]
+pub struct Accepted {
+    pub commit_id: CommitId,
+    pub accepted_at: Timestamp,
+    /// `None` while the commit awaits sequencing.
+    pub published: Option<Cursor>,
+}
+
+impl ServedRepository {
+    pub fn open(root: &Path) -> Result<Self> {
+        let root_dir = directory(root)?;
+        let metadata = root_dir
+            .open_dir_nofollow(".synck")
+            .at("open portable metadata", root.join(".synck"))?;
+        let config = read_config(&metadata, root)?;
+        if config.authority == Authority::Follower {
+            return Err(invalid(
+                "a follower does not order its history; serve the repository it follows",
+            ));
+        }
+        regular(
+            &metadata,
+            "repository.sqlite3",
+            &root.join(".synck/repository.sqlite3"),
+        )?;
+        let storage = SqliteStorage::new(root.join(".synck/repository.sqlite3"))
+            .with_encrypted(config.encrypted);
+        storage.open_readonly().map_err(corrupt)?;
+        Ok(Self {
+            root: root.to_path_buf(),
+            metadata,
+            repo_id: config.repo_id,
+            encrypted: config.encrypted,
+            storage_mode: config.storage_mode,
+            storage,
+        })
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    pub fn repository_id(&self) -> &RepoId {
+        &self.repo_id
+    }
+
+    pub fn identity(&self) -> Result<synck_sync::RepositoryIdentity> {
+        self.storage
+            .history_identity(&self.repo_id)
+            .map_err(corrupt)?
+            .ok_or_else(|| corrupt("repository has no history generation"))
+    }
+
+    /// Blocking SQLite reads: call it off async worker threads.
+    pub fn capabilities(&self) -> Result<synck_sync::Capabilities> {
+        let repository = self.identity()?;
+        let latest = self.storage.history_head(&repository).map_err(corrupt)?;
+        Ok(synck_sync::Capabilities {
+            protocol_version: synck_sync::PROTOCOL_VERSION,
+            repository,
+            encrypted: self.encrypted,
+            latest,
+            policy: synck_sync::ServerPolicy::default(),
+        })
+    }
+
+    fn object_store(&self) -> ChunkStore {
+        ChunkStore::new(self.root.join(".synck").join(OBJECT_STORE_FILE), &self.repo_id)
+    }
+
+    pub fn has_object(&self, id: &ObjectId) -> Result<bool> {
+        if self.storage_mode == StorageMode::Chunked {
+            return self.object_store().holds_blob(id);
+        }
+        let name = id
+            .as_str()
+            .strip_prefix("sha256:")
+            .ok_or_else(|| corrupt("object ID has no digest"))?;
+        let objects = self.metadata.open_dir_nofollow("objects").map_err(corrupt)?;
+        match objects.symlink_metadata(name) {
+            Ok(_) => Ok(true),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error).at("inspect object", self.root.join(".synck/objects").join(name)),
+        }
+    }
+
+    /// Stream an object's exact stored bytes, refusing any other digest. Blocking.
+    pub fn copy_object(&self, id: &ObjectId, out: &mut dyn Write) -> Result<u64> {
+        let store = self.object_store();
+        let chunked = (self.storage_mode == StorageMode::Chunked).then_some(&store);
+        copy_stored(&self.root, &self.metadata, chunked, id, out)
+    }
+
+    /// Store `source`'s bytes as `id`. Its form is checked when a commit names
+    /// it, since only the commit gives it a role. Blocking: waits for the lock.
+    pub fn install_object(&self, id: &ObjectId, source: &Path) -> Result<()> {
+        let metadata = self.root.join(".synck");
+        let _lock = crate::repository::acquire_lock(&metadata, true)?;
+        let file = open_regular_file_nofollow(source)?;
+        let size = file.metadata().at("inspect object upload", source)?.len();
+        match self.metadata.create_dir("tmp") {
+            Err(error) if error.kind() != std::io::ErrorKind::AlreadyExists => {
+                return Err(error).at("create staging directory", metadata.join("tmp"));
+            }
+            _ => {}
+        }
+        let store = self.object_store();
+        let captured = crate::raw_object::capture(
+            file,
+            size,
+            None,
+            &metadata.join("objects"),
+            &metadata.join("tmp"),
+            (self.storage_mode == StorageMode::Chunked).then_some(&store),
+            true,
+            None,
+        )?;
+        if captured.id != *id {
+            return Err(invalid(format!("object bytes are {}, not {id}", captured.id)));
+        }
+        Ok(())
+    }
+
+    /// The commit accepted for `operation_id`, if any. Takes no lock.
+    pub async fn accepted(&self, operation_id: &str) -> Result<Option<Accepted>> {
+        let commit = self
+            .storage
+            .get_commit_by_operation_id_readonly(&self.repo_id, &sync_operation_id(operation_id))
+            .await
+            .map_err(corrupt)?;
+        commit.map(|commit| self.receipt(commit)).transpose()
+    }
+
+    fn receipt(&self, commit: CommitRow) -> Result<Accepted> {
+        let published = match commit.repo_seq {
+            Some(repo_seq) => self
+                .storage
+                .history_cursor(&self.identity()?, repo_seq)
+                .map_err(corrupt)?,
+            None => None,
+        };
+        Ok(Accepted {
+            commit_id: commit.commit_id,
+            accepted_at: commit.created_at,
+            published,
+        })
+    }
+
+    /// Accept a proposal with every Core check a local commit gets, then
+    /// sequence it. A retry of an accepted operation returns its commit; one
+    /// that names another commit is refused. Waits for the repository lock.
+    pub async fn accept(&self, proposal: Proposal) -> Result<Acceptance> {
+        let metadata = self.root.join(".synck");
+        let _lock = crate::repository::acquire_lock(&metadata, true)?;
+        crate::repository::reject_unfinished_origin_operation(&metadata)?;
+        let core = Repo::new(
+            Storage::new(Arc::new(self.storage.clone())),
+            CoreConfig {
+                encrypted: self.encrypted,
+                follows_domains: false,
+                ..CoreConfig::default()
+            },
+        );
+        let operation_id = sync_operation_id(&proposal.operation_id);
+        if let Some(commit) = core
+            .get_commit_by_operation_id(self.repo_id.clone(), &operation_id)
+            .await?
+        {
+            if commit.commit_id != proposal.commit_id {
+                return Err(invalid("operation ID was already used for a different commit"));
+            }
+            return Ok(Acceptance::Accepted(self.receipt(commit)?));
+        }
+        let missing = self.unusable_objects(&core, &proposal).await?;
+        if !missing.is_empty() {
+            return Ok(Acceptance::MissingObjects(missing));
+        }
+        let mut items: Vec<ItemId> = proposal
+            .events
+            .iter()
+            .filter_map(|event| event.item_id.clone())
+            .chain(proposal.ref_events.iter().map(|event| event.owner_item_id.clone()))
+            .chain(proposal.guards.iter().map(|guard| guard.item_id.clone()))
+            .collect();
+        items.sort();
+        items.dedup();
+        let guards: Vec<(ItemId, i64)> = proposal
+            .guards
+            .iter()
+            .map(|guard| (guard.item_id.clone(), guard.head_seq))
+            .collect();
+        let accepted = core
+            .append_file_folder_checked_with_refs(
+                self.repo_id.clone(),
+                CommitProposal {
+                    author_id: proposal.metadata.author_id,
+                    committer_id: proposal.metadata.committer_id,
+                    message: proposal.metadata.message,
+                    occurred_at: proposal.metadata.occurred_at,
+                    operation_id: Some(operation_id),
+                    events: proposal.events,
+                },
+                proposal.ref_events,
+                &guards,
+                &[],
+            )
+            .await;
+        let accepted = match accepted {
+            Ok(accepted) => accepted,
+            // An absent item or parent is a head of zero.
+            Err(error)
+                if crate::commands::is_conflict(&error)
+                    || matches!(error, synck_vcs::errors::CoreError::ItemNotFound { .. }) =>
+            {
+                let heads: HashMap<ItemId, i64> = core
+                    .get_items(self.repo_id.clone(), items.clone())
+                    .await?
+                    .into_iter()
+                    .map(|row| (row.item_id, row.head_seq))
+                    .collect();
+                return Ok(Acceptance::Conflict(
+                    items
+                        .into_iter()
+                        .map(|item_id| ItemHead {
+                            head_seq: heads.get(&item_id).copied().unwrap_or(0),
+                            item_id,
+                        })
+                        .collect(),
+                ));
+            }
+            Err(error) => return Err(error.into()),
+        };
+        if accepted.commit_id != proposal.commit_id {
+            return Err(LocalError::Integrity(format!(
+                "proposal for commit {} was accepted as {}",
+                proposal.commit_id, accepted.commit_id
+            )));
+        }
+        while core
+            .sequence_repo_activity(self.repo_id.clone(), SEQUENCE_PAGE)
+            .await?
+            == SEQUENCE_PAGE
+        {}
+        let commit = core
+            .get_commit(self.repo_id.clone(), accepted.commit_id)
+            .await?
+            .ok_or_else(|| corrupt("accepted commit is missing"))?;
+        Ok(Acceptance::Accepted(self.receipt(commit)?))
+    }
+
+    /// Objects the proposal names that are absent. A present object whose
+    /// role selects a frame must hold one.
+    async fn unusable_objects(&self, core: &Repo, proposal: &Proposal) -> Result<Vec<ObjectId>> {
+        let mut item_types: HashMap<ItemId, String> = proposal
+            .events
+            .iter()
+            .filter_map(|event| Some((event.item_id.clone()?, event.create_item.as_ref()?.item_type.clone())))
+            .collect();
+        let stored: Vec<ItemId> = proposal
+            .events
+            .iter()
+            .filter(|event| event.set_content.is_some())
+            .filter_map(|event| event.item_id.clone())
+            .filter(|item_id| !item_types.contains_key(item_id))
+            .collect();
+        for row in core.get_items(self.repo_id.clone(), stored).await? {
+            item_types.insert(row.item_id, row.item_type);
+        }
+        let mut forms: BTreeMap<ObjectId, Form> = BTreeMap::new();
+        for event in &proposal.events {
+            let (Some(content), Some(item_id)) = (&event.set_content, &event.item_id) else {
+                continue;
+            };
+            let item_type = item_types
+                .get(item_id)
+                .ok_or_else(|| invalid(format!("content for unknown item {item_id}")))?;
+            for (role, id) in content.roles() {
+                forms.insert(id.clone(), content_form(self.encrypted, item_type, role));
+            }
+        }
+        for event in &proposal.ref_events {
+            for id in event.set_content.iter().flat_map(|content| content.values()) {
+                forms.entry(id.clone()).or_insert(Form::Opaque);
+            }
+        }
+        let mut missing = Vec::new();
+        for (id, form) in forms {
+            if !self.has_object(&id)? {
+                missing.push(id);
+                continue;
+            }
+            match form {
+                Form::Plain | Form::Opaque => {}
+                Form::Salted => {
+                    let mut frame = SaltedFrame::default();
+                    self.copy_object(&id, &mut frame)?;
+                    frame
+                        .finish()
+                        .map_err(|error| invalid(format!("object {id}: {error}")))?;
+                }
+                Form::Encrypted => {
+                    let mut frame = FrameStart::default();
+                    self.copy_object(&id, &mut frame)?;
+                    synck_vcs::object::verify_encrypted_frame(&frame.0)
+                        .map_err(|error| invalid(format!("object {id}: {error}")))?;
+                }
+            }
+        }
+        Ok(missing)
+    }
+}
