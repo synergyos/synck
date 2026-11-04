@@ -10,7 +10,7 @@ use synck_local::server::tokens::{self, Access};
 use synck_local::server::{Server, router};
 use tokio::sync::oneshot;
 
-struct Running {
+pub(super) struct Running {
     stop: Option<oneshot::Sender<()>>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
@@ -23,7 +23,7 @@ impl Drop for Running {
 }
 
 /// Serve on `address` from a thread of its own, since the client blocks.
-fn start(state: &Path, roots: &[PathBuf], address: SocketAddr) -> (Running, SocketAddr) {
+pub(super) fn start(state: &Path, roots: &[PathBuf], address: SocketAddr) -> (Running, SocketAddr) {
     let listener = std::net::TcpListener::bind(address).unwrap();
     listener.set_nonblocking(true).unwrap();
     let address = listener.local_addr().unwrap();
@@ -44,7 +44,7 @@ fn start(state: &Path, roots: &[PathBuf], address: SocketAddr) -> (Running, Sock
     (Running { stop: Some(stop), thread: Some(thread) }, address)
 }
 
-fn synck(directory: &Path, token: &str, arguments: &[&str]) -> Output {
+pub(super) fn synck(directory: &Path, token: &str, arguments: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_synck"))
         .current_dir(directory)
         .env("SYNCK_TOKEN", token)
@@ -53,28 +53,28 @@ fn synck(directory: &Path, token: &str, arguments: &[&str]) -> Output {
         .unwrap()
 }
 
-fn ok(directory: &Path, token: &str, arguments: &[&str]) -> String {
+pub(super) fn ok(directory: &Path, token: &str, arguments: &[&str]) -> String {
     let output = synck(directory, token, arguments);
     assert!(output.status.success(), "{arguments:?}: {}", String::from_utf8_lossy(&output.stderr));
     String::from_utf8(output.stdout).unwrap()
 }
 
-fn json(directory: &Path, token: &str, arguments: &[&str]) -> Value {
+pub(super) fn json(directory: &Path, token: &str, arguments: &[&str]) -> Value {
     let mut arguments = arguments.to_vec();
     arguments.insert(0, "--json");
     serde_json::from_str(&ok(directory, token, &arguments)).unwrap()
 }
 
-struct Fixture {
-    parent: tempfile::TempDir,
-    state: PathBuf,
-    origin: PathBuf,
-    url: String,
-    writer: String,
-    running: Running,
+pub(super) struct Fixture {
+    pub(super) parent: tempfile::TempDir,
+    pub(super) state: PathBuf,
+    pub(super) origin: PathBuf,
+    pub(super) url: String,
+    pub(super) writer: String,
+    pub(super) running: Running,
 }
 
-async fn fixture() -> Fixture {
+pub(super) async fn fixture() -> Fixture {
     let parent = tempfile::tempdir().unwrap();
     let state = parent.path().join("state");
     synck_local::server::init(&state).unwrap();
@@ -89,7 +89,21 @@ async fn fixture() -> Fixture {
 }
 
 impl Fixture {
-    fn clone(&self, name: &str, hold: bool) -> PathBuf {
+    /// The server's own address, before any proxy.
+    pub(super) fn address(&self) -> SocketAddr {
+        self.url["http://".len()..].split('/').next().unwrap().parse().unwrap()
+    }
+
+    /// Stop the server once its connections finish.
+    pub(super) fn stop(&mut self) {
+        drop(std::mem::replace(&mut self.running, Running { stop: None, thread: None }));
+    }
+
+    pub(super) fn restart(&mut self, address: SocketAddr) {
+        self.running = start(&self.state, &[self.origin.clone()], address).0;
+    }
+
+    pub(super) fn clone(&self, name: &str, hold: bool) -> PathBuf {
         let destination = self.parent.path().join(name);
         let mut arguments = vec!["clone", &self.url, destination.to_str().unwrap(), "--author", name];
         if hold {
@@ -162,8 +176,8 @@ async fn commits_wait_while_the_server_is_unreachable() {
     let mut fixture = fixture().await;
     let token = fixture.writer.clone();
     let laptop = fixture.clone("laptop", false);
-    let address: SocketAddr = fixture.url["http://".len()..].split('/').next().unwrap().parse().unwrap();
-    drop(std::mem::replace(&mut fixture.running, Running { stop: None, thread: None }));
+    let address = fixture.address();
+    fixture.stop();
 
     std::fs::write(laptop.join("offline.txt"), "written on a train\n").unwrap();
     let output = synck(&laptop, &token, &["commit", "-m", "Offline"]);
@@ -174,7 +188,7 @@ async fn commits_wait_while_the_server_is_unreachable() {
     let error: Value = serde_json::from_slice(&failed.stderr).unwrap();
     assert_eq!(error["error"]["kind"], "UNREACHABLE");
 
-    fixture.running = start(&fixture.state, &[fixture.origin.clone()], address).0;
+    fixture.restart(address);
     ok(&laptop, &token, &["push"]);
     ok(&fixture.origin, "", &["pull"]);
     assert_eq!(std::fs::read_to_string(fixture.origin.join("offline.txt")).unwrap(), "written on a train\n");
