@@ -158,6 +158,12 @@ enum Command {
         repo_id: String,
     },
     /// Serve repositories to other devices and agents over protocol 1.
+    ///
+    /// `synck serve init STATE` makes a state root, `synck serve token add`
+    /// prints a token for a device or agent, and `synck serve STATE --listen
+    /// 127.0.0.1:8740 REPOSITORY...` serves. Clients run `synck clone
+    /// https://HOST/v1/repositories/REPO_ID`. Caddy in front provides TLS:
+    /// see deploy/Caddyfile and docs/sync-server.md.
     Serve(serve_cli::ServeArgs),
     /// Explain local Synck workflows.
     Instructions,
@@ -176,14 +182,21 @@ enum Command {
         #[arg(long, default_value = "CHUNKED", value_parser = parse_storage_mode)]
         storage_mode: synck_local::StorageMode,
     },
-    /// Make another working tree of a repository on this machine.
+    /// Make another working tree of a repository, on this machine or from a
+    /// sync server.
     ///
     /// The clone reads the origin's history and stored content in place, so it
     /// costs only its working files. Commits from every working tree go into
     /// the same history; `pull` brings in the others'.
+    ///
+    /// An https:// origin is a repository served by `synck serve`. The clone
+    /// keeps its own verified copy of that history, sends each commit at once
+    /// and holds it while the server cannot be reached; `push` sends held
+    /// commits. It needs `--author`.
     Clone {
         /// Repository directory on a local disk, or a sync server's
-        /// https://HOST/v1/repositories/REPO_ID with the token in SYNCK_TOKEN.
+        /// https://HOST/v1/repositories/REPO_ID with the token in SYNCK_TOKEN
+        /// (http:// only to this machine).
         origin: PathBuf,
         /// New or empty directory for the working tree.
         destination: PathBuf,
@@ -191,19 +204,20 @@ enum Command {
         #[arg(long = "include")]
         include: Vec<String>,
         /// Name recorded on commits from the clone; the origin's by default.
+        /// Required for an https:// origin.
         #[arg(long)]
         author: Option<String>,
         /// Keep commits in the clone until `push` sends them.
         #[arg(long)]
         hold: bool,
     },
-    /// Bring in commits made from other working trees, keeping local changes.
+    /// Bring in commits from other working trees or the sync server, keeping local changes.
     Pull {
         /// Then check out only these files and folders; repeat for more.
         #[arg(long = "include")]
         include: Vec<String>,
     },
-    /// Send a held clone's commits to its origin, after pulling.
+    /// Send a clone's held commits to its origin or sync server, after pulling.
     Push,
     /// Copy a committed file or folder as an alternative in the same history.
     ///

@@ -76,6 +76,24 @@ private text and metadata include a random salt. `synck fsck`
   and every byte that history refers to. Thin repositories may lack payloads. `synck archive` writes a verified copy
   that opens with this tool alone.
 
+### Working from several places
+
+`synck clone` gives each person or agent its own working tree. On one machine a
+clone reads its repository in place. Across machines, `synck serve` shares
+repositories over HTTPS, much like a self-hosted Git server, with a token per
+device or agent:
+
+```console
+$ synck serve init ~/synck-state
+$ synck serve token add ~/synck-state --name laptop --access write --repository ~/Documents/personal
+$ synck serve ~/synck-state --listen 127.0.0.1:8740 ~/Documents/personal
+```
+
+On another machine, `SYNCK_TOKEN=… synck clone https://sync.example.com/v1/repositories/REPO_ID notes --author Alex`
+makes a clone that commits, pulls and pushes through the server and keeps
+working offline. Caddy in front provides TLS ([`deploy/Caddyfile`](deploy/Caddyfile));
+see [the sync server](docs/sync-server.md).
+
 [Items, events and commits](https://synckhub.com/synck/internals) and the
 [system design](https://synckhub.com/synck/internals/system-design) explain the
 model in depth, including its [trade-offs against Git, Lore, Perforce and plain

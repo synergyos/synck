@@ -27,6 +27,51 @@ synck serve ~/synck-state --listen 127.0.0.1:8740 ~/Documents/personal ~/Documen
   Caddy on the same host terminates it ([TLS](#tls)).
 - `synck serve` has no JSON output; `--json` is refused.
 
+## Try it on one machine
+
+Without Caddy, a clone on the same machine talks to the server over plain HTTP.
+`synck serve` prints each repository's ID as it starts (`serving <repo_id>
+from …`):
+
+```bash
+SYNCK_TOKEN=<token> synck clone http://127.0.0.1:8740/v1/repositories/<repo_id> /tmp/laptop --author laptop
+```
+
+`http://` is accepted only for `localhost`, `127.0.0.1` and `[::1]`, and the
+server listens only on loopback. Another machine, even on the same home
+network, connects through HTTPS ([TLS](#tls)).
+
+## Compared with Git's servers
+
+Git has two built-in ways to serve repositories:
+
+- `git daemon` speaks Git's own protocol with no login and no encryption. It
+  is meant for public read-only access; pushing through it is off by default.
+- Git's smart HTTP is `git http-backend` behind a web server such as Apache or
+  nginx. The web server does the login and the TLS; Git does the transfer, and
+  both fetching and pushing work.
+
+`synck serve` sits closest to smart HTTP, as one program:
+
+- **Login is built in.** Each device or agent gets a named token, read or
+  write, for chosen repositories; revoking it takes effect at the next
+  request. Git leaves this to the web server.
+- **TLS comes from Caddy**, as smart HTTP's comes from its web server, but
+  Caddy gets and renews the certificate itself.
+- **Every commit is checked as it arrives**, as in the repository itself. A
+  commit that touches a file someone else changed is refused with `CONFLICT`,
+  and the client merges with `pull`, as `git push` is refused when the branch
+  moved. There are no branches and no force push: history only grows.
+- **Retries are safe.** A commit carries its ID and gets a receipt; a client cut
+  off before the answer asks again and finds it accepted, never sending it
+  twice.
+- **Leases** let an agent reserve a file that cannot be merged, such as a Word
+  document. Git servers have no locks (Git LFS adds them).
+- **Clients keep a complete, verified copy** and keep committing while the
+  server is away; the commits are sent later. A Git clone is likewise complete.
+- **Transfer is one request per object**, where Git packs everything into one
+  stream. A first clone or a commit of many new files is slower than Git.
+
 ## TLS
 
 [`deploy/Caddyfile`](../deploy/Caddyfile) puts Caddy in front of the server.

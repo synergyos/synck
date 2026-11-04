@@ -29,7 +29,10 @@ pub struct ServeArgs {
 #[derive(Debug, Subcommand)]
 enum ServeCommand {
     /// Create a private state root: its lock and token database.
-    Init { state: PathBuf },
+    Init {
+        /// Directory for the state root, made if absent.
+        state: PathBuf,
+    },
     /// Manage named bearer tokens. They take effect while the server runs.
     #[command(subcommand)]
     Token(TokenCommand),
@@ -39,17 +42,30 @@ enum ServeCommand {
 enum TokenCommand {
     /// Print a new token once; only its hash is kept.
     Add {
+        /// State root made by `synck serve init`.
         state: PathBuf,
+        /// Unique name to list and revoke the token by.
         #[arg(long)]
         name: String,
+        /// `read` clones and pulls; `write` also commits and leases.
         #[arg(long, value_enum)]
         access: Access,
         /// A repository directory the token may use. Repeat for more.
         #[arg(long = "repository", required = true)]
         repositories: Vec<PathBuf>,
     },
-    List { state: PathBuf },
-    Revoke { state: PathBuf, name: String },
+    /// Print each token's name, access, creation time and repository IDs.
+    List {
+        /// State root made by `synck serve init`.
+        state: PathBuf,
+    },
+    /// Refuse a token from its next request on.
+    Revoke {
+        /// State root made by `synck serve init`.
+        state: PathBuf,
+        /// The token's name.
+        name: String,
+    },
 }
 
 fn state_root(path: &Path) -> Result<PathBuf> {

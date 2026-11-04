@@ -116,6 +116,12 @@ commit. A `CONFLICT` from `pull` itself is a move or deletion against an edit. S
 An agent whose work should land only when finished clones with `--hold` and runs
 `synck push` at the end; its commits keep their IDs.
 
+An agent on another machine clones from a [sync server](sync-server.md) the same
+way: `SYNCK_TOKEN=TOKEN synck clone https://HOST/v1/repositories/REPO_ID DIR
+--author AGENT`. Commits, `pull`, `push` and `lock` then go through the server;
+a commit made while it cannot be reached is held and listed by `status`, and
+`push` sends it. See [HTTPS clones](local-repository.md#https-clones-a-sync-server-as-the-origin).
+
 ## Agents sharing a local checkout
 
 Before loading or editing a path, use `synck --json lock acquire PATH --owner

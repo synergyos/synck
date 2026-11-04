@@ -51,6 +51,23 @@ writes nothing. Repository and item commands take the origin's path.
 A held clone keeps its commits, each with its final commit ID, until push sends
 them in order; status lists them. push pulls first and stops at CONFLICT.
 
+Clone from another machine's sync server with a token from its owner:
+    SYNCK_TOKEN=<token> synck clone https://<host>/v1/repositories/<repo-id> <directory> --author <name>
+It works like a local clone, against its own copy of the history: commit sends
+each commit at once, or holds it when the server cannot be reached (status lists
+it; push sends it later). pull, push and lock use the server.
+UNREACHABLE means the server did not answer; nothing was lost.
+
+SYNC SERVER
+
+Serve repositories to other machines:
+    synck serve init <state>
+    synck serve token add <state> --name <device> --access read|write --repository <repository>
+    synck serve <state> --listen 127.0.0.1:8740 <repository>...
+token add prints the token once. The server listens on loopback; an HTTPS proxy
+such as Caddy on the same host faces the network. The served repositories keep
+working locally and take in remote commits at their next pull.
+
 ALTERNATIVES
 
 There are no branches. Copy a file or folder in the same history, work on the
@@ -158,5 +175,5 @@ remove it.
     synck repository append-chat <chat-id> <body-file> --path <directory> [--attachment <file>...]
 Chats and email are read with item show; they are not ordinary filesystem folders.
 
-All work is local: there are no network or server commands. Give each agent
-its own clone; copy a repository with archive or repository import.
+Give each agent its own clone; copy a repository with archive or repository
+import. Only https:// clones and synck serve use the network.
