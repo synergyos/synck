@@ -306,6 +306,134 @@ pub(crate) fn guard(
     Ok(())
 }
 
+/// The keys of a reservation request, refused unless it is well formed.
+fn request_keys(paths: &[String], owner: &str, ttl: u64) -> Result<Vec<String>> {
+    if paths.is_empty() || owner.trim().is_empty() || owner.len() > 128 {
+        return Err(invalid(
+            "provide reservation paths and an owner of 1 to 128 bytes",
+        ));
+    }
+    expiry(ttl)?;
+    let keys = paths.iter().map(|p| key(p)).collect::<Result<Vec<_>>>()?;
+    for (i, a) in keys.iter().enumerate() {
+        if keys[..i].iter().any(|b| overlaps(a, b)) {
+            return Err(invalid("reservation paths overlap"));
+        }
+    }
+    Ok(keys)
+}
+
+/// Whether any reservation exists, live or expired.
+pub(crate) fn any(metadata: &Path, repo_id: &str) -> Result<bool> {
+    Ok(match open(metadata, repo_id, false)? {
+        Some(db) => db.query_row("SELECT EXISTS(SELECT 1 FROM reservations)", [], |r| r.get(0))?,
+        None => false,
+    })
+}
+
+pub(crate) fn list(metadata: &Path, repo_id: &str) -> Result<Vec<AgentLock>> {
+    Ok(match open(metadata, repo_id, false)? {
+        Some(db) => reservations(&db)?.into_iter().map(|r| r.info).collect(),
+        None => Vec::new(),
+    })
+}
+
+/// Reserve `paths` for `tree`. The caller has checked that they are clean
+/// in that working tree, under the repository lock.
+pub(crate) fn reserve(
+    metadata: &Path,
+    repo_id: &str,
+    paths: Vec<String>,
+    owner: &str,
+    ttl: u64,
+    tree: &str,
+) -> Result<AgentLease> {
+    let keys = request_keys(&paths, owner, ttl)?;
+    let mut db = open(metadata, repo_id, true)?.expect("created database");
+    let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    for row in reservations(&tx)? {
+        if keys.iter().any(|p| overlaps(p, &row.key)) {
+            // A child takeover must not drop the fence on the rest of an
+            // expired folder. Acquire the whole old scope or release it.
+            let covers_old_scope = keys.iter().any(|p| covers(p, &row.key));
+            if row.info.expires_at > now() || !covers_old_scope {
+                return Err(LocalError::Locked {
+                    path: row.info.path,
+                    owner: row.info.owner,
+                });
+            }
+            tx.execute("DELETE FROM reservations WHERE path_key=?1", [row.key])?;
+        }
+    }
+    let expires_at = expiry(ttl)?;
+    let token = Uuid::new_v4().to_string();
+    let mut locks = Vec::new();
+    for (path, path_key) in paths.into_iter().zip(keys) {
+        tx.execute(
+            "INSERT INTO reservations VALUES(?1,?2,?3,?4,?5,?6)",
+            params![path_key, path, owner, token, expires_at, tree],
+        )?;
+        locks.push(AgentLock {
+            path,
+            owner: owner.into(),
+            expires_at,
+        });
+    }
+    tx.commit()?;
+    Ok(AgentLease { token, locks })
+}
+
+pub(crate) fn renew(metadata: &Path, repo_id: &str, token: &str, ttl: u64) -> Result<()> {
+    validate_tokens(&[token.into()])?;
+    let expires_at = expiry(ttl)?;
+    let mut db = open(metadata, repo_id, false)?.ok_or(LocalError::LockLost)?;
+    let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let rows = reservations(&tx)?;
+    if !rows.iter().any(|r| r.token == token)
+        || rows
+            .iter()
+            .any(|r| r.token == token && r.info.expires_at <= now())
+    {
+        return Err(LocalError::LockLost);
+    }
+    tx.execute(
+        "UPDATE reservations SET expires_at=?1 WHERE token=?2",
+        params![expires_at, token],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// Exact-token release is idempotent and never changes working files.
+pub(crate) fn release(metadata: &Path, repo_id: &str, token: &str) -> Result<usize> {
+    validate_tokens(&[token.into()])?;
+    let Some(db) = open(metadata, repo_id, false)? else {
+        return Ok(0);
+    };
+    db.execute("DELETE FROM reservations WHERE token=?1", [token])
+        .map_err(Into::into)
+}
+
+/// Explicit recovery after inspecting abandoned work. Never removes files.
+pub(crate) fn break_paths(metadata: &Path, repo_id: &str, paths: &[String]) -> Result<usize> {
+    if paths.is_empty() {
+        return Err(invalid("name paths to release"));
+    }
+    let keys = paths.iter().map(|p| key(p)).collect::<Result<Vec<_>>>()?;
+    let Some(mut db) = open(metadata, repo_id, false)? else {
+        return Ok(0);
+    };
+    let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let mut count = 0;
+    for row in reservations(&tx)? {
+        if keys.iter().any(|p| overlaps(p, &row.key)) {
+            count += tx.execute("DELETE FROM reservations WHERE path_key=?1", [row.key])?;
+        }
+    }
+    tx.commit()?;
+    Ok(count)
+}
+
 impl Repository {
     pub fn set_agent_lock_tokens(&mut self, tokens: &[String]) -> Result<()> {
         validate_tokens(tokens)?;
@@ -382,12 +510,7 @@ impl Repository {
         Ok(path)
     }
     pub fn agent_locks(&self) -> Result<Vec<AgentLock>> {
-        Ok(
-            match open(self.store_path(), self.repository_id().as_str(), false)? {
-                Some(db) => reservations(&db)?.into_iter().map(|r| r.info).collect(),
-                None => Vec::new(),
-            },
-        )
+        list(self.store_path(), self.repository_id().as_str())
     }
     pub async fn acquire_agent_locks(
         &self,
@@ -396,22 +519,11 @@ impl Repository {
         owner: &str,
         ttl: u64,
     ) -> Result<AgentLease> {
-        if paths.is_empty() || owner.trim().is_empty() || owner.len() > 128 {
-            return Err(invalid(
-                "provide reservation paths and an owner of 1 to 128 bytes",
-            ));
-        }
-        expiry(ttl)?;
         let paths = paths
             .iter()
             .map(|p| self.agent_path(caller, p))
             .collect::<Result<Vec<_>>>()?;
-        let keys = paths.iter().map(|p| key(p)).collect::<Result<Vec<_>>>()?;
-        for (i, a) in keys.iter().enumerate() {
-            if keys[..i].iter().any(|b| overlaps(a, b)) {
-                return Err(invalid("reservation paths overlap"));
-            }
-        }
+        let keys = request_keys(&paths, owner, ttl)?;
         // Refuse to take over uncommitted work, including ignored/untracked files.
         let (committed, working, changes, _) = self.changes().await?;
         let mut changed_keys = Vec::new();
@@ -474,91 +586,26 @@ impl Repository {
                 )));
             }
         }
-        let mut db =
-            open(self.store_path(), self.repository_id().as_str(), true)?.expect("created database");
-        let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        for row in reservations(&tx)? {
-            if keys.iter().any(|p| overlaps(p, &row.key)) {
-                // A child takeover must not drop the fence on the rest of an
-                // expired folder. Acquire the whole old scope or release it.
-                let covers_old_scope = keys.iter().any(|p| covers(p, &row.key));
-                if row.info.expires_at > now() || !covers_old_scope {
-                    return Err(LocalError::Locked {
-                        path: row.info.path,
-                        owner: row.info.owner,
-                    });
-                }
-                tx.execute("DELETE FROM reservations WHERE path_key=?1", [row.key])?;
-            }
-        }
-        let expires_at = expiry(ttl)?;
-        let token = Uuid::new_v4().to_string();
-        let mut locks = Vec::new();
-        let tree = self.lock_tree();
-        for (path, path_key) in paths.into_iter().zip(keys) {
-            tx.execute(
-                "INSERT INTO reservations VALUES(?1,?2,?3,?4,?5,?6)",
-                params![path_key, path, owner, token, expires_at, tree],
-            )?;
-            locks.push(AgentLock {
-                path,
-                owner: owner.into(),
-                expires_at,
-            });
-        }
-        tx.commit()?;
-        Ok(AgentLease { token, locks })
+        reserve(
+            self.store_path(),
+            self.repository_id().as_str(),
+            paths,
+            owner,
+            ttl,
+            &self.lock_tree(),
+        )
     }
     pub fn renew_agent_locks(&self, token: &str, ttl: u64) -> Result<()> {
-        validate_tokens(&[token.into()])?;
-        let expires_at = expiry(ttl)?;
-        let mut db = open(self.store_path(), self.repository_id().as_str(), false)?
-            .ok_or(LocalError::LockLost)?;
-        let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let rows = reservations(&tx)?;
-        if !rows.iter().any(|r| r.token == token)
-            || rows
-                .iter()
-                .any(|r| r.token == token && r.info.expires_at <= now())
-        {
-            return Err(LocalError::LockLost);
-        }
-        tx.execute(
-            "UPDATE reservations SET expires_at=?1 WHERE token=?2",
-            params![expires_at, token],
-        )?;
-        tx.commit()?;
-        Ok(())
+        renew(self.store_path(), self.repository_id().as_str(), token, ttl)
     }
-    /// Exact-token release is idempotent and never changes working files.
     pub fn release_agent_locks(&self, token: &str) -> Result<usize> {
-        validate_tokens(&[token.into()])?;
-        let Some(db) = open(self.store_path(), self.repository_id().as_str(), false)? else {
-            return Ok(0);
-        };
-        db.execute("DELETE FROM reservations WHERE token=?1", [token])
-            .map_err(Into::into)
+        release(self.store_path(), self.repository_id().as_str(), token)
     }
-    /// Explicit recovery after inspecting abandoned work. Never removes files.
     pub fn break_agent_locks(&self, caller: &Path, paths: &[PathBuf]) -> Result<usize> {
-        if paths.is_empty() {
-            return Err(invalid("name paths to release"));
-        }
-        let keys = paths
+        let paths = paths
             .iter()
-            .map(|p| self.agent_path(caller, p).and_then(|p| key(&p)))
+            .map(|p| self.agent_path(caller, p))
             .collect::<Result<Vec<_>>>()?;
-        let Some(mut db) = open(self.store_path(), self.repository_id().as_str(), false)? else {
-            return Ok(0);
-        };
-        let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let mut count = 0;
-        for row in reservations(&tx)? {
-            if keys.iter().any(|p| overlaps(p, &row.key)) {
-                count += tx.execute("DELETE FROM reservations WHERE path_key=?1", [row.key])?;
-            }
-        }
-        tx.commit()?;
-        Ok(count)
+        break_paths(self.store_path(), self.repository_id().as_str(), &paths)
     }
 }

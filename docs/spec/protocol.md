@@ -4,9 +4,11 @@ This transport-neutral contract uses [format 7](format.md), commit format 6 and
 its objects. `synck-sync` provides wire values, streaming verification and
 admission-policy helpers. Authentication, durable staging, cleanup, transaction
 installation and Core acceptance belong to the authority/client adapters.
-The generic `synck serve`, clone/pull integration, remote lease commands and
-resumable import executor remain work in the central-sync plan. Library tests
-are not evidence that those executables or a deployed service exist.
+`portable::ServedRepository` in `synck-local` is the repository side of a
+server: acceptance, history pages, objects and leases. HTTPS clone/pull
+integration and the resumable import executor remain work in the central-sync
+plan. Library tests are not evidence that those executables or a deployed
+service exist.
 
 This replaces the initial unshipped protocol-1 draft with pages within commits.
 There is no 0.1 fallback or downgrade. Consumers pin the same public revision.
@@ -64,6 +66,11 @@ All routes are under `/v1/repositories/{repo_id}/sync`:
 | `POST /history` | `HistoryRequest` / `HistoryPage` |
 | `PUT /objects/{object_id}` | exact stored bytes, immutable installation |
 | `GET /objects/{object_id}` | exact stored bytes, or explicit missing |
+| `GET /leases` | `Leases` |
+| `POST /leases` | `LeaseRequest` / `Lease` |
+| `POST /leases/renew` | `LeaseRenewal` / 204 |
+| `POST /leases/release` | `LeaseToken` / `Released` |
+| `POST /leases/break` | `LeasePaths` / `Released` |
 
 HTTP deployments require authenticated TLS and authorization on every route,
 including receipts and immutable object downloads. IDs are not access tokens.
@@ -183,6 +190,14 @@ JSON integers.
 | `HistoryFragment` | `header`, `events` |
 | `PublishedHeader` | `commit` (`CommitRow`), `checkpoint` |
 | `CommitRow` | `repo_id`, `commit_id`, `repo_seq`, `format_version`, `author_id`, `committer_id`, `message?`, `occurred_at?`, `created_at`, `event_count`, `events_digest` |
+| `LeaseRequest` | `paths`, `owner`, `ttl` |
+| `Lease` | `token`, `locks` (list of `LeasedPath`) |
+| `LeasedPath` | `path`, `owner`, `expires_at` (UTC Unix seconds) |
+| `Leases` | `locks` |
+| `LeaseRenewal` | `token`, `ttl` |
+| `LeaseToken` | `token` |
+| `LeasePaths` | `paths` |
+| `Released` | `released` |
 
 `SubmitResult` is tagged by `status`. `accepted` has `receipt`. `conflict` has `items`,
 a list of `ItemHead`, where `head_seq` zero means the item is absent. `POLICY_LIMIT`
@@ -215,6 +230,9 @@ value is an event envelope with its `item_id`, a `ref` value is a ref envelope, 
 | 403 | `FORBIDDEN` | The credential may only read |
 | 404 | `NOT_FOUND` | No such route, no such repository for this credential, or no receipt |
 | 404 | `OBJECT_MISSING` | The object is not stored |
+| 409 | `CHECKPOINT` | The history request's cursor is not on this history |
+| 409 | `LOCKED` | Another lease holds a path; the body's `path` and `owner` name it |
+| 409 | `LOCK_LOST` | A presented lease token is expired, released or replaced, or does not cover a path written |
 | 409 | `GENERATION` | The repository's generation is not the request's; reconcile first |
 | 409 | `OPERATION_REUSED` | The operation ID was submitted with another request digest |
 | 409 | `OBJECTS_MISSING` | The submission names content that is not stored; the body's `objects` lists it. Upload it and submit again |
@@ -319,7 +337,26 @@ shared clone the lease also guards local writes, pull and materialization, not
 just the acquisition request. Direct filesystem writes bypass these locks, so
 all agents sharing files must participate. Receipt recovery and preserving
 unfinished local work remain necessary after expiry or loss of a server lease.
-Remote lease adapters and clone command integration are pending plan steps.
+
+The lease routes follow the local rules of `docs/local-repository.md`
+("Local agents sharing a checkout"): repository paths with `/`, compared by the
+VCS's portable name keys; parent and child conflict; all paths of one request
+succeed or fail together; `ttl` is 1 to 86400 seconds; an expired lease still
+fences until another request covers its whole scope; listing never shows
+tokens; `break` removes every lease overlapping its paths. The server cannot see
+a client's working files, so the client checks that the paths are clean before
+it asks. A reference server keeps leases in the repository's own reservation
+table, so they fence the repository's local working trees too, and theirs fence
+remote writers.
+
+A submission carries the lease tokens its writer holds as `synck-lock-token`
+headers, one per token; they are credentials, not part of the request digest.
+The authority refuses a submission that writes a path another lease holds
+(`LOCKED`), or, when tokens are presented, one that writes a path they do not
+cover or that presents a dead token (`LOCK_LOST`). A proposal writes each item it
+touches where the item is and where the proposal puts it. A retry of an accepted
+operation returns its receipt without these checks. Clone command integration
+is a pending plan step.
 
 ## Evidence
 

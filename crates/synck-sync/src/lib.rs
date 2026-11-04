@@ -298,6 +298,57 @@ pub struct PublishedCommit {
     pub checkpoint: Sha256Digest,
 }
 
+/// `POST /leases`: reserve repository paths, as `synck lock acquire` does.
+/// `ttl` is 1 to 86400 seconds.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LeaseRequest {
+    pub paths: Vec<String>,
+    pub owner: String,
+    pub ttl: u64,
+}
+/// The token is the only proof of ownership; it is never listed.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Lease {
+    pub token: String,
+    pub locks: Vec<LeasedPath>,
+}
+/// `expires_at` is UTC Unix seconds.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LeasedPath {
+    pub path: String,
+    pub owner: String,
+    pub expires_at: i64,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Leases {
+    pub locks: Vec<LeasedPath>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LeaseRenewal {
+    pub token: String,
+    pub ttl: u64,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LeaseToken {
+    pub token: String,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LeasePaths {
+    pub paths: Vec<String>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Released {
+    pub released: u64,
+}
+
 fn digest_id(bytes: [u8; 32]) -> Sha256Digest {
     Sha256Digest::parse(synck_vcs::types::sha256_prefixed_hex_from_digest_bytes(
         bytes,

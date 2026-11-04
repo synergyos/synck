@@ -7,8 +7,10 @@
 
 use std::collections::BTreeMap;
 
-use synck_sync::{CommitMetadata, Cursor, ItemHead};
+use synck_sync::{CommitMetadata, Cursor, HistoryPage, HistoryRequest, ItemHead};
 use synck_vcs::types::{CommitRow, RefEventProposal};
+
+use crate::agent_locks::{self, AgentLease, AgentLock};
 
 use super::*;
 
@@ -20,6 +22,11 @@ fn sync_operation_id(operation_id: &str) -> String {
 
 /// Core sequences in pages of this many commits.
 const SEQUENCE_PAGE: usize = 256;
+/// The working tree recorded for reservations taken through a server: never
+/// a local tree, so a local `pull` does not answer to them.
+const REMOTE_TREE: &str = "sync";
+/// Bounds a walk up the folder tree.
+const MAX_DEPTH: usize = 4096;
 
 pub struct ServedRepository {
     root: PathBuf,
@@ -39,6 +46,8 @@ pub struct Proposal {
     pub events: Vec<EventProposal>,
     pub ref_events: Vec<RefEventProposal>,
     pub guards: Vec<ItemHead>,
+    /// Reservation tokens the writer holds, as `--lock-token` gives them.
+    pub lock_tokens: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -223,6 +232,15 @@ impl ServedRepository {
             }
             return Ok(Acceptance::Accepted(self.receipt(commit)?));
         }
+        let tokens = &proposal.lock_tokens;
+        agent_locks::validate_tokens(tokens)?;
+        let repo_id = self.repo_id.as_str();
+        if !tokens.is_empty() || agent_locks::any(&metadata, repo_id)? {
+            let paths = self.proposal_paths(&proposal).await?;
+            let paths: Vec<&str> = paths.iter().map(String::as_str).collect();
+            let scope = agent_locks::Scope { metadata: &metadata, tree: None };
+            agent_locks::guard(&scope, repo_id, tokens, Some(&paths))?;
+        }
         let missing = self.unusable_objects(&core, &proposal).await?;
         if !missing.is_empty() {
             return Ok(Acceptance::MissingObjects(missing));
@@ -359,5 +377,132 @@ impl ServedRepository {
             }
         }
         Ok(missing)
+    }
+
+    /// The repository paths a proposal writes: each item it touches where it
+    /// is now and where the proposal puts it. Records outside the tree have
+    /// none.
+    async fn proposal_paths(&self, proposal: &Proposal) -> Result<Vec<String>> {
+        let mut stored: HashMap<ItemId, Option<(Option<ItemId>, Option<String>)>> = HashMap::new();
+        let mut placed: HashMap<ItemId, (Option<ItemId>, Option<String>)> = HashMap::new();
+        for event in &proposal.events {
+            let Some(item_id) = &event.item_id else { continue };
+            let mut place = match &event.create_item {
+                Some(create) => (create.parent_folder_id.clone(), create.name.clone()),
+                None => match placed.get(item_id) {
+                    Some(place) => place.clone(),
+                    None => match self.stored_place(&mut stored, item_id).await? {
+                        Some(place) => place,
+                        None => continue,
+                    },
+                },
+            };
+            if let Some(parent) = &event.set_parent {
+                place.0 = parent.clone();
+            }
+            if let Some(name) = &event.set_name {
+                place.1 = Some(name.clone());
+            }
+            placed.insert(item_id.clone(), place);
+        }
+        let empty = HashMap::new();
+        let mut paths = BTreeSet::new();
+        for item_id in proposal.events.iter().filter_map(|event| event.item_id.as_ref()) {
+            paths.extend(self.path(&mut stored, &empty, item_id).await?);
+            paths.extend(self.path(&mut stored, &placed, item_id).await?);
+        }
+        for event in &proposal.ref_events {
+            paths.extend(self.path(&mut stored, &empty, &event.owner_item_id).await?);
+        }
+        Ok(paths.into_iter().collect())
+    }
+
+    async fn stored_place(
+        &self,
+        stored: &mut HashMap<ItemId, Option<(Option<ItemId>, Option<String>)>>,
+        item_id: &ItemId,
+    ) -> Result<Option<(Option<ItemId>, Option<String>)>> {
+        if let Some(place) = stored.get(item_id) {
+            return Ok(place.clone());
+        }
+        let place = self
+            .storage
+            .get_item_readonly(&self.repo_id, item_id)
+            .await
+            .map_err(corrupt)?
+            .map(|row| (row.parent_folder_id, row.name));
+        stored.insert(item_id.clone(), place.clone());
+        Ok(place)
+    }
+
+    /// `item_id`'s path with `placed` over the stored tree; `None` for an
+    /// absent item, a record, or an item under one.
+    async fn path(
+        &self,
+        stored: &mut HashMap<ItemId, Option<(Option<ItemId>, Option<String>)>>,
+        placed: &HashMap<ItemId, (Option<ItemId>, Option<String>)>,
+        item_id: &ItemId,
+    ) -> Result<Option<String>> {
+        let mut names = Vec::new();
+        let mut current = Some(item_id.clone());
+        while let Some(id) = current {
+            if names.len() == MAX_DEPTH {
+                return Err(corrupt("folder tree is deeper than a path can be"));
+            }
+            let place = match placed.get(&id) {
+                Some(place) => Some(place.clone()),
+                None => self.stored_place(stored, &id).await?,
+            };
+            let Some((parent, Some(name))) = place else {
+                return Ok(None);
+            };
+            names.push(name);
+            current = parent;
+        }
+        names.reverse();
+        Ok(Some(names.join("/")))
+    }
+
+    /// Every reservation, live or expired. Waits for the repository lock.
+    pub fn reservations(&self) -> Result<Vec<AgentLock>> {
+        let metadata = self.root.join(".synck");
+        let _lock = crate::repository::acquire_lock(&metadata, true)?;
+        agent_locks::list(&metadata, self.repo_id.as_str())
+    }
+
+    /// Reserve repository paths for a remote writer, as `synck lock acquire`
+    /// does for a local one. The writer has checked its own working tree;
+    /// this one is not consulted. Waits for the repository lock.
+    pub fn reserve(&self, paths: Vec<String>, owner: &str, ttl: u64) -> Result<AgentLease> {
+        let metadata = self.root.join(".synck");
+        let _lock = crate::repository::acquire_lock(&metadata, true)?;
+        agent_locks::reserve(&metadata, self.repo_id.as_str(), paths, owner, ttl, REMOTE_TREE)
+    }
+
+    pub fn renew_reservation(&self, token: &str, ttl: u64) -> Result<()> {
+        let metadata = self.root.join(".synck");
+        let _lock = crate::repository::acquire_lock(&metadata, true)?;
+        agent_locks::renew(&metadata, self.repo_id.as_str(), token, ttl)
+    }
+
+    pub fn release_reservation(&self, token: &str) -> Result<usize> {
+        let metadata = self.root.join(".synck");
+        let _lock = crate::repository::acquire_lock(&metadata, true)?;
+        agent_locks::release(&metadata, self.repo_id.as_str(), token)
+    }
+
+    pub fn break_reservations(&self, paths: &[String]) -> Result<usize> {
+        let metadata = self.root.join(".synck");
+        let _lock = crate::repository::acquire_lock(&metadata, true)?;
+        agent_locks::break_paths(&metadata, self.repo_id.as_str(), paths)
+    }
+
+    /// One page of published history; `None` when the request's position is
+    /// not on this history. Takes no lock.
+    pub async fn history(&self, request: &HistoryRequest) -> Result<Option<HistoryPage>> {
+        request
+            .validate()
+            .map_err(|error| invalid(error.to_string()))?;
+        self.storage.history_page(request).await.map_err(corrupt)
     }
 }

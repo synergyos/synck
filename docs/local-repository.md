@@ -137,7 +137,8 @@ into the tree — answer only to their own tree's reservations, so one agent's
 lease never stops another clone from pulling the holder's commits. `status`
 lists every reservation with its holder and expiry. Cache rebuilding preserves
 them; archives and repository imports omit them. Do not delete this database to
-clear locks. Leases are not history and are not synchronized to any server.
+clear locks. Leases are not history. A sync server serving the repository takes
+and enforces remote leases in this same table, so `lock list` shows them too.
 
 ## Clones: one working tree per agent or person
 

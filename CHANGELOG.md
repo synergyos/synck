@@ -180,6 +180,11 @@ Core SQLite schema 7. Repositories from 0.1 are refused. Copy files across with
   protocol-1 proposal with the checks a local commit gets, waiting for the
   repository lock as a clone does. A retry returns the original commit; stale
   heads come back as a conflict, absent content as missing objects.
+- `ServedRepository` serves packed history pages
+  (`SqliteStorage::history_page`) and takes, renews, releases and breaks
+  reservations for remote writers in the repository's own reservation table.
+  A proposal that writes a reserved path needs the lease's token. Lease wire
+  values are in `synck-sync`.
 
 ### Testing
 
