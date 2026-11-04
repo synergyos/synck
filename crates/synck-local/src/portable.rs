@@ -854,6 +854,7 @@ impl PortableRepository {
                 previous_paths: None,
             }),
             baseline: None,
+            committing: None,
         };
         // Share this exact lock with the temporary adapter. No second opener
         // or lock gap is involved.
@@ -3220,6 +3221,7 @@ pub async fn init_repository_with_name_repair(
                 paths: Vec::new(),
                 pending: None,
                 baseline: None,
+                committing: None,
             },
         )?;
         if storage_mode == StorageMode::Chunked {

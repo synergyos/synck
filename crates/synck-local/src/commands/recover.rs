@@ -579,6 +579,7 @@ impl Repository {
             },
             &current,
         )?;
+        self.record_own_commit(&intent.operation_id)?;
         self.core()
             .append_file_folder_checked(
                 self.config().repo_id().clone(),

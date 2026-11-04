@@ -537,6 +537,12 @@ impl Repository {
         if self.held() && self.remote().is_none() {
             self.pin_held_objects(&captured.values().collect::<Vec<_>>()).await?;
         }
+        let operation_id = options
+            .operation_id
+            .as_ref()
+            .map(crate::portable::stored_operation_id)
+            .unwrap_or_else(|| Uuid::new_v4().to_string());
+        self.record_own_commit(&operation_id)?;
         let accepted = self
             .core()
             .append_file_folder_checked_with_refs(
@@ -549,13 +555,7 @@ impl Repository {
                     committer_id: self.config().author().to_string(),
                     message: message.map(str::to_string),
                     occurred_at: options.occurred_at,
-                    operation_id: Some(
-                        options
-                            .operation_id
-                            .as_ref()
-                            .map(crate::portable::stored_operation_id)
-                            .unwrap_or_else(|| Uuid::new_v4().to_string()),
-                    ),
+                    operation_id: Some(operation_id),
                     events: prepared.events,
                 },
                 prepared.ref_events,

@@ -22,6 +22,11 @@ pub(crate) struct Checkout {
     /// trees commit to the same history, so HEAD may have moved past it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub baseline: Option<i64>,
+    /// The operation of a commit this working tree is making at HEAD. A kill
+    /// after the commit is accepted and before its baseline is recorded leaves
+    /// it here, and the next open bases the tree on that commit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub committing: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

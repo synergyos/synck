@@ -143,6 +143,7 @@ fn scenario_in(mode: &str, prepare: impl Fn(&Path) -> Vec<String>) {
     ok(&finished, args);
     let expected_commits = commit_count(&finished);
     let expected_tree = tree(&finished);
+    let expected_status = ok(&finished, &["status", "--json"]);
     ok(&finished, &["fsck"]);
 
     let mut point = 1;
@@ -182,6 +183,8 @@ fn scenario_in(mode: &str, prepare: impl Fn(&Path) -> Vec<String>) {
         }
         assert_eq!(commit_count(&crashed), expected_commits, "{context}");
         assert_eq!(tree(&crashed), expected_tree, "{context}");
+        // The working tree is based on the commit it made, not left behind it.
+        assert_eq!(ok(&crashed, &["status", "--json"]), expected_status, "{context}");
         let fsck = synck(&crashed, &["fsck"], None);
         assert!(fsck.status.success(), "{context}: {}", String::from_utf8_lossy(&fsck.stderr));
         assert_clean_metadata(&crashed, &context);

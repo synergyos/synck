@@ -29,7 +29,10 @@ store version 2: 0.3.0 upgrades a version 1 store when it opens one, after which
   origin's history. `synck pull` brings in the others' commits and keeps local
   changes; `commit`, `revert`, `mv`, `recover` and `version restore` pull first.
   A file changed on both sides is a `CONFLICT` with its `paths`, and nothing is
-  written. `checkout.json` records each working tree's `baseline` commit.
+  written. `checkout.json` records each working tree's `baseline` commit, and
+  `committing`, the operation of a commit made at HEAD, until the commit is
+  its baseline: a working tree killed in between is based on its own commit
+  at the next command, not left behind it.
 - `synck duplicate <source> <destination>` copies a committed file or folder as
   an alternative in the same history, each copy recording `derived_from`.
   `synck adopt <alternative> <original>` makes the original match it in one

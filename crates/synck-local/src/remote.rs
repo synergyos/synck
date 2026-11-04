@@ -755,6 +755,7 @@ async fn make_clone(
         hidden_files: Default::default(),
         pending: Some(crate::checkout::Transition { previous_paths: None }),
         baseline: Some(head),
+        committing: None,
     };
     let source = metadata.join(crate::checkout::CHECKOUT_SOURCE_FILE);
     std::fs::write(&source, b"[]").at("write", &source)?;

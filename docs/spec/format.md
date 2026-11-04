@@ -93,7 +93,10 @@ relative paths; empty means all), `hidden_files` (`ignore`, default, or `track`)
 optional `pending`, which holds `previous_paths` (null or an array) while
 transitioning its materialized paths, and optional `baseline`: the `repo_seq` of
 the commit the working files are based on, which is HEAD unless another working
-tree has committed since. A missing `baseline` means HEAD. A missing file means
+tree has committed since. A missing `baseline` means HEAD. Optional
+`committing` is the `operation_id` of a commit this working tree is making at
+HEAD; at open, if that commit is in history past `baseline`, it becomes the
+baseline, and the field is cleared whenever the baseline is written. A missing file means
 the repository has no working tree, and a `FOLLOWER` has none whatever the file
 says. It is not canonical history and copies do not carry it.
 

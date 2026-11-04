@@ -101,6 +101,7 @@ pub async fn clone_repository(
             previous_paths: None,
         }),
         baseline: Some(head),
+        committing: None,
     };
     let source = metadata.join(crate::checkout::CHECKOUT_SOURCE_FILE);
     std::fs::write(&source, b"[]").at("write", &source)?;

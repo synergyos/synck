@@ -537,7 +537,16 @@ impl Repository {
     fn load_baseline(&self) -> Result<()> {
         let head = self.head_repo_seq()?;
         let on_disk = crate::checkout::read_checkout(&self.metadata_path)?;
-        let recorded = on_disk.as_ref().and_then(|checkout| checkout.baseline);
+        let mut recorded = on_disk.as_ref().and_then(|checkout| checkout.baseline);
+        let committing = on_disk.as_ref().and_then(|checkout| checkout.committing.as_deref());
+        // This tree's own commit, made at HEAD; later commits are another
+        // tree's.
+        if let Some(operation_id) = committing
+            && let Some(repo_seq) = self.operation_repo_seq(operation_id)?
+            && recorded.is_some_and(|baseline| baseline < repo_seq)
+        {
+            recorded = Some(repo_seq);
+        }
         let baseline = match recorded {
             Some(baseline) if baseline > head => {
                 return Err(LocalError::Integrity(format!(
@@ -550,10 +559,40 @@ impl Repository {
         self.baseline.store(baseline, std::sync::atomic::Ordering::SeqCst);
         self.at_head.store(baseline == head, std::sync::atomic::Ordering::SeqCst);
         // A checkout being enabled is published later, with this baseline.
-        if on_disk.is_some() && recorded != Some(baseline) {
+        let on_disk_baseline = on_disk.as_ref().and_then(|checkout| checkout.baseline);
+        if on_disk.is_some() && (on_disk_baseline != Some(baseline) || committing.is_some()) {
             self.record_baseline(baseline)?;
         }
         Ok(())
+    }
+
+    /// The sequence of the commit `operation_id` made, if any.
+    fn operation_repo_seq(&self, operation_id: &str) -> Result<Option<i64>> {
+        let connection = self.storage.open_readonly().map_err(|error| {
+            LocalError::Integrity(format!("cannot read repository history: {error}"))
+        })?;
+        Ok(connection
+            .query_row(
+                "SELECT repo_seq FROM vcs_commits WHERE repo_id = ?1 AND operation_id = ?2",
+                params![self.config.repo_id.as_str(), operation_id],
+                |row| row.get::<_, Option<i64>>(0),
+            )
+            .optional()?
+            .flatten())
+    }
+
+    /// Call before appending a commit the working files already hold. At
+    /// HEAD, the commit will become the baseline; recording its operation
+    /// first lets the next open find it if this process dies in between.
+    pub(crate) fn record_own_commit(&self, operation_id: &str) -> Result<()> {
+        if !self.at_head() {
+            return Ok(());
+        }
+        let Some(mut checkout) = crate::checkout::read_checkout(&self.metadata_path)? else {
+            return Ok(());
+        };
+        checkout.committing = Some(operation_id.to_string());
+        crate::checkout::write_checkout(&self.metadata_path, &checkout)
     }
 
     pub(crate) fn head_repo_seq(&self) -> Result<i64> {
@@ -620,6 +659,7 @@ impl Repository {
         let mut checkout = crate::checkout::read_checkout(&self.metadata_path)?
             .ok_or_else(|| LocalError::Integrity("checkout state is missing".into()))?;
         checkout.baseline = Some(repo_seq);
+        checkout.committing = None;
         crate::checkout::write_checkout(&self.metadata_path, &checkout)
     }
 
