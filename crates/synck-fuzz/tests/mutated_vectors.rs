@@ -180,6 +180,29 @@ fn chunks_survive_mutation() {
 }
 
 #[test]
+fn pdf_survives_mutation() {
+    let page = b"%PDF-1.7
+1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj
+2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj
+3 0 obj << /Type /Page /Parent 2 0 R /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> /XObject << /X 6 0 R >> >> >> endobj
+4 0 obj << /Length 7 0 R >> stream
+q 1 0 0 1 0 0 cm BT /F1 10 Tf 72 700 Td [(A) -300 (b)] TJ T* (c) ' ET /X Do BI /W 1 /H 1 ID x EI Q
+endstream endobj
+5 0 obj << /Type /Font /Subtype /Type0 /ToUnicode 8 0 R /DescendantFonts [<< /W [1 [500] 2 3 600] >>] >> endobj
+6 0 obj << /Subtype /Form /Length 21 >> stream
+BT /F1 9 Tf (d) Tj ET
+endstream endobj
+7 0 obj 98 endobj
+8 0 obj << /Length 82 >> stream
+1 beginbfchar <41> <0041> endbfchar 1 beginbfrange <0001> <0002> <0062> endbfrange
+endstream endobj
+trailer << /Root 1 0 R >>
+"
+    .to_vec();
+    exercise("pdf", synck_fuzz::pdf, &[page]);
+}
+
+#[test]
 fn ooxml_survives_mutation() {
     // An empty archive, then the same one after a stored entry.
     let mut empty = b"PK\x05\x06".to_vec();

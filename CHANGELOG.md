@@ -3,6 +3,16 @@
 Format numbers are listed with each release that changes one. Before 1.0 a release
 reads only its own repository format; see [Format and compatibility](docs/formats.md).
 
+## Unreleased
+
+### CLI
+
+- `diff` compares PDFs by their text: one line per paragraph under `Page N`,
+  with wrapped lines joined, so a word added to a paragraph changes one line.
+  An encrypted PDF, or one that cannot be read, is still a binary difference.
+- Hunk headers of PDF, slide and sheet diffs name the page, slide or sheet the
+  hunk starts in, such as `@@ -5,5 +5,5 @@ Page 2`.
+
 ## 0.3.0
 
 Repository format 7, commit format 6, object frame V1, history bundle format 5,

@@ -24,6 +24,7 @@ mod raw_object;
 mod path_warnings;
 mod office_text;
 mod ooxml;
+mod pdf_text;
 pub mod portable;
 mod remote;
 mod repository;
@@ -70,5 +71,9 @@ pub mod fuzz_entry {
 
     pub fn ooxml_regions(file: std::fs::File, size: u64) {
         let _ = crate::ooxml::chunk_region_lengths(file, size, crate::ooxml::OoxmlKind::Docx);
+    }
+
+    pub fn pdf_text(data: &[u8]) {
+        let _ = crate::pdf_text::document_text(data);
     }
 }

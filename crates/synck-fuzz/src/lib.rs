@@ -121,6 +121,10 @@ pub fn chunk(data: &[u8]) {
     synck_local::fuzz_entry::decode_chunk(codec, i64::from(header & 0x7fff_ffff), payload);
 }
 
+pub fn pdf(data: &[u8]) {
+    synck_local::fuzz_entry::pdf_text(data);
+}
+
 /// OOXML region analysis takes a file, as it does for working files.
 pub fn ooxml(data: &[u8]) {
     let mut file = tempfile().expect("create a temporary file");

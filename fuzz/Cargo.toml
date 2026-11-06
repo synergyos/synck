@@ -92,3 +92,10 @@ path = "fuzz_targets/ooxml.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "pdf"
+path = "fuzz_targets/pdf.rs"
+test = false
+doc = false
+bench = false

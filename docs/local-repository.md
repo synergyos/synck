@@ -356,13 +356,21 @@ synck export-tree HEAD ./exported-tree
 ```
 
 `diff` shows a line patch for text files. For a Word, Excel or PowerPoint
-file (`.docx`, `.xlsx`, `.pptx`) it compares the document's text instead of its
-bytes: Word paragraphs, slide paragraphs under `Slide N`, and sheet cells as
-`A1: value (=formula)` under `Sheet N`. JSON marks this `DOCUMENT`; the patch
-describes the text and cannot be applied to the file. A change only in
-formatting, images or anything else outside that text, and a document that
-cannot be read, shows as a binary difference. Files over 8 MiB are not
-compared.
+file (`.docx`, `.xlsx`, `.pptx`) or a PDF it compares the document's text
+instead of its bytes: Word paragraphs, slide paragraphs under `Slide N`, sheet
+cells as `A1: value (=formula)` under `Sheet N`, and PDF paragraphs under
+`Page N`. Each hunk header names the slide, sheet or page the hunk starts in,
+as Git names a function. JSON marks this `DOCUMENT`; the patch describes the
+text and cannot be applied to the file. A change only in formatting, images or
+anything else outside that text, and a document that cannot be read, shows as
+a binary difference. Files over 8 MiB are not compared.
+
+A PDF's text is what its pages draw, read through each font's Unicode map or
+encoding. Lines that wrap join into one paragraph, so a word added to a
+paragraph changes one line of the diff. A hyphen at a wrap is kept, since it
+may be part of the word. A scanned page has text only where OCR added it.
+Encrypted PDFs, compression other than Flate, and annotations and form fields
+are not read.
 
 Commit log order is repository publication order. Item history follows stable
 identity through moves/renames. A FILE content revision is distinct from a named

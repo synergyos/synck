@@ -20,7 +20,7 @@ pub const TEXT_DIFF_MAX_BYTES: u64 = 8 * 1024 * 1024;
 #[derive(Debug, Eq, PartialEq)]
 pub enum TextDiffKind {
     Patch(String),
-    /// A patch of the text of an Office document, not of its bytes.
+    /// A patch of the text of an Office document or a PDF, not of its bytes.
     Document(String),
     Binary,
     TooLarge,
@@ -245,7 +245,7 @@ fn text_diff_entry(
     if old == new {
         return Ok(None);
     }
-    if let (Some(old_text), Some(new_text)) = (
+    if let (Some((old_text, old_sections)), Some((new_text, new_sections))) = (
         document_text(old_path.as_deref(), &old),
         document_text(new_path.as_deref(), &new),
     ) {
@@ -253,7 +253,12 @@ fn text_diff_entry(
         let kind = if old_text == new_text {
             TextDiffKind::Binary
         } else {
-            TextDiffKind::Document(unified(old_path.as_deref(), new_path.as_deref(), &old_text, &new_text)?)
+            let patch = unified(old_path.as_deref(), new_path.as_deref(), &old_text, &new_text)?;
+            if old_sections || new_sections {
+                TextDiffKind::Document(section_headers(&patch, &old_text, &new_text))
+            } else {
+                TextDiffKind::Document(patch)
+            }
         };
         return Ok(Some(TextDiffEntry { old_path, new_path, kind }));
     }
@@ -278,13 +283,60 @@ fn text_diff_entry(
     }))
 }
 
-/// The text of an Office document at `path`, or "" for an absent side. None
-/// when the present side is not a readable Office document.
-fn document_text(path: Option<&str>, bytes: &[u8]) -> Option<String> {
-    match path {
-        None => Some(String::new()),
-        Some(path) => crate::office_text::document_text(OoxmlKind::from_path(Path::new(path))?, bytes),
+/// The text of an Office document or a PDF at `path`, or "" for an absent
+/// side, and whether its lines fall under section lines: `Slide N`, `Sheet N`
+/// or `Page N`. None when the present side is not a readable document.
+fn document_text(path: Option<&str>, bytes: &[u8]) -> Option<(String, bool)> {
+    let Some(path) = path.map(Path::new) else {
+        return Some((String::new(), false));
+    };
+    if let Some(kind) = OoxmlKind::from_path(path) {
+        let text = crate::office_text::document_text(kind, bytes)?;
+        return Some((text, kind != OoxmlKind::Docx));
     }
+    if !path.extension()?.eq_ignore_ascii_case("pdf") {
+        return None;
+    }
+    Some((crate::pdf_text::document_text(bytes)?, true))
+}
+
+/// Names the section each hunk starts in after its `@@` line, as Git names
+/// the enclosing function: the last `Page N`, `Slide N` or `Sheet N` line
+/// before the hunk, in the old text, or in the new one for an added file.
+fn section_headers(patch: &str, old_text: &str, new_text: &str) -> String {
+    let added = old_text.is_empty();
+    let lines: Vec<&str> = if added { new_text } else { old_text }.lines().collect();
+    let mut out = String::with_capacity(patch.len());
+    for line in patch.split_inclusive('\n') {
+        let section = line
+            .strip_prefix("@@ -")
+            .and_then(|ranges| ranges.split(' ').nth(usize::from(added)))
+            .and_then(|range| {
+                let range = range.trim_start_matches('+');
+                let (start, length) = range.split_once(',').unwrap_or((range, "1"));
+                let (start, length): (usize, usize) = (start.parse().ok()?, length.parse().ok()?);
+                // An empty range starts after its line, any other at it.
+                let before = if length == 0 { start } else { start.saturating_sub(1) };
+                lines[..before.min(lines.len())].iter().rev().find(|line| is_section(line))
+            });
+        match section {
+            Some(section) => {
+                out.push_str(line.trim_end_matches('\n'));
+                out.push(' ');
+                out.push_str(section);
+                out.push('\n');
+            }
+            None => out.push_str(line),
+        }
+    }
+    out
+}
+
+fn is_section(line: &str) -> bool {
+    ["Page ", "Slide ", "Sheet "].iter().any(|name| {
+        line.strip_prefix(name)
+            .is_some_and(|number| !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit()))
+    })
 }
 
 fn unified(old_path: Option<&str>, new_path: Option<&str>, old_text: &str, new_text: &str) -> Result<String> {
@@ -426,6 +478,31 @@ mod tests {
         let restyled = docx("<w:p><w:r><w:rPr><w:b/></w:rPr><w:t>Term: 12 months</w:t></w:r></w:p>");
         assert_eq!(diff_kind(old.clone(), restyled), TextDiffKind::Binary);
         assert_eq!(diff_kind(old, b"not a zip".to_vec()), TextDiffKind::Binary);
+    }
+
+    #[test]
+    fn pdf_documents_diff_by_their_text_under_page_headers() {
+        let page = |paragraphs: &[&str]| {
+            let lines: Vec<String> = paragraphs
+                .iter()
+                .enumerate()
+                .map(|(index, text)| format!("1 0 0 1 72 {} Tm ({text}) Tj", 700 - 40 * index))
+                .collect();
+            format!("BT /F1 10 Tf {} ET", lines.join(" "))
+        };
+        let old = crate::pdf_text::tests::pages(&[&page(&["Intro"]), &page(&["One", "Two", "Three", "Four", "Five", "Six"])]);
+        let new = crate::pdf_text::tests::pages(&[&page(&["Intro"]), &page(&["One", "Two", "Three", "Four", "5", "Six"])]);
+        let path = Some("Reports/q3.pdf".to_string());
+        let entry = text_diff_entry(path.clone(), path, Some(FileBytes::Bytes(old)), Some(FileBytes::Bytes(new)))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            entry.kind,
+            TextDiffKind::Document(
+                "--- a/Reports/q3.pdf\n+++ b/Reports/q3.pdf\n@@ -5,5 +5,5 @@ Page 2\n   Two\n   Three\n   Four\n-  Five\n+  5\n   Six\n"
+                    .to_string()
+            )
+        );
     }
 
     fn node(id: &str, kind: NodeKind, blob: Option<&str>) -> CommittedNode {
