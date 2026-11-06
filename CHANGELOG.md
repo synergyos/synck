@@ -3,27 +3,6 @@
 Format numbers are listed with each release that changes one. Before 1.0 a release
 reads only its own repository format; see [Format and compatibility](docs/formats.md).
 
-## Unreleased
-
-### CLI
-
-- A pull no longer throws away held commits that the origin or server overtook.
-  The held commits before the first one that changes an item changed there stay
-  held with their IDs and are sent by `push`; that one and every later one are
-  withdrawn and kept as withdrawn saves, with their commit IDs, labelled `w1`,
-  `w2`, …. `synck withdrawn` lists them, and `show`, `export` and `discard`
-  (or `--all`) take a label or a commit ID. They are kept for 90 days, protected
-  from `gc` and checked by `fsck`; `gc` then removes them and names them
-  (`expired_withdrawn`). Before, a pull took every held commit out, so their IDs
-  stopped resolving, and `gc` could delete the bytes they had saved, including
-  in an HTTPS clone's own store.
-- `status` counts withdrawn saves (`withdrawn`), `pull` names them
-  (`withdrawn`), the `CONFLICT` from `push` lists them (`withdrawn`), and `show`
-  of a withdrawn commit ID names its label.
-
-Local format: a held or HTTPS clone's `.synck/withdrawn.json`, and an optional
-`withdrawn` array in the origin's pins (format.md). No repository format change.
-
 ## 0.3.0
 
 Repository format 7, commit format 6, object frame V1, history bundle format 5,
@@ -74,11 +53,20 @@ store version 2: 0.3.0 upgrades a version 1 store when it opens one, after which
   pulls and then sends them in order, each with the commit ID it was given;
   `status` lists them. A held clone keeps its own copy of the history; the
   origin's `gc` keeps the content of unpushed commits. Held commits are
-  proposals: one that changes an item the origin changed too is taken back
-  into the working files by `pull`, merged with the origin's, to be committed
-  again (`unwound` in `pull --json`); `push` does the same and stops with
-  `CONFLICT`. `log` shows `held` in place of a held commit's sequence
-  (`"held": true` in JSON).
+  proposals: the held commits before the first one that changes an item the
+  origin changed too stay held with their IDs; `pull` withdraws that one and
+  every later one, and their changes go back into the working files, merged
+  with the origin's, to be committed again (`unwound` and `withdrawn` in
+  `pull --json`); `push` does the same and stops with `CONFLICT`. `log` shows
+  `held` in place of a held commit's sequence (`"held": true` in JSON).
+- A withdrawn commit is kept as a withdrawn save with its commit ID, labelled
+  `w1`, `w2`, …, in a held or HTTPS clone's `.synck/withdrawn.json`.
+  `synck withdrawn` lists them, and `show`, `export` and `discard` (or `--all`)
+  take a label or a commit ID. They are kept for 90 days, protected from `gc`
+  (through an optional `withdrawn` array in the origin's pins, or the HTTPS
+  clone's own store) and checked by `fsck`; `gc` then removes them and names
+  them (`expired_withdrawn`). `status` counts them and `show` of a withdrawn
+  commit ID names its label.
 - `info` starts with `origin` or `clone of <origin>`, and a clone's `status`
   with the same line and the commits waiting to be sent. A clone's `info` and
   `status` JSON carry `origin`, and `held_commits` when it can hold commits.
