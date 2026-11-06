@@ -1,6 +1,6 @@
 # Format and compatibility
 
-Synck 0.2.0 and 0.3.0 use repository format 7, Core SQLite schema 7, commit
+Synck 0.2.0, 0.3.0 and 0.4.0 use repository format 7, Core SQLite schema 7, commit
 format 6, object frame V1 and history bundle format 5. These numbers name
 different contracts; they need not match. The [standalone specification](spec/format.md),
 its SQL schemas and language-neutral vectors define the persisted format.
@@ -8,10 +8,11 @@ Where implementation and specification disagree, the implementation is wrong.
 
 Before 1.0, each release reads only its own repository format. Other versions
 are refused without migration or modification. Format 6 belongs to Synck 0.1.x;
-format 7 belongs to 0.2.0 and 0.3.0. 0.3.0 opens 0.2.0 repositories; 0.2.0
-refuses an object store created by 0.3.0, whose pages are 32 KiB instead of
-4 KiB. Repositories written by untagged development builds are disposable. Rust
-APIs are also pre-1.0 and consumers must pin a revision.
+format 7 belongs to 0.2.0, 0.3.0 and 0.4.0. 0.3.0 and 0.4.0 open each other's
+repositories and 0.2.0 repositories; 0.2.0 refuses an object store created by
+0.3.0 or 0.4.0, whose pages are 32 KiB instead of 4 KiB. Repositories written
+by untagged development builds are disposable. Rust APIs are also pre-1.0 and
+consumers must pin a revision.
 No compatibility reader, automatic converter or silent reinterpretation exists.
 
 For a manual 0.1-to-0.2 transfer, use the 0.1 executable to run
