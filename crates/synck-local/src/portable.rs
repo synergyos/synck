@@ -623,12 +623,15 @@ impl PortableRepository {
         Ok(stored)
     }
 
-    /// Objects held clones keep for commits not yet pushed, and the pins of
-    /// clones that are gone or no longer held.
+    /// Objects held clones keep for commits not yet pushed and for withdrawn
+    /// saves that have not expired, and the pins of clones that are gone or no
+    /// longer held. A working tree with its own store, an HTTPS clone, keeps
+    /// the objects of its own withdrawn saves.
     fn held_pins(&self) -> Result<(BTreeSet<String>, Vec<PathBuf>)> {
         let directory = self.root.join(".synck").join(crate::commands::PINS_DIRECTORY);
         let root = self.root.canonicalize().at("resolve repository root", &self.root)?;
-        let mut objects = BTreeSet::new();
+        let mut objects = crate::commands::live_withdrawn_objects(&self.root.join(".synck"))?;
+        let now = chrono::Utc::now();
         let mut stale = Vec::new();
         let entries = match fs::read_dir(&directory) {
             Ok(entries) => entries,
@@ -652,6 +655,9 @@ impl PortableRepository {
             });
             if held && path.file_name() == crate::commands::pin_path(&root, &pin.clone).file_name() {
                 objects.extend(pin.objects);
+                for withdrawn in pin.withdrawn.into_iter().filter(|withdrawn| withdrawn.until > now) {
+                    objects.extend(withdrawn.objects);
+                }
             } else {
                 stale.push(path);
             }
@@ -708,6 +714,7 @@ impl PortableRepository {
             return Ok(crate::GcReport {
                 removed_objects,
                 removed_bytes,
+                expired_withdrawn: Vec::new(),
             });
         }
         let stored = self.stored_objects()?;
@@ -718,6 +725,7 @@ impl PortableRepository {
         let mut report = crate::GcReport {
             removed_objects: 0,
             removed_bytes: 0,
+            expired_withdrawn: Vec::new(),
         };
         for (name, size) in stored {
             if !referenced.contains(&name) {

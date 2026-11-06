@@ -747,6 +747,78 @@ fn held_clones_keep_commits_until_push_with_their_ids() {
 }
 
 #[test]
+fn withdrawn_saves_keep_their_ids_and_bytes_until_they_expire() {
+    let temp = tempfile::tempdir().unwrap();
+    let origin = temp.path().join("origin");
+    fs::create_dir_all(&origin).unwrap();
+    for name in ["a.txt", "x.txt", "y.txt"] {
+        fs::write(origin.join(name), b"start\n").unwrap();
+    }
+    run(&origin, &["init", "--author", "origin"]);
+    run(&origin, &["commit", "-m", "start"]);
+    run(temp.path(), &["clone", "origin", "held", "--hold"]);
+    let held = temp.path().join("held");
+    let commit = |path: &str, bytes: &[u8], message: &str| {
+        fs::write(held.join(path), bytes).unwrap();
+        json(&held, &["commit", "-m", message, "--json"])["commit_id"].clone()
+    };
+    let clean = commit("x.txt", b"x held\n", "x");
+    let mine = commit("a.txt", b"a mine\n", "a");
+    let later = commit("y.txt", b"y held\n", "y");
+    fs::write(origin.join("a.txt"), b"a theirs\n").unwrap();
+    run(&origin, &["commit", "-m", "theirs"]);
+
+    // The commit before the conflicting one stays held with its ID; that one
+    // and every later one are withdrawn, and their changes are working changes.
+    let error = fails(&held, &["push", "--json"]);
+    assert_eq!(error["error"]["kind"], "CONFLICT");
+    assert_eq!(error["error"]["withdrawn"], serde_json::json!(["w1", "w2"]));
+    let status = json(&held, &["status", "--json"]);
+    assert_eq!(status["held_commits"], serde_json::json!([clean]));
+    assert_eq!(status["withdrawn"], 2);
+    assert_eq!(fs::read(held.join("y.txt")).unwrap(), b"y held\n");
+    let listed = json(&held, &["withdrawn", "--json"])["withdrawn"].clone();
+    assert_eq!(listed[0]["label"], "w2");
+    assert_eq!(listed[0]["commit_id"], later);
+    assert_eq!(listed[1]["label"], "w1");
+    assert_eq!(listed[1]["commit_id"], mine);
+    assert_eq!(listed[1]["changes"][0]["path"], "a.txt");
+    let pointer = fails(&held, &["show", mine.as_str().unwrap(), "--json"]);
+    assert!(pointer["error"]["message"].as_str().unwrap().contains("withdrawn as w1"));
+    assert_eq!(
+        json(&held, &["withdrawn", "show", mine.as_str().unwrap(), "--json"])["withdrawn"]["label"],
+        "w1"
+    );
+
+    // Resolving with the origin's version leaves the withdrawn bytes only in
+    // the store, where the origin's gc keeps them.
+    fs::write(held.join("a.txt"), b"a theirs\n").unwrap();
+    run(&held, &["resolve", "a.txt"]);
+    run(&origin, &["gc"]);
+    run(&held, &["withdrawn", "export", "w1", "a.txt", "../mine.txt"]);
+    assert_eq!(fs::read(temp.path().join("mine.txt")).unwrap(), b"a mine\n");
+    run(&held, &["commit", "-m", "y again"]);
+    let pushed = json(&held, &["push", "--json"])["pushed"].clone();
+    assert_eq!(pushed[0], clean);
+    assert_eq!(json(&held, &["withdrawn", "--json"])["withdrawn"].as_array().unwrap().len(), 2);
+    run(&held, &["fsck"]);
+
+    // Discarded or expired, a withdrawn save is gone and its bytes are free.
+    assert_eq!(json(&held, &["withdrawn", "discard", "w2", "--json"])["discarded"], serde_json::json!(["w2"]));
+    let path = held.join(".synck/withdrawn.json");
+    let mut file: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    file["saves"][0]["withdrawn_at"] = Value::from("2020-01-01T00:00:00Z");
+    fs::write(&path, serde_json::to_vec(&file).unwrap()).unwrap();
+    assert_eq!(json(&held, &["withdrawn", "--json"])["withdrawn"], serde_json::json!([]));
+    // A clone's gc collects the origin's store.
+    let collected = json(&held, &["gc", "--json"]);
+    assert_eq!(collected["expired_withdrawn"], serde_json::json!(["w1"]));
+    assert!(collected["removed_objects"].as_u64().unwrap() > 0);
+    run(&held, &["fsck"]);
+    run(&origin, &["fsck"]);
+}
+
+#[test]
 fn init_rejects_nested_repositories_before_publication() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("repo");

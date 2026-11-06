@@ -508,8 +508,9 @@ fn chunked_gc_survives_a_kill_at_every_mutation() {
 }
 
 /// A held commit to a file the origin changed too. Wherever a kill stops the
-/// pull that takes it back into the working files, the clone verifies and
-/// the next pull ends where an uninterrupted one does.
+/// pull that takes it back into the working files, the clone verifies, the
+/// next pull ends where an uninterrupted one does, and the commit is recorded
+/// as withdrawn exactly once.
 #[test]
 #[ignore = "kills a real process at every mutation"]
 fn held_pull_survives_a_kill_at_every_mutation() {
@@ -547,6 +548,10 @@ fn held_pull_survives_a_kill_at_every_mutation() {
         let status: serde_json::Value = serde_json::from_str(&ok(&held, &["status", "--json"])).unwrap();
         assert_eq!(status["held_commits"], serde_json::json!([]), "{context}");
         assert_eq!(status["conflicts"][0]["path"], "edit.txt", "{context}");
+        // Recorded once, whether the kill came before or after the record.
+        let withdrawn: serde_json::Value = serde_json::from_str(&ok(&held, &["withdrawn", "--json"])).unwrap();
+        assert_eq!(withdrawn["withdrawn"].as_array().unwrap().len(), 1, "{context}");
+        assert_eq!(withdrawn["withdrawn"][0]["label"], "w1", "{context}");
         point += 1;
     }
     assert!(point > 5, "the pull reached only {point} mutations, so the interposer is not loaded");

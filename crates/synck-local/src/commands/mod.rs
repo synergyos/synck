@@ -71,14 +71,17 @@ mod restore;
 mod revert;
 #[cfg(test)]
 mod tests;
+mod withdrawn;
 
 pub use commit::*;
 pub use history::*;
 pub use held::PushOutcome;
 pub(crate) use held::{
-    HELD_FILE, Held, PINS_DIRECTORY, Pin, apply, empty_history, is_conflict, pin_path, proposal_from_rows, read_held,
-    stored_proposal, write_held,
+    HELD_FILE, Held, PINS_DIRECTORY, Pin, PinnedUntil, apply, empty_history, is_conflict, pin_path, proposal_from_rows,
+    read_held, stored_proposal, write_held,
 };
+pub use withdrawn::{WITHDRAWN_DAYS, WithdrawnFileVersion, WithdrawnSave};
+pub(crate) use withdrawn::live_withdrawn_objects;
 pub use pull::{Conflict, PullOutcome};
 use pull::{PULL_INTENT_NAME, PULL_STAGE_NAME};
 use moves::*;
@@ -875,6 +878,22 @@ impl Repository {
         let path = self.metadata_path().join(name);
         std::fs::remove_file(&path).at("remove operation intent", &path)?;
         sync_directory(self.metadata_path())
+    }
+
+    /// The operation ID `commit_id` was appended with here.
+    pub(crate) fn commit_operation_id(&self, commit_id: &CommitId) -> Result<String> {
+        let connection = self.storage().open_readonly().map_err(|error| {
+            LocalError::Invalid(format!("cannot read repository database: {error}"))
+        })?;
+        let operation_id: Option<String> = connection.query_row(
+            "SELECT operation_id FROM vcs_commits WHERE repo_id = ?1 AND commit_id = ?2",
+            params![
+                self.config().repo_id().as_str(),
+                synck_vcs::types::commit_id_to_digest_bytes(commit_id).as_slice()
+            ],
+            |row| row.get(0),
+        )?;
+        operation_id.ok_or_else(|| LocalError::Integrity(format!("commit {commit_id} has no operation ID")))
     }
 
     pub(crate) fn operation_commit_id(&self, operation_id: &str) -> Result<Option<String>> {

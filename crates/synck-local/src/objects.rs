@@ -26,6 +26,8 @@ pub struct StorageReport {
 pub struct GcReport {
     pub removed_objects: u64,
     pub removed_bytes: u64,
+    /// Labels of this working tree's withdrawn saves that had expired.
+    pub expired_withdrawn: Vec<String>,
 }
 
 impl Repository {
@@ -45,7 +47,8 @@ impl Repository {
 
     pub async fn gc(&self) -> Result<GcReport> {
         self.recover_current().await?;
-        self.portable_view()?.gc().await
+        let expired_withdrawn = self.expire_withdrawn().await?;
+        Ok(GcReport { expired_withdrawn, ..self.portable_view()?.gc().await? })
     }
 
     #[cfg(test)]
@@ -535,6 +538,7 @@ mod tests {
             GcReport {
                 removed_objects: 1,
                 removed_bytes: 11,
+                expired_withdrawn: Vec::new(),
             }
         );
         assert_eq!(

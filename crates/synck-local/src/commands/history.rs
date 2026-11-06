@@ -898,7 +898,20 @@ impl Repository {
 
     pub async fn show(&self, input: &str) -> Result<HistoryCommit> {
         self.recover_current().await?;
-        let commit = self.resolve_revision(input).await?;
+        let commit = match self.resolve_revision(input).await {
+            Err(LocalError::Invalid(detail)) => {
+                return Err(LocalError::Invalid(match self.withdrawn_label(input)? {
+                    Some(label) => format!("{input} was withdrawn as {label}; run synck withdrawn show {label}"),
+                    None => detail,
+                }));
+            }
+            result => result?,
+        };
+        self.show_commit(commit).await
+    }
+
+    /// What `commit` changed, from its state roots.
+    pub(super) async fn show_commit(&self, commit: CommitRow) -> Result<HistoryCommit> {
         let commit_id = commit.commit_id.clone();
         let repo_seq = commit.repo_seq.ok_or_else(|| {
             LocalError::Integrity(format!("commit {commit_id} has no repository sequence"))

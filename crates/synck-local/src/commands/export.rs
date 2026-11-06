@@ -81,6 +81,17 @@ impl Repository {
         let (_, blob_id, size) = self
             .resolve_file_revision(caller, input, requested_seq)
             .await?;
+        self.export_object(caller, destination, &blob_id, size)
+    }
+
+    /// Copy stored bytes to `destination`, which must not exist.
+    pub(super) fn export_object(
+        &self,
+        caller: &Path,
+        destination: &Path,
+        blob_id: &ObjectId,
+        size: i64,
+    ) -> Result<()> {
         let (parent, name, destination) =
             resolve_export_destination(caller, destination, self.metadata_path())?;
         if self.remote().is_none() {
@@ -105,7 +116,7 @@ impl Repository {
             }
         }
         let temporary =
-            self.copy_object_to_temporary(&parent_dir, &parent, &destination, &blob_id, size)?;
+            self.copy_object_to_temporary(&parent_dir, &parent, &destination, blob_id, size)?;
         self.publish_temporary_file(&parent_dir, &parent, &temporary, &name, &destination, false)?;
         sync_directory(&parent)
     }

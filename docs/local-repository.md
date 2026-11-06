@@ -224,19 +224,44 @@ synck push                         # both land in the origin, in order
 held commits to the origin in order. A commit's ID does not depend on where it
 lands, so each keeps the ID it was given when committed.
 
-Held commits are proposals: the origin decides. When the origin changed an item
-that a held commit changes too, `pull` takes the held commits back out of the
-clone's history and leaves their changes in the working files, merged with the
-origin's as [above](#clones-one-working-tree-per-agent-or-person): text
-three-way with markers, any other file kept with the origin's version beside
-it. `log` shows the origin's history again and `pull` names the paths
-(`unwound` in JSON). Check the files, `synck resolve` any conflicts and commit;
-`push` sends the new commit. `push` makes the same pull, then stops with
-`CONFLICT` and the paths, sending nothing. A move or deletion against an edit
-stops the pull as in any clone, with the held changes already in the working
-files. Held commits are not backed up and nobody else sees them until pushed.
-`gc` in the origin keeps their content; delete a held clone only after pushing
-it.
+Held commits are proposals: the origin decides. A held commit names the item
+heads it was made from, and its ID hashes them, so once the origin has changed
+one of its items it can never be accepted there. `pull` then **withdraws** it:
+the held commits before the first such one stay held with their IDs, and that
+one and every later one leave the clone's history. Their changes stay in the
+working files, merged with the origin's as
+[above](#clones-one-working-tree-per-agent-or-person): text three-way with
+markers, any other file kept with the clone's version and the origin's beside
+it. `pull` names the paths and the withdrawn saves (`unwound` and `withdrawn`
+in JSON). Check the files, `synck resolve` any conflicts and commit; `push`
+sends the held commits and the new one. `push` makes the same pull, then stops
+with `CONFLICT`, the paths and the withdrawn saves, sending nothing. A move or
+deletion against an edit stops the pull as in any clone, with the held changes
+already in the working files. Held commits are not backed up and nobody else
+sees them until pushed. `gc` in the origin keeps their content; delete a held
+clone only after pushing it.
+
+### Withdrawn saves
+
+A withdrawn commit is kept in the clone with its commit ID, exactly as it would
+be proposed to a server, and a label, `w1`, `w2`, …, that is never reused.
+
+```sh
+synck withdrawn                                # list them, newest first
+synck withdrawn show w2                        # what it changed
+synck withdrawn export w2 brief.docx ../w2.docx   # the bytes it saved
+synck withdrawn discard w2                     # or --all
+```
+
+`status` counts them (`withdrawn` in JSON), and `show` of a withdrawn commit ID
+names its label. Each accepts a label or the complete commit ID. A withdrawn
+save is kept for 90 days after it was withdrawn: until then its content is
+protected from `gc` (in the origin's store for a local clone, in the clone's
+own for an HTTPS clone), and `fsck` checks that it hashes to its ID and that its
+saved bytes are intact. Then `withdrawn` stops listing it and `gc` removes it
+and names it (`expired_withdrawn` in JSON). `discard` removes one at once.
+Withdrawn saves are this clone's: nobody else sees them, and deleting the clone
+deletes them.
 
 ### HTTPS clones: a sync server as the origin
 
@@ -263,9 +288,9 @@ synck pull                           # take in everyone else's commits
 - A commit keeps its ID on the server. Its operation ID there is its commit ID,
   so a push repeated after a lost reply finds the accepted commit instead of
   adding it again.
-- A held commit that changes an item the server changed too goes back into the
-  working files at `pull` or `push`, merged, as in a held clone. Until then
-  `commit` stops with `CONFLICT`.
+- A held commit that changes an item the server changed too is withdrawn at
+  `pull` or `push`, with every later one, and its changes stay in the working
+  files, merged, as in a held clone. Until then `commit` stops with `CONFLICT`.
 - `lock` commands take, list, renew, release and break the server's leases,
   after the same local check that the paths are clean. Local commands do not
   check leases in an HTTPS clone: the server checks them when a commit arrives,

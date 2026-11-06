@@ -2,7 +2,7 @@ use serde_json::{Value, json};
 use synck_local::{
     Change, ChangeKind, CommitEvent, DeletedEntry, DetailedEventLogEntry, DetailedLogEntry,
     EventHistoryCommit, HistoryCommit, LocalError, LogEntry, NamedVersionEntry, TextDiffEntry,
-    TextDiffKind, VersionEntry,
+    TextDiffKind, VersionEntry, WithdrawnSave,
 };
 
 pub(crate) const SCHEMA_VERSION: u32 = 5;
@@ -127,6 +127,20 @@ pub(crate) fn event_history_commit(value: &EventHistoryCommit) -> Value {
     output
 }
 
+pub(crate) fn withdrawn_save(value: &WithdrawnSave) -> Value {
+    json!({
+        "label": value.name(),
+        "commit_id": value.commit_id,
+        "author": value.metadata.author_id,
+        "message": value.metadata.message,
+        "saved_at": value.saved_at.to_rfc3339(),
+        "withdrawn_at": value.withdrawn_at.to_rfc3339(),
+        "expires_at": value.expires_at().to_rfc3339(),
+        "changes": value.changes.iter().map(change).collect::<Vec<_>>(),
+        "files": value.files,
+    })
+}
+
 pub(crate) fn deleted_entry(value: &DeletedEntry) -> Value {
     json!({
         "item_id": value.item_id,
@@ -205,10 +219,13 @@ pub(crate) fn error(value: &LocalError) -> Value {
     if let LocalError::ChangedOnBothSides { paths }
     | LocalError::CannotMerge { paths }
     | LocalError::HeldConflict { paths }
-    | LocalError::HeldMerged { paths }
+    | LocalError::HeldMerged { paths, .. }
     | LocalError::Unresolved { paths } = value
     {
         error["paths"] = json!(paths);
+    }
+    if let LocalError::HeldMerged { withdrawn, .. } = value {
+        error["withdrawn"] = json!(withdrawn);
     }
     if let LocalError::Conflict {
         item_id,

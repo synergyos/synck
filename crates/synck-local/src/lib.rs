@@ -36,7 +36,7 @@ mod worktree;
 pub use commands::{
     Conflict, PullOutcome, PushOutcome, CommitEvent, CommitEventPage, CommitOutcome, DeletedEntry,
     DetailedEventLogEntry, DetailedLogEntry, EventHistoryCommit, HistoryCommit, LogEntry,
-    VersionEntry,
+    VersionEntry, WITHDRAWN_DAYS, WithdrawnFileVersion, WithdrawnSave,
 };
 pub use comparison::{
     ComparedRevision, StructuralComparison, TEXT_DIFF_MAX_BYTES, TextDiffEntry, TextDiffKind,

@@ -114,6 +114,8 @@ pub struct PullOutcome {
     /// Paths that held commits changed and the origin changed too: the held
     /// commits were taken back into the working files and merged.
     pub unwound: Vec<String>,
+    /// Labels of the held commits this pull withdrew.
+    pub withdrawn: Vec<String>,
 }
 
 fn item_states(
@@ -303,15 +305,16 @@ impl Repository {
         self.guard_agent_all()?;
         self.recover_pending_pull().await?;
         let mut unwound = Vec::new();
+        let mut withdrawn = Vec::new();
         // A writer's own fetch from a server is in `pull_if_behind`.
         if self.held() && (merge || self.remote().is_none()) {
-            match self.take_in().await {
-                Err(LocalError::HeldConflict { paths }) if merge => {
-                    self.unwind_held().await?;
-                    self.take_in().await?;
-                    unwound = paths;
+            if let Err(items) = self.take_in_items().await? {
+                let paths = self.item_paths(&items).await?;
+                if !merge {
+                    return Err(LocalError::HeldConflict { paths });
                 }
-                result => result?,
+                withdrawn = self.withdraw_held(items).await?;
+                unwound = paths;
             }
         }
         let from = self.baseline();
@@ -322,6 +325,7 @@ impl Repository {
                 updated: Vec::new(),
                 conflicts: self.conflicts()?.into_iter().map(|conflict| conflict.path).collect(),
                 unwound,
+                withdrawn,
             });
         }
         let (base, working, _, working_ids) = self.changes().await?;
@@ -421,12 +425,14 @@ impl Repository {
             updated,
             conflicts: self.conflicts()?.into_iter().map(|conflict| conflict.path).collect(),
             unwound,
+            withdrawn,
         })
     }
 
-    /// Take in the origin's or the server's newer commits.
-    async fn take_in(&self) -> Result<()> {
-        if self.remote().is_some() { self.take_in_remote().await } else { self.take_in_origin().await }
+    /// Take in the origin's or the server's newer commits, or return the
+    /// items of the first one held commits keep this history from taking.
+    pub(super) async fn take_in_items(&self) -> Result<std::result::Result<(), Vec<ItemId>>> {
+        if self.remote().is_some() { self.take_in_remote_items().await } else { self.take_in_origin().await }
     }
 
     /// Merge one file changed on both sides. `base` is absent when both sides

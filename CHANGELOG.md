@@ -3,6 +3,27 @@
 Format numbers are listed with each release that changes one. Before 1.0 a release
 reads only its own repository format; see [Format and compatibility](docs/formats.md).
 
+## Unreleased
+
+### CLI
+
+- A pull no longer throws away held commits that the origin or server overtook.
+  The held commits before the first one that changes an item changed there stay
+  held with their IDs and are sent by `push`; that one and every later one are
+  withdrawn and kept as withdrawn saves, with their commit IDs, labelled `w1`,
+  `w2`, …. `synck withdrawn` lists them, and `show`, `export` and `discard`
+  (or `--all`) take a label or a commit ID. They are kept for 90 days, protected
+  from `gc` and checked by `fsck`; `gc` then removes them and names them
+  (`expired_withdrawn`). Before, a pull took every held commit out, so their IDs
+  stopped resolving, and `gc` could delete the bytes they had saved, including
+  in an HTTPS clone's own store.
+- `status` counts withdrawn saves (`withdrawn`), `pull` names them
+  (`withdrawn`), the `CONFLICT` from `push` lists them (`withdrawn`), and `show`
+  of a withdrawn commit ID names its label.
+
+Local format: a held or HTTPS clone's `.synck/withdrawn.json`, and an optional
+`withdrawn` array in the origin's pins (format.md). No repository format change.
+
 ## 0.3.0
 
 Repository format 7, commit format 6, object frame V1, history bundle format 5,

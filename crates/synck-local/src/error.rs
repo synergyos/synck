@@ -75,9 +75,9 @@ pub enum LocalError {
     /// A held commit changes items the repository changed too.
     #[error("held commits change items the repository changed too: {}; synck pull puts their changes back in the working files and merges them", .paths.join(", "))]
     HeldConflict { paths: Vec<String> },
-    /// A pull took conflicting held commits back into the working files.
-    #[error("held commits change items the repository changed too: {}; their changes are back in the working files, merged with the repository's. Check them, synck resolve any conflicts, then commit and push", .paths.join(", "))]
-    HeldMerged { paths: Vec<String> },
+    /// A pull withdrew conflicting held commits into the working files.
+    #[error("held commits change items the repository changed too: {}; withdrawn as {} (synck withdrawn lists them) and their changes are back in the working files, merged with the repository's. Check them, synck resolve any conflicts, then commit and push", .paths.join(", "), .withdrawn.join(", "))]
+    HeldMerged { paths: Vec<String>, withdrawn: Vec<String> },
     /// Files a pull merged with conflicts or kept both versions of.
     #[error("unresolved conflicts: {}; edit them, then run synck resolve with their paths", .paths.join(", "))]
     Unresolved { paths: Vec<String> },

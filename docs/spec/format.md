@@ -121,8 +121,23 @@ origin's. `held.json` holds `origin_seq`, through which every origin commit is
 in the copy, and `pushed_seq`, through which every commit of the copy is in the
 origin. Its content objects are written to the origin's store, and the origin's
 `pins/<SHA-256 of the clone's root path>.json` names them, as `{"clone": path,
-"objects": [object IDs]}`, until they are pushed; `gc` keeps every object a
-pin names and removes the pins of clones that are gone. Neither file is history.
+"objects": [object IDs]}`, until they are pushed; optional `withdrawn` is an
+array of `{"until": RFC 3339 time, "objects": [object IDs]}` for withdrawn
+saves. `gc` keeps every object a pin names, a withdrawn entry's until its
+`until`, and removes the pins of clones that are gone. Neither file is history.
+
+A held or HTTPS clone's `withdrawn.json`, present once a pull withdrew a held
+commit, is `{"next": n, "saves": [...]}`: `next` is the number the next
+withdrawn save is labelled with (`w<n>`), and each save is `{label, commit_id,
+metadata, saved_at, withdrawn_at, records, metadata_objects, changes, files}`.
+`metadata` is the commit's author, committer, message and origin time, and
+`records` its item and ref events, both as a protocol-1 proposal carries them,
+so the events and header hash to `commit_id` as any commit's do.
+`metadata_objects` maps each metadata ID the events name to its stored bytes in
+lowercase hexadecimal. `changes` and `files` are what `show` listed and the
+paths, object IDs and sizes of the file contents the commit saved. A save is
+kept until 90 days after `withdrawn_at`. An HTTPS clone's `gc` keeps the
+objects of the saves it has not expired. It is not history.
 
 Authority is local operational configuration, not a cryptographic credential.
 `FOLLOWER` is an imported copy, and it refuses writes. `INDEPENDENT_LOCAL` accepts

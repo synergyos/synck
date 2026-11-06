@@ -837,6 +837,15 @@ impl Repository {
     /// Take in the server's newer commits. The working files take them in
     /// afterwards, as in any pull.
     pub(crate) async fn take_in_remote(&self) -> Result<()> {
+        match self.take_in_remote_items().await? {
+            Ok(()) => Ok(()),
+            Err(items) => Err(LocalError::HeldConflict { paths: self.item_paths(&items).await? }),
+        }
+    }
+
+    /// Take in the server's newer commits, or return the items of the first
+    /// one this history cannot take.
+    pub(crate) async fn take_in_remote_items(&self) -> Result<std::result::Result<(), Vec<ItemId>>> {
         let remote = self.remote_client()?;
         let mut held = read_held(self.metadata_path())?;
         let before = held.clone();
@@ -853,10 +862,7 @@ impl Repository {
         if held != before {
             write_held(self.metadata_path(), &held)?;
         }
-        match fetched {
-            Ok(()) => Ok(()),
-            Err(items) => Err(LocalError::HeldConflict { paths: self.item_paths(&items).await? }),
-        }
+        Ok(fetched)
     }
 
     /// Send the held commits to the server, oldest first, after taking in
@@ -864,7 +870,7 @@ impl Repository {
     pub(crate) async fn push_remote(&self) -> Result<PushOutcome> {
         let pulled = self.pull().await?;
         if !pulled.unwound.is_empty() {
-            return Err(LocalError::HeldMerged { paths: pulled.unwound });
+            return Err(LocalError::HeldMerged { paths: pulled.unwound, withdrawn: pulled.withdrawn });
         }
         let pushed = self.held_commits().await?.unwrap_or_default();
         if pushed.is_empty() {

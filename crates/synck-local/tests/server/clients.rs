@@ -194,3 +194,35 @@ async fn commits_wait_while_the_server_is_unreachable() {
     ok(&fixture.origin, "", &["pull"]);
     assert_eq!(std::fs::read_to_string(fixture.origin.join("offline.txt")).unwrap(), "written on a train\n");
 }
+
+#[tokio::test]
+async fn an_offline_commit_the_server_overtook_is_withdrawn_and_kept() {
+    let mut fixture = fixture().await;
+    let token = fixture.writer.clone();
+    let laptop = fixture.clone("laptop", false);
+    let address = fixture.address();
+    fixture.stop();
+
+    std::fs::write(laptop.join("notes.txt"), "notes on a train\n").unwrap();
+    let clean = json(&laptop, &token, &["commit", "-m", "Notes"])["commit_id"].clone();
+    std::fs::write(laptop.join("brief.txt"), "brief on a train\n").unwrap();
+    let mine = json(&laptop, &token, &["commit", "-m", "Brief"])["commit_id"].clone();
+    std::fs::write(fixture.origin.join("brief.txt"), "brief in the office\n").unwrap();
+    ok(&fixture.origin, "", &["commit", "-m", "Office brief"]);
+    fixture.restart(address);
+
+    // The commit before the conflicting one stays held and is sent with its ID.
+    let pulled = json(&laptop, &token, &["pull"]);
+    assert_eq!(pulled["withdrawn"], serde_json::json!(["w1"]));
+    assert_eq!(json(&laptop, &token, &["status"])["held_commits"], serde_json::json!([clean]));
+    assert_eq!(json(&laptop, &token, &["withdrawn"])["withdrawn"][0]["commit_id"], mine);
+
+    // Kept with the office's version, the train's bytes survive this clone's gc.
+    std::fs::write(laptop.join("brief.txt"), "brief in the office\n").unwrap();
+    ok(&laptop, &token, &["resolve", "brief.txt"]);
+    assert_eq!(json(&laptop, &token, &["push"])["pushed"], serde_json::json!([clean]));
+    ok(&laptop, &token, &["gc"]);
+    ok(&laptop, &token, &["withdrawn", "export", "w1", "brief.txt", "../train.txt"]);
+    assert_eq!(std::fs::read_to_string(fixture.parent.path().join("train.txt")).unwrap(), "brief on a train\n");
+    ok(&laptop, &token, &["fsck"]);
+}

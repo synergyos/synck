@@ -8,10 +8,11 @@
 //! its parents, so a replayed commit keeps its ID.
 //!
 //! Held commits are proposals: the origin decides. When the origin changed an
-//! item a held commit changes too, `pull` takes the held commits out of the
-//! copy, leaving their changes in the working files as changes not yet
-//! committed, and merges them with the origin's like any other. Committing the
-//! result makes new proposals.
+//! item a held commit changes too, `pull` keeps the held commits before the
+//! first such one and withdraws that one and every later one: it records them
+//! as withdrawn saves (`withdrawn.rs`), takes them out of the copy and leaves
+//! their changes in the working files as changes not yet committed, merged
+//! with the origin's like any other. Committing the result makes new proposals.
 
 use super::*;
 use synck_vcs::config::CoreConfig;
@@ -47,6 +48,16 @@ pub(crate) struct Held {
 #[serde(deny_unknown_fields)]
 pub(crate) struct Pin {
     pub(crate) clone: PathBuf,
+    pub(crate) objects: BTreeSet<String>,
+    /// Objects of withdrawn saves, kept until each expires.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) withdrawn: Vec<PinnedUntil>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PinnedUntil {
+    pub(crate) until: DateTime<Utc>,
     pub(crate) objects: BTreeSet<String>,
 }
 
@@ -302,18 +313,15 @@ impl Repository {
         Ok(paths)
     }
 
-    /// Replay the origin's newer commits into this held clone's history. The
-    /// working files take them in afterwards, as in any pull.
-    pub(super) async fn take_in_origin(&self) -> Result<()> {
+    /// Replay the origin's newer commits into this held clone's history, or
+    /// return the items of the first one it cannot take. The working files
+    /// take them in afterwards, as in any pull.
+    pub(super) async fn take_in_origin(&self) -> Result<std::result::Result<(), Vec<ItemId>>> {
         let mut held = read_held(self.metadata_path())?;
         let head = self.head_repo_seq()?;
         let last = match replay(&self.origin_core(), self.core(), self.repository_id(), held.origin_seq).await? {
             Ok(last) => last,
-            Err(items) => {
-                return Err(LocalError::HeldConflict {
-                    paths: self.item_paths(&items).await?,
-                });
-            }
+            Err(items) => return Ok(Err(items)),
         };
         // Sequenced but not yet in the working files: the pull writes them.
         if self.head_repo_seq()? != head {
@@ -324,18 +332,46 @@ impl Repository {
             held.origin_seq = last;
             write_held(self.metadata_path(), &held)?;
         }
-        Ok(())
+        Ok(Ok(()))
     }
 
-    /// Take the held commits out of this clone's history copy, leaving their
-    /// changes in the working files, which are then based on the last commit
-    /// below them that the origin has.
-    pub(super) async fn unwind_held(&self) -> Result<()> {
-        let commits = self.held_commits().await?.unwrap_or_default();
-        if commits.is_empty() {
-            return Ok(());
+    /// The origin moved `items` past the held commits. Withdraw the first held
+    /// commit that changes one of them and every later one, keeping those
+    /// before it, until the origin's newer commits replay. Returns the labels
+    /// the withdrawn commits are recorded under.
+    pub(super) async fn withdraw_held(&self, mut items: Vec<ItemId>) -> Result<Vec<String>> {
+        let mut labels = Vec::new();
+        loop {
+            let commits = self.held_commits().await?.unwrap_or_default();
+            if commits.is_empty() {
+                return Err(LocalError::Integrity("the origin's history does not replay without held commits".into()));
+            }
+            let conflicting: HashSet<&ItemId> = items.iter().collect();
+            let mut keep = commits.len() - 1;
+            for (index, commit_id) in commits.iter().enumerate() {
+                let commit_id = CommitId::parse(commit_id).map_err(|error| LocalError::Integrity(error.to_string()))?;
+                let events = self.core().list_events_for_commit(self.repository_id().clone(), commit_id, UNBOUNDED).await?;
+                if events.iter().any(|event| conflicting.contains(&event.item_id)) {
+                    keep = index;
+                    break;
+                }
+            }
+            labels.extend(self.unwind_held(&commits[keep..], keep > 0).await?);
+            match self.take_in_items().await? {
+                Ok(()) => return Ok(labels),
+                Err(next) => items = next,
+            }
         }
-        let skip: HashSet<&str> = commits.iter().map(String::as_str).collect();
+    }
+
+    /// Record `withdrawn`, the last of the held commits, and take them out of
+    /// this clone's history copy, leaving their changes in the working files,
+    /// which are then based on the copy without them. `keeps` says whether
+    /// held commits remain before them.
+    async fn unwind_held(&self, withdrawn: &[String], keeps: bool) -> Result<Vec<String>> {
+        let skip: HashSet<&str> = withdrawn.iter().map(String::as_str).collect();
+        let held_ids: HashSet<String> = self.held_commits().await?.unwrap_or_default().into_iter().collect();
+        let saves = self.build_withdrawn(withdrawn).await?;
         let repo_id = self.repository_id();
         let directory = self.metadata_path().join("tmp").join(format!("unwind-{}", Uuid::new_v4()));
         std::fs::create_dir(&directory).at("create", &directory)?;
@@ -359,10 +395,15 @@ impl Repository {
                     if skip.contains(commit.commit_id.as_str()) {
                         continue;
                     }
-                    let (proposal, ref_events) = stored_proposal(self.core(), repo_id, &commit).await?;
+                    let (mut proposal, ref_events) = stored_proposal(self.core(), repo_id, &commit).await?;
+                    if held_ids.contains(commit.commit_id.as_str()) {
+                        // Kept as made: an HTTPS clone tells a sent commit by
+                        // an operation ID equal to its commit ID.
+                        proposal.operation_id = Some(self.commit_operation_id(&commit.commit_id)?);
+                    }
                     if apply(&target, repo_id, &commit, proposal, ref_events).await?.is_err() {
                         return Err(LocalError::Integrity(format!(
-                            "commit {} does not replay without the held commits",
+                            "commit {} does not replay without the withdrawn commits",
                             commit.commit_id
                         )));
                     }
@@ -372,13 +413,18 @@ impl Repository {
                 }
             }
             let head = crate::repository::head_repo_seq(&storage, repo_id)?;
+            let held = read_held(self.metadata_path())?;
             let unwind = Unwind {
-                commits: commits.clone(),
+                commits: withdrawn.to_vec(),
                 baseline: baseline.unwrap_or(head),
-                held: Held { pushed_seq: head, ..read_held(self.metadata_path())? },
+                // Commits through `pushed_seq` precede every held one, so they
+                // keep their sequences.
+                held: Held { pushed_seq: if keeps { held.pushed_seq } else { head }, ..held },
             };
             rusqlite::Connection::open(storage.path())?.query_row("PRAGMA journal_mode=WAL", [], |_| Ok(()))?;
             self.write_json_intent(UNWIND_INTENT_NAME, "unwind", &unwind)?;
+            // Recorded before the copy loses them; an unwind cut short forgets them.
+            let labels = self.add_withdrawn(saves)?;
             // One transaction replaces the copy's content; the connections
             // this process holds read the new content from their next query.
             let source = rusqlite::Connection::open(storage.path())?;
@@ -387,16 +433,17 @@ impl Repository {
             if step != rusqlite::backup::StepResult::Done {
                 return Err(LocalError::Integrity(format!("history copy was not replaced: {step:?}")));
             }
-            Ok(unwind)
+            Ok((unwind, labels))
         }
         .await;
         let _ = std::fs::remove_dir_all(&directory);
-        self.finish_unwind(&result?)?;
+        let (unwind, labels) = result?;
+        self.finish_unwind(&unwind)?;
         self.recover_current().await?;
         if self.remote().is_none() {
             self.pin_held_objects(&[]).await?;
         }
-        Ok(())
+        Ok(labels)
     }
 
     /// Base the working tree on the copy without the held commits. The file
@@ -417,6 +464,7 @@ impl Repository {
         for commit_id in &unwind.commits {
             let commit_id = CommitId::parse(commit_id).map_err(|error| LocalError::Integrity(error.to_string()))?;
             if self.core().get_commit(self.repository_id().clone(), commit_id).await?.is_some() {
+                self.forget_withdrawn(&unwind.commits)?;
                 return self.clear_intent(UNWIND_INTENT_NAME);
             }
         }
@@ -470,7 +518,7 @@ impl Repository {
         }
         let pulled = self.pull().await?;
         if !pulled.unwound.is_empty() {
-            return Err(LocalError::HeldMerged { paths: pulled.unwound });
+            return Err(LocalError::HeldMerged { paths: pulled.unwound, withdrawn: pulled.withdrawn });
         }
         let pushed = self.held_commits().await?.unwrap_or_default();
         // A reservation from any working tree refuses these commits as it
@@ -533,8 +581,9 @@ impl Repository {
         if self.held_commits().await?.is_none_or(|commits| commits.is_empty()) && extra.is_empty() {
             objects.clear();
         }
+        let withdrawn = self.withdrawn_pins()?;
         let path = pin_path(self.store_path(), self.root_path());
-        if objects.is_empty() {
+        if objects.is_empty() && withdrawn.is_empty() {
             return match std::fs::remove_file(&path) {
                 Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(LocalError::Io {
                     action: "remove held-object pin",
@@ -554,6 +603,7 @@ impl Repository {
         let pin = Pin {
             clone: self.root_path().to_path_buf(),
             objects,
+            withdrawn,
         };
         let temporary = self.store_path().join("tmp").join(format!("pin-{}.tmp", Uuid::new_v4()));
         std::fs::write(&temporary, serde_json::to_vec(&pin)?).at("write", &temporary)?;

@@ -435,6 +435,7 @@ impl Repository {
     pub async fn verify_complete(&self) -> Result<crate::portable::VerificationReport> {
         let report = self.portable_view()?.verify().await?;
         self.verify_named_versions().await?;
+        self.verify_withdrawn()?;
         self.status().await?;
         Ok(report)
     }

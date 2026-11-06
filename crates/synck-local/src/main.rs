@@ -325,6 +325,14 @@ enum Command {
     },
     /// List items currently in the repository trash.
     Deleted,
+    /// List withdrawn saves: held commits a pull took back out of the history.
+    ///
+    /// Each is kept for 90 days after it was withdrawn, with its commit ID, a
+    /// label such as w2, and the bytes it saved.
+    Withdrawn {
+        #[command(subcommand)]
+        command: Option<WithdrawnCommand>,
+    },
     /// Recover a trashed item while preserving its identity and history.
     Recover {
         /// Path the item had when it was deleted, or its item ID from `deleted`.
@@ -722,6 +730,33 @@ enum MonitorCommand {
     Status,
     /// Stop the repository monitor if it is running.
     Stop,
+}
+
+#[derive(Debug, Subcommand)]
+enum WithdrawnCommand {
+    /// Show what a withdrawn save changed.
+    Show {
+        /// Its label, such as w2, or its complete commit ID.
+        save: String,
+    },
+    /// Copy the bytes a withdrawn save gave a file to a new destination.
+    Export {
+        /// Its label, such as w2, or its complete commit ID.
+        save: String,
+        /// The file, by its path in the save.
+        path: PathBuf,
+        /// New file to write; it must not exist.
+        destination: PathBuf,
+    },
+    /// Remove withdrawn saves and release their content.
+    Discard {
+        /// Labels or complete commit IDs.
+        #[arg(required_unless_present = "all", conflicts_with = "all")]
+        saves: Vec<String>,
+        /// Remove every withdrawn save.
+        #[arg(long)]
+        all: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -1221,6 +1256,7 @@ async fn run_checkout(
             };
             let conflicts = repository.conflicts().map_err(|error| (error, false))?;
             let skipped = repository.skipped_entries().map_err(|error| (error, false))?;
+            let withdrawn = repository.withdrawn().map_err(|error| (error, false))?.len();
             print_path_warnings(&warnings);
             if json {
                 let mut status = status_json(&changes);
@@ -1239,6 +1275,9 @@ async fn run_checkout(
                 if !conflicts.is_empty() {
                     status["conflicts"] = json!(conflicts);
                 }
+                if withdrawn != 0 {
+                    status["withdrawn"] = json!(withdrawn);
+                }
                 println!("{status}");
             } else {
                 if info.origin.is_some() {
@@ -1255,6 +1294,11 @@ async fn run_checkout(
                         ),
                         None => println!("conflict: {}; synck resolve when done", visible(&conflict.path)),
                     }
+                }
+                match withdrawn {
+                    0 => {}
+                    1 => println!("1 withdrawn save; synck withdrawn lists it"),
+                    count => println!("{count} withdrawn saves; synck withdrawn lists them"),
                 }
                 let now = chrono::Utc::now().timestamp();
                 for lock in &reservations {
@@ -1610,6 +1654,91 @@ async fn run_checkout(
             Ok(ExitCode::SUCCESS)
         }
         .await,
+        Command::Withdrawn { command } => async {
+            match command {
+                None => {
+                    let saves = repository.withdrawn()?;
+                    if json {
+                        println!(
+                            "{}",
+                            json!({
+                                "schema_version": cli_json::SCHEMA_VERSION,
+                                "withdrawn": saves.iter().map(cli_json::withdrawn_save).collect::<Vec<_>>(),
+                            })
+                        );
+                    }
+                    for save in saves.iter().filter(|_| !json) {
+                        let saved_at = save.saved_at.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M %:z");
+                        let mut line = format!(
+                            "{} | {saved_at} | {}",
+                            styled(COMMIT_STYLE, &save.name()),
+                            visible(&save.metadata.author_id)
+                        );
+                        if let Some(message) = save.metadata.message.as_deref() {
+                            line.push_str(" | ");
+                            line.push_str(&one_line_message(message));
+                        }
+                        let paths: Vec<&str> = save.changes.iter().map(|change| change.path.as_str()).collect();
+                        line.push_str(&format!(
+                            " | {} | expires {}",
+                            visible(&paths.join(", ")),
+                            save.expires_at().with_timezone(&chrono::Local).format("%Y-%m-%d")
+                        ));
+                        anstream::println!("{line}");
+                    }
+                }
+                Some(WithdrawnCommand::Show { save }) => {
+                    let save = repository.withdrawn_save(&save)?;
+                    if json {
+                        println!(
+                            "{}",
+                            json!({"schema_version": cli_json::SCHEMA_VERSION, "withdrawn": cli_json::withdrawn_save(&save)})
+                        );
+                    } else {
+                        println!(
+                            "{} {} {} {} {}",
+                            save.name(),
+                            save.commit_id,
+                            save.saved_at.to_rfc3339(),
+                            visible(&save.metadata.author_id),
+                            visible_lines(save.metadata.message.as_deref().unwrap_or(""))
+                        );
+                        println!(
+                            "withdrawn {}, kept until {}",
+                            save.withdrawn_at.to_rfc3339(),
+                            save.expires_at().to_rfc3339()
+                        );
+                        print_changes(&save.changes, align_change_markers);
+                    }
+                }
+                Some(WithdrawnCommand::Export { save, path, destination }) => {
+                    repository.export_withdrawn(&current, &save, &path, &destination).await?;
+                    print_outcome(
+                        json,
+                        json!({"exported": path, "withdrawn": save, "destination": destination}),
+                        format_args!("exported {} from {save} to {}", path.display(), destination.display()),
+                    );
+                }
+                Some(WithdrawnCommand::Discard { saves, all }) => {
+                    let discarded = repository.discard_withdrawn(&saves, all).await?;
+                    print_outcome(
+                        json,
+                        json!({"discarded": discarded}),
+                        format_args!(
+                            "{}",
+                            if discarded.is_empty() {
+                                "nothing to discard".to_string()
+                            } else {
+                                format!("discarded {}", discarded.join(", "))
+                            }
+                        ),
+                    );
+                }
+            }
+            Ok::<_, LocalError>(ExitCode::SUCCESS)
+        }
+        .await
+        .map_err(|error| (error, false)),
         Command::Recover { item_id, message } => async {
             let commit_id = repository
                 .recover_item(&item_id, &message)
@@ -1799,6 +1928,7 @@ async fn run_checkout(
                     "updated": outcome.updated,
                     "conflicts": outcome.conflicts,
                     "unwound": outcome.unwound,
+                    "withdrawn": outcome.withdrawn,
                     "checkout_paths": repository.checkout_paths(),
                 }),
                 format_args!(
@@ -1816,8 +1946,9 @@ async fn run_checkout(
             );
             if !json && !outcome.unwound.is_empty() {
                 println!(
-                    "held commits changed {}, which the repository changed too; their changes are back in the working files, merged with the repository's: check them, then commit and push",
-                    visible(&outcome.unwound.join(", "))
+                    "held commits changed {}, which the repository changed too; withdrawn as {} (synck withdrawn lists them) and their changes are back in the working files, merged with the repository's: check them, then commit and push",
+                    visible(&outcome.unwound.join(", ")),
+                    outcome.withdrawn.join(", ")
                 );
             }
             if !json && !outcome.conflicts.is_empty() {
@@ -2035,12 +2166,16 @@ async fn run_checkout(
                 json!({
                     "removed_objects": report.removed_objects,
                     "removed_bytes": report.removed_bytes,
+                    "expired_withdrawn": report.expired_withdrawn,
                 }),
                 format_args!(
                     "removed_objects {}\nremoved_bytes {}",
                     report.removed_objects, report.removed_bytes
                 ),
             );
+            if !json && !report.expired_withdrawn.is_empty() {
+                println!("expired withdrawn saves {}", report.expired_withdrawn.join(", "));
+            }
             Ok(ExitCode::SUCCESS)
         }
         .await,
