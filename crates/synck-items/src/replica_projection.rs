@@ -75,7 +75,9 @@ pub fn apply_replica_item_event(
             item_type: create.item_type.clone(),
             item_subtype: ITEM_SUBTYPE_STANDARD.to_string(),
             name: create.name.clone().unwrap_or_default(),
-            parent_folder_id: create.parent_folder_id.clone(),
+            // Records are filed through their link; this is the display
+            // folder, not a rewrite of their canonical non-tree parent.
+            parent_folder_id: create.parent_folder_id.clone().or_else(|| create.link.clone()),
             lifecycle_state: LifecycleState::Live,
             metadata_json: serde_json::json!({}),
             color_metadata: None,
@@ -98,7 +100,7 @@ pub fn apply_replica_item_event(
             "non-contiguous item sequence for {item_id}"
         )));
     }
-    if let Some(parent) = proposal.set_parent.as_ref() {
+    if let Some(parent) = proposal.set_parent.as_ref().or(proposal.set_link.as_ref()) {
         item.parent_folder_id.clone_from(parent);
     }
     if let Some(name) = proposal.set_name.as_ref() {
