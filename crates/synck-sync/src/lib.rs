@@ -168,6 +168,8 @@ pub enum ProposalRecord {
     Item(EventProposal),
     Ref(RefEventProposal),
     Guard(ItemHead),
+    /// Exact subtree membership, authenticated in the guard stream.
+    SubtreeGuard(synck_vcs::types::SubtreeClosureGuard),
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

@@ -67,6 +67,7 @@ pub struct ProposalVerifier {
     guards_hasher: Sha256,
     refs_started: bool,
     previous_guard: Option<ItemId>,
+    previous_subtree: Option<ItemId>,
 }
 impl ProposalVerifier {
     pub fn new(
@@ -90,6 +91,7 @@ impl ProposalVerifier {
             guards_hasher: Sha256::new(),
             refs_started: false,
             previous_guard: None,
+            previous_subtree: None,
         })
     }
     pub fn next_offset(&self) -> u64 {
@@ -117,7 +119,10 @@ impl ProposalVerifier {
         for record in &page.records {
             match record {
                 ProposalRecord::Item(event) => {
-                    if next.refs_started || next.previous_guard.is_some() {
+                    if next.refs_started
+                        || next.previous_guard.is_some()
+                        || next.previous_subtree.is_some()
+                    {
                         return Err(invalid("item follows ref or guard"));
                     }
                     if event.item_id.is_none()
@@ -130,7 +135,7 @@ impl ProposalVerifier {
                     next.event(0, canonical_event_proposal_bytes(event)?)?;
                 }
                 ProposalRecord::Ref(event) => {
-                    if next.previous_guard.is_some() {
+                    if next.previous_guard.is_some() || next.previous_subtree.is_some() {
                         return Err(invalid("ref follows guard"));
                     }
                     if event.event_type.trim().is_empty() || event.base_ref_seq < 0 {
@@ -140,7 +145,8 @@ impl ProposalVerifier {
                     next.event(1, canonical_ref_event_proposal_bytes(event)?)?;
                 }
                 ProposalRecord::Guard(guard) => {
-                    if guard.head_seq < 1
+                    if next.previous_subtree.is_some()
+                        || guard.head_seq < 1
                         || next
                             .previous_guard
                             .as_ref()
@@ -157,6 +163,37 @@ impl ProposalVerifier {
                         .ok_or_else(|| invalid("guard count overflow"))?;
                     next.previous_guard = Some(guard.item_id.clone());
                 }
+                ProposalRecord::SubtreeGuard(guard) => {
+                    if next
+                        .previous_subtree
+                        .as_ref()
+                        .is_some_and(|id| id >= &guard.root_item_id)
+                        || (guard.require_empty_live_descendants
+                            && !guard.expected_non_tombstoned_descendants.is_empty())
+                        || guard
+                            .expected_non_tombstoned_descendants
+                            .iter()
+                            .any(|(id, seq)| *seq < 1 || id == &guard.root_item_id)
+                        || guard
+                            .expected_non_tombstoned_descendants
+                            .windows(2)
+                            .any(|pair| pair[0].0 >= pair[1].0)
+                    {
+                        return Err(invalid(
+                            "subtree guards must be sorted with exact positive heads",
+                        ));
+                    }
+                    // Domain separation preserves legacy head-guard hashes and
+                    // prevents interpreting a subtree as a plain item guard.
+                    let value = serde_json::to_value(record).map_err(|e| invalid(e.to_string()))?;
+                    next.guards_hasher
+                        .update(Sha256::digest(canonical_json_bytes(&value)?));
+                    next.guards = next
+                        .guards
+                        .checked_add(1)
+                        .ok_or_else(|| invalid("guard count overflow"))?;
+                    next.previous_subtree = Some(guard.root_item_id.clone());
+                }
             }
         }
         next.offset = next
@@ -172,7 +209,8 @@ impl ProposalVerifier {
             .checked_add(1)
             .filter(|n| *n <= i32::MAX as u64)
             .ok_or_else(|| invalid("event count does not fit the canonical representation"))?;
-        self.events_hasher.push(family, &Sha256::digest(payload).into());
+        self.events_hasher
+            .push(family, &Sha256::digest(payload).into());
         Ok(())
     }
     /// Build the final request from the exact uploaded stream. Guards bind the

@@ -702,6 +702,12 @@ fn lifecycle_closure<'a>(
         }
         let item = &current[&item_id];
         if item.lifecycle_state != ProfileLifecycleState::Tombstoned {
+            if FileFolderKind::from_item_type(&item.item_type).is_none() {
+                return Err(error(
+                    SemanticErrorCode::LifecycleMismatch,
+                    "FILE/FOLDER lifecycle context contains a product item",
+                ));
+            }
             if !lifecycle_items.insert(item_id.clone()) {
                 return Err(error(
                     SemanticErrorCode::ConflictingIntent,

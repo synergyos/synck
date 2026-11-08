@@ -90,7 +90,7 @@ fn published(request: &SubmitRequest, records: &[ProposalRecord]) -> PublishedCo
                     created_at: now(),
                 }))
             }
-            ProposalRecord::Guard(_) => None,
+            ProposalRecord::Guard(_) | ProposalRecord::SubtreeGuard(_) => None,
         })
         .collect();
     let checkpoint = digest(
@@ -897,4 +897,81 @@ fn guarded_vector_binds_events_guards_and_request() {
     let validated = upload(&request, &records, 1).finish(&request, now()).unwrap();
     assert_eq!(validated.commit_id.as_str(), guarded["commit_id"]);
     assert_eq!(validated.request_digest.as_str(), guarded["request_digest"]);
+}
+
+#[test]
+fn subtree_guards_bind_exact_closure_without_changing_legacy_commit_identity() {
+    let initial = request();
+    let mut rec = records();
+    let guard = SubtreeClosureGuard {
+        root_item_id: ItemId::parse("019a2900-0000-7000-8000-000000000003").unwrap(),
+        expected_non_tombstoned_descendants: vec![(
+            ItemId::parse("019a2900-0000-7000-8000-000000000004").unwrap(),
+            7,
+        )],
+        require_empty_live_descendants: false,
+    };
+    rec.push(ProposalRecord::SubtreeGuard(guard.clone()));
+    let state = upload(&initial, &rec, 1);
+    let guarded = state.request(initial.metadata.clone()).unwrap();
+    state.finish(&guarded, now()).unwrap();
+    assert_eq!(guarded.guard_count, initial.guard_count + 1);
+    assert_eq!(
+        validate_submit(&guarded).unwrap().commit_id,
+        validate_submit(&initial).unwrap().commit_id
+    );
+    assert_ne!(
+        validate_submit(&guarded).unwrap().request_digest,
+        validate_submit(&initial).unwrap().request_digest
+    );
+    let mut changed = rec.clone();
+    let ProposalRecord::SubtreeGuard(changed_guard) = changed.last_mut().unwrap() else {
+        unreachable!()
+    };
+    changed_guard.expected_non_tombstoned_descendants[0].1 += 1;
+    assert!(
+        upload(&initial, &changed, 1)
+            .finish(&guarded, now())
+            .is_err()
+    );
+    for invalid in [
+        SubtreeClosureGuard {
+            require_empty_live_descendants: true,
+            ..guard.clone()
+        },
+        SubtreeClosureGuard {
+            expected_non_tombstoned_descendants: vec![(guard.root_item_id.clone(), 1)],
+            ..guard.clone()
+        },
+    ] {
+        let mut verifier = verifier(&initial);
+        let page = ProposalPage {
+            repository: initial.repository.clone(),
+            operation_id: initial.operation_id.clone(),
+            offset: 0,
+            records: vec![records().remove(0), ProposalRecord::SubtreeGuard(invalid)],
+        };
+        assert!(verifier.push(&page, now()).is_err());
+        assert_eq!(verifier.next_offset(), 0);
+    }
+    let mut verifier = verifier(&initial);
+    assert!(
+        verifier
+            .push(
+                &ProposalPage {
+                    repository: initial.repository,
+                    operation_id: initial.operation_id,
+                    offset: 0,
+                    records: vec![
+                        ProposalRecord::SubtreeGuard(guard.clone()),
+                        ProposalRecord::Guard(ItemHead {
+                            item_id: guard.root_item_id,
+                            head_seq: 1
+                        })
+                    ]
+                },
+                now()
+            )
+            .is_err()
+    );
 }

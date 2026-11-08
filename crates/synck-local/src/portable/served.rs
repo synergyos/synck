@@ -58,6 +58,7 @@ pub struct Proposal {
     pub events: Vec<EventProposal>,
     pub ref_events: Vec<RefEventProposal>,
     pub guards: Vec<ItemHead>,
+    pub subtree_guards: Vec<synck_vcs::types::SubtreeClosureGuard>,
     /// Reservation tokens the writer holds, as `--lock-token` gives them.
     pub lock_tokens: Vec<String>,
 }
@@ -380,7 +381,7 @@ impl ServedRepository {
                 },
                 proposal.ref_events,
                 &guards,
-                &[],
+                &proposal.subtree_guards,
             )
             .await;
         let accepted = match accepted {

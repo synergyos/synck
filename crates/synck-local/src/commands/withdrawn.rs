@@ -72,7 +72,7 @@ impl WithdrawnSave {
             let references = match record {
                 ProposalRecord::Item(event) => synck_items::references::event_references(event),
                 ProposalRecord::Ref(event) => synck_items::references::ref_event_references(event),
-                ProposalRecord::Guard(_) => continue,
+                ProposalRecord::Guard(_) | ProposalRecord::SubtreeGuard(_) => continue,
             }
             .map_err(|error| LocalError::Integrity(error.to_string()))?;
             objects.extend(references.objects);
@@ -89,7 +89,7 @@ impl WithdrawnSave {
             let (family, bytes) = match record {
                 ProposalRecord::Item(event) => (COMMIT_EVENT_FAMILY_ITEM, canonical_event_proposal_bytes(event)?),
                 ProposalRecord::Ref(event) => (COMMIT_EVENT_FAMILY_REF, canonical_ref_event_proposal_bytes(event)?),
-                ProposalRecord::Guard(_) => {
+                ProposalRecord::Guard(_) | ProposalRecord::SubtreeGuard(_) => {
                     return Err(LocalError::Integrity(format!("withdrawn {} holds a head guard", self.name())));
                 }
             };

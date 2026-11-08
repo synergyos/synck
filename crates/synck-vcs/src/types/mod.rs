@@ -632,7 +632,8 @@ pub struct CommitRow {
 /// The root's ordinary proposal baseline protects the root itself. Descendant
 /// pairs are sorted by `item_id` and participate in the existing append head
 /// guards as well as transaction-time subtree membership validation.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SubtreeClosureGuard {
     pub root_item_id: ItemId,
     pub expected_non_tombstoned_descendants: Vec<(ItemId, i64)>,

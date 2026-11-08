@@ -136,7 +136,8 @@ the publication caller must finish the complete inventory before network writes.
 
 `ProposalPage` contains `repository`, `operation_id`, zero-based record `offset`
 and `records`. Records are tagged `{kind, value}`: `item` (`EventProposal`), then
-`ref` (`RefEventProposal`), then `guard` (`ItemHead`). An upload has one ordered
+`ref` (`RefEventProposal`), then `guard` (`ItemHead`), then optional
+`subtree_guard` (`SubtreeClosureGuard`). An upload has one ordered
 stream across all pages. Every event supplies a stable item ID. Head guards are
 unique, sorted by item ID, and assert a positive pre-commit head. There is no
 aggregate event, byte or guard-count cap. Guards are paged so they cannot become
@@ -149,7 +150,7 @@ a same-offset retry returns the original acknowledgement only for identical
 canonical records. Changed contents or gaps are rejected, never overwritten.
 A dropped reply does not justify a fresh operation ID. The authority may rebuild
 `ProposalVerifier` by replaying durable pages; it keeps only streaming digests,
-counts and one previous guard ID, not the whole proposal in memory.
+counts and the previous item/subtree guard IDs, not the whole proposal in memory.
 
 The final `SubmitRequest` contains:
 
@@ -163,8 +164,13 @@ guard_count, guards_digest
 `events_digest` is the existing format digest over each event's family byte and
 SHA-256 of its canonical payload, with all ordinary events before refs.
 `guards_digest` is SHA-256 of the concatenation of SHA-256 digests of each guard's
-canonical RFC 8785 JSON, in sorted order; an empty guard stream hashes empty
-bytes. `request_digest` hashes canonical RFC 8785 JSON of the final typed request,
+canonical RFC 8785 JSON, in sorted order. Subtree guards follow head guards,
+are unique and sorted by root ID, and hash their complete tagged record rather
+than the untagged value. They bind the exact sorted non-tombstoned descendant
+IDs and positive heads, or an explicit empty-live requirement. Both guard kinds
+count toward `guard_count`. An empty guard stream hashes empty bytes. Legacy
+head-only requests and commit identities remain unchanged. Older readers reject
+the new record; producers require an authority supporting subtree guards. `request_digest` hashes canonical RFC 8785 JSON of the final typed request,
 with `occurred_at` in the format's one spelling.
 It binds generation, operation, metadata and both stream summaries. Page size or
 boundaries do not affect these identities.
@@ -237,9 +243,13 @@ An event in a fragment is tagged by `event_family`. `item` has `repo_id`, `item_
 UTF-8 encoding is the event's exact canonical bytes, as in a history bundle. It is a
 string and not a nested object so that a JSON parser cannot change those bytes.
 
-A proposal record is `{"kind": "item" | "ref" | "guard", "value": ...}`. An `item`
+A proposal record is `{"kind": "item" | "ref" | "guard" | "subtree_guard", "value": ...}`. An `item`
 value is an event envelope with its `item_id`, a `ref` value is a ref envelope, and a
-`guard` value is an `ItemHead`.
+`guard` value is an `ItemHead`. A `subtree_guard` value has `root_item_id`,
+`expected_non_tombstoned_descendants` (sorted `[item_id, head_seq]` pairs),
+and `require_empty_live_descendants`. The empty-live mode cannot list descendants.
+Authorities pass these exact authenticated guards to checked Core acceptance;
+missing, moved-in, moved-out, or changed descendants reject the whole proposal.
 
 ## HTTP refusals
 

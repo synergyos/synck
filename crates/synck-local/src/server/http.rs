@@ -168,6 +168,7 @@ impl Server {
             events: Vec::new(),
             ref_events: Vec::new(),
             guards: Vec::new(),
+            subtree_guards: Vec::new(),
             lock_tokens,
         };
         for record in records {
@@ -175,6 +176,7 @@ impl Server {
                 ProposalRecord::Item(event) => proposal.events.push(event),
                 ProposalRecord::Ref(event) => proposal.ref_events.push(event),
                 ProposalRecord::Guard(guard) => proposal.guards.push(guard),
+                ProposalRecord::SubtreeGuard(guard) => proposal.subtree_guards.push(guard),
             }
         }
         self.uploads

@@ -1452,3 +1452,54 @@ fn accepted_commit(
         event_rows,
     )
 }
+
+#[test]
+fn lifecycle_rejects_product_members_instead_of_panicking() {
+    let root = item(100);
+    let child = item(101);
+    let rows = BTreeMap::from([
+        (
+            root.clone(),
+            current(
+                root.clone(),
+                "FOLDER",
+                None,
+                "folder",
+                1,
+                ProfileLifecycleState::Live,
+                None,
+            ),
+        ),
+        (
+            child.clone(),
+            current(
+                child.clone(),
+                "EMAIL",
+                Some(root.clone()),
+                "message",
+                2,
+                ProfileLifecycleState::Live,
+                None,
+            ),
+        ),
+    ]);
+    let proposal = IntentProposal {
+        message: None,
+        intents: vec![Intent::Trash {
+            root: ItemBase {
+                item_id: root,
+                base_seq: 1,
+            },
+            descendants: vec![ItemBase {
+                item_id: child,
+                base_seq: 2,
+            }],
+        }],
+    };
+    assert_eq!(
+        validate_and_materialize(&repo_id(), &proposal, &rows)
+            .unwrap_err()
+            .code,
+        SemanticErrorCode::LifecycleMismatch
+    );
+}
