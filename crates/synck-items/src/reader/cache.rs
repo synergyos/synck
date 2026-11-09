@@ -60,7 +60,7 @@ impl ItemReader {
         };
         let digest = digest(&state)?;
         serde_json::to_vec(&CachedReader {
-            version: 3,
+            version: 4,
             digest,
             state,
         })
@@ -74,7 +74,9 @@ impl ItemReader {
     /// input-size limits, confidentiality, checkpoint verification and authority.
     pub fn from_cache(expected_item_id: ItemId, bytes: &[u8]) -> Result<Self, ReadError> {
         let cache: CachedReader = serde_json::from_slice(bytes).map_err(invalid)?;
-        if cache.version != 3
+        // Version 3 predates canonical record filing-link projection. Its
+        // state checksum cannot detect a semantically stale projection.
+        if cache.version != 4
             || cache.state.item_id != expected_item_id
             || cache.digest != digest(&cache.state)?
         {

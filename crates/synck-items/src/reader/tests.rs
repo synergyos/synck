@@ -608,7 +608,9 @@ fn reader_cache_rejects_damage_wrong_identity_version_and_poison() {
     assert!(ItemReader::from_cache(ItemId::new(),&cache).is_err());
     let mut parsed:Value=serde_json::from_slice(&cache).unwrap();parsed["state"]["ref_seq"]=1.into();
     assert!(ItemReader::from_cache(id.clone(),&serde_json::to_vec(&parsed).unwrap()).is_err());
-    let mut parsed:Value=serde_json::from_slice(&cache).unwrap();parsed["version"]=1.into();
+    let mut parsed:Value=serde_json::from_slice(&cache).unwrap();
+    assert_eq!(parsed["version"],4);
+    parsed["version"]=3.into();
     assert!(ItemReader::from_cache(id.clone(),&serde_json::to_vec(&parsed).unwrap()).is_err());
     assert!(ItemReader::from_cache(id.clone(),&cache[..cache.len()/2]).is_err());
     let bad=event(&id,"CHAT::MESSAGE::SET_CONTENT",json!({"item_seq":999}),json_body("missing"));
