@@ -975,3 +975,20 @@ fn subtree_guards_bind_exact_closure_without_changing_legacy_commit_identity() {
             .is_err()
     );
 }
+
+#[test]
+fn repository_head_is_optional_authenticated_and_separate_from_commit_identity() {
+    let legacy = request();
+    let bytes = serde_json::to_value(&legacy).unwrap();
+    assert!(bytes.get("repository_head").is_none());
+    let original = validate_submit(&legacy).unwrap();
+    let mut guarded = legacy.clone();
+    guarded.repository_head = Some(0);
+    let checked = upload(&guarded,&records(),1).finish(&guarded,now()).unwrap();
+    assert_ne!(checked.request_digest,original.request_digest);
+    assert_eq!(checked.commit_id,original.commit_id);
+    guarded.repository_head = Some(1);
+    assert_ne!(validate_submit(&guarded).unwrap().request_digest,checked.request_digest);
+    guarded.repository_head = Some(i64::MAX as u64+1);
+    assert!(validate_submit(&guarded).is_err());
+}

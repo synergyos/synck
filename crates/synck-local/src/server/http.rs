@@ -162,6 +162,7 @@ impl Server {
         }
         let (validated, records) = self.uploads.staged(&request)?;
         let mut proposal = Proposal {
+            repository_head: request.repository_head,
             operation_id: request.operation_id.clone(),
             commit_id: validated.commit_id,
             metadata: request.metadata.clone(),

@@ -90,6 +90,19 @@ impl SqliteStorage {
         &self.path
     }
 
+    /// Compare the complete accepted repository state to a published cursor.
+    ///
+    /// The caller MUST hold the authority's exclusive repository write lock
+    /// through this check and append. SQLite's read alone is not a CAS. A sealed
+    /// unpublished commit invalidates the cursor even before it gets repo_seq.
+    pub fn repository_head_matches(&self, repo_id: &RepoId, expected: u64) -> Result<bool, StorageError> {
+        let expected = i64::try_from(expected).map_err(|_| StorageError::Other { detail:"repository head exceeds i64".into() })?;
+        self.open_readonly()?.query_row(
+            "SELECT COALESCE((SELECT MAX(repo_seq) FROM vcs_commits WHERE repo_id=?1),0)=?2 AND NOT EXISTS(SELECT 1 FROM vcs_commits WHERE repo_id=?1 AND commit_id IS NOT NULL AND repo_seq IS NULL)",
+            rusqlite::params![repo_id.as_str(),expected], |row|row.get(0),
+        ).map_err(map_sqlite_error)
+    }
+
     /// Install one already validated, sealed history commit atomically.
     ///
     /// This is deliberately narrower than append: it preserves the supplied

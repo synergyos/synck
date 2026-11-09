@@ -193,6 +193,11 @@ pub struct PageAck {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SubmitRequest {
+    /// Optional authority fence over the complete published repository state.
+    /// Acceptance also requires that no accepted commit remains unpublished.
+    /// Omitted requests retain their existing bytes and request digest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repository_head: Option<u64>,
     pub repository: RepositoryIdentity,
     pub operation_id: String,
     pub metadata: CommitMetadata,

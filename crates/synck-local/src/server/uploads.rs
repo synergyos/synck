@@ -214,10 +214,16 @@ impl Uploads {
         operation_id: &str,
         request_digest: &Sha256Digest,
     ) -> Result<()> {
-        open_existing(&self.state_root)?.execute(
-            "INSERT OR REPLACE INTO submissions (repo_id, operation_id, request_digest) VALUES (?1, ?2, ?3)",
+        let connection = open_existing(&self.state_root)?;
+        connection.execute(
+            "INSERT OR IGNORE INTO submissions (repo_id, operation_id, request_digest) VALUES (?1, ?2, ?3)",
             params![repo_id.as_str(), operation_id, request_digest.as_str()],
         )?;
+        let stored: String = connection.query_row(
+            "SELECT request_digest FROM submissions WHERE repo_id=?1 AND operation_id=?2",
+            params![repo_id.as_str(),operation_id],|row|row.get(0),
+        )?;
+        if stored != request_digest.as_str() { return Err(Error::OperationReused); }
         Ok(())
     }
 

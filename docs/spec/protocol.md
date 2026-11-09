@@ -156,6 +156,7 @@ The final `SubmitRequest` contains:
 
 ```text
 repository, operation_id
+repository_head?
 metadata: {author_id, committer_id, message, occurred_at}
 event_count, events_digest
 guard_count, guards_digest
@@ -174,6 +175,21 @@ the new record; producers require an authority supporting subtree guards. `reque
 with `occurred_at` in the format's one spelling.
 It binds generation, operation, metadata and both stream summaries. Page size or
 boundaries do not affect these identities.
+
+An optional `repository_head` fences the complete state used to plan an opaque
+application command. It is the non-negative published repository sequence
+(`0` for genesis), bounded by `i64::MAX`. The authority compares it while holding
+its exclusive repository write gate and also rejects any sealed accepted commit
+that has not yet been published. Checking only the published maximum would miss
+such a phantom. Every other append writer must share that gate. The check and
+append are one protected operation. An existing accepted operation receipt is
+returned before this fence, so retries remain valid after later commits. The
+field participates in `request_digest`, including device signatures over it;
+it does not change the canonical commit ID. Omission preserves old request
+bytes. Authorities may require the fence for application profiles whose opaque
+relations cannot be checked by the authority; generic public local acceptance
+keeps it optional. Older authorities reject the new field and must be upgraded
+before producers use it.
 
 `validate_submit` checks only the header and computes identity. The authority
 must call `ProposalVerifier::finish` against the actual staged pages, then prove
@@ -211,7 +227,7 @@ JSON integers.
 | `ProposalPage` | `repository`, `operation_id`, `offset`, `records` |
 | `PageAck` | `next_offset`, `expires_at` |
 | `CommitMetadata` | `author_id`, `committer_id`, `message?`, `occurred_at?` |
-| `SubmitRequest` | `repository`, `operation_id`, `metadata`, `event_count`, `events_digest`, `guard_count`, `guards_digest` |
+| `SubmitRequest` | `repository`, `operation_id`, `metadata`, `event_count`, `events_digest`, `guard_count`, `guards_digest`, optional `repository_head` |
 | `Receipt` | `operation_id`, `request_digest`, `commit_id`, `accepted_at`, `published?` (`Cursor`) |
 | `HistoryRequest` | `after` (`HistoryPosition`), `limit` |
 | `HistoryPosition` | `completed` (`Cursor`), `pending?` |

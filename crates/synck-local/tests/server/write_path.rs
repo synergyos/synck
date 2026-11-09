@@ -153,3 +153,48 @@ async fn an_upload_continues_after_a_restart() {
     assert!(matches!(serde_json::from_slice(&body).unwrap(), SubmitResult::Accepted { .. }));
 }
 
+
+#[tokio::test]
+async fn repository_head_fences_new_child_phantoms_and_replays_accepted_requests() {
+    use synck_sync::{RepositoryIdentity,SubmitRequest};
+    async fn stage(router:&Router,sync:&str,writer:&str,repository:&RepositoryIdentity,operation:&str,name:&str,head:Option<u64>)->SubmitRequest {
+        let (_,event)=create_file(&repository.repo_id,name,b"body");
+        let (metadata_id,metadata)=metadata_object(&event);
+        let (pages,mut request)=upload(repository,operation,vec![ProposalRecord::Item(event)]);
+        request.repository_head=head;
+        for (id,bytes) in [(metadata_id,metadata),(object_id(b"body"),b"body".to_vec())] {
+            assert_eq!(send(router,Method::PUT,&format!("{sync}/objects/{id}"),writer,bytes).await.0,StatusCode::NO_CONTENT);
+        }
+        for page in pages {
+            assert_eq!(send(router,Method::PUT,&format!("{sync}/uploads/{operation}/pages/{}",page.offset),writer,serde_json::to_vec(&page).unwrap()).await.0,StatusCode::OK);
+        }
+        request
+    }
+    async fn submit(router:&Router,sync:&str,writer:&str,request:&SubmitRequest)->SubmitResult {
+        let (status,body)=send(router,Method::POST,&format!("{sync}/proposals"),writer,serde_json::to_vec(request).unwrap()).await;
+        assert_eq!(status,StatusCode::OK,"{}",String::from_utf8_lossy(&body));
+        serde_json::from_slice(&body).unwrap()
+    }
+    let parent=tempfile::tempdir().unwrap();
+    let state=parent.path().join("state"); synck_local::server::init(&state).unwrap();
+    let root=parent.path().join("repository");
+    let repo_id=synck_local::init(&root,"owner").await.unwrap();
+    let writer=tokens::add(&state,"writer",Access::Write,&[repo_id.clone()]).unwrap();
+    let router=synck_local::server::router(Arc::new(Server::open(&state,&[root]).unwrap()));
+    let sync=format!("/v1/repositories/{repo_id}/sync");
+    let (_,raw)=send(&router,Method::GET,&format!("{sync}/capabilities"),&writer,vec![]).await;
+    let caps:Capabilities=serde_json::from_slice(&raw).unwrap();
+    let stale=stage(&router,&sync,&writer,&caps.repository,"stale-absence","parent-change",Some(caps.latest.repo_seq)).await;
+    let child=stage(&router,&sync,&writer,&caps.repository,"new-child","child",None).await;
+    let SubmitResult::Accepted{receipt:child_receipt}=submit(&router,&sync,&writer,&child).await else {panic!("child rejected")};
+    assert!(matches!(submit(&router,&sync,&writer,&stale).await,SubmitResult::Conflict{..}));
+    let mut rebound=stale.clone(); rebound.repository_head=Some(child_receipt.published.as_ref().unwrap().repo_seq);
+    assert_eq!(send(&router,Method::POST,&format!("{sync}/proposals"),&writer,serde_json::to_vec(&rebound).unwrap()).await.0,StatusCode::CONFLICT);
+    let guarded=stage(&router,&sync,&writer,&caps.repository,"guarded","guarded",Some(child_receipt.published.unwrap().repo_seq)).await;
+    let SubmitResult::Accepted{receipt}=submit(&router,&sync,&writer,&guarded).await else {panic!("guarded request rejected")};
+    let next=stage(&router,&sync,&writer,&caps.repository,"later","later",None).await;
+    assert!(matches!(submit(&router,&sync,&writer,&next).await,SubmitResult::Accepted{..}));
+    let SubmitResult::Accepted{receipt:replay}=submit(&router,&sync,&writer,&guarded).await else {panic!("accepted retry hit stale head fence")};
+    assert_eq!(replay.commit_id,receipt.commit_id);
+    assert_eq!(replay.accepted_at,receipt.accepted_at);
+}

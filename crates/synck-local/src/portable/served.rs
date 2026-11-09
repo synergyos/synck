@@ -51,6 +51,7 @@ pub enum PackEntry {
 }
 
 pub struct Proposal {
+    pub repository_head: Option<u64>,
     pub operation_id: String,
     /// What the submission's digests say the commit is.
     pub commit_id: CommitId,
@@ -333,6 +334,13 @@ impl ServedRepository {
                 return Err(invalid("operation ID was already used for a different commit"));
             }
             return Ok(Acceptance::Accepted(self.receipt(commit)?));
+        }
+        if let Some(head) = proposal.repository_head
+            && !self.storage.repository_head_matches(&self.repo_id,head).map_err(corrupt)?
+        {
+            // A cursor fence can fail without any touched item changing (for
+            // example, a new child elsewhere). The client must pull full history.
+            return Ok(Acceptance::Conflict(Vec::new()));
         }
         let tokens = &proposal.lock_tokens;
         agent_locks::validate_tokens(tokens)?;

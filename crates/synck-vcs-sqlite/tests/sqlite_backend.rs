@@ -2868,3 +2868,20 @@ async fn filing_in_a_domain_repository_goes_through_the_domain() {
         tombstone(&shared, "TASK"), tombstone(&folder, "FOLDER"),
     ], vec![])).await.unwrap();
 }
+
+#[tokio::test]
+async fn repository_head_excludes_accepted_unpublished_phantoms() {
+    let (_directory,backend) = backend();
+    backend.init_schema().await.unwrap();
+    let repo_id = RepoId::new();
+    let repo = Repo::new(Storage::new(Arc::new(backend.clone())),CoreConfig::default());
+    assert!(backend.repository_head_matches(&repo_id,0).unwrap());
+    repo.append(repo_id.clone(),commit(vec![create_event("first")])).await.unwrap();
+    assert!(!backend.repository_head_matches(&repo_id,0).unwrap());
+    repo.sequence_repo_activity(repo_id.clone(),10).await.unwrap();
+    assert!(backend.repository_head_matches(&repo_id,1).unwrap());
+    repo.append(repo_id.clone(),commit(vec![create_event("new-child")])).await.unwrap();
+    // The touched head did not change and publication did not run: checking
+    // MAX(repo_seq) alone would still incorrectly accept the stale cursor.
+    assert!(!backend.repository_head_matches(&repo_id,1).unwrap());
+}
