@@ -5,6 +5,10 @@
 /// `msg_parser` 0.3.6 fallback only recognizes the non-standard
 /// `htmltag N` spelling, so real Outlook bodies leak one destination marker
 /// (`*`) per fragment into the resulting HTML.
+///
+/// Text bytes, literal or `\'hh`, are in the `\ansicpg` codepage (Windows-1252
+/// when absent), so `\'80` is the euro sign rather than U+0080. `\uN` writes a
+/// UTF-16 unit and is followed by `\ucN` fallback characters that are dropped.
 pub(super) fn extract_encapsulated_html(rtf: &[u8]) -> Option<String> {
     let rtf = std::str::from_utf8(rtf).ok()?;
     if !rtf.contains("\\fromhtml1") {
@@ -12,7 +16,7 @@ pub(super) fn extract_encapsulated_html(rtf: &[u8]) -> Option<String> {
     }
 
     let bytes = rtf.as_bytes();
-    let mut html = String::with_capacity(bytes.len());
+    let mut html = HtmlText::new(ansi_codepage(bytes));
     let mut index = 0;
     let mut in_rtf_only_region = false;
 
@@ -51,13 +55,95 @@ pub(super) fn extract_encapsulated_html(rtf: &[u8]) -> Option<String> {
             b'{' | b'}' | b'\r' | b'\n' => index += 1,
             b'\\' => collect_escape_or_skip_control(bytes, &mut index, &mut html),
             byte => {
-                html.push(byte as char);
+                html.push_byte(byte);
                 index += 1;
             }
         }
     }
 
-    (!html.is_empty()).then_some(html)
+    html.finish()
+}
+
+/// Decoded HTML plus the codepage bytes not yet decoded, so multi-byte
+/// codepages see whole characters.
+struct HtmlText {
+    text: String,
+    pending: Vec<u8>,
+    codepage: u32,
+    fallback_chars: u32,
+    skip: u32,
+    high_surrogate: Option<u16>,
+}
+
+impl HtmlText {
+    fn new(codepage: u32) -> Self {
+        Self {
+            text: String::new(),
+            pending: Vec::new(),
+            codepage,
+            fallback_chars: 1,
+            skip: 0,
+            high_surrogate: None,
+        }
+    }
+
+    fn push_byte(&mut self, byte: u8) {
+        if self.skip > 0 {
+            self.skip -= 1;
+            return;
+        }
+        self.pending.push(byte);
+    }
+
+    fn push_utf16(&mut self, unit: u16) {
+        self.flush();
+        self.skip = self.fallback_chars;
+        if (0xd800..0xdc00).contains(&unit) {
+            self.high_surrogate = Some(unit);
+            return;
+        }
+        let units = match self.high_surrogate.take() {
+            Some(high) => vec![high, unit],
+            None => vec![unit],
+        };
+        self.text
+            .extend(char::decode_utf16(units).map(|c| c.unwrap_or(char::REPLACEMENT_CHARACTER)));
+    }
+
+    fn flush(&mut self) {
+        if self.pending.is_empty() {
+            return;
+        }
+        let decoded =
+            super::decode_msg_string8(&self.pending, Some(self.codepage)).unwrap_or_else(|| {
+                super::decode_msg_string8(&self.pending, Some(1252)).unwrap_or_default()
+            });
+        self.text.push_str(&decoded);
+        self.pending.clear();
+    }
+
+    fn finish(mut self) -> Option<String> {
+        self.flush();
+        (!self.text.is_empty()).then_some(self.text)
+    }
+}
+
+fn ansi_codepage(bytes: &[u8]) -> u32 {
+    let Some(start) = bytes
+        .windows(b"\\ansicpg".len())
+        .position(|window| window == b"\\ansicpg")
+    else {
+        return 1252;
+    };
+    let digits = &bytes[start + b"\\ansicpg".len()..];
+    let end = digits
+        .iter()
+        .position(|byte| !byte.is_ascii_digit())
+        .unwrap_or(digits.len());
+    std::str::from_utf8(&digits[..end])
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(1252)
 }
 
 fn is_non_html_destination_group(bytes: &[u8], index: usize) -> bool {
@@ -139,7 +225,7 @@ fn skip_group(bytes: &[u8], index: &mut usize) {
     }
 }
 
-fn collect_htmltag_group(bytes: &[u8], index: &mut usize, html: &mut String) {
+fn collect_htmltag_group(bytes: &[u8], index: &mut usize, html: &mut HtmlText) {
     let mut depth = 1usize;
     while *index < bytes.len() && depth > 0 {
         match bytes[*index] {
@@ -154,45 +240,50 @@ fn collect_htmltag_group(bytes: &[u8], index: &mut usize, html: &mut String) {
             b'\r' | b'\n' => *index += 1,
             b'\\' => collect_escape_or_skip_control(bytes, index, html),
             byte => {
-                html.push(byte as char);
+                html.push_byte(byte);
                 *index += 1;
             }
         }
     }
 }
 
-fn collect_escape_or_skip_control(bytes: &[u8], index: &mut usize, html: &mut String) {
+fn collect_escape_or_skip_control(bytes: &[u8], index: &mut usize, html: &mut HtmlText) {
     *index += 1;
     let Some(&next) = bytes.get(*index) else {
         return;
     };
     match next {
-        b'\\' => {
-            html.push('\\');
-            *index += 1;
-        }
-        b'{' => {
-            html.push('{');
-            *index += 1;
-        }
-        b'}' => {
-            html.push('}');
+        b'\\' | b'{' | b'}' => {
+            html.push_byte(next);
             *index += 1;
         }
         b'\'' if *index + 2 < bytes.len() => {
             if let Ok(hex) = std::str::from_utf8(&bytes[*index + 1..*index + 3])
-                && let Ok(byte) = u8::from_str_radix(hex, 16) {
-                    html.push(byte as char);
-                }
+                && let Ok(byte) = u8::from_str_radix(hex, 16)
+            {
+                html.push_byte(byte);
+            }
             *index += 3;
         }
         b'\r' | b'\n' | b'*' => *index += 1,
         _ => {
+            let word_start = *index;
             while bytes.get(*index).is_some_and(u8::is_ascii_alphabetic) {
                 *index += 1;
             }
+            let word = &bytes[word_start..*index];
+            let number_start = *index;
             skip_signed_number(bytes, index);
+            let number = std::str::from_utf8(&bytes[number_start..*index])
+                .ok()
+                .and_then(|value| value.parse::<i32>().ok());
             skip_control_delimiter(bytes, index);
+            match (word, number) {
+                // RTF writes units above 32767 as negative numbers.
+                (b"u", Some(value)) => html.push_utf16(value as u16),
+                (b"uc", Some(value)) => html.fallback_chars = value.max(0) as u32,
+                _ => {}
+            }
         }
     }
 }
@@ -268,6 +359,36 @@ mod tests {
         assert_eq!(
             extract_encapsulated_html(rtf).as_deref(),
             Some("<p>Visible body</p>")
+        );
+    }
+
+    #[test]
+    fn decodes_text_bytes_with_the_ansi_codepage() {
+        let rtf = br#"{\rtf1\ansi\ansicpg1252\fromhtml1
+{\*\htmltag64 <p>}1.877,04 \'80 \'84Bienes\'93 \'fc{\*\htmltag64 </p>}
+}"#;
+        assert_eq!(
+            extract_encapsulated_html(rtf).as_deref(),
+            Some("<p>1.877,04 € „Bienes“ ü</p>")
+        );
+
+        let cyrillic = br#"{\rtf1\ansi\ansicpg1251\fromhtml1
+{\*\htmltag64 <p>}\'cf\'f0\'e8{\*\htmltag64 </p>}
+}"#;
+        assert_eq!(
+            extract_encapsulated_html(cyrillic).as_deref(),
+            Some("<p>При</p>")
+        );
+    }
+
+    #[test]
+    fn decodes_unicode_escapes_and_drops_their_fallback() {
+        let rtf = br#"{\rtf1\ansi\fromhtml1
+{\*\htmltag64 <p>}\u8364?5 \uc2\u-10179\'3f\'3f\u-8704??!{\*\htmltag64 </p>}
+}"#;
+        assert_eq!(
+            extract_encapsulated_html(rtf).as_deref(),
+            Some("<p>€5 😀!</p>")
         );
     }
 

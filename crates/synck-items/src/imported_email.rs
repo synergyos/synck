@@ -2610,7 +2610,7 @@ mod tests {
         assert!(!body_html.windows(4).any(|window| window == b">**<"));
         assert_eq!(
             hex_lower(&Sha256::digest(body_html)),
-            "c0659105d0cc5475982f180faa04a0b2a5a2c6a85e5b73a374498e36c72103e6"
+            "96c87cd6806ba7c52c52532a33e07643a4d0300b21f2f0431bb3e2a2301509c5"
         );
         assert_eq!(parsed.attachments.len(), 11);
         assert_eq!(
@@ -2635,7 +2635,7 @@ mod tests {
         );
         assert_eq!(
             hex_lower(&Sha256::digest(&parsed.raw_rfc822)),
-            "91a454b25396a0b8fbdb976515a42e1d1a48fd02c0e93709ab4d25c6a577a8db"
+            "1c9dd7a6962b832bef21c07fcfc4f3b0eca573a07a4007626561211de2e4ddf0"
         );
     }
 
