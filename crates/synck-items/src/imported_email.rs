@@ -9,7 +9,7 @@ use std::path::Path;
 
 mod msg_rtf;
 
-pub const IMPORTED_EMAIL_PARSER_VERSION: u32 = 12;
+pub const IMPORTED_EMAIL_PARSER_VERSION: u32 = 13;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct ImportedEmailLimits {
