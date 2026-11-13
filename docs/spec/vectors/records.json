@@ -1515,6 +1515,79 @@
     ]
   },
   {
+    "name": "a federated record repeats its stream in a later commit",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "CHAT::CREATE",
+            "create_item": {
+              "item_type": "CHAT"
+            },
+            "set_is_federated": true,
+            "set_federation_stream_id": "s"
+          }
+        ],
+        "valid": true,
+        "state_digest": "sha256:3ea6c9ff442c10ad25103aed698b6e4facfab5d0aca7df2bfb14932db81d3008"
+      },
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "base_seq": 1,
+            "event_type": "CHAT::FEDERATE",
+            "set_is_federated": true,
+            "set_federation_stream_id": "s"
+          }
+        ],
+        "valid": true,
+        "state_digest": "sha256:3b54897df617255e2f72cb4a888daccd9ec25a4f296f0a84ddca1afbda1c52a8"
+      }
+    ]
+  },
+  {
+    "name": "a later commit repeats the stream only once",
+    "commits": [
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "event_type": "CHAT::CREATE",
+            "create_item": {
+              "item_type": "CHAT"
+            },
+            "set_is_federated": true,
+            "set_federation_stream_id": "s"
+          }
+        ],
+        "valid": true,
+        "state_digest": "sha256:3ea6c9ff442c10ad25103aed698b6e4facfab5d0aca7df2bfb14932db81d3008"
+      },
+      {
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "base_seq": 1,
+            "event_type": "CHAT::FEDERATE",
+            "set_is_federated": true,
+            "set_federation_stream_id": "s"
+          },
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000202",
+            "base_seq": 1,
+            "event_type": "CHAT::FEDERATE",
+            "set_is_federated": true,
+            "set_federation_stream_id": "s"
+          }
+        ],
+        "valid": false,
+        "reason": "illegal federation transition"
+      }
+    ]
+  },
+  {
     "name": "a bootstrap repeats its own stream",
     "commits": [
       {

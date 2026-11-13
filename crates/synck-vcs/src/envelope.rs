@@ -265,11 +265,13 @@ impl CommitEnvelopeValidator {
                         self.findings
                             .push(format!("{context}: federation transition has no stream ID"));
                     }
-                    let redundant_bootstrap = item.created_in_commit
-                        && !item.bootstrap_rebind_seen
+                    // Repeating the stream the item is already FEDERATED on
+                    // changes nothing, so a history that arrives in several
+                    // commits stays valid. Once per commit.
+                    let repeated_stream = !item.bootstrap_rebind_seen
                         && item.sequencing_mode == Some(SequencingMode::Federated)
                         && stream == item.federation_stream_id.as_deref();
-                    if redundant_bootstrap {
+                    if repeated_stream {
                         item.bootstrap_rebind_seen = true;
                     } else if item.sequencing_mode == Some(SequencingMode::Local)
                         && !item.federation_changed
@@ -576,6 +578,24 @@ mod tests {
             )
             .0
             .is_empty()
+        );
+
+        // In a later commit too: the item is already on that stream.
+        let federated = EnvelopeItemState::from_head(
+            Some(1),
+            false,
+            Some(SequencingMode::Federated),
+            Some("stream".to_string()),
+        );
+        let mut later = rebind.clone();
+        later.base_seq = Some(1);
+        let findings = validate_proposals(vec![later.clone()], federated.clone()).0;
+        assert!(findings.is_empty(), "{findings:?}");
+        assert!(
+            validate_proposals(vec![later.clone(), later], federated)
+                .0
+                .iter()
+                .any(|finding| finding.contains("illegal federation transition"))
         );
 
         rebind.set_federation_stream_id = Some("other".to_string());

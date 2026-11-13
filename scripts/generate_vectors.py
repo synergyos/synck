@@ -1281,7 +1281,7 @@ def replay_commit(items, commit):
                 raise Invalid("federation needs a stream")
             if create is not None:
                 item["mode"], item["stream"] = "FEDERATED", stream
-            elif (item_id in created and item_id not in rebound
+            elif (item_id not in rebound
                     and item["mode"] == "FEDERATED" and item["stream"] == stream):
                 rebound.add(item_id)
             elif item["mode"] == "LOCAL" and item_id not in mode_changed:
@@ -1581,6 +1581,18 @@ def new_records():
             ([update("r1", 1, "CHAT::FEDERATE", set_is_federated=True,
                      set_federation_stream_id="s")], True),
             ([update("r1", 2, "CHAT::FEDERATE", set_is_federated=False)], True),
+        ]),
+        ("a federated record repeats its stream in a later commit", [
+            ([dict(record("r1", "CHAT"), set_is_federated=True, set_federation_stream_id="s")], True),
+            ([update("r1", 1, "CHAT::FEDERATE", set_is_federated=True,
+                     set_federation_stream_id="s")], True),
+        ]),
+        ("a later commit repeats the stream only once", [
+            ([dict(record("r1", "CHAT"), set_is_federated=True, set_federation_stream_id="s")], True),
+            ([update("r1", 1, "CHAT::FEDERATE", set_is_federated=True,
+                     set_federation_stream_id="s"),
+              update("r1", 1, "CHAT::FEDERATE", set_is_federated=True,
+                     set_federation_stream_id="s")], False),
         ]),
         ("a bootstrap repeats its own stream", [
             ([dict(record("r1", "CHAT"), set_is_federated=True, set_federation_stream_id="s"),

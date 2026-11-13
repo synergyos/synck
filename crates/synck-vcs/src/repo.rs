@@ -1634,23 +1634,16 @@ impl Repo {
                         mode_change_count += 1;
                     }
                     Some(true) => {
-                        // A source bootstrap replays its local bind event after the create
-                        // event. The create already materializes the replica as federated,
-                        // so accept only that redundant same-stream transition to preserve
-                        // source item_seq alignment.
-                        let bootstrap_create = proposal
-                            .events
-                            .first()
-                            .is_some_and(|first| first.create_item.is_some());
+                        // A source bootstrap replays its local bind event, in the proposal
+                        // that creates the replica or a later one when the history comes
+                        // in pages. The replica is already FEDERATED on this stream (it is
+                        // found by it), so accept only that same-stream repeat, once per
+                        // proposal, to preserve source item_seq alignment.
                         let same_stream = ev
                             .set_federation_stream_id
                             .as_deref()
                             .is_some_and(|fid| fid == proposal.federation_stream_id);
-                        if !bootstrap_create
-                            || !same_stream
-                            || ev.modifies_item()
-                            || bootstrap_rebind_seen
-                        {
+                        if !same_stream || ev.modifies_item() || bootstrap_rebind_seen {
                             return Err(CoreError::IllegalFederationTransition);
                         }
                         bootstrap_rebind_seen = true;

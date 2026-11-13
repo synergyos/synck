@@ -1542,7 +1542,7 @@ async fn repo_enforces_base_sequence_and_operation_id() {
 }
 
 #[tokio::test]
-async fn federated_bootstrap_rejects_a_second_rebind_event() {
+async fn federated_bootstrap_repeats_its_stream_once_per_proposal() {
     let (_dir, storage) = backend();
     storage.init_schema().await.unwrap();
     let repo_id = RepoId::new();
@@ -1583,13 +1583,28 @@ async fn federated_bootstrap_rejects_a_second_rebind_event() {
     repo.ingest(
         repo_id.clone(),
         FederatedProposal {
-            federation_stream_id: stream,
+            federation_stream_id: stream.clone(),
             item_seq: 1,
             author_id: "author".to_string(),
             committer_id: "author".to_string(),
             message: None,
             occurred_at: None,
             events: vec![create.clone(), rebind.clone()],
+        },
+    )
+    .await
+    .unwrap();
+    // A paged source history repeats it in a later proposal.
+    repo.ingest(
+        repo_id.clone(),
+        FederatedProposal {
+            federation_stream_id: stream.clone(),
+            item_seq: 3,
+            author_id: "author".to_string(),
+            committer_id: "author".to_string(),
+            message: None,
+            occurred_at: None,
+            events: vec![rebind.clone()],
         },
     )
     .await
