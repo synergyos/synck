@@ -18,14 +18,24 @@ const CLEAN_STATUS_OUTPUT: &[u8] = b"nothing to commit, working tree clean\n";
 fn long_paths_survive_commit_rename_and_checkout() {
     let temporary = tempfile::tempdir().unwrap();
     let root = temporary.path().join("source");
-    let initialized = synck(temporary.path(), &["init", root.to_str().unwrap(), "--author", "author"]);
+    let initialized = synck(
+        temporary.path(),
+        &["init", root.to_str().unwrap(), "--author", "author"],
+    );
     assert!(initialized.status.success(), "{:?}", initialized);
-    let relative = (0..4).map(|i| format!("{i}{}", "a".repeat(63))).collect::<Vec<_>>().join("/");
+    let relative = (0..4)
+        .map(|i| format!("{i}{}", "a".repeat(63)))
+        .collect::<Vec<_>>()
+        .join("/");
     fs::create_dir_all(root.join(&relative)).unwrap();
     fs::write(root.join(&relative).join("before.txt"), b"long path bytes").unwrap();
     let committed = synck(&root, &["commit", "-m", "Long path"]);
     assert!(committed.status.success(), "{:?}", committed);
-    fs::rename(root.join(&relative).join("before.txt"), root.join(&relative).join("after.txt")).unwrap();
+    fs::rename(
+        root.join(&relative).join("before.txt"),
+        root.join(&relative).join("after.txt"),
+    )
+    .unwrap();
     let committed = synck(&root, &["commit", "-m", "Rename long path"]);
     assert!(committed.status.success(), "{:?}", committed);
     let status = synck(&root, &["status"]);
@@ -41,14 +51,28 @@ fn long_paths_survive_commit_rename_and_checkout() {
     let copy = temporary.path().join("copy");
     for (cwd, args) in [
         (root.as_path(), vec!["archive", archive.to_str().unwrap()]),
-        (temporary.path(), vec!["repository", "import", archive.to_str().unwrap(), copy.to_str().unwrap()]),
+        (
+            temporary.path(),
+            vec![
+                "repository",
+                "import",
+                archive.to_str().unwrap(),
+                copy.to_str().unwrap(),
+            ],
+        ),
     ] {
         let output = synck(cwd, &args);
         assert!(output.status.success(), "{:?}", output);
     }
-    let checkout = synck(&copy, &["repository", "checkout", ".", "--author", "author"]);
+    let checkout = synck(
+        &copy,
+        &["repository", "checkout", ".", "--author", "author"],
+    );
     assert!(checkout.status.success(), "{:?}", checkout);
-    assert_eq!(fs::read(copy.join(&relative).join("after.txt")).unwrap(), b"long path bytes");
+    assert_eq!(
+        fs::read(copy.join(&relative).join("after.txt")).unwrap(),
+        b"long path bytes"
+    );
     assert!(!copy.join(&relative).join("before.txt").exists());
     if cfg!(windows) {
         assert!(String::from_utf8_lossy(&checkout.stderr).contains("after.txt"));
@@ -134,7 +158,11 @@ fn cli_commits_moves_out_of_a_folder_deleted_in_the_same_commit() {
     fs::write(root.join("old/keep.txt"), b"keep").unwrap();
     fs::write(root.join("old/drop.txt"), b"drop").unwrap();
     fs::write(root.join("old/sub/inner.txt"), b"inner").unwrap();
-    assert!(synck(root, &["init", "--author", "author"]).status.success());
+    assert!(
+        synck(root, &["init", "--author", "author"])
+            .status
+            .success()
+    );
     assert!(synck(root, &["commit", "-m", "initial"]).status.success());
 
     fs::rename(root.join("old/keep.txt"), root.join("keep.txt")).unwrap();
@@ -397,7 +425,11 @@ fn cli_monitor_sees_a_deletion_in_a_folder_beside_a_same_named_file() {
     fs::write(root.join("Matter/notes.txt"), b"notes").unwrap();
     // `Matter.pdf` sorts between `Matter` and `Matter/brief.txt`.
     fs::write(root.join("Matter.pdf"), b"pdf").unwrap();
-    assert!(synck(root, &["init", "--author", "author"]).status.success());
+    assert!(
+        synck(root, &["init", "--author", "author"])
+            .status
+            .success()
+    );
     assert!(synck(root, &["commit", "-m", "matter"]).status.success());
     assert_eq!(
         json_stdout(root, &["monitor", "status", "--json"])["status"],
@@ -421,7 +453,11 @@ fn cli_monitor_runs_in_a_checkout_deeper_than_a_socket_address() {
     let root = &temporary.path().join("a".repeat(120));
     fs::create_dir(root).unwrap();
     fs::write(root.join("brief.txt"), b"brief").unwrap();
-    assert!(synck(root, &["init", "--author", "author"]).status.success());
+    assert!(
+        synck(root, &["init", "--author", "author"])
+            .status
+            .success()
+    );
     assert!(synck(root, &["commit", "-m", "brief"]).status.success());
     assert_eq!(
         json_stdout(root, &["monitor", "status", "--json"])["status"],
@@ -438,7 +474,11 @@ fn cli_monitor_runs_in_a_checkout_deeper_than_a_socket_address() {
 fn cli_commands_wait_for_the_repository_lock() {
     let temporary = tempfile::tempdir().unwrap();
     let root = temporary.path();
-    assert!(synck(root, &["init", "--author", "author"]).status.success());
+    assert!(
+        synck(root, &["init", "--author", "author"])
+            .status
+            .success()
+    );
     let lock = fs::OpenOptions::new()
         .write(true)
         .open(root.join(".synck/lock"))
@@ -470,18 +510,31 @@ fn cli_reports_skipped_links_across_monitor_scans() {
     let root = temporary.path();
     fs::create_dir(root.join("docs")).unwrap();
     fs::write(root.join("docs/brief.txt"), b"brief").unwrap();
-    assert!(synck(root, &["init", "--author", "author"]).status.success());
+    assert!(
+        synck(root, &["init", "--author", "author"])
+            .status
+            .success()
+    );
     assert!(synck(root, &["commit", "-m", "docs"]).status.success());
     let clean = "nothing to commit, working tree clean\n";
-    assert_eq!(String::from_utf8(synck(root, &["status"]).stdout).unwrap(), clean);
+    assert_eq!(
+        String::from_utf8(synck(root, &["status"]).stdout).unwrap(),
+        clean
+    );
 
     std::os::unix::fs::symlink("brief.txt", root.join("docs/alias")).unwrap();
     let status = String::from_utf8(synck(root, &["status"]).stdout).unwrap();
-    assert_eq!(status, format!("{clean}skipped, not a file or folder: docs/alias\n"));
+    assert_eq!(
+        status,
+        format!("{clean}skipped, not a file or folder: docs/alias\n")
+    );
     // A scan of other paths keeps reporting it.
     fs::write(root.join("notes.txt"), b"notes").unwrap();
     let status = String::from_utf8(synck(root, &["status"]).stdout).unwrap();
-    assert_eq!(status, "A notes.txt\nskipped, not a file or folder: docs/alias\n");
+    assert_eq!(
+        status,
+        "A notes.txt\nskipped, not a file or folder: docs/alias\n"
+    );
     let commit = json_stdout(root, &["--json", "commit", "-m", "notes"]);
     assert_eq!(commit["skipped"], serde_json::json!(["docs/alias"]));
     assert!(synck(root, &["monitor", "stop"]).status.success());
@@ -493,7 +546,11 @@ fn cli_monitor_exits_when_its_repository_is_removed() {
     let temporary = tempfile::tempdir().unwrap();
     let root = temporary.path().join("repository");
     fs::create_dir(&root).unwrap();
-    assert!(synck(&root, &["init", "--author", "author"]).status.success());
+    assert!(
+        synck(&root, &["init", "--author", "author"])
+            .status
+            .success()
+    );
     let config: Value =
         serde_json::from_slice(&fs::read(root.join(".synck/config.json")).unwrap()).unwrap();
     let mut monitor = Command::new(env!("CARGO_BIN_EXE_synck"))
@@ -1155,7 +1212,8 @@ fn cli_log_and_show_events_expose_complete_authoritative_rows() {
         .unwrap();
     let mut proposal: synck_vcs::types::EventProposal =
         serde_json::from_slice(&original_payload).unwrap();
-    proposal.set_metadata = Some(synck_vcs::metadata::MetadataRef::new(serde_json::json!({"tampered": true})).unwrap());
+    proposal.set_metadata =
+        Some(synck_vcs::metadata::MetadataRef::new(serde_json::json!({"tampered": true})).unwrap());
     let tampered_payload = synck_vcs::types::canonical_event_proposal_bytes(&proposal).unwrap();
     let tampered_digest = synck_vcs::types::compute_sha256_digest_bytes(&tampered_payload).to_vec();
     connection
@@ -1170,8 +1228,7 @@ fn cli_log_and_show_events_expose_complete_authoritative_rows() {
     let tampered = synck(root, &["show", "HEAD", "--events"]);
     assert_eq!(tampered.status.code(), Some(1));
     assert!(
-        String::from_utf8_lossy(&tampered.stderr)
-            .contains("digest disagrees"),
+        String::from_utf8_lossy(&tampered.stderr).contains("digest disagrees"),
         "{}",
         String::from_utf8_lossy(&tampered.stderr)
     );
@@ -2255,7 +2312,10 @@ fn cli_json_errors_and_exit_codes_are_stable() {
     assert_eq!(tree["restored"], false);
     let exported = json_stdout(root, &["export-tree", "HEAD", "exported", "--json"]);
     assert_eq!(exported["revision"], "HEAD");
-    assert_eq!(fs::read(root.join("exported/file.txt")).unwrap(), b"content");
+    assert_eq!(
+        fs::read(root.join("exported/file.txt")).unwrap(),
+        b"content"
+    );
     fs::remove_dir_all(root.join("exported")).unwrap();
     let gc = json_stdout(root, &["gc", "--json"]);
     assert_eq!(gc["removed_objects"], 0);
@@ -3125,7 +3185,8 @@ fn reused_allocation_identity_is_delete_plus_add() {
     fs::remove_file(root.join("file.txt")).unwrap();
     fs::write(root.join("unrelated.bin"), b"unrelated bytes").unwrap();
     let metadata = fs::metadata(root.join("unrelated.bin")).unwrap();
-    let connection = rusqlite::Connection::open(root.join(".synck/repository.local.sqlite3")).unwrap();
+    let connection =
+        rusqlite::Connection::open(root.join(".synck/repository.local.sqlite3")).unwrap();
     connection
         .execute(
             "UPDATE local_worktree_identities
@@ -3380,7 +3441,11 @@ fn fsck_reports_schema_drift_as_integrity_failure() {
 #[test]
 fn fsck_rebuild_state_index_replaces_corrupt_derived_nodes() {
     let temporary = committed_repository();
-    assert!(synck(temporary.path(), &["fsck", "--rebuild-state-index"]).status.success());
+    assert!(
+        synck(temporary.path(), &["fsck", "--rebuild-state-index"])
+            .status
+            .success()
+    );
     let database = temporary.path().join(".synck/repository.state.sqlite3");
     let connection = rusqlite::Connection::open(&database).unwrap();
     let state_root: Vec<u8> = connection
@@ -3399,7 +3464,11 @@ fn fsck_rebuild_state_index_replaces_corrupt_derived_nodes() {
     drop(connection);
 
     let broken = synck(temporary.path(), &["fsck"]);
-    assert!(broken.status.success(), "a cache cannot invalidate canonical history: {}", String::from_utf8_lossy(&broken.stderr));
+    assert!(
+        broken.status.success(),
+        "a cache cannot invalidate canonical history: {}",
+        String::from_utf8_lossy(&broken.stderr)
+    );
 
     let rebuilt = synck(temporary.path(), &["fsck", "--rebuild-state-index"]);
     assert!(
@@ -3417,7 +3486,11 @@ fn fsck_rebuild_state_index_replaces_corrupt_derived_nodes() {
 #[test]
 fn fsck_ignores_unreachable_state_nodes() {
     let temporary = committed_repository();
-    assert!(synck(temporary.path(), &["fsck", "--rebuild-state-index"]).status.success());
+    assert!(
+        synck(temporary.path(), &["fsck", "--rebuild-state-index"])
+            .status
+            .success()
+    );
     let baseline = json_stdout(temporary.path(), &["fsck"]);
     let database = temporary.path().join(".synck/repository.state.sqlite3");
     let connection = rusqlite::Connection::open(&database).unwrap();
@@ -3450,7 +3523,11 @@ fn fsck_ignores_unreachable_state_nodes() {
 #[test]
 fn missing_state_head_discards_residual_rows_and_reprojects() {
     let temporary = committed_repository();
-    assert!(synck(temporary.path(), &["fsck", "--rebuild-state-index"]).status.success());
+    assert!(
+        synck(temporary.path(), &["fsck", "--rebuild-state-index"])
+            .status
+            .success()
+    );
     let database = temporary.path().join(".synck/repository.state.sqlite3");
     let connection = rusqlite::Connection::open(&database).unwrap();
     connection
@@ -3621,12 +3698,20 @@ fn init_and_commit_rename_non_portable_names() {
     fs::create_dir(root.join("folder?")).unwrap();
     fs::write(root.join("folder?/NUL.txt"), b"initial").unwrap();
     let output = synck(root, &["init", "--author", "author"]);
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert!(String::from_utf8_lossy(&output.stderr).contains("folder_/_NUL.txt"));
     assert_eq!(fs::read(root.join("folder_/_NUL.txt")).unwrap(), b"initial");
     fs::write(root.join("bad?name"), b"selected").unwrap();
     let output = synck(root, &["commit", "bad?name", "-m", "selected", "--json"]);
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let value: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(value["renamed"][0]["from"], "bad?name");
     assert_eq!(value["renamed"][0]["to"], "bad_name");
@@ -3640,36 +3725,89 @@ fn commit_format_limits_survive_portable_writes_copy_and_fsck() {
     use synck_vcs::limits::*;
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("repo");
-    assert!(synck(temp.path(), &["init", root.to_str().unwrap(), "--author", "author"]).status.success());
+    assert!(
+        synck(
+            temp.path(),
+            &["init", root.to_str().unwrap(), "--author", "author"]
+        )
+        .status
+        .success()
+    );
     fs::write(root.join("file.txt"), b"one").unwrap();
     let message = "é".repeat(MAX_MESSAGE_BYTES / 2);
     let output = synck(&root, &["commit", "-m", &message]);
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let source = temp.path().join("input");
     fs::write(&source, b"two").unwrap();
-    let output = synck(&root, &["repository", "create-file", "two.txt", source.to_str().unwrap(), "--path", ".", "-m", &message]);
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let output = synck(
+        &root,
+        &[
+            "repository",
+            "create-file",
+            "two.txt",
+            source.to_str().unwrap(),
+            "--path",
+            ".",
+            "-m",
+            &message,
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let archive = temp.path().join("archive");
     let copy = temp.path().join("copy");
-    for args in [vec!["fsck"], vec!["archive", archive.to_str().unwrap()],
-        vec!["repository", "import", archive.to_str().unwrap(), copy.to_str().unwrap()],
-        vec!["repository", "verify", copy.to_str().unwrap()]] {
+    for args in [
+        vec!["fsck"],
+        vec!["archive", archive.to_str().unwrap()],
+        vec![
+            "repository",
+            "import",
+            archive.to_str().unwrap(),
+            copy.to_str().unwrap(),
+        ],
+        vec!["repository", "verify", copy.to_str().unwrap()],
+    ] {
         let output = synck(&root, &args);
-        assert!(output.status.success(), "{args:?}: {}", String::from_utf8_lossy(&output.stderr));
+        assert!(
+            output.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
     fs::write(root.join("file.txt"), b"edited").unwrap();
-    let output = synck(&root, &["commit", "-m", &(message+"x")]);
+    let output = synck(&root, &["commit", "-m", &(message + "x")]);
     assert!(!output.status.success());
 
     let db = rusqlite::Connection::open(root.join(".synck/repository.sqlite3")).unwrap();
-    for (field, maximum) in [("message",MAX_MESSAGE_BYTES), ("author_id",MAX_ACTOR_ID_BYTES),
-        ("committer_id",MAX_ACTOR_ID_BYTES), ("operation_id",MAX_OPERATION_ID_BYTES)] {
-        let original: Option<String> = db.query_row(&format!("SELECT {field} FROM vcs_commits ORDER BY repo_seq DESC LIMIT 1"), [], |r| r.get(0)).unwrap();
+    for (field, maximum) in [
+        ("message", MAX_MESSAGE_BYTES),
+        ("author_id", MAX_ACTOR_ID_BYTES),
+        ("committer_id", MAX_ACTOR_ID_BYTES),
+        ("operation_id", MAX_OPERATION_ID_BYTES),
+    ] {
+        let original: Option<String> = db
+            .query_row(
+                &format!("SELECT {field} FROM vcs_commits ORDER BY repo_seq DESC LIMIT 1"),
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         db.execute(&format!("UPDATE vcs_commits SET {field}=?1 WHERE repo_seq=(SELECT max(repo_seq) FROM vcs_commits)"), ["x".repeat(maximum+1)]).unwrap();
         for args in [vec!["log"], vec!["fsck"]] {
             let output = synck(&root, &args);
             assert!(!output.status.success(), "{field}: {args:?}");
-            let output = format!("{}{}",String::from_utf8_lossy(&output.stdout),String::from_utf8_lossy(&output.stderr));
+            let output = format!(
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
             assert!(output.contains("format byte limit"), "{field}: {output}");
         }
         db.execute(&format!("UPDATE vcs_commits SET {field}=?1 WHERE repo_seq=(SELECT max(repo_seq) FROM vcs_commits)"), [original]).unwrap();

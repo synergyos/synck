@@ -27,7 +27,9 @@ impl SqliteStorage {
                 .map_err(|_| error("invalid metadata object ID"))?;
             let payload: Vec<u8> = row.get(1).map_err(error)?;
             if payload.starts_with(ENCRYPTED_PREFIX) != self.encrypted() {
-                return Err(error("metadata object has the wrong form for this repository"));
+                return Err(error(
+                    "metadata object has the wrong form for this repository",
+                ));
             }
             Metadata::verify_any(&ObjectId::from_digest(digest), payload).map_err(error)?;
             count += 1;
@@ -59,12 +61,19 @@ impl SqliteStorage {
 
     /// Store metadata objects received in either form, as a sync server
     /// receives those a proposal names, in one transaction.
-    pub fn put_metadata_objects(&self, repo: &RepoId, objects: &[(ObjectId, Vec<u8>)]) -> Result<(), StorageError> {
+    pub fn put_metadata_objects(
+        &self,
+        repo: &RepoId,
+        objects: &[(ObjectId, Vec<u8>)],
+    ) -> Result<(), StorageError> {
         for (id, payload) in objects {
             if payload.starts_with(ENCRYPTED_PREFIX) != self.encrypted() {
-                return Err(error(format!("metadata object {id} has the wrong form for this repository")));
+                return Err(error(format!(
+                    "metadata object {id} has the wrong form for this repository"
+                )));
             }
-            Metadata::verify_any(id, payload.clone()).map_err(|source| error(format!("metadata object {id}: {source}")))?;
+            Metadata::verify_any(id, payload.clone())
+                .map_err(|source| error(format!("metadata object {id}: {source}")))?;
         }
         let mut connection = self.open_writable()?;
         let transaction = connection.transaction().map_err(error)?;
@@ -76,7 +85,11 @@ impl SqliteStorage {
 
     /// A metadata object's exact stored bytes, in either form, for a sync
     /// server to send. Corrupt present bytes are an error.
-    pub fn metadata_object(&self, repo: &RepoId, id: &ObjectId) -> Result<Option<Vec<u8>>, StorageError> {
+    pub fn metadata_object(
+        &self,
+        repo: &RepoId,
+        id: &ObjectId,
+    ) -> Result<Option<Vec<u8>>, StorageError> {
         let Some(bytes) = self.stored_metadata(repo, id)? else {
             return Ok(None);
         };
@@ -93,12 +106,21 @@ impl SqliteStorage {
     ) -> Result<Vec<ObjectId>, StorageError> {
         let ids: Vec<ObjectId> = ids.into_iter().collect();
         let stored = self.metadata_objects(repo, &ids)?;
-        Ok(ids.into_iter().zip(stored).filter(|(_, bytes)| bytes.is_none()).map(|(id, _)| id).collect())
+        Ok(ids
+            .into_iter()
+            .zip(stored)
+            .filter(|(_, bytes)| bytes.is_none())
+            .map(|(id, _)| id)
+            .collect())
     }
 
     /// Each of `ids`' exact bytes, verified, or `None` where it is not stored,
     /// read through one connection.
-    pub fn metadata_objects(&self, repo: &RepoId, ids: &[ObjectId]) -> Result<Vec<Option<Vec<u8>>>, StorageError> {
+    pub fn metadata_objects(
+        &self,
+        repo: &RepoId,
+        ids: &[ObjectId],
+    ) -> Result<Vec<Option<Vec<u8>>>, StorageError> {
         let connection = self.open_readonly()?;
         let mut statement = connection
             .prepare("SELECT payload FROM vcs_metadata_objects WHERE repo_id=?1 AND object_id=?2")
@@ -106,7 +128,9 @@ impl SqliteStorage {
         ids.iter()
             .map(|id| {
                 let bytes: Option<Vec<u8>> = statement
-                    .query_row(params![repo.as_str(), id.as_bytes().as_slice()], |row| row.get(0))
+                    .query_row(params![repo.as_str(), id.as_bytes().as_slice()], |row| {
+                        row.get(0)
+                    })
                     .optional()
                     .map_err(error)?;
                 if let Some(bytes) = &bytes {
@@ -117,7 +141,11 @@ impl SqliteStorage {
             .collect()
     }
 
-    fn stored_metadata(&self, repo: &RepoId, id: &ObjectId) -> Result<Option<Vec<u8>>, StorageError> {
+    fn stored_metadata(
+        &self,
+        repo: &RepoId,
+        id: &ObjectId,
+    ) -> Result<Option<Vec<u8>>, StorageError> {
         self.open_readonly()?
             .query_row(
                 "SELECT payload FROM vcs_metadata_objects WHERE repo_id=?1 AND object_id=?2",

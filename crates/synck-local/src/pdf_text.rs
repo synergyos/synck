@@ -96,7 +96,11 @@ struct Dict(Vec<(Vec<u8>, Object)>);
 
 impl Dict {
     fn get(&self, key: &[u8]) -> Option<&Object> {
-        self.0.iter().rev().find(|(name, _)| name == key).map(|(_, value)| value)
+        self.0
+            .iter()
+            .rev()
+            .find(|(name, _)| name == key)
+            .map(|(_, value)| value)
     }
 
     fn is(&self, key: &[u8], name: &[u8]) -> bool {
@@ -126,7 +130,10 @@ fn is_space(byte: u8) -> bool {
 }
 
 fn is_delimiter(byte: u8) -> bool {
-    matches!(byte, b'(' | b')' | b'<' | b'>' | b'[' | b']' | b'{' | b'}' | b'/' | b'%')
+    matches!(
+        byte,
+        b'(' | b')' | b'<' | b'>' | b'[' | b']' | b'{' | b'}' | b'/' | b'%'
+    )
 }
 
 fn is_regular(byte: u8) -> bool {
@@ -135,9 +142,14 @@ fn is_regular(byte: u8) -> bool {
 
 /// A PDF number: digits with at most one point and an optional sign.
 fn number(word: &[u8]) -> Option<f64> {
-    let digits = word.strip_prefix(b"-").or_else(|| word.strip_prefix(b"+")).unwrap_or(word);
+    let digits = word
+        .strip_prefix(b"-")
+        .or_else(|| word.strip_prefix(b"+"))
+        .unwrap_or(word);
     let valid = digits.iter().any(u8::is_ascii_digit)
-        && digits.iter().all(|byte| byte.is_ascii_digit() || *byte == b'.')
+        && digits
+            .iter()
+            .all(|byte| byte.is_ascii_digit() || *byte == b'.')
         && digits.iter().filter(|byte| **byte == b'.').count() <= 1;
     if !valid {
         return None;
@@ -146,7 +158,8 @@ fn number(word: &[u8]) -> Option<f64> {
 }
 
 fn whole(number: f64) -> Option<u32> {
-    (number >= 0.0 && number <= f64::from(u32::MAX) && number.fract() == 0.0).then_some(number as u32)
+    (number >= 0.0 && number <= f64::from(u32::MAX) && number.fract() == 0.0)
+        .then_some(number as u32)
 }
 
 impl<'a> Lexer<'a> {
@@ -161,7 +174,10 @@ impl<'a> Lexer<'a> {
     fn skip_space(&mut self) {
         while let Some(byte) = self.peek() {
             if byte == b'%' {
-                while self.peek().is_some_and(|byte| byte != b'\r' && byte != b'\n') {
+                while self
+                    .peek()
+                    .is_some_and(|byte| byte != b'\r' && byte != b'\n')
+                {
                     self.pos += 1;
                 }
             } else if is_space(byte) {
@@ -194,8 +210,12 @@ impl<'a> Lexer<'a> {
                 self.pos += 1;
                 Some(Token::DictEnd)
             }
-            b'<' => self.hex_string().map(|bytes| Token::Object(Object::String(bytes))),
-            b'(' => self.literal_string().map(|bytes| Token::Object(Object::String(bytes))),
+            b'<' => self
+                .hex_string()
+                .map(|bytes| Token::Object(Object::String(bytes))),
+            b'(' => self
+                .literal_string()
+                .map(|bytes| Token::Object(Object::String(bytes))),
             b'/' => Some(Token::Object(Object::Name(self.name()))),
             _ if is_delimiter(byte) => None,
             _ => {
@@ -205,7 +225,9 @@ impl<'a> Lexer<'a> {
                 let word = &self.data[start..self.pos];
                 Some(match word {
                     b"true" | b"false" | b"null" => Token::Object(Object::Other),
-                    _ => number(word).map_or(Token::Keyword(word), |number| Token::Object(Object::Number(number))),
+                    _ => number(word).map_or(Token::Keyword(word), |number| {
+                        Token::Object(Object::Number(number))
+                    }),
                 })
             }
         }
@@ -381,7 +403,9 @@ impl<'a> Lexer<'a> {
         // the data runs to the next `endstream`, and `Document::decode`
         // tries the /Length an indirect object holds.
         let declared = match dict.get(b"Length") {
-            Some(Object::Number(length)) => whole(*length).and_then(|length| start.checked_add(length as usize)),
+            Some(Object::Number(length)) => {
+                whole(*length).and_then(|length| start.checked_add(length as usize))
+            }
             _ => None,
         }
         .filter(|end| ends_stream(self.data, *end));
@@ -499,7 +523,10 @@ impl<'a> Document<'a> {
             }
         }
         trailers.sort_by_key(|(at, _)| *at);
-        if trailers.iter().any(|(_, dict)| dict.get(b"Encrypt").is_some()) {
+        if trailers
+            .iter()
+            .any(|(_, dict)| dict.get(b"Encrypt").is_some())
+        {
             return None;
         }
         document.root = trailers
@@ -516,7 +543,9 @@ impl<'a> Document<'a> {
     /// The objects an object stream holds; none if it cannot be read.
     fn object_stream(&self, dict: &Dict, range: Range<usize>) -> Vec<(u32, Object)> {
         let mut objects = Vec::new();
-        let (Some(count), Some(first)) = (self.whole(dict.get(b"N")), self.whole(dict.get(b"First"))) else {
+        let (Some(count), Some(first)) =
+            (self.whole(dict.get(b"N")), self.whole(dict.get(b"First")))
+        else {
             return objects;
         };
         let Some(data) = self.decode(dict, range) else {
@@ -525,15 +554,19 @@ impl<'a> Document<'a> {
         let first = first as usize;
         let mut header = Lexer::new(&data[..first.min(data.len())], 0, false);
         for _ in 0..count {
-            let (Some(Token::Object(Object::Number(id))), Some(Token::Object(Object::Number(offset)))) =
-                (header.token(), header.token())
+            let (
+                Some(Token::Object(Object::Number(id))),
+                Some(Token::Object(Object::Number(offset))),
+            ) = (header.token(), header.token())
             else {
                 break;
             };
             let (Some(id), Some(offset)) = (whole(id), whole(offset)) else {
                 break;
             };
-            if let Some(object) = Lexer::new(&data, first.saturating_add(offset as usize), true).object(0) {
+            if let Some(object) =
+                Lexer::new(&data, first.saturating_add(offset as usize), true).object(0)
+            {
                 objects.push((id, object));
             }
         }
@@ -636,7 +669,13 @@ impl<'a> Document<'a> {
     fn pages(&self) -> Option<Vec<(&Dict, Option<&Dict>)>> {
         let catalog = self.dict(self.objects.get(&self.root)?)?;
         let mut pages = Vec::new();
-        self.page_tree(catalog.get(b"Pages")?, None, 0, &mut HashSet::new(), &mut pages)?;
+        self.page_tree(
+            catalog.get(b"Pages")?,
+            None,
+            0,
+            &mut HashSet::new(),
+            &mut pages,
+        )?;
         Some(pages)
     }
 
@@ -658,7 +697,10 @@ impl<'a> Document<'a> {
             return Some(());
         }
         let dict = self.dict(node)?;
-        let resources = dict.get(b"Resources").and_then(|object| self.dict(object)).or(resources);
+        let resources = dict
+            .get(b"Resources")
+            .and_then(|object| self.dict(object))
+            .or(resources);
         match self.get(dict, b"Kids") {
             Some(Object::Array(kids)) => {
                 for kid in kids {
@@ -774,7 +816,13 @@ struct Page<'d, 'a> {
 }
 
 impl<'d> Page<'d, '_> {
-    fn run(&mut self, content: &[u8], resources: Option<&'d Dict>, ctm: Matrix, depth: usize) -> Option<()> {
+    fn run(
+        &mut self,
+        content: &[u8],
+        resources: Option<&'d Dict>,
+        ctm: Matrix,
+        depth: usize,
+    ) -> Option<()> {
         self.content += content.len();
         if depth > MAX_DEPTH || self.content > MAX_CONTENT {
             return None;
@@ -823,14 +871,18 @@ impl<'d> Page<'d, '_> {
                 }
                 b"BT" => (tm, tlm) = (IDENTITY, IDENTITY),
                 b"Tf" => {
-                    if let (Some(Object::Name(name)), Some(size)) = (operands.first(), operand(&operands, 1)) {
+                    if let (Some(Object::Name(name)), Some(size)) =
+                        (operands.first(), operand(&operands, 1))
+                    {
                         state.font = self.font(resources, name);
                         state.size = size;
                     }
                 }
                 b"Tc" => state.char_spacing = operand(&operands, 0).unwrap_or(state.char_spacing),
                 b"Tw" => state.word_spacing = operand(&operands, 0).unwrap_or(state.word_spacing),
-                b"Tz" => state.scale = operand(&operands, 0).map_or(state.scale, |scale| scale / 100.0),
+                b"Tz" => {
+                    state.scale = operand(&operands, 0).map_or(state.scale, |scale| scale / 100.0)
+                }
                 b"TL" => state.leading = operand(&operands, 0).unwrap_or(state.leading),
                 b"Ts" => state.rise = operand(&operands, 0).unwrap_or(state.rise),
                 b"Td" | b"TD" => {
@@ -892,7 +944,13 @@ impl<'d> Page<'d, '_> {
     }
 
     /// Draws the form XObject `name`; other XObjects have no text.
-    fn form(&mut self, resources: Option<&'d Dict>, name: &[u8], ctm: &Matrix, depth: usize) -> Option<()> {
+    fn form(
+        &mut self,
+        resources: Option<&'d Dict>,
+        name: &[u8],
+        ctm: &Matrix,
+        depth: usize,
+    ) -> Option<()> {
         let document = self.document;
         let Some(object) = resources
             .and_then(|resources| resources.get(b"XObject"))
@@ -904,7 +962,8 @@ impl<'d> Page<'d, '_> {
         let Object::Stream(dict, _) = document.resolve(object) else {
             return Some(());
         };
-        if !matches!(document.get(dict, b"Subtype"), Some(Object::Name(subtype)) if subtype == b"Form") {
+        if !matches!(document.get(dict, b"Subtype"), Some(Object::Name(subtype)) if subtype == b"Form")
+        {
             return Some(());
         }
         let content = document.stream(object)?;
@@ -912,7 +971,10 @@ impl<'d> Page<'d, '_> {
             Some(Object::Array(items)) => matrix(items).unwrap_or(IDENTITY),
             _ => IDENTITY,
         };
-        let resources = dict.get(b"Resources").and_then(|object| document.dict(object)).or(resources);
+        let resources = dict
+            .get(b"Resources")
+            .and_then(|object| document.dict(object))
+            .or(resources);
         self.run(&content, resources, multiply(&matrix, ctm), depth + 1)
     }
 
@@ -942,11 +1004,20 @@ impl<'d> Page<'d, '_> {
         };
         let width = if font.two_byte { 2 } else { 1 };
         for code in bytes.chunks_exact(width) {
-            let code = code.iter().fold(0, |code, byte| code << 8 | u32::from(*byte));
+            let code = code
+                .iter()
+                .fold(0, |code, byte| code << 8 | u32::from(*byte));
             let render = multiply(tm, &state.ctm);
-            let origin = (state.rise * render[2] + render[4], state.rise * render[3] + render[5]);
+            let origin = (
+                state.rise * render[2] + render[4],
+                state.rise * render[3] + render[5],
+            );
             let length = render[0].hypot(render[1]);
-            let direction = if length > 0.0 { (render[0] / length, render[1] / length) } else { (1.0, 0.0) };
+            let direction = if length > 0.0 {
+                (render[0] / length, render[1] / length)
+            } else {
+                (1.0, 0.0)
+            };
             let size = (state.size * render[2].hypot(render[3])).abs();
             let mut advance = font.width(code) * state.size + state.char_spacing;
             if width == 1 && code == 32 {
@@ -954,7 +1025,10 @@ impl<'d> Page<'d, '_> {
             }
             *tm = multiply(&translation(advance * state.scale, 0.0), tm);
             let render = multiply(tm, &state.ctm);
-            let end = (state.rise * render[2] + render[4], state.rise * render[3] + render[5]);
+            let end = (
+                state.rise * render[2] + render[4],
+                state.rise * render[3] + render[5],
+            );
             // Positions along the baseline and across it, so that rotated
             // text reads as lines too.
             let across = (-direction.1, direction.0);
@@ -969,7 +1043,15 @@ impl<'d> Page<'d, '_> {
         }
     }
 
-    fn glyph(&mut self, text: &str, direction: (f64, f64), across: f64, start: f64, end: f64, size: f64) {
+    fn glyph(
+        &mut self,
+        text: &str,
+        direction: (f64, f64),
+        across: f64,
+        start: f64,
+        end: f64,
+        size: f64,
+    ) {
         let same_line = self.line.as_ref().is_some_and(|line| {
             let size = size.max(line.size);
             dot(direction, line.direction) > 0.99
@@ -980,7 +1062,10 @@ impl<'d> Page<'d, '_> {
             self.end_line();
         }
         let text: Cow<'_, str> = if text.chars().any(char::is_control) {
-            text.chars().filter(|c| !c.is_control()).collect::<String>().into()
+            text.chars()
+                .filter(|c| !c.is_control())
+                .collect::<String>()
+                .into()
         } else {
             text.into()
         };
@@ -1061,7 +1146,9 @@ fn line_spacing(pages: &[Vec<Line>]) -> BTreeMap<i64, f64> {
         for block in blocks(lines, &BTreeMap::new()) {
             for pair in block.windows(2) {
                 let size = half_points(pair[0].size.max(pair[1].size));
-                *counts.entry((size, half_points(pair[0].across - pair[1].across))).or_default() += 1;
+                *counts
+                    .entry((size, half_points(pair[0].across - pair[1].across)))
+                    .or_default() += 1;
             }
         }
     }
@@ -1072,7 +1159,10 @@ fn line_spacing(pages: &[Vec<Line>]) -> BTreeMap<i64, f64> {
             *best = (count, drop as f64 / 2.0);
         }
     }
-    usual.into_iter().map(|(size, (_, drop))| (size, drop)).collect()
+    usual
+        .into_iter()
+        .map(|(size, (_, drop))| (size, drop))
+        .collect()
 }
 
 /// Groups lines into blocks: lines one below another in about the same size,
@@ -1111,7 +1201,13 @@ fn paragraphs(lines: &[Line], spacing: &BTreeMap<i64, f64>, out: &mut String) {
                 // A soft hyphen only marks where the word was broken.
                 paragraph.truncate(stem);
                 paragraph.push_str(&next.text);
-            } else if paragraph.ends_with('-') && paragraph.chars().rev().nth(1).is_some_and(char::is_alphabetic) {
+            } else if paragraph.ends_with('-')
+                && paragraph
+                    .chars()
+                    .rev()
+                    .nth(1)
+                    .is_some_and(char::is_alphabetic)
+            {
                 paragraph.push_str(&next.text);
             } else {
                 paragraph.push(' ');
@@ -1125,7 +1221,10 @@ fn paragraphs(lines: &[Line], spacing: &BTreeMap<i64, f64>, out: &mut String) {
 fn continues(previous: &Line, next: &Line, spacing: &BTreeMap<i64, f64>) -> bool {
     let size = previous.size.max(next.size);
     let drop = previous.across - next.across;
-    let usual = spacing.get(&half_points(size)).copied().unwrap_or(f64::INFINITY);
+    let usual = spacing
+        .get(&half_points(size))
+        .copied()
+        .unwrap_or(f64::INFINITY);
     dot(previous.direction, next.direction) > 0.99
         && drop > 0.5 * size
         && drop <= 2.5 * size
@@ -1272,7 +1371,9 @@ impl ToUnicode {
         }
         let offset = code - low;
         match destination {
-            Destination::List(texts) => texts.get(offset as usize).map(|text| Cow::Borrowed(text.as_str())),
+            Destination::List(texts) => texts
+                .get(offset as usize)
+                .map(|text| Cow::Borrowed(text.as_str())),
             Destination::Start(units) => {
                 let mut units = units.clone();
                 if let Some(last) = units.last_mut() {
@@ -1285,14 +1386,21 @@ impl ToUnicode {
 }
 
 fn code(bytes: &[u8]) -> Option<u32> {
-    (!bytes.is_empty() && bytes.len() <= 4).then(|| bytes.iter().fold(0, |code, byte| code << 8 | u32::from(*byte)))
+    (!bytes.is_empty() && bytes.len() <= 4).then(|| {
+        bytes
+            .iter()
+            .fold(0, |code, byte| code << 8 | u32::from(*byte))
+    })
 }
 
 /// UTF-16BE code units; a lone final byte is a unit of its own.
 fn units(bytes: &[u8]) -> Vec<u16> {
     bytes
         .chunks(2)
-        .map(|pair| pair.iter().fold(0, |unit, byte| unit << 8 | u16::from(*byte)))
+        .map(|pair| {
+            pair.iter()
+                .fold(0, |unit, byte| unit << 8 | u16::from(*byte))
+        })
         .collect()
 }
 
@@ -1311,7 +1419,10 @@ struct Widths {
 
 impl Default for Widths {
     fn default() -> Self {
-        Widths { default: 1.0, runs: BTreeMap::new() }
+        Widths {
+            default: 1.0,
+            runs: BTreeMap::new(),
+        }
     }
 }
 
@@ -1321,7 +1432,10 @@ impl Widths {
     fn simple(document: &Document<'_>, font: &Dict, scale: f64) -> Widths {
         let first = document.whole(font.get(b"FirstChar"));
         let Some(Object::Array(widths)) = document.get(font, b"Widths") else {
-            return Widths { default: 500.0 * scale, runs: BTreeMap::new() };
+            return Widths {
+                default: 500.0 * scale,
+                runs: BTreeMap::new(),
+            };
         };
         let missing = document
             .get(font, b"FontDescriptor")
@@ -1336,9 +1450,15 @@ impl Widths {
         if let Some(first) = first
             && !widths.is_empty()
         {
-            runs.insert(first, (first.saturating_add(widths.len() as u32 - 1), widths));
+            runs.insert(
+                first,
+                (first.saturating_add(widths.len() as u32 - 1), widths),
+            );
         }
-        Widths { default: missing * scale, runs }
+        Widths {
+            default: missing * scale,
+            runs,
+        }
     }
 
     /// A CIDFont's `/DW` and `/W`: `c [w1 w2 ...]` gives codes from c their
@@ -1358,10 +1478,15 @@ impl Widths {
                             .iter()
                             .map(|width| document.number(Some(width)).unwrap_or(0.0) / 1000.0)
                             .collect();
-                        runs.insert(first, (first.saturating_add(widths.len() as u32 - 1), widths));
+                        runs.insert(
+                            first,
+                            (first.saturating_add(widths.len() as u32 - 1), widths),
+                        );
                     }
                     Some(Object::Number(last)) => {
-                        let (Some(last), Some(width)) = (whole(*last), document.number(items.next())) else {
+                        let (Some(last), Some(width)) =
+                            (whole(*last), document.number(items.next()))
+                        else {
                             break;
                         };
                         if first <= last {
@@ -1379,7 +1504,11 @@ impl Widths {
         match self.runs.range(..=code).next_back() {
             Some((first, (last, widths))) if code <= *last => {
                 let index = (code - first) as usize;
-                widths.get(index).or(widths.last()).copied().unwrap_or(self.default)
+                widths
+                    .get(index)
+                    .or(widths.last())
+                    .copied()
+                    .unwrap_or(self.default)
             }
             _ => self.default,
         }
@@ -1430,7 +1559,9 @@ fn simple_encoding(document: &Document<'_>, font: &Dict) -> Vec<String> {
         let mut code = 0;
         for item in items {
             match document.resolve(item) {
-                Object::Number(number) => code = whole(*number).map_or(usize::MAX, |code| code as usize),
+                Object::Number(number) => {
+                    code = whole(*number).map_or(usize::MAX, |code| code as usize)
+                }
                 Object::Name(name) => {
                     if let Some(slot) = table.get_mut(code) {
                         *slot = glyph_text(name);
@@ -1482,17 +1613,101 @@ const WIN_ANSI_80: [(char, &str); 32] = [
 
 /// Glyph names of U+00A1 to U+00FF.
 const LATIN_1_NAMES: [&str; 95] = [
-    "exclamdown", "cent", "sterling", "currency", "yen", "brokenbar", "section", "dieresis", "copyright",
-    "ordfeminine", "guillemotleft", "logicalnot", "sfthyphen", "registered", "macron", "degree", "plusminus",
-    "twosuperior", "threesuperior", "acute", "mu", "paragraph", "periodcentered", "cedilla", "onesuperior",
-    "ordmasculine", "guillemotright", "onequarter", "onehalf", "threequarters", "questiondown", "Agrave",
-    "Aacute", "Acircumflex", "Atilde", "Adieresis", "Aring", "AE", "Ccedilla", "Egrave", "Eacute",
-    "Ecircumflex", "Edieresis", "Igrave", "Iacute", "Icircumflex", "Idieresis", "Eth", "Ntilde", "Ograve",
-    "Oacute", "Ocircumflex", "Otilde", "Odieresis", "multiply", "Oslash", "Ugrave", "Uacute", "Ucircumflex",
-    "Udieresis", "Yacute", "Thorn", "germandbls", "agrave", "aacute", "acircumflex", "atilde", "adieresis",
-    "aring", "ae", "ccedilla", "egrave", "eacute", "ecircumflex", "edieresis", "igrave", "iacute",
-    "icircumflex", "idieresis", "eth", "ntilde", "ograve", "oacute", "ocircumflex", "otilde", "odieresis",
-    "divide", "oslash", "ugrave", "uacute", "ucircumflex", "udieresis", "yacute", "thorn", "ydieresis",
+    "exclamdown",
+    "cent",
+    "sterling",
+    "currency",
+    "yen",
+    "brokenbar",
+    "section",
+    "dieresis",
+    "copyright",
+    "ordfeminine",
+    "guillemotleft",
+    "logicalnot",
+    "sfthyphen",
+    "registered",
+    "macron",
+    "degree",
+    "plusminus",
+    "twosuperior",
+    "threesuperior",
+    "acute",
+    "mu",
+    "paragraph",
+    "periodcentered",
+    "cedilla",
+    "onesuperior",
+    "ordmasculine",
+    "guillemotright",
+    "onequarter",
+    "onehalf",
+    "threequarters",
+    "questiondown",
+    "Agrave",
+    "Aacute",
+    "Acircumflex",
+    "Atilde",
+    "Adieresis",
+    "Aring",
+    "AE",
+    "Ccedilla",
+    "Egrave",
+    "Eacute",
+    "Ecircumflex",
+    "Edieresis",
+    "Igrave",
+    "Iacute",
+    "Icircumflex",
+    "Idieresis",
+    "Eth",
+    "Ntilde",
+    "Ograve",
+    "Oacute",
+    "Ocircumflex",
+    "Otilde",
+    "Odieresis",
+    "multiply",
+    "Oslash",
+    "Ugrave",
+    "Uacute",
+    "Ucircumflex",
+    "Udieresis",
+    "Yacute",
+    "Thorn",
+    "germandbls",
+    "agrave",
+    "aacute",
+    "acircumflex",
+    "atilde",
+    "adieresis",
+    "aring",
+    "ae",
+    "ccedilla",
+    "egrave",
+    "eacute",
+    "ecircumflex",
+    "edieresis",
+    "igrave",
+    "iacute",
+    "icircumflex",
+    "idieresis",
+    "eth",
+    "ntilde",
+    "ograve",
+    "oacute",
+    "ocircumflex",
+    "otilde",
+    "odieresis",
+    "divide",
+    "oslash",
+    "ugrave",
+    "uacute",
+    "ucircumflex",
+    "udieresis",
+    "yacute",
+    "thorn",
+    "ydieresis",
 ];
 
 /// MacRomanEncoding's 0x80 to 0xff, with U+FFFD for 0xf0.
@@ -1510,7 +1725,9 @@ fn base_char(base: BaseEncoding, code: u8) -> Option<char> {
         (BaseEncoding::WinAnsi, 0xa1..=0xac | 0xae..=0xff) => Some(char::from(code)),
         (BaseEncoding::WinAnsi, 0xa0) => Some(' '),
         (BaseEncoding::WinAnsi, 0xad) => Some('-'),
-        (BaseEncoding::WinAnsi, 0x80..=0x9f) => Some(WIN_ANSI_80[usize::from(code - 0x80)].0).filter(|c| *c != '\0'),
+        (BaseEncoding::WinAnsi, 0x80..=0x9f) => {
+            Some(WIN_ANSI_80[usize::from(code - 0x80)].0).filter(|c| *c != '\0')
+        }
         (BaseEncoding::WinAnsi, _) => None,
     }
 }
@@ -1581,9 +1798,14 @@ fn glyph_text(name: &[u8]) -> String {
         return name.to_string();
     }
     if let Some(index) = LATIN_1_NAMES.iter().position(|latin| *latin == name) {
-        return char::from_u32(0xa1 + index as u32).expect("Latin-1 is Unicode").to_string();
+        return char::from_u32(0xa1 + index as u32)
+            .expect("Latin-1 is Unicode")
+            .to_string();
     }
-    if let Some((c, _)) = WIN_ANSI_80.iter().find(|(_, glyph)| !glyph.is_empty() && *glyph == name) {
+    if let Some((c, _)) = WIN_ANSI_80
+        .iter()
+        .find(|(_, glyph)| !glyph.is_empty() && *glyph == name)
+    {
         return c.to_string();
     }
     if let Some(hex) = name.strip_prefix("uni")
@@ -1609,7 +1831,6 @@ fn glyph_text(name: &[u8]) -> String {
     }
     "\u{fffd}".to_string()
 }
-
 
 #[cfg(test)]
 pub(crate) mod tests {
@@ -1638,7 +1859,9 @@ pub(crate) mod tests {
     /// A PDF with a page for each content stream, drawn in a WinAnsi
     /// Helvetica without widths: each glyph is half the font size wide.
     pub(crate) fn pages(contents: &[&str]) -> Vec<u8> {
-        let kids: Vec<String> = (0..contents.len()).map(|page| format!("{} 0 R", 4 + 2 * page)).collect();
+        let kids: Vec<String> = (0..contents.len())
+            .map(|page| format!("{} 0 R", 4 + 2 * page))
+            .collect();
         let mut objects = vec![
             (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
             (
@@ -1657,7 +1880,10 @@ pub(crate) mod tests {
         ];
         for (page, content) in contents.iter().enumerate() {
             let id = 4 + 2 * page as u32;
-            objects.push((id, format!("<< /Type /Page /Parent 2 0 R /Contents {} 0 R >>", id + 1).into_bytes()));
+            objects.push((
+                id,
+                format!("<< /Type /Page /Parent 2 0 R /Contents {} 0 R >>", id + 1).into_bytes(),
+            ));
             objects.push((id + 1, stream("", content.as_bytes())));
         }
         pdf(&objects, "<< /Root 1 0 R >>")
@@ -1671,7 +1897,8 @@ pub(crate) mod tests {
             1 0 0 1 72 688 Tm (jumps over the lazy) Tj 1 0 0 1 50 688 Tm (2) Tj
             1 0 0 1 72 676 Tm (dog.) Tj 1 0 0 1 50 676 Tm (3) Tj
             1 0 0 1 72 664 Tm (New paragraph) Tj 1 0 0 1 50 664 Tm (4) Tj ET";
-        let second = "BT /F1 10 Tf 12 TL 72 700 Td (A long line that breaks to-) Tj T* (gether here) Tj
+        let second =
+            "BT /F1 10 Tf 12 TL 72 700 Td (A long line that breaks to-) Tj T* (gether here) Tj
             1 0 0 1 72 500 Tm [(Hel) -20 (lo) -300 (world)] TJ
             0 1 -1 0 300 300 Tm (Rotated) Tj ET";
         assert_eq!(
@@ -1731,7 +1958,8 @@ pub(crate) mod tests {
             miniz_oxide::deflate::compress_to_vec_zlib(data.as_bytes(), 6)
         };
         let compressed = |id: u32, data: Vec<u8>| {
-            let mut object = format!("<< /Filter /FlateDecode /Length {id} 0 R >>\nstream\n").into_bytes();
+            let mut object =
+                format!("<< /Filter /FlateDecode /Length {id} 0 R >>\nstream\n").into_bytes();
             object.extend(&data);
             object.extend(b"\nendstream");
             object
@@ -1748,7 +1976,13 @@ pub(crate) mod tests {
             &[
                 (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
                 (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
-                (5, stream(&format!("/Type /ObjStm /N 2 /First {}", header.len()), held.as_bytes())),
+                (
+                    5,
+                    stream(
+                        &format!("/Type /ObjStm /N 2 /First {}", header.len()),
+                        held.as_bytes(),
+                    ),
+                ),
                 (6, compressed(7, old.clone())),
                 (7, old.len().to_string().into_bytes()),
                 (
@@ -1762,13 +1996,19 @@ pub(crate) mod tests {
             "<< /Root 1 0 R >>",
         );
         // An appended update replaces the content and its length.
-        for (id, object) in [(6, compressed(9, new.clone())), (9, new.len().to_string().into_bytes())] {
+        for (id, object) in [
+            (6, compressed(9, new.clone())),
+            (9, new.len().to_string().into_bytes()),
+        ] {
             file.extend(format!("{id} 0 obj\n").bytes());
             file.extend(object);
             file.extend(b"\nendobj\n");
         }
         file.extend(b"trailer\n<< /Root 1 0 R >>\n%%EOF\n");
-        assert_eq!(document_text(&file).unwrap(), "Page 1\n  New text\n  In a form\n");
+        assert_eq!(
+            document_text(&file).unwrap(),
+            "Page 1\n  New text\n  In a form\n"
+        );
     }
 
     #[test]
@@ -1784,8 +2024,17 @@ pub(crate) mod tests {
             &[
                 (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
                 (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
-                (3, b"<< /Type /Page /Parent 2 0 R /Contents 4 0 R >>".to_vec()),
-                (4, stream("/Filter /LZWDecode", b"\x80\x0b\x60\x50\x22\x0c\x0c\x85\x01")),
+                (
+                    3,
+                    b"<< /Type /Page /Parent 2 0 R /Contents 4 0 R >>".to_vec(),
+                ),
+                (
+                    4,
+                    stream(
+                        "/Filter /LZWDecode",
+                        b"\x80\x0b\x60\x50\x22\x0c\x0c\x85\x01",
+                    ),
+                ),
             ],
             "<< /Root 1 0 R >>",
         );

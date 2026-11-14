@@ -10,7 +10,7 @@ use chrono::{DateTime, Utc};
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use synck_vcs::state::{NamespaceKey, RootHeader, StateIndexStore, StateRootId, StateTree};
-use synck_vcs::types::{ObjectId, CommitId, ItemId, LifecycleState, RepoId, Sha256Digest};
+use synck_vcs::types::{CommitId, ItemId, LifecycleState, ObjectId, RepoId, Sha256Digest};
 use synck_vcs_sqlite::parse_timestamp;
 use uuid::Uuid;
 
@@ -130,11 +130,12 @@ impl Repository {
             format_version: self.config().format_version(),
             repo_id: self.config().repo_id().to_string(),
             author: self.config().author().to_string(),
-            origin: self
-                .config()
-                .remote
-                .clone()
-                .or_else(|| self.config().origin.as_ref().map(|path| path.display().to_string())),
+            origin: self.config().remote.clone().or_else(|| {
+                self.config()
+                    .origin
+                    .as_ref()
+                    .map(|path| path.display().to_string())
+            }),
             hold: self.config().hold,
         }
     }

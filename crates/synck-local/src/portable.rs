@@ -19,9 +19,6 @@ use sha2::{Digest, Sha256};
 use synck_file_folder::{
     BlobRef, CurrentItem, Intent, IntentProposal, Location, ProfileLifecycleState,
 };
-use synck_vcs::object::{
-    EncryptedFrameCheck, Form, HEADER_BYTES, Object, SaltedFrame, content_form,
-};
 use synck_items::reader::{ItemReader, ReadContext, ReadableItem, RefReadContext};
 use synck_vcs::bundle::{
     BundleReader, validate_bundle_event_payload_json_and_digest,
@@ -29,13 +26,16 @@ use synck_vcs::bundle::{
 };
 use synck_vcs::config::CoreConfig;
 use synck_vcs::limits::{MAX_ACTOR_ID_BYTES, MAX_MESSAGE_BYTES};
+use synck_vcs::object::{
+    EncryptedFrameCheck, Form, HEADER_BYTES, Object, SaltedFrame, content_form,
+};
 use synck_vcs::repo::Repo;
 use synck_vcs::state::{NamespaceKey, StateIndexStore, StateTree};
 use synck_vcs::storage::{Storage, StorageBackend};
 use synck_vcs::types::{
-    AcceptedCommit, ObjectId, CommitEventRow, CommitId, CommitProposal, EventContent,
-    EventProposal, ItemCursor, ItemId, ItemRevision, ItemRow, LifecycleState, RefEventRow, RepoEventCursor,
-    RepoId, SequencingMode, Timestamp,
+    AcceptedCommit, CommitEventRow, CommitId, CommitProposal, EventContent, EventProposal,
+    ItemCursor, ItemId, ItemRevision, ItemRow, LifecycleState, ObjectId, RefEventRow,
+    RepoEventCursor, RepoId, SequencingMode, Timestamp,
 };
 use synck_vcs::verify::{
     SemanticVerifier, VerifyCommit, VerifyCommitEvent, VerifyEvent, VerifyItem, VerifyRefEvent,
@@ -44,8 +44,8 @@ use synck_vcs_sqlite::SqliteStorage;
 use uuid::Uuid;
 
 use crate::chunk_store::{ChunkStore, OBJECT_STORE_FILE, StorageMode};
-use crate::ooxml::{OoxmlKind, chunk_region_lengths};
 use crate::error::{IoContext, LocalError, Result};
+use crate::ooxml::{OoxmlKind, chunk_region_lengths};
 use crate::repository::{
     RepositoryLock, is_cap_link_or_reparse, is_link_or_reparse, open_regular_file_nofollow,
     remove_tree_nofollow, rename_between_noreplace, rename_noreplace, replace_file, sync_directory,
@@ -59,8 +59,12 @@ pub const FORMAT_VERSION: u32 = 7;
 const MAX_PAYLOAD_BYTES: usize = HEADER_BYTES + synck_items::body_events::MAX_BODY_BYTES;
 pub(crate) fn unsupported_format(version: Option<u64>) -> LocalError {
     let reader = match version {
-        Some(6) => "Open format 6 with Synck 0.1.x, export its working files, and initialize a new repository with this release.",
-        _ => "Open this repository with the release that created it; this release has no migration reader.",
+        Some(6) => {
+            "Open format 6 with Synck 0.1.x, export its working files, and initialize a new repository with this release."
+        }
+        _ => {
+            "Open this repository with the release that created it; this release has no migration reader."
+        }
     };
     let version = version.map_or_else(|| "missing".to_string(), |value| value.to_string());
     invalid(format!(
@@ -187,16 +191,24 @@ pub struct PortableRepository {
     origin_view: bool,
 }
 
-struct BoundedEmailSource<'a> { bytes: &'a mut Vec<u8>, limit: u64 }
+struct BoundedEmailSource<'a> {
+    bytes: &'a mut Vec<u8>,
+    limit: u64,
+}
 impl Write for BoundedEmailSource<'_> {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
         if bytes.len() as u64 > self.limit.saturating_sub(self.bytes.len() as u64) {
-            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "EMAIL source exceeds parser limit"));
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "EMAIL source exceeds parser limit",
+            ));
         }
         self.bytes.extend_from_slice(bytes);
         Ok(bytes.len())
     }
-    fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 fn invalid(error: impl std::fmt::Display) -> LocalError {
@@ -418,7 +430,9 @@ impl WriteOptions {
     pub(crate) fn mark_file_write(&self, events: &mut [EventProposal]) {
         for event in events {
             match (event.event_type.as_str(), event.create_item.as_mut()) {
-                ("FILE::CREATE", Some(create)) => create.derived_from.clone_from(&self.derived_from),
+                ("FILE::CREATE", Some(create)) => {
+                    create.derived_from.clone_from(&self.derived_from)
+                }
                 ("FILE::SET_CONTENT", None) => event.merged_from.clone_from(&self.merged_from),
                 _ => {}
             }
@@ -454,7 +468,9 @@ fn read_config(metadata: &Dir, root: &Path) -> Result<Config> {
             "this is a clone of {origin}; give repository and item commands the origin's path"
         )));
     }
-    let version = value.get("format_version").and_then(serde_json::Value::as_u64);
+    let version = value
+        .get("format_version")
+        .and_then(serde_json::Value::as_u64);
     if version != Some(u64::from(FORMAT_VERSION)) {
         return Err(unsupported_format(version));
     }
@@ -628,34 +644,56 @@ impl PortableRepository {
     /// longer held. A working tree with its own store, an HTTPS clone, keeps
     /// the objects of its own withdrawn saves.
     fn held_pins(&self) -> Result<(BTreeSet<String>, Vec<PathBuf>)> {
-        let directory = self.root.join(".synck").join(crate::commands::PINS_DIRECTORY);
-        let root = self.root.canonicalize().at("resolve repository root", &self.root)?;
+        let directory = self
+            .root
+            .join(".synck")
+            .join(crate::commands::PINS_DIRECTORY);
+        let root = self
+            .root
+            .canonicalize()
+            .at("resolve repository root", &self.root)?;
         let mut objects = crate::commands::live_withdrawn_objects(&self.root.join(".synck"))?;
         let now = chrono::Utc::now();
         let mut stale = Vec::new();
         let entries = match fs::read_dir(&directory) {
             Ok(entries) => entries,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok((objects, stale)),
-            Err(source) => return Err(LocalError::Io { action: "read held-object pins", path: directory, source }),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok((objects, stale));
+            }
+            Err(source) => {
+                return Err(LocalError::Io {
+                    action: "read held-object pins",
+                    path: directory,
+                    source,
+                });
+            }
         };
         for entry in entries {
             let path = entry.at("read held-object pins", &directory)?.path();
-            let pin: crate::commands::Pin = serde_json::from_slice(&fs::read(&path).at("read", &path)?)?;
-            let config: Option<serde_json::Value> = fs::read(pin.clone.join(".synck").join("config.json"))
-                .ok()
-                .and_then(|bytes| serde_json::from_slice(&bytes).ok());
+            let pin: crate::commands::Pin =
+                serde_json::from_slice(&fs::read(&path).at("read", &path)?)?;
+            let config: Option<serde_json::Value> =
+                fs::read(pin.clone.join(".synck").join("config.json"))
+                    .ok()
+                    .and_then(|bytes| serde_json::from_slice(&bytes).ok());
             let held = config.is_some_and(|config| {
                 config.get("hold") == Some(&serde_json::Value::Bool(true))
-                    && config.get("repo_id").and_then(serde_json::Value::as_str) == Some(self.repo_id().as_str())
+                    && config.get("repo_id").and_then(serde_json::Value::as_str)
+                        == Some(self.repo_id().as_str())
                     && config
                         .get("origin")
                         .and_then(serde_json::Value::as_str)
                         .and_then(|origin| Path::new(origin).canonicalize().ok())
                         == Some(root.clone())
             });
-            if held && path.file_name() == crate::commands::pin_path(&root, &pin.clone).file_name() {
+            if held && path.file_name() == crate::commands::pin_path(&root, &pin.clone).file_name()
+            {
                 objects.extend(pin.objects);
-                for withdrawn in pin.withdrawn.into_iter().filter(|withdrawn| withdrawn.until > now) {
+                for withdrawn in pin
+                    .withdrawn
+                    .into_iter()
+                    .filter(|withdrawn| withdrawn.until > now)
+                {
                     objects.extend(withdrawn.objects);
                 }
             } else {
@@ -854,7 +892,9 @@ impl PortableRepository {
             ));
         }
         self.staging_directory()?;
-        crate::repository::initialize_checkout_schema(&crate::local_database::LocalDatabase::beside(&self.storage))?;
+        crate::repository::initialize_checkout_schema(
+            &crate::local_database::LocalDatabase::beside(&self.storage),
+        )?;
         let checkout = crate::checkout::Checkout {
             hidden_files: Default::default(),
             paths,
@@ -1229,11 +1269,24 @@ impl PortableRepository {
                 "historical cursor belongs to another checkpoint or parent",
             ));
         }
-        let mut store = self.storage.state_index_store(self.repo_id().clone()).map_err(corrupt)?;
-        synck_vcs::state::catch_up_state_index(&self.core(), self.repo_id(), &mut store, Some(through))
-            .await.map_err(corrupt)?;
-        let root_id = store.root_at(through).await.map_err(corrupt)?
-            .ok_or_else(|| corrupt("historical checkpoint is missing after replay"))?.state_root;
+        let mut store = self
+            .storage
+            .state_index_store(self.repo_id().clone())
+            .map_err(corrupt)?;
+        synck_vcs::state::catch_up_state_index(
+            &self.core(),
+            self.repo_id(),
+            &mut store,
+            Some(through),
+        )
+        .await
+        .map_err(corrupt)?;
+        let root_id = store
+            .root_at(through)
+            .await
+            .map_err(corrupt)?
+            .ok_or_else(|| corrupt("historical checkpoint is missing after replay"))?
+            .state_root;
         let mut tree = StateTree::new(&mut store);
         let root = tree.read_root(root_id).await.map_err(corrupt)?;
         if root.repo_id != *self.repo_id() || root.repo_seq != through {
@@ -1375,11 +1428,7 @@ impl PortableRepository {
         Ok(PortableItem { item, refs })
     }
 
-    async fn read_owner(
-        &self,
-        id: &ItemId,
-        through: Option<i64>,
-    ) -> Result<ItemReader> {
+    async fn read_owner(&self, id: &ItemId, through: Option<i64>) -> Result<ItemReader> {
         let mut reader = ItemReader::for_repository(self.repo_id().clone(), id.clone());
         let mut from = 1;
         'history: loop {
@@ -1403,9 +1452,15 @@ impl PortableRepository {
                 .map_err(corrupt)?;
                 let mut event: EventProposal = row.proposal()?;
                 let mut body_erased = false;
-                if let Some(content_id) = event.set_content.as_ref().and_then(|content| content.get("body")).cloned() {
+                if let Some(content_id) = event
+                    .set_content
+                    .as_ref()
+                    .and_then(|content| content.get("body"))
+                    .cloned()
+                {
                     if self.object_held(&content_id)? {
-                        let objects = BTreeMap::from([(content_id.clone(), self.read_body(content_id)?)]);
+                        let objects =
+                            BTreeMap::from([(content_id.clone(), self.read_body(content_id)?)]);
                         synck_items::body_events::restore(
                             std::slice::from_mut(&mut event),
                             &objects,
@@ -1465,7 +1520,10 @@ impl PortableRepository {
         if self.storage_mode() == StorageMode::Chunked {
             return self.object_store().holds_blob(id);
         }
-        match self.metadata.symlink_metadata(format!("objects/{}", &id.as_str()[7..])) {
+        match self
+            .metadata
+            .symlink_metadata(format!("objects/{}", &id.as_str()[7..]))
+        {
             Ok(_) => Ok(true),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
             Err(error) => Err(corrupt(error)),
@@ -1482,7 +1540,10 @@ impl PortableRepository {
             self.object_store().copy_blob(&id, size, &mut bytes)?;
             bytes
         } else {
-            let dir = self.metadata.open_dir_nofollow("objects").map_err(corrupt)?;
+            let dir = self
+                .metadata
+                .open_dir_nofollow("objects")
+                .map_err(corrupt)?;
             let name = &id.as_str()[7..];
             read_small(
                 &dir,
@@ -1512,10 +1573,19 @@ impl PortableRepository {
     /// output is never published until its content identity and size pass.
     /// Recompute presentation from the preserved original with the current parser.
     /// This view is never written back into canonical history.
-    pub async fn render_email(&self, id: &ItemId, through: Option<i64>) -> Result<synck_items::imported_email::ParsedImportedEmail> {
+    pub async fn render_email(
+        &self,
+        id: &ItemId,
+        through: Option<i64>,
+    ) -> Result<synck_items::imported_email::ParsedImportedEmail> {
         let item = self.show_item(id, through).await?.item.projection;
-        if item.item_type != "EMAIL" { return Err(invalid("email rendering requires an EMAIL item")); }
-        let source = item.content_roles.get("source").ok_or_else(|| corrupt("EMAIL has no source role"))?;
+        if item.item_type != "EMAIL" {
+            return Err(invalid("email rendering requires an EMAIL item"));
+        }
+        let source = item
+            .content_roles
+            .get("source")
+            .ok_or_else(|| corrupt("EMAIL has no source role"))?;
         let format = match item.metadata_json["mailcal"]["source"]["format"].as_str() {
             Some("eml") => synck_items::imported_email::ImportedEmailFormat::Eml,
             Some("msg") => synck_items::imported_email::ImportedEmailFormat::Msg,
@@ -1525,9 +1595,16 @@ impl PortableRepository {
         // Imported sources have the profile's size bound; refuse a forged size
         // before allocating an unbounded presentation buffer.
         let limit = crate::email_import::SOURCE_BYTES;
-        self.copy_blob(source, &mut BoundedEmailSource { bytes: &mut bytes, limit })?;
+        self.copy_blob(
+            source,
+            &mut BoundedEmailSource {
+                bytes: &mut bytes,
+                limit,
+            },
+        )?;
         let limits = synck_items::imported_email::ImportedEmailLimits::for_source_limit_and_parser_concurrency(limit, 1);
-        synck_items::imported_email::parse_imported_email_owned(format, bytes, &limits).map_err(invalid)
+        synck_items::imported_email::parse_imported_email_owned(format, bytes, &limits)
+            .map_err(invalid)
     }
 
     pub async fn export_file(
@@ -1549,7 +1626,9 @@ impl PortableRepository {
             ),
             "EMAIL" => {
                 let source = &item.metadata_json["mailcal"]["source"];
-                let blob = item.content_roles.get("source")
+                let blob = item
+                    .content_roles
+                    .get("source")
                     .map(|id| id.as_str())
                     .ok_or_else(|| invalid("EMAIL has no exact imported source"))?
                     .to_string();
@@ -1572,7 +1651,16 @@ impl PortableRepository {
             .unwrap_or_else(|| Path::new("."))
             .canonicalize()
             .at("resolve file export parent", destination)?;
-        crate::agent_locks::guard_output(&self.root, &crate::agent_locks::Scope { metadata: &self.root.join(".synck"), tree: Some("") }, self.repo_id().as_str(), &self.agent_lock_tokens, &parent_path.join(name))?;
+        crate::agent_locks::guard_output(
+            &self.root,
+            &crate::agent_locks::Scope {
+                metadata: &self.root.join(".synck"),
+                tree: Some(""),
+            },
+            self.repo_id().as_str(),
+            &self.agent_lock_tokens,
+            &parent_path.join(name),
+        )?;
         let parent = directory(&parent_path)?;
         match parent.symlink_metadata(name) {
             Ok(_) => return Err(invalid("export destination already exists")),
@@ -1657,7 +1745,9 @@ impl PortableRepository {
                         .into_iter()
                         .map(|id| id.as_str()[7..].to_string()),
                 );
-                if let Some(id) = refs.metadata { metadata.insert(id.as_str()[7..].to_string()); }
+                if let Some(id) = refs.metadata {
+                    metadata.insert(id.as_str()[7..].to_string());
+                }
                 cursor = Some(RepoEventCursor {
                     repo_seq: row
                         .repo_seq()
@@ -1757,8 +1847,12 @@ impl PortableRepository {
         if !findings.is_empty() {
             return Err(corrupt(findings.summary()));
         }
-        self.storage.verify_metadata_objects(self.repo_id()).map_err(corrupt)?;
-        self.storage.verify_checkpoints(self.repo_id()).map_err(corrupt)?;
+        self.storage
+            .verify_metadata_objects(self.repo_id())
+            .map_err(corrupt)?;
+        self.storage
+            .verify_checkpoints(self.repo_id())
+            .map_err(corrupt)?;
         let connection = self.storage.open_readonly().map_err(corrupt)?;
         for table in [
             "vcs_metadata_objects",
@@ -1820,16 +1914,16 @@ impl PortableRepository {
                 if self.config.checkout.is_some() {
                     for row in &rows {
                         if let CommitEventRow::Item(event) = row
-                            && synck_file_folder::is_file_content_event(&event.event_type) {
-                                let proposal: EventProposal =
-                                    event.proposal()?;
-                                let (blob, size) = crate::event_profile::parse_content(&proposal)
-                                    .map_err(corrupt)?;
-                                expected_heads.insert(
-                                    event.item_id.to_string(),
-                                    (event.item_seq, blob.to_string(), size),
-                                );
-                            }
+                            && synck_file_folder::is_file_content_event(&event.event_type)
+                        {
+                            let proposal: EventProposal = event.proposal()?;
+                            let (blob, size) =
+                                crate::event_profile::parse_content(&proposal).map_err(corrupt)?;
+                            expected_heads.insert(
+                                event.item_id.to_string(),
+                                (event.item_seq, blob.to_string(), size),
+                            );
+                        }
                     }
                 }
                 for row in &rows {
@@ -1949,7 +2043,9 @@ impl PortableRepository {
         let (objects, metadata) = self.references().await?;
         let inventory = if self.storage_mode() == StorageMode::Chunked {
             Some(self.object_store().verify_all()?)
-        } else { None };
+        } else {
+            None
+        };
         let mut missing_objects = Vec::new();
         for name in &objects {
             let id = ObjectId::parse(format!("sha256:{name}")).map_err(corrupt)?;
@@ -1961,7 +2057,10 @@ impl PortableRepository {
                     Err(error) => return Err(corrupt(error)),
                 },
             };
-            if !present { missing_objects.push(id); continue; }
+            if !present {
+                missing_objects.push(id);
+                continue;
+            }
             match forms.get(name) {
                 Some(forms) => {
                     for form in forms {
@@ -1980,9 +2079,15 @@ impl PortableRepository {
             .missing_metadata(self.repo_id(), ids)
             .map_err(corrupt)?;
         Ok(VerificationReport {
-            repo_id: self.repo_id().clone(), terminal_repo_seq: terminal,
-            commits: count, items: item_count, objects: objects.len(), metadata: metadata.len(),
-            missing_objects, missing_metadata, state_digest,
+            repo_id: self.repo_id().clone(),
+            terminal_repo_seq: terminal,
+            commits: count,
+            items: item_count,
+            objects: objects.len(),
+            metadata: metadata.len(),
+            missing_objects,
+            missing_metadata,
+            state_digest,
         })
     }
 
@@ -2037,7 +2142,11 @@ impl PortableRepository {
         self.proposal_with(events, &WriteOptions::default())
     }
 
-    fn proposal_with(&self, mut events: Vec<EventProposal>, options: &WriteOptions) -> CommitProposal {
+    fn proposal_with(
+        &self,
+        mut events: Vec<EventProposal>,
+        options: &WriteOptions,
+    ) -> CommitProposal {
         options.mark_file_write(&mut events);
         let committer = self.config.author.clone().expect("validated local author");
         CommitProposal {
@@ -2081,9 +2190,18 @@ impl PortableRepository {
                 .and_then(|metadata: &serde_json::Value| metadata.get("title"))
                 .cloned()
         };
-        let link = |event: &EventProposal| event.create_item.as_ref().and_then(|item| item.link.clone());
+        let link = |event: &EventProposal| {
+            event
+                .create_item
+                .as_ref()
+                .and_then(|item| item.link.clone())
+        };
         let source = |event: &EventProposal| {
-            event.set_content.as_ref().and_then(|content| content.get("source")).cloned()
+            event
+                .set_content
+                .as_ref()
+                .and_then(|content| content.get("source"))
+                .cloned()
         };
         match accepted {
             Some(accepted)
@@ -2092,10 +2210,14 @@ impl PortableRepository {
                     && source(&accepted) == source(create)
                     && title(&accepted) == title(create) =>
             {
-                let item = accepted.item_id.ok_or_else(|| corrupt("accepted event has no item ID"))?;
+                let item = accepted
+                    .item_id
+                    .ok_or_else(|| corrupt("accepted event has no item ID"))?;
                 Ok(Some((item, commit.commit_id)))
             }
-            _ => Err(invalid("operation ID was already used for a different write")),
+            _ => Err(invalid(
+                "operation ID was already used for a different write",
+            )),
         }
     }
 
@@ -2132,8 +2254,13 @@ impl PortableRepository {
             .collect::<std::result::Result<Vec<_>, _>>()?;
         let mut written = None;
         for event in &events {
-            let Some(blob) = synck_file_folder::file_blob_reference(event).map_err(corrupt)? else { continue; };
-            let id = event.item_id.as_ref().ok_or_else(|| corrupt("accepted FILE event has no item ID"))?;
+            let Some(blob) = synck_file_folder::file_blob_reference(event).map_err(corrupt)? else {
+                continue;
+            };
+            let id = event
+                .item_id
+                .as_ref()
+                .ok_or_else(|| corrupt("accepted FILE event has no item ID"))?;
             let same_item = match (item, location) {
                 (Some(item), _) => id == item,
                 (None, Some(location)) => events.iter().any(|create| {
@@ -2158,7 +2285,10 @@ impl PortableRepository {
                 let mut proposed = crate::objects::PlainDigest::default();
                 self.copy_blob(&blob.blob_id, &mut previous)?;
                 self.copy_blob(&content.blob_id, &mut proposed)?;
-                if previous.finish() == proposed.finish() { written = Some(id.clone()); break; }
+                if previous.finish() == proposed.finish() {
+                    written = Some(id.clone());
+                    break;
+                }
             }
         }
         match written {
@@ -2173,7 +2303,9 @@ impl PortableRepository {
     /// has already hashed every object in a chunked store.
     fn verify_object(&self, id: &ObjectId, form: Form, unhashed: bool) -> Result<()> {
         match form {
-            Form::Plain | Form::Opaque if unhashed => self.copy_blob(id, &mut std::io::sink()).map(|_| ()),
+            Form::Plain | Form::Opaque if unhashed => {
+                self.copy_blob(id, &mut std::io::sink()).map(|_| ())
+            }
             Form::Plain | Form::Opaque => Ok(()),
             Form::Salted => {
                 let mut frame = SaltedFrame::default();
@@ -2224,20 +2356,32 @@ impl PortableRepository {
     fn store_file(&self, source: &Path) -> Result<BlobRef> {
         let file = open_regular_file_nofollow(source)?;
         let before = file.metadata().at("inspect capture source", source)?;
-        let regions = OoxmlKind::from_path(source).and_then(|kind| {
-            chunk_region_lengths(file.try_clone().ok()?, before.len(), kind)
-        });
+        let regions = OoxmlKind::from_path(source)
+            .and_then(|kind| chunk_region_lengths(file.try_clone().ok()?, before.len(), kind));
         let mut file = file;
         std::io::Seek::rewind(&mut file).at("rewind capture source", source)?;
         let store = self.object_store();
-        let captured = crate::raw_object::capture(file, before.len(), regions, &self.root.join(".synck/objects"),
+        let captured = crate::raw_object::capture(
+            file,
+            before.len(),
+            regions,
+            &self.root.join(".synck/objects"),
             &self.staging_directory()?,
-            (self.storage_mode() == StorageMode::Chunked).then_some(&store), true, None)?;
+            (self.storage_mode() == StorageMode::Chunked).then_some(&store),
+            true,
+            None,
+        )?;
         let after = fs::symlink_metadata(source).at("inspect capture source", source)?;
-        if !after.is_file() || before.len() != after.len() || before.modified().ok() != after.modified().ok() {
+        if !after.is_file()
+            || before.len() != after.len()
+            || before.modified().ok() != after.modified().ok()
+        {
             return Err(invalid("file changed while being captured"));
         }
-        Ok(BlobRef { blob_id:captured.id, size:captured.size })
+        Ok(BlobRef {
+            blob_id: captured.id,
+            size: captured.size,
+        })
     }
 
     async fn profile_current(&self, seeds: Vec<ItemId>) -> Result<BTreeMap<ItemId, CurrentItem>> {
@@ -2262,8 +2406,12 @@ impl PortableRepository {
                     item_id: item.item_id,
                     item_type: item.item_type,
                     parent_item_id: item.parent_folder_id,
-                    name: item.name.ok_or_else(|| corrupt("a tree item has no name"))?,
-                    name_key: item.name_key.ok_or_else(|| corrupt("a tree item has no name key"))?,
+                    name: item
+                        .name
+                        .ok_or_else(|| corrupt("a tree item has no name"))?,
+                    name_key: item
+                        .name_key
+                        .ok_or_else(|| corrupt("a tree item has no name key"))?,
                     head_seq: item.head_seq,
                     lifecycle_state: match item.lifecycle_state {
                         LifecycleState::Live => ProfileLifecycleState::Live,
@@ -2323,12 +2471,16 @@ impl PortableRepository {
         let size = i64::try_from(content.size).map_err(invalid)?;
         // A write killed before acceptance leaves these bytes at the target, and
         // repeating it finishes the job.
-        let written = crate::commands::verify_working_file(&working, &path, &content.blob_id, size)
-            .is_ok();
+        let written =
+            crate::commands::verify_working_file(&working, &path, &content.blob_id, size).is_ok();
         let changes = working.status().await?;
         if changes.iter().any(|change| {
             (change.path == path
-                && !(written && matches!(change.kind, crate::worktree::ChangeKind::Add | crate::worktree::ChangeKind::Modify)))
+                && !(written
+                    && matches!(
+                        change.kind,
+                        crate::worktree::ChangeKind::Add | crate::worktree::ChangeKind::Modify
+                    )))
                 || change.source_path.as_deref() == Some(&path)
                 || path.starts_with(&format!("{}/", change.path))
         }) {
@@ -2362,7 +2514,13 @@ impl PortableRepository {
             return Err(invalid("injected failure before file acceptance"));
         }
         let outcome = working
-            .commit_selected_with(working.root_path(), &[PathBuf::from(&path)], options, Some((&path, content)), &HashMap::new())
+            .commit_selected_with(
+                working.root_path(),
+                &[PathBuf::from(&path)],
+                options,
+                Some((&path, content)),
+                &HashMap::new(),
+            )
             .await?;
         let commit = match outcome {
             crate::CommitOutcome::Committed(id) => CommitId::parse(id).map_err(corrupt)?,
@@ -2417,7 +2575,8 @@ impl PortableRepository {
         self.writable()?;
         options.validate()?;
         let content = self.store_file(source)?;
-        self.create_file_content(parent, name, content, options).await
+        self.create_file_content(parent, name, content, options)
+            .await
     }
 
     /// Create a FILE from another FILE's current bytes, recording that revision
@@ -2446,7 +2605,8 @@ impl PortableRepository {
             }),
             ..options.clone()
         };
-        self.create_file_content(parent, name, content, &options).await
+        self.create_file_content(parent, name, content, &options)
+            .await
     }
 
     async fn create_file_content(
@@ -2532,12 +2692,18 @@ impl PortableRepository {
     ) -> Result<(ItemId, CommitId)> {
         self.writable()?;
         options.validate()?;
-        let filename = source.file_name().and_then(|name| name.to_str()).ok_or_else(|| {
-            invalid("EMAIL_IMPORT_INVALID_FORMAT: email source filename must be UTF-8")
-        })?;
+        let filename = source
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| {
+                invalid("EMAIL_IMPORT_INVALID_FORMAT: email source filename must be UTF-8")
+            })?;
         let id = ItemId::new();
         let prepared = crate::email_import::prepare(&id, link.clone(), filename, title, source)?;
-        let create = prepared.events.first().ok_or_else(|| corrupt("an email import has no events"))?;
+        let create = prepared
+            .events
+            .first()
+            .ok_or_else(|| corrupt("an email import has no events"))?;
         if let Some((item, commit)) = self.replayed_email_import(options, create).await? {
             return Ok((item, self.finished(commit).await?));
         }
@@ -2585,7 +2751,10 @@ impl PortableRepository {
             return self.finished(commit).await;
         }
         let item = self.local_owner(id, "FILE").await?;
-        let name = item.name.as_deref().ok_or_else(|| corrupt("a FILE has no name"))?;
+        let name = item
+            .name
+            .as_deref()
+            .ok_or_else(|| corrupt("a FILE has no name"))?;
         let readable = self.show_item(id, None).await?;
         let head = match (
             readable.item.projection.content_blob_id,
@@ -2734,10 +2903,21 @@ impl PortableRepository {
         }
         let report = self.verify().await?;
         if !report.missing_objects.is_empty() || !report.missing_metadata.is_empty() {
-            return Err(invalid("complete export requires all referenced content and metadata objects"));
+            return Err(invalid(
+                "complete export requires all referenced content and metadata objects",
+            ));
         }
         let (objects_to_copy, _) = self.references().await?;
-        crate::agent_locks::guard_output(&self.root, &crate::agent_locks::Scope { metadata: &self.root.join(".synck"), tree: Some("") }, self.repo_id().as_str(), &self.agent_lock_tokens, destination)?;
+        crate::agent_locks::guard_output(
+            &self.root,
+            &crate::agent_locks::Scope {
+                metadata: &self.root.join(".synck"),
+                tree: Some(""),
+            },
+            self.repo_id().as_str(),
+            &self.agent_lock_tokens,
+            destination,
+        )?;
         let (parent, parent_path, name, staging) = staging(destination)?;
         let result = async {
             let metadata = staging.join(".synck");
@@ -2754,7 +2934,8 @@ impl PortableRepository {
                 &database,
                 None,
             )?;
-            let storage = SqliteStorage::new(database.clone()).with_encrypted(self.config.encrypted);
+            let storage =
+                SqliteStorage::new(database.clone()).with_encrypted(self.config.encrypted);
             // Establish the ordinary local WAL profile on the private copy.
             drop(storage.open_writable().map_err(corrupt)?);
             let preserve_chunks =
@@ -3037,9 +3218,13 @@ pub async fn materialize_repository(
             ));
         }
         let mut header = BufReader::new(open_regular_file_nofollow(&private_history)?);
-        let encrypted = BundleReader::new(&mut header).read_header().map_err(corrupt)?.encrypted();
+        let encrypted = BundleReader::new(&mut header)
+            .read_header()
+            .map_err(corrupt)?
+            .encrypted();
         let history = open_regular_file_nofollow(&private_history)?;
-        let storage = SqliteStorage::new(metadata.join("repository.sqlite3")).with_encrypted(encrypted);
+        let storage =
+            SqliteStorage::new(metadata.join("repository.sqlite3")).with_encrypted(encrypted);
         let report = storage
             .import_bundle(&mut BufReader::new(history))
             .await
@@ -3120,9 +3305,11 @@ pub async fn init_repository_with_mode(
     author: &str,
     storage_mode: StorageMode,
 ) -> Result<RepoId> {
-    Ok(init_repository_with_name_repair(destination, author, storage_mode)
-        .await?
-        .0)
+    Ok(
+        init_repository_with_name_repair(destination, author, storage_mode)
+            .await?
+            .0,
+    )
 }
 
 /// Initialize a checkout and rename its existing non-portable names, reporting
@@ -3209,7 +3396,9 @@ pub async fn init_repository_with_name_repair(
             .project_imported_history(&repo_id)
             .await
             .map_err(corrupt)?;
-        crate::repository::initialize_checkout_schema(&crate::local_database::LocalDatabase::beside(&storage))?;
+        crate::repository::initialize_checkout_schema(
+            &crate::local_database::LocalDatabase::beside(&storage),
+        )?;
         write_new(
             &metadata.join("config.json"),
             &serde_json::to_vec(&Config {
@@ -3241,7 +3430,8 @@ pub async fn init_repository_with_name_repair(
             crate::repository::create_default_synckignore(&staging)?;
         }
         if let Some(root) = &existing {
-            fix_names = crate::worktree::validate_initial_tree(&directory(root)?, &directory(&staging)?)?;
+            fix_names =
+                crate::worktree::validate_initial_tree(&directory(root)?, &directory(&staging)?)?;
         }
         let working = crate::Repository::discover(&staging).await?;
         if !matches!(
@@ -3318,7 +3508,10 @@ pub async fn init_repository_with_name_repair(
         )?;
     }
     let repairs = if fix_names {
-        crate::Repository::discover(destination).await?.fix_names().await?
+        crate::Repository::discover(destination)
+            .await?
+            .fix_names()
+            .await?
     } else {
         Vec::new()
     };

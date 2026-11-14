@@ -56,7 +56,11 @@ impl fmt::Display for NameError {
                 write!(f, "name contains control character U+{:04X}", *ch as u32)
             }
             NameErrorKind::Unassigned(ch) => {
-                write!(f, "name contains unassigned code point U+{:04X}", *ch as u32)
+                write!(
+                    f,
+                    "name contains unassigned code point U+{:04X}",
+                    *ch as u32
+                )
             }
             NameErrorKind::ReservedControlName => {
                 write!(f, "name is reserved for the control directory")

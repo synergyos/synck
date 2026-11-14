@@ -94,7 +94,9 @@ impl IntoResponse for Error {
             }
         };
         let body = match &self {
-            Self::ObjectsMissing(objects) => serde_json::json!({ "status": code, "objects": objects }),
+            Self::ObjectsMissing(objects) => {
+                serde_json::json!({ "status": code, "objects": objects })
+            }
             Self::Repository(crate::LocalError::Locked { path, owner }) => {
                 serde_json::json!({ "status": code, "path": path, "owner": owner })
             }

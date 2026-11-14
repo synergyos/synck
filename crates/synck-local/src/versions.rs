@@ -5,10 +5,9 @@ use chrono::{DateTime, Utc};
 use serde_json::{Map, Value};
 use synck_file_folder::file_versions as version_set;
 use synck_vcs::types::{
-    ObjectId, CommitId, CommitProposal, EventContent, EventProposal, EventRow, ItemCursor, ItemId,
-    LifecycleState, RefEventProposal, RefEventRow,
-    canonical_ref_event_proposal_bytes, compute_sha256_digest_bytes,
-    sha256_prefixed_hex_from_digest_bytes,
+    CommitId, CommitProposal, EventContent, EventProposal, EventRow, ItemCursor, ItemId,
+    LifecycleState, ObjectId, RefEventProposal, RefEventRow, canonical_ref_event_proposal_bytes,
+    compute_sha256_digest_bytes, sha256_prefixed_hex_from_digest_bytes,
 };
 use uuid::Uuid;
 
@@ -88,7 +87,10 @@ fn named_version_ref_event(
     Ok(RefEventProposal {
         owner_item_id: file_item_id.clone(),
         event_type: event_type.to_string(),
-        set_metadata: Some(synck_vcs::metadata::MetadataRef::new(Value::Object(metadata)).map_err(|e| LocalError::Invalid(e.to_string()))?),
+        set_metadata: Some(
+            synck_vcs::metadata::MetadataRef::new(Value::Object(metadata))
+                .map_err(|e| LocalError::Invalid(e.to_string()))?,
+        ),
         set_content: content,
         base_ref_seq,
     })
@@ -404,9 +406,11 @@ impl Repository {
                 break;
             }
         }
-        let version_owners = items.iter()
+        let version_owners = items
+            .iter()
             .filter(|item| item.item_type == "FILE" && item.ref_head_seq > 0)
-            .map(|item| item.item_id.clone()).collect::<BTreeSet<_>>();
+            .map(|item| item.item_id.clone())
+            .collect::<BTreeSet<_>>();
         let mut operation_owners = HashMap::new();
         for file_item_id in version_owners {
             let state = match self.load_version_set(&file_item_id).await {
@@ -551,20 +555,28 @@ fn apply_ref_version_event(
 ) -> Result<()> {
     let proposal = decode_ref_version_event(file_item_id, event)?;
     if proposal.set_content.is_some() {
-        return Err(LocalError::Integrity("named-version refs cannot hold content objects".into()));
+        return Err(LocalError::Integrity(
+            "named-version refs cannot hold content objects".into(),
+        ));
     }
     if event.ref_seq != state.head_seq + 1 {
-        return Err(LocalError::Integrity("noncontiguous FILE ref ledger".into()));
+        return Err(LocalError::Integrity(
+            "noncontiguous FILE ref ledger".into(),
+        ));
     }
     if state.replay_commit_id.as_ref() != Some(&event.commit_id) {
         state.replay_commit_id = Some(event.commit_id.clone());
         state.replay_commit_base_seq = state.head_seq;
     }
     if proposal.base_ref_seq != state.replay_commit_base_seq {
-        return Err(LocalError::Integrity("invalid FILE ref base sequence".into()));
+        return Err(LocalError::Integrity(
+            "invalid FILE ref base sequence".into(),
+        ));
     }
     let metadata = proposal
-        .set_metadata.as_ref().and_then(synck_vcs::metadata::MetadataRef::value)
+        .set_metadata
+        .as_ref()
+        .and_then(synck_vcs::metadata::MetadataRef::value)
         .and_then(Value::as_object)
         .ok_or_else(|| LocalError::Integrity(format!("{} has no metadata", event.event_type)))?;
     if required_item_id(metadata, "file_item_id")? != *file_item_id {
@@ -669,18 +681,15 @@ fn apply_ref_version_event(
         }
         version_set::VERSION_SET_REVISION_EVENT => {
             let previous_source = replay_live_version(state, &version_id)?.source_item_seq;
-            let source_item_seq =
-                required_positive_i64(metadata, "source_item_seq")?;
-            let source_commit_id =
-                optional_commit_id(metadata, "source_commit_id")?;
+            let source_item_seq = required_positive_i64(metadata, "source_item_seq")?;
+            let source_commit_id = optional_commit_id(metadata, "source_commit_id")?;
             let source_commit_event_idx =
                 optional_nonnegative_i32(metadata, "source_commit_event_idx")?;
-            let description_patch =
-                if metadata.contains_key("description") {
-                    Some(required_description(metadata)?)
-                } else {
-                    None
-                };
+            let description_patch = if metadata.contains_key("description") {
+                Some(required_description(metadata)?)
+            } else {
+                None
+            };
             let (blob_id, size) = validate_source_transition(
                 event,
                 &version_id,
@@ -924,7 +933,11 @@ fn parse_event(event: &EventRow) -> Result<EventProposal> {
 }
 
 fn event_content(event: &EventProposal) -> Result<(ObjectId, i64)> {
-    let blob_id = match event.set_content.as_ref().and_then(|content| content.only("bytes")) {
+    let blob_id = match event
+        .set_content
+        .as_ref()
+        .and_then(|content| content.only("bytes"))
+    {
         Some(blob_id) => ObjectId::parse(blob_id.as_str())
             .map_err(|error| LocalError::Integrity(format!("invalid version blob ID: {error}")))?,
         _ => {
@@ -934,7 +947,9 @@ fn event_content(event: &EventProposal) -> Result<(ObjectId, i64)> {
         }
     };
     let size = event
-        .set_metadata.as_ref().and_then(synck_vcs::metadata::MetadataRef::value)
+        .set_metadata
+        .as_ref()
+        .and_then(synck_vcs::metadata::MetadataRef::value)
         .and_then(|value| value.pointer("/content/size"))
         .and_then(Value::as_i64)
         .filter(|value| *value >= 0)
@@ -978,7 +993,6 @@ fn required_positive_i64(metadata: &Map<String, Value>, key: &str) -> Result<i64
             .ok_or_else(|| LocalError::Integrity(format!("{key} must be greater than zero")))
     })
 }
-
 
 fn optional_nonnegative_i32(metadata: &Map<String, Value>, key: &str) -> Result<Option<i32>> {
     let value = match metadata.get(key) {
@@ -1076,11 +1090,16 @@ mod tests {
             Map::new(),
             None,
             0,
-        ).unwrap();
+        )
+        .unwrap();
         let payload = canonical_ref_event_proposal_bytes(&proposal).unwrap();
         let payload_digest = compute_sha256_digest_bytes(&payload);
         let mut row = RefEventRow {
-                metadata: proposal.set_metadata.as_ref().and_then(|value| value.payload()).cloned(),
+            metadata: proposal
+                .set_metadata
+                .as_ref()
+                .and_then(|value| value.payload())
+                .cloned(),
             repo_id,
             owner_item_id: file_item_id.clone(),
             ref_seq: 1,
@@ -1157,7 +1176,8 @@ mod tests {
             metadata,
             None,
             next_ref_seq - 1,
-        ).unwrap()
+        )
+        .unwrap()
     }
 
     fn replace_event(
@@ -1184,7 +1204,8 @@ mod tests {
             metadata,
             None,
             next_ref_seq - 1,
-        ).unwrap()
+        )
+        .unwrap()
     }
 
     fn tombstone_event(
@@ -1200,7 +1221,8 @@ mod tests {
             Map::new(),
             None,
             next_ref_seq - 1,
-        ).unwrap()
+        )
+        .unwrap()
     }
 
     async fn append(repository: &Repository, message: &str, ref_events: Vec<RefEventProposal>) {

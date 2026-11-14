@@ -3,9 +3,8 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use super::{
-    ContentPointer, FORMAT_VERSION, ItemValue, MAX_ENTRIES,
-    MAX_INDEX_NODE_BYTES, NamespaceKey, RootHeader, StateError, StateNode, StateNodeId,
-    item_id_bytes,
+    ContentPointer, FORMAT_VERSION, ItemValue, MAX_ENTRIES, MAX_INDEX_NODE_BYTES, NamespaceKey,
+    RootHeader, StateError, StateNode, StateNodeId, item_id_bytes,
 };
 use crate::naming::namespace_key;
 use crate::types::{

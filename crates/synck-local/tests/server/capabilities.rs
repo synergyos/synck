@@ -20,7 +20,16 @@ async fn get(router: &Router, uri: &str, token: Option<&str>) -> (StatusCode, Ve
         .await
         .unwrap();
     let status = response.status();
-    (status, response.into_body().collect().await.unwrap().to_bytes().to_vec())
+    (
+        status,
+        response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .to_vec(),
+    )
 }
 
 #[tokio::test]
@@ -42,7 +51,10 @@ async fn capabilities_need_a_granted_token_and_revocation_applies_at_once() {
     assert!(matches!(Server::open(&state, &[]), Err(Error::Locked(_))));
     let router = synck_local::server::router(Arc::new(server));
 
-    let uri = format!("/v1/repositories/{}/sync/capabilities", personal_id.as_str());
+    let uri = format!(
+        "/v1/repositories/{}/sync/capabilities",
+        personal_id.as_str()
+    );
     let (status, body) = get(&router, &uri, Some(&laptop)).await;
     assert_eq!(status, StatusCode::OK);
     let capabilities: Capabilities = serde_json::from_slice(&body).unwrap();
@@ -54,11 +66,23 @@ async fn capabilities_need_a_granted_token_and_revocation_applies_at_once() {
     // Change one character of the secret to another.
     let swapped = if &laptop[40..41] == "A" { "B" } else { "A" };
     let forged = format!("{}{swapped}{}", &laptop[..40], &laptop[41..]);
-    assert_eq!(get(&router, &uri, Some(&forged)).await.0, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        get(&router, &uri, Some(&forged)).await.0,
+        StatusCode::UNAUTHORIZED
+    );
     let work_uri = format!("/v1/repositories/{}/sync/capabilities", work_id.as_str());
-    assert_eq!(get(&router, &work_uri, Some(&laptop)).await.0, StatusCode::NOT_FOUND);
-    assert_eq!(get(&router, "/v1/unknown", Some(&laptop)).await.0, StatusCode::NOT_FOUND);
+    assert_eq!(
+        get(&router, &work_uri, Some(&laptop)).await.0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        get(&router, "/v1/unknown", Some(&laptop)).await.0,
+        StatusCode::NOT_FOUND
+    );
 
     assert!(tokens::revoke(&state, "laptop").unwrap());
-    assert_eq!(get(&router, &uri, Some(&laptop)).await.0, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        get(&router, &uri, Some(&laptop)).await.0,
+        StatusCode::UNAUTHORIZED
+    );
 }

@@ -75,7 +75,12 @@ fn state_root(path: &Path) -> Result<PathBuf> {
 pub async fn run(args: ServeArgs) -> Result<()> {
     match args.command {
         Some(ServeCommand::Init { state }) => synck_local::server::init(&state_root(&state)?),
-        Some(ServeCommand::Token(TokenCommand::Add { state, name, access, repositories })) => {
+        Some(ServeCommand::Token(TokenCommand::Add {
+            state,
+            name,
+            access,
+            repositories,
+        })) => {
             let repositories = repositories
                 .iter()
                 .map(|root| Ok(ServedRepository::open(root)?.repository_id().clone()))
@@ -91,8 +96,17 @@ pub async fn run(args: ServeArgs) -> Result<()> {
                     .created_at
                     .duration_since(std::time::UNIX_EPOCH)
                     .map_or(0, |since| since.as_secs());
-                let repositories: Vec<&str> = token.repositories.iter().map(|repo| repo.as_str()).collect();
-                println!("{}\t{}\t{created}\t{}", token.name, token.access, repositories.join(","));
+                let repositories: Vec<&str> = token
+                    .repositories
+                    .iter()
+                    .map(|repo| repo.as_str())
+                    .collect();
+                println!(
+                    "{}\t{}\t{created}\t{}",
+                    token.name,
+                    token.access,
+                    repositories.join(",")
+                );
             }
             Ok(())
         }
@@ -108,7 +122,11 @@ pub async fn run(args: ServeArgs) -> Result<()> {
             };
             let server = Server::open(&state_root(&state)?, &args.repositories)?;
             for repository in server.repositories() {
-                eprintln!("serving {} from {}", repository.repository_id(), repository.root().display());
+                eprintln!(
+                    "serving {} from {}",
+                    repository.repository_id(),
+                    repository.root().display()
+                );
             }
             synck_local::server::serve(server, listen).await
         }

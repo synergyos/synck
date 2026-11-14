@@ -19,7 +19,7 @@ use synck_vcs::naming::compute_name_key;
 use synck_vcs::repo::Repo;
 use synck_vcs::state::{StateIndexStore, StateProjectorStore};
 use synck_vcs::storage::Storage;
-use synck_vcs::types::{ObjectId, CommitEventRow, CommitId, ItemId, RepoId};
+use synck_vcs::types::{CommitEventRow, CommitId, ItemId, ObjectId, RepoId};
 use synck_vcs_sqlite::SqliteStorage;
 use uuid::Uuid;
 
@@ -133,8 +133,6 @@ impl HiddenFilesMode {
             Self::Track => "track",
         }
     }
-
-
 }
 
 /// Working-copy commands need a working tree. Name a bare complete repository
@@ -233,7 +231,13 @@ impl Config {
         Self {
             remote: Some(remote),
             hold,
-            ..Self::complete(repo_id, author, crate::portable::Authority::Local, checkout, storage_mode)
+            ..Self::complete(
+                repo_id,
+                author,
+                crate::portable::Authority::Local,
+                checkout,
+                storage_mode,
+            )
         }
     }
 
@@ -248,7 +252,6 @@ impl Config {
     pub(crate) fn author(&self) -> &str {
         &self.author
     }
-
 }
 
 pub(crate) struct RepositoryLock {
@@ -307,8 +310,11 @@ impl Repository {
         let root = discover_root(start)?;
         let file = open_regular_file_nofollow(&root.join(".synck/config.json"))?;
         let config: serde_json::Value = serde_json::from_reader(file)?;
-        if config.get("format_version").and_then(|v| v.as_u64()) != Some(u64::from(FORMAT_VERSION)) {
-            return Err(crate::portable::unsupported_format(config.get("format_version").and_then(|v| v.as_u64())));
+        if config.get("format_version").and_then(|v| v.as_u64()) != Some(u64::from(FORMAT_VERSION))
+        {
+            return Err(crate::portable::unsupported_format(
+                config.get("format_version").and_then(|v| v.as_u64()),
+            ));
         }
         Self::discover(start).await
     }
@@ -323,12 +329,17 @@ impl Repository {
         let lock = acquire_lock(&metadata_path, false)?;
         let config_path = metadata_path.join("config.json");
         let mut config_bytes = Vec::new();
-        std::io::Read::read_to_end(&mut open_regular_file_nofollow(&config_path)?, &mut config_bytes)
-            .at("read", &config_path)?;
+        std::io::Read::read_to_end(
+            &mut open_regular_file_nofollow(&config_path)?,
+            &mut config_bytes,
+        )
+        .at("read", &config_path)?;
         let mut config: Config = serde_json::from_slice(&config_bytes)?;
         config.checkout = crate::checkout::read_checkout(&metadata_path)?;
         if config.format_version != FORMAT_VERSION {
-            return Err(crate::portable::unsupported_format(Some(u64::from(config.format_version))));
+            return Err(crate::portable::unsupported_format(Some(u64::from(
+                config.format_version,
+            ))));
         }
         if config.checkout.is_none()
             || config.encrypted
@@ -468,8 +479,14 @@ impl Repository {
     /// store without any working tree.
     pub(crate) fn portable_view(&self) -> Result<crate::portable::PortableRepository> {
         crate::portable::PortableRepository::from_locked_checkout(
-            self.store_path.parent().expect("store path is inside a root"),
-            if self.config.hold { self.origin_storage() } else { self.storage.clone() },
+            self.store_path
+                .parent()
+                .expect("store path is inside a root"),
+            if self.config.hold {
+                self.origin_storage()
+            } else {
+                self.storage.clone()
+            },
             Arc::clone(self.origin_lock.as_ref().unwrap_or(&self._lock)),
             &self.config,
             &self.agent_lock_tokens,
@@ -539,7 +556,9 @@ impl Repository {
         let head = self.head_repo_seq()?;
         let on_disk = crate::checkout::read_checkout(&self.metadata_path)?;
         let mut recorded = on_disk.as_ref().and_then(|checkout| checkout.baseline);
-        let committing = on_disk.as_ref().and_then(|checkout| checkout.committing.as_deref());
+        let committing = on_disk
+            .as_ref()
+            .and_then(|checkout| checkout.committing.as_deref());
         // This tree's own commit, made at HEAD; later commits are another
         // tree's.
         if let Some(operation_id) = committing
@@ -557,8 +576,10 @@ impl Repository {
             Some(baseline) if baseline < head && self.files_changed_after(baseline)? => baseline,
             _ => head,
         };
-        self.baseline.store(baseline, std::sync::atomic::Ordering::SeqCst);
-        self.at_head.store(baseline == head, std::sync::atomic::Ordering::SeqCst);
+        self.baseline
+            .store(baseline, std::sync::atomic::Ordering::SeqCst);
+        self.at_head
+            .store(baseline == head, std::sync::atomic::Ordering::SeqCst);
         // A checkout being enabled is published later, with this baseline.
         let on_disk_baseline = on_disk.as_ref().and_then(|checkout| checkout.baseline);
         if on_disk.is_some() && (on_disk_baseline != Some(baseline) || committing.is_some()) {
@@ -623,7 +644,8 @@ impl Repository {
 
     /// Commits are being added that the working files do not have yet.
     pub(crate) fn leave_head(&self) {
-        self.at_head.store(false, std::sync::atomic::Ordering::SeqCst);
+        self.at_head
+            .store(false, std::sync::atomic::Ordering::SeqCst);
     }
 
     fn files_changed_after(&self, repo_seq: i64) -> Result<bool> {
@@ -644,13 +666,16 @@ impl Repository {
     /// Base the working tree on `repo_seq`: HEAD after a commit made at HEAD,
     /// a pull, or a restore of the whole tree.
     pub(crate) fn advance_baseline(&self, repo_seq: i64) -> Result<()> {
-        self.at_head
-            .store(repo_seq == self.head_repo_seq()?, std::sync::atomic::Ordering::SeqCst);
+        self.at_head.store(
+            repo_seq == self.head_repo_seq()?,
+            std::sync::atomic::Ordering::SeqCst,
+        );
         if self.baseline() == repo_seq {
             return Ok(());
         }
         self.record_baseline(repo_seq)?;
-        self.baseline.store(repo_seq, std::sync::atomic::Ordering::SeqCst);
+        self.baseline
+            .store(repo_seq, std::sync::atomic::Ordering::SeqCst);
         Ok(())
     }
 
@@ -713,20 +738,34 @@ impl Repository {
     }
 
     pub fn hidden_files_mode(&self) -> HiddenFilesMode {
-        self.config.checkout.as_ref().expect("checkout adapter").hidden_files
+        self.config
+            .checkout
+            .as_ref()
+            .expect("checkout adapter")
+            .hidden_files
     }
 
     pub fn set_hidden_files_mode(&mut self, mode: HiddenFilesMode) -> Result<()> {
         let previous = self.hidden_files_mode();
-        if mode == previous { return Ok(()); }
+        if mode == previous {
+            return Ok(());
+        }
         // Invalidate before publishing the preference: an interrupted update
         // can cause an extra scan, but cannot reuse a scan under a new policy.
         self.local
             .open_writable()?
             .execute("DELETE FROM local_worktree_scan_state", [])?;
-        self.config.checkout.as_mut().expect("checkout adapter").hidden_files = mode;
+        self.config
+            .checkout
+            .as_mut()
+            .expect("checkout adapter")
+            .hidden_files = mode;
         if let Err(error) = self.publish_checkout_config() {
-            self.config.checkout.as_mut().expect("checkout adapter").hidden_files = previous;
+            self.config
+                .checkout
+                .as_mut()
+                .expect("checkout adapter")
+                .hidden_files = previous;
             return Err(error);
         }
         Ok(())
@@ -975,11 +1014,9 @@ impl Repository {
                             item,
                             &relocated,
                         ))
-                    .then(|| {
-                        synck_file_folder::ItemBase {
-                            item_id: item_id.clone(),
-                            base_seq: item.head_seq,
-                        }
+                    .then(|| synck_file_folder::ItemBase {
+                        item_id: item_id.clone(),
+                        base_seq: item.head_seq,
                     })
                 })
                 .collect::<Vec<_>>();
@@ -1005,8 +1042,7 @@ impl Repository {
                         .any(|item| !visible.contains(&item.item_id))
                     {
                         return Err(LocalError::Invalid(
-                            "folder deletion would affect omitted or non-filesystem items"
-                                .into(),
+                            "folder deletion would affect omitted or non-filesystem items".into(),
                         ));
                     }
                     Some(&root.item_id)
@@ -1021,8 +1057,7 @@ impl Repository {
                 )?;
                 if mode != "LOCAL" {
                     return Err(LocalError::Invalid(
-                        "externally sequenced items cannot be edited in a local checkout"
-                            .into(),
+                        "externally sequenced items cannot be edited in a local checkout".into(),
                     ));
                 }
             }
@@ -1320,12 +1355,17 @@ impl Repository {
                 continue;
             }
             let proposal: synck_vcs::types::EventProposal = event.proposal()?;
-            let Some(blob_id) = proposal.set_content.as_ref().and_then(|content| content.only("bytes"))
+            let Some(blob_id) = proposal
+                .set_content
+                .as_ref()
+                .and_then(|content| content.only("bytes"))
             else {
                 continue;
             };
             let size = proposal
-                .set_metadata.as_ref().and_then(synck_vcs::metadata::MetadataRef::value)
+                .set_metadata
+                .as_ref()
+                .and_then(synck_vcs::metadata::MetadataRef::value)
                 .and_then(|m| m.get("content"))
                 .and_then(|m| m.get("size"))
                 .and_then(serde_json::Value::as_i64)
@@ -1577,7 +1617,10 @@ fn open_origin_store(store: &Path, clone: &Config) -> Result<()> {
     let missing = |error: LocalError| {
         LocalError::Invalid(format!(
             "this clone's origin is not available at {}: {error}",
-            store.parent().expect("store path is inside a root").display()
+            store
+                .parent()
+                .expect("store path is inside a root")
+                .display()
         ))
     };
     validate_store_layout(store).map_err(missing)?;
@@ -1589,7 +1632,10 @@ fn open_origin_store(store: &Path, clone: &Config) -> Result<()> {
     {
         return Err(LocalError::Invalid(format!(
             "{} is no longer this clone's origin repository",
-            store.parent().expect("store path is inside a root").display()
+            store
+                .parent()
+                .expect("store path is inside a root")
+                .display()
         )));
     }
     Ok(())
@@ -1602,7 +1648,10 @@ pub(crate) fn reject_unfinished_origin_operation(store: &Path) -> Result<()> {
         if store.join(name).symlink_metadata().is_ok() {
             return Err(LocalError::Invalid(format!(
                 "the origin has an unfinished operation; run any synck command in {} first",
-                store.parent().expect("store path is inside a root").display()
+                store
+                    .parent()
+                    .expect("store path is inside a root")
+                    .display()
             )));
         }
     }
@@ -2500,12 +2549,17 @@ mod tests {
         let creates = item_ids
             .iter()
             .enumerate()
-            .map(|(index, item_id)| EventProposal { set_link: None, merged_from: None,
+            .map(|(index, item_id)| EventProposal {
+                set_link: None,
+                merged_from: None,
                 item_id: Some(item_id.clone()),
                 event_type: "FOLDER::CREATE".to_string(),
                 set_metadata: None,
                 set_content: None,
-                create_item: Some(CreateItem { key: None, link: None, derived_from: None,
+                create_item: Some(CreateItem {
+                    key: None,
+                    link: None,
+                    derived_from: None,
                     item_type: "FOLDER".to_string(),
                     parent_folder_id: None,
                     name: Some(format!("folder-{index}")),
@@ -2539,7 +2593,9 @@ mod tests {
         let renames = item_ids
             .iter()
             .enumerate()
-            .map(|(index, item_id)| EventProposal { set_link: None, merged_from: None,
+            .map(|(index, item_id)| EventProposal {
+                set_link: None,
+                merged_from: None,
                 item_id: Some(item_id.clone()),
                 event_type: "FOLDER::SET_NAME".to_string(),
                 set_metadata: None,
@@ -2610,12 +2666,17 @@ mod tests {
         init(temporary.path(), "author").await.unwrap();
         let repository = Repository::discover(temporary.path()).await.unwrap();
         let events = (0..10_001)
-            .map(|index| EventProposal { set_link: None, merged_from: None,
+            .map(|index| EventProposal {
+                set_link: None,
+                merged_from: None,
                 item_id: Some(synck_vcs::types::ItemId::new()),
                 event_type: "FOLDER::CREATE".to_string(),
                 set_metadata: None,
                 set_content: None,
-                create_item: Some(CreateItem { key: None, link: None, derived_from: None,
+                create_item: Some(CreateItem {
+                    key: None,
+                    link: None,
+                    derived_from: None,
                     item_type: "FOLDER".to_string(),
                     parent_folder_id: None,
                     name: Some(format!("folder-{index}")),
@@ -2663,12 +2724,17 @@ mod tests {
                     message: Some("create".to_string()),
                     occurred_at: None,
                     operation_id: Some(Uuid::new_v4().to_string()),
-                    events: vec![EventProposal { set_link: None, merged_from: None,
+                    events: vec![EventProposal {
+                        set_link: None,
+                        merged_from: None,
                         item_id: Some(item_id.clone()),
                         event_type: "FOLDER::CREATE".to_string(),
                         set_metadata: None,
                         set_content: None,
-                        create_item: Some(CreateItem { key: None, link: None, derived_from: None,
+                        create_item: Some(CreateItem {
+                            key: None,
+                            link: None,
+                            derived_from: None,
                             item_type: "FOLDER".to_string(),
                             parent_folder_id: None,
                             name: Some("before".to_string()),
@@ -2696,7 +2762,9 @@ mod tests {
                     message: Some("move".to_string()),
                     occurred_at: None,
                     operation_id: Some(Uuid::new_v4().to_string()),
-                    events: vec![EventProposal { set_link: None, merged_from: None,
+                    events: vec![EventProposal {
+                        set_link: None,
+                        merged_from: None,
                         item_id: Some(item_id),
                         event_type: "FOLDER::MOVE".to_string(),
                         set_metadata: None,
@@ -2735,12 +2803,17 @@ mod tests {
                     message: Some("reserved name".to_string()),
                     occurred_at: None,
                     operation_id: Some(Uuid::new_v4().to_string()),
-                    events: vec![EventProposal { set_link: None, merged_from: None,
+                    events: vec![EventProposal {
+                        set_link: None,
+                        merged_from: None,
                         item_id: Some(ItemId::new()),
                         event_type: "FOLDER::CREATE".to_string(),
                         set_metadata: None,
                         set_content: None,
-                        create_item: Some(CreateItem { key: None, link: None, derived_from: None,
+                        create_item: Some(CreateItem {
+                            key: None,
+                            link: None,
+                            derived_from: None,
                             item_type: "FOLDER".to_string(),
                             parent_folder_id: None,
                             name: Some(".SyNcK".to_string()),
@@ -2762,16 +2835,23 @@ mod tests {
 }
 
 /// Initialize the separate checkout database without modifying canonical history.
-pub(crate) fn initialize_checkout_schema(local: &crate::local_database::LocalDatabase) -> Result<()> {
+pub(crate) fn initialize_checkout_schema(
+    local: &crate::local_database::LocalDatabase,
+) -> Result<()> {
     let mut connection = local.create()?;
-    let transaction = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let transaction =
+        connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     let exists: bool = transaction.query_row(
         "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='local_schema_meta')",
         [],
         |r| r.get(0),
     )?;
     let version: i64 = if exists {
-        transaction.query_row("SELECT version FROM local_schema_meta WHERE singleton = 1", [], |row| row.get(0))?
+        transaction.query_row(
+            "SELECT version FROM local_schema_meta WHERE singleton = 1",
+            [],
+            |row| row.get(0),
+        )?
     } else {
         transaction.execute_batch(LOCAL_SCHEMA)?;
         LOCAL_SCHEMA_VERSION

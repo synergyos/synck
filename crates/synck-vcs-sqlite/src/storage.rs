@@ -95,8 +95,14 @@ impl SqliteStorage {
     /// The caller MUST hold the authority's exclusive repository write lock
     /// through this check and append. SQLite's read alone is not a CAS. A sealed
     /// unpublished commit invalidates the cursor even before it gets repo_seq.
-    pub fn repository_head_matches(&self, repo_id: &RepoId, expected: u64) -> Result<bool, StorageError> {
-        let expected = i64::try_from(expected).map_err(|_| StorageError::Other { detail:"repository head exceeds i64".into() })?;
+    pub fn repository_head_matches(
+        &self,
+        repo_id: &RepoId,
+        expected: u64,
+    ) -> Result<bool, StorageError> {
+        let expected = i64::try_from(expected).map_err(|_| StorageError::Other {
+            detail: "repository head exceeds i64".into(),
+        })?;
         self.open_readonly()?.query_row(
             "SELECT COALESCE((SELECT MAX(repo_seq) FROM vcs_commits WHERE repo_id=?1),0)=?2 AND NOT EXISTS(SELECT 1 FROM vcs_commits WHERE repo_id=?1 AND commit_id IS NOT NULL AND repo_seq IS NULL)",
             rusqlite::params![repo_id.as_str(),expected], |row|row.get(0),
@@ -665,8 +671,12 @@ fn commit_from_row(row: &Row<'_>) -> rusqlite::Result<CommitRow> {
     let message: Option<String> = row.get(6)?;
     let operation: Option<String> = row.get(11)?;
     synck_vcs::limits::validate_commit_metadata(
-        &author, &committer, message.as_deref(), operation.as_deref(),
-    ).map_err(|e| decode_error(4, e.to_string()))?;
+        &author,
+        &committer,
+        message.as_deref(),
+        operation.as_deref(),
+    )
+    .map_err(|e| decode_error(4, e.to_string()))?;
     let occurred_at = row
         .get::<_, Option<String>>(7)?
         .map(|value| parse_time_row(value, 7))
@@ -688,18 +698,34 @@ fn commit_from_row(row: &Row<'_>) -> rusqlite::Result<CommitRow> {
 
 fn checked_payload(row: &Row<'_>, column: usize) -> rusqlite::Result<Vec<u8>> {
     let bytes: Vec<u8> = row.get(column)?;
-    synck_vcs::limits::check_bytes("event payload", bytes.len(), synck_vcs::limits::MAX_EVENT_PAYLOAD_BYTES)
-        .map_err(|e| decode_error(column, e.to_string()))?;
+    synck_vcs::limits::check_bytes(
+        "event payload",
+        bytes.len(),
+        synck_vcs::limits::MAX_EVENT_PAYLOAD_BYTES,
+    )
+    .map_err(|e| decode_error(column, e.to_string()))?;
     Ok(bytes)
 }
 
-fn metadata_from_row(row: &Row<'_>, event_column: usize, metadata_column: usize) -> rusqlite::Result<Option<synck_vcs::metadata::Metadata>> {
-    let Some(bytes) = row.get::<_, Option<Vec<u8>>>(metadata_column)? else { return Ok(None); };
+fn metadata_from_row(
+    row: &Row<'_>,
+    event_column: usize,
+    metadata_column: usize,
+) -> rusqlite::Result<Option<synck_vcs::metadata::Metadata>> {
+    let Some(bytes) = row.get::<_, Option<Vec<u8>>>(metadata_column)? else {
+        return Ok(None);
+    };
     let payload: Vec<u8> = row.get(event_column)?;
-    let event: serde_json::Value = serde_json::from_slice(&payload).map_err(|e| decode_error(event_column, e.to_string()))?;
-    let id = event.get("metadata_id").and_then(serde_json::Value::as_str).ok_or_else(|| decode_error(event_column, "missing metadata ID"))?;
-    let id = synck_vcs::types::ObjectId::parse(id).map_err(|e| decode_error(event_column, e.to_string()))?;
-    synck_vcs::metadata::Metadata::verify_any(&id, bytes).map_err(|e| decode_error(metadata_column, e.to_string()))
+    let event: serde_json::Value =
+        serde_json::from_slice(&payload).map_err(|e| decode_error(event_column, e.to_string()))?;
+    let id = event
+        .get("metadata_id")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| decode_error(event_column, "missing metadata ID"))?;
+    let id = synck_vcs::types::ObjectId::parse(id)
+        .map_err(|e| decode_error(event_column, e.to_string()))?;
+    synck_vcs::metadata::Metadata::verify_any(&id, bytes)
+        .map_err(|e| decode_error(metadata_column, e.to_string()))
 }
 
 fn event_from_row(row: &Row<'_>) -> rusqlite::Result<EventRow> {
@@ -781,7 +807,7 @@ fn commit_event_from_row(row: &Row<'_>) -> rusqlite::Result<CommitEventRow> {
             commit_event_idx: row.get(6)?,
             repo_seq: row.get(7)?,
             payload: checked_payload(row, 8)?,
-                metadata: metadata_from_row(row, 8, 13)?,
+            metadata: metadata_from_row(row, 8, 13)?,
             event_payload_digest: parse_digest(row.get(9)?, 9)?,
             created_at: parse_time_row(row.get(10)?, 10)?,
         })),
@@ -1133,7 +1159,9 @@ impl StorageBackend for SqliteStorage {
             let sequence = commit.repo_seq.expect("sequenced query");
             if previous.checked_add(1) != Some(sequence) {
                 return Err(StorageError::Other {
-                    detail: format!("repository sequence must be consecutive after {previous}, got {sequence}"),
+                    detail: format!(
+                        "repository sequence must be consecutive after {previous}, got {sequence}"
+                    ),
                 });
             }
             previous = sequence;
@@ -2035,15 +2063,11 @@ fn verify_checkpoints_in(
         let id = commit_id_from_digest_bytes(&commit).map_err(|error| StorageError::Other {
             detail: error.to_string(),
         })?;
-        let digest = synck_vcs::checkpoint::digest(
-            &previous,
-            seq as u64,
-            &id,
-            parse_timestamp(&accepted)?,
-        )
-        .map_err(|error| StorageError::Other {
-            detail: error.to_string(),
-        })?;
+        let digest =
+            synck_vcs::checkpoint::digest(&previous, seq as u64, &id, parse_timestamp(&accepted)?)
+                .map_err(|error| StorageError::Other {
+                    detail: error.to_string(),
+                })?;
         if published_digest.as_deref() != Some(digest.as_slice()) {
             return Err(StorageError::Other {
                 detail: format!("checkpoint digest mismatch at sequence {seq}"),
@@ -2204,7 +2228,9 @@ mod checked_append_work_tests {
         let (event_type, set_content, set_parent, set_name) = match case {
             Case::Content => (
                 "FILE::SET_CONTENT",
-                Some(EventContent::bytes(synck_vcs::types::ObjectId::from_digest([42;32]))),
+                Some(EventContent::bytes(
+                    synck_vcs::types::ObjectId::from_digest([42; 32]),
+                )),
                 None,
                 None,
             ),
@@ -2225,7 +2251,9 @@ mod checked_append_work_tests {
                 message: None,
                 occurred_at: None,
                 operation_id: Some("measured".to_string()),
-                events: vec![EventProposal { set_link: None, merged_from: None,
+                events: vec![EventProposal {
+                    set_link: None,
+                    merged_from: None,
                     item_id: Some(file_id),
                     event_type: event_type.to_string(),
                     set_metadata: None,
@@ -2254,13 +2282,21 @@ mod checked_append_work_tests {
         parent_folder_id: Option<ItemId>,
         name: &str,
     ) -> EventProposal {
-        EventProposal { set_link: None, merged_from: None,
+        EventProposal {
+            set_link: None,
+            merged_from: None,
             item_id: Some(item_id),
             event_type: format!("{item_type}::CREATE"),
             set_metadata: None,
-            set_content: (item_type == "FILE")
-                .then(|| synck_vcs::content::EventContent::bytes(synck_vcs::types::ObjectId::from_digest([7; 32]))),
-            create_item: Some(CreateItem { key: None, link: None, derived_from: None,
+            set_content: (item_type == "FILE").then(|| {
+                synck_vcs::content::EventContent::bytes(synck_vcs::types::ObjectId::from_digest(
+                    [7; 32],
+                ))
+            }),
+            create_item: Some(CreateItem {
+                key: None,
+                link: None,
+                derived_from: None,
                 item_type: item_type.to_string(),
                 parent_folder_id,
                 name: Some(name.to_string()),

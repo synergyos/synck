@@ -87,10 +87,19 @@ impl WithdrawnSave {
         let mut count = 0usize;
         for record in &self.records {
             let (family, bytes) = match record {
-                ProposalRecord::Item(event) => (COMMIT_EVENT_FAMILY_ITEM, canonical_event_proposal_bytes(event)?),
-                ProposalRecord::Ref(event) => (COMMIT_EVENT_FAMILY_REF, canonical_ref_event_proposal_bytes(event)?),
+                ProposalRecord::Item(event) => (
+                    COMMIT_EVENT_FAMILY_ITEM,
+                    canonical_event_proposal_bytes(event)?,
+                ),
+                ProposalRecord::Ref(event) => (
+                    COMMIT_EVENT_FAMILY_REF,
+                    canonical_ref_event_proposal_bytes(event)?,
+                ),
                 ProposalRecord::Guard(_) | ProposalRecord::SubtreeGuard(_) => {
-                    return Err(LocalError::Integrity(format!("withdrawn {} holds a head guard", self.name())));
+                    return Err(LocalError::Integrity(format!(
+                        "withdrawn {} holds a head guard",
+                        self.name()
+                    )));
                 }
             };
             digest.push(family, &compute_sha256_digest_bytes(&bytes));
@@ -112,10 +121,12 @@ impl WithdrawnSave {
             )));
         }
         for (id, payload) in &self.metadata_objects {
-            let bytes = hex::decode(payload)
-                .map_err(|_| LocalError::Integrity(format!("withdrawn {} has unreadable metadata", self.name())))?;
-            Metadata::verify_any(id, bytes)
-                .map_err(|error| LocalError::Integrity(format!("withdrawn {} metadata {id}: {error}", self.name())))?;
+            let bytes = hex::decode(payload).map_err(|_| {
+                LocalError::Integrity(format!("withdrawn {} has unreadable metadata", self.name()))
+            })?;
+            Metadata::verify_any(id, bytes).map_err(|error| {
+                LocalError::Integrity(format!("withdrawn {} metadata {id}: {error}", self.name()))
+            })?;
         }
         Ok(())
     }
@@ -125,16 +136,26 @@ pub(crate) fn read_withdrawn(metadata: &Path) -> Result<WithdrawnFile> {
     let path = metadata.join(WITHDRAWN_FILE);
     match std::fs::read(&path) {
         Ok(bytes) => Ok(serde_json::from_slice(&bytes)?),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(WithdrawnFile { next: 1, saves: Vec::new() }),
-        Err(source) => Err(LocalError::Io { action: "read", path, source }),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(WithdrawnFile {
+            next: 1,
+            saves: Vec::new(),
+        }),
+        Err(source) => Err(LocalError::Io {
+            action: "read",
+            path,
+            source,
+        }),
     }
 }
 
 fn write_withdrawn(metadata: &Path, file: &WithdrawnFile) -> Result<()> {
-    let path = metadata.join("tmp").join(format!("withdrawn-{}.tmp", Uuid::new_v4()));
+    let path = metadata
+        .join("tmp")
+        .join(format!("withdrawn-{}.tmp", Uuid::new_v4()));
     std::fs::write(&path, serde_json::to_vec(file)?).at("write", &path)?;
     crate::repository::sync_file(&path)?;
-    crate::repository::replace_file(&path, &metadata.join(WITHDRAWN_FILE)).at("publish withdrawn saves", &path)?;
+    crate::repository::replace_file(&path, &metadata.join(WITHDRAWN_FILE))
+        .at("publish withdrawn saves", &path)?;
     sync_directory(metadata)
 }
 
@@ -143,15 +164,25 @@ fn write_withdrawn(metadata: &Path, file: &WithdrawnFile) -> Result<()> {
 pub(crate) fn live_withdrawn_objects(metadata: &Path) -> Result<BTreeSet<String>> {
     let now = Utc::now();
     let mut objects = BTreeSet::new();
-    for save in read_withdrawn(metadata)?.saves.iter().filter(|save| save.live(now)) {
-        objects.extend(save.objects()?.iter().map(|id| id.as_str()[7..].to_string()));
+    for save in read_withdrawn(metadata)?
+        .saves
+        .iter()
+        .filter(|save| save.live(now))
+    {
+        objects.extend(
+            save.objects()?
+                .iter()
+                .map(|id| id.as_str()[7..].to_string()),
+        );
     }
     Ok(objects)
 }
 
 /// One withdrawn save named by its label or its complete commit ID.
 fn select<'a>(saves: &'a [WithdrawnSave], input: &str) -> Option<&'a WithdrawnSave> {
-    saves.iter().find(|save| save.name() == input || save.commit_id.as_str() == input)
+    saves
+        .iter()
+        .find(|save| save.name() == input || save.commit_id.as_str() == input)
 }
 
 impl Repository {
@@ -168,9 +199,11 @@ impl Repository {
     }
 
     pub fn withdrawn_save(&self, input: &str) -> Result<WithdrawnSave> {
-        select(&self.withdrawn()?, input)
-            .cloned()
-            .ok_or_else(|| LocalError::Invalid(format!("no withdrawn save {input}; synck withdrawn lists them")))
+        select(&self.withdrawn()?, input).cloned().ok_or_else(|| {
+            LocalError::Invalid(format!(
+                "no withdrawn save {input}; synck withdrawn lists them"
+            ))
+        })
     }
 
     /// The label a commit ID was withdrawn as, for pointing `show` there.
@@ -179,13 +212,27 @@ impl Repository {
     }
 
     /// Copy the bytes a withdrawn save gave `input` to a new file.
-    pub async fn export_withdrawn(&self, caller: &Path, save: &str, input: &Path, destination: &Path) -> Result<()> {
+    pub async fn export_withdrawn(
+        &self,
+        caller: &Path,
+        save: &str,
+        input: &Path,
+        destination: &Path,
+    ) -> Result<()> {
         let save = self.withdrawn_save(save)?;
         let path = normalize_input_path(self.root_path(), caller, input)?;
-        let file = save.files.iter().find(|file| file.path == path).ok_or_else(|| {
-            LocalError::Invalid(format!("withdrawn {} did not save the bytes of {path}", save.name()))
-        })?;
-        let size = i64::try_from(file.size).map_err(|_| LocalError::Integrity("file size overflow".into()))?;
+        let file = save
+            .files
+            .iter()
+            .find(|file| file.path == path)
+            .ok_or_else(|| {
+                LocalError::Invalid(format!(
+                    "withdrawn {} did not save the bytes of {path}",
+                    save.name()
+                ))
+            })?;
+        let size = i64::try_from(file.size)
+            .map_err(|_| LocalError::Integrity("file size overflow".into()))?;
         self.export_object(caller, destination, &file.blob_id, size)
     }
 
@@ -198,7 +245,11 @@ impl Repository {
         for input in inputs {
             let save = select(&file.saves, input)
                 .filter(|save| save.live(now))
-                .ok_or_else(|| LocalError::Invalid(format!("no withdrawn save {input}; synck withdrawn lists them")))?;
+                .ok_or_else(|| {
+                    LocalError::Invalid(format!(
+                        "no withdrawn save {input}; synck withdrawn lists them"
+                    ))
+                })?;
             chosen.insert(save.label);
         }
         let removed: Vec<String> = file
@@ -207,7 +258,8 @@ impl Repository {
             .filter(|save| (all || chosen.contains(&save.label)) && save.live(now))
             .map(WithdrawnSave::name)
             .collect();
-        file.saves.retain(|save| !(all || chosen.contains(&save.label)));
+        file.saves
+            .retain(|save| !(all || chosen.contains(&save.label)));
         self.publish_withdrawn(&file).await?;
         Ok(removed)
     }
@@ -216,7 +268,12 @@ impl Repository {
     pub(crate) async fn expire_withdrawn(&self) -> Result<Vec<String>> {
         let mut file = read_withdrawn(self.metadata_path())?;
         let now = Utc::now();
-        let expired: Vec<String> = file.saves.iter().filter(|save| !save.live(now)).map(WithdrawnSave::name).collect();
+        let expired: Vec<String> = file
+            .saves
+            .iter()
+            .filter(|save| !save.live(now))
+            .map(WithdrawnSave::name)
+            .collect();
         if !expired.is_empty() {
             file.saves.retain(|save| save.live(now));
             self.publish_withdrawn(&file).await?;
@@ -243,7 +300,11 @@ impl Repository {
             .map(|save| {
                 Ok(PinnedUntil {
                     until: save.expires_at(),
-                    objects: save.objects()?.iter().map(|id| id.as_str()[7..].to_string()).collect(),
+                    objects: save
+                        .objects()?
+                        .iter()
+                        .map(|id| id.as_str()[7..].to_string())
+                        .collect(),
                 })
             })
             .collect()
@@ -255,22 +316,33 @@ impl Repository {
         let now = Utc::now();
         let mut saves = Vec::new();
         for commit_id in commits {
-            let id = CommitId::parse(commit_id).map_err(|error| LocalError::Integrity(error.to_string()))?;
+            let id = CommitId::parse(commit_id)
+                .map_err(|error| LocalError::Integrity(error.to_string()))?;
             let commit = self
                 .core()
                 .get_commit(self.repository_id().clone(), id.clone())
                 .await?
-                .ok_or_else(|| LocalError::Integrity(format!("held commit {commit_id} is missing")))?;
-            let (proposal, ref_events) = stored_proposal(self.core(), self.repository_id(), &commit).await?;
+                .ok_or_else(|| {
+                    LocalError::Integrity(format!("held commit {commit_id} is missing"))
+                })?;
+            let (proposal, ref_events) =
+                stored_proposal(self.core(), self.repository_id(), &commit).await?;
             let mut metadata_objects = BTreeMap::new();
             for metadata in proposal
                 .events
                 .iter()
                 .filter_map(|event| event.set_metadata.as_ref())
-                .chain(ref_events.iter().filter_map(|event| event.set_metadata.as_ref()))
+                .chain(
+                    ref_events
+                        .iter()
+                        .filter_map(|event| event.set_metadata.as_ref()),
+                )
             {
                 let payload = metadata.payload().ok_or_else(|| {
-                    LocalError::Integrity(format!("held commit {commit_id} lacks metadata {}", metadata.id()))
+                    LocalError::Integrity(format!(
+                        "held commit {commit_id} lacks metadata {}",
+                        metadata.id()
+                    ))
                 })?;
                 metadata_objects.insert(metadata.id(), hex::encode(payload.payload()));
             }
@@ -287,7 +359,9 @@ impl Repository {
                 .map(|(path, node)| {
                     Ok(WithdrawnFileVersion {
                         path,
-                        blob_id: node.blob_id.ok_or_else(|| LocalError::Integrity("FILE has no object".into()))?,
+                        blob_id: node
+                            .blob_id
+                            .ok_or_else(|| LocalError::Integrity("FILE has no object".into()))?,
                         size: node
                             .size
                             .and_then(|size| u64::try_from(size).ok())
@@ -355,7 +429,11 @@ impl Repository {
         let Some(first) = forgotten.iter().min() else {
             return Ok(());
         };
-        if forgotten.iter().max().is_some_and(|last| last + 1 == file.next) {
+        if forgotten
+            .iter()
+            .max()
+            .is_some_and(|last| last + 1 == file.next)
+        {
             file.next = *first;
         }
         file.saves.retain(|save| !forgotten.contains(&save.label));
@@ -376,6 +454,10 @@ impl Repository {
                 }
             }
         }
-        if findings.is_empty() { Ok(()) } else { Err(LocalError::Integrity(findings.summary())) }
+        if findings.is_empty() {
+            Ok(())
+        } else {
+            Err(LocalError::Integrity(findings.summary()))
+        }
     }
 }

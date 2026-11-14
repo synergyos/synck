@@ -50,7 +50,9 @@ mod tests {
         let flags = OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE;
         let connection = open_connection(dir.path().join("database.sqlite3"), flags).unwrap();
         for pragma in ["fullfsync", "checkpoint_fullfsync"] {
-            let value: i64 = connection.pragma_query_value(None, pragma, |row| row.get(0)).unwrap();
+            let value: i64 = connection
+                .pragma_query_value(None, pragma, |row| row.get(0))
+                .unwrap();
             assert_eq!(value, 1, "{pragma}");
         }
     }
@@ -65,7 +67,9 @@ mod tests {
             .pragma_query_value(None, "trusted_schema", |row| row.get(0))
             .unwrap();
         assert_eq!(trusted, 0);
-        connection.execute_batch("PRAGMA writable_schema = ON").unwrap();
+        connection
+            .execute_batch("PRAGMA writable_schema = ON")
+            .unwrap();
         connection
             .execute_batch("UPDATE sqlite_schema SET sql = 'CREATE TABLE t(b)'")
             .unwrap_err();

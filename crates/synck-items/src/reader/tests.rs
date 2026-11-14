@@ -8,7 +8,9 @@ fn now() -> DateTime<Utc> {
     "2026-10-25T12:00:00Z".parse().unwrap()
 }
 fn event(id: &ItemId, ty: &str, metadata: Value, content: Option<EventContent>) -> EventProposal {
-    let mut event = EventProposal::from_fields(json!({"item_id":id,"event_type":ty,"set_metadata":metadata})).unwrap();
+    let mut event =
+        EventProposal::from_fields(json!({"item_id":id,"event_type":ty,"set_metadata":metadata}))
+            .unwrap();
     event.set_content = content;
     event
 }
@@ -31,7 +33,10 @@ fn create(kind: &str) -> (ItemReader, ItemId) {
     let id = ItemId::new();
     let mut reader = ItemReader::new(id.clone());
     let mut first = event(&id, &format!("{kind}::CREATE"), json!({}), None);
-    first.create_item = Some(CreateItem { key: None, link: None, derived_from: None,
+    first.create_item = Some(CreateItem {
+        key: None,
+        link: None,
+        derived_from: None,
         item_type: kind.into(),
         name: Some("Example".into()),
         parent_folder_id: None,
@@ -148,7 +153,9 @@ fn reactions_keep_reactor_and_attachment_kind_survives_nonobject_metadata_replac
             &id,
             "CHAT::MESSAGE.ATTACHMENT::CREATE",
             json!({"parent_item_seq":2,"meta":{"kind":"EMBEDDED","snapshot_name":"photo.png"},"content":{"size":12}}),
-            Some(EventContent::bytes(synck_vcs::types::ObjectId::parse(A).unwrap())),
+            Some(EventContent::bytes(
+                synck_vcs::types::ObjectId::parse(A).unwrap(),
+            )),
         ),
         "alice",
     );
@@ -168,7 +175,9 @@ fn reactions_keep_reactor_and_attachment_kind_survives_nonobject_metadata_replac
             &id,
             "CHAT::MESSAGE.ATTACHMENT::SET_CONTENT",
             json!({"item_seq":5}),
-            Some(EventContent::bytes(synck_vcs::types::ObjectId::parse(B).unwrap())),
+            Some(EventContent::bytes(
+                synck_vcs::types::ObjectId::parse(B).unwrap(),
+            )),
         ),
         "editor",
     );
@@ -214,7 +223,9 @@ fn folder_removal_detaches_attachments_and_rehomes_native_file_names() {
             &id,
             "CHAT::MESSAGE.ATTACHMENT::CREATE",
             json!({"parent_item_seq":10,"meta":{"kind":"EMBEDDED","chat_file_folder_id":folder}}),
-            Some(EventContent::bytes(synck_vcs::types::ObjectId::parse(A).unwrap())),
+            Some(EventContent::bytes(
+                synck_vcs::types::ObjectId::parse(A).unwrap(),
+            )),
         ),
         "alice",
     );
@@ -245,7 +256,9 @@ fn email_readers_expose_attachments_and_metadata_replacement() {
             &id,
             "EMAIL::ATTACHMENT::CREATE",
             json!({"meta":{"filename":"document.pdf"}}),
-            Some(EventContent::bytes(synck_vcs::types::ObjectId::parse(A).unwrap())),
+            Some(EventContent::bytes(
+                synck_vcs::types::ObjectId::parse(A).unwrap(),
+            )),
         ),
         "alice",
     );
@@ -285,7 +298,10 @@ fn hosted_only_native_domains_are_explicitly_unsupported() {
         let id = ItemId::new();
         let mut reader = ItemReader::new(id.clone());
         let mut first = event(&id, &format!("{kind}::CREATE"), json!({}), None);
-        first.create_item = Some(CreateItem { key: None, link: None, derived_from: None,
+        first.create_item = Some(CreateItem {
+            key: None,
+            link: None,
+            derived_from: None,
             item_type: kind.into(),
             name: Some("unsupported".into()),
             parent_folder_id: None,
@@ -367,7 +383,12 @@ fn an_erased_payload_reads_as_missing_in_a_chat_and_its_subitems() {
     let erased_message = reader.latest_item_seq() - 1;
     apply(
         &mut reader,
-        &event(&id, "CHAT::MESSAGE::SET_CONTENT", json!({"item_seq": erased_message}), json_body("edited")),
+        &event(
+            &id,
+            "CHAT::MESSAGE::SET_CONTENT",
+            json!({"item_seq": erased_message}),
+            json_body("edited"),
+        ),
         "alice",
     );
     let snapshot = reader.snapshot().unwrap();
@@ -379,11 +400,17 @@ fn an_erased_payload_reads_as_missing_in_a_chat_and_its_subitems() {
 fn only_an_erased_creation_excuses_a_mutation_of_nothing() {
     let (mut reader, id) = create("CHAT");
     let mut erased = event(&id, "CHAT::MESSAGE::SET_CONTENT", json!({}), None);
-    erased.set_metadata =
-        Some(synck_vcs::metadata::MetadataRef::Absent(ObjectId::from_digest([1; 32])));
+    erased.set_metadata = Some(synck_vcs::metadata::MetadataRef::Absent(
+        ObjectId::from_digest([1; 32]),
+    ));
     apply(&mut reader, &erased, "alice");
     let result = reader.apply(
-        &event(&id, "CHAT::MESSAGE::SET_CONTENT", json!({"item_seq": 9999}), json_body("x")),
+        &event(
+            &id,
+            "CHAT::MESSAGE::SET_CONTENT",
+            json!({"item_seq": 9999}),
+            json_body("x"),
+        ),
         ReadContext {
             item_seq: reader.latest_item_seq() + 1,
             created_at: now(),
@@ -432,8 +459,9 @@ fn an_erased_edit_hides_the_body_it_replaced() {
 fn an_erased_creation_excuses_only_its_own_family() {
     let (mut reader, id) = create("CHAT");
     let mut erased = event(&id, "CHAT::MESSAGE::CREATE", json!({}), None);
-    erased.set_metadata =
-        Some(synck_vcs::metadata::MetadataRef::Absent(ObjectId::from_digest([1; 32])));
+    erased.set_metadata = Some(synck_vcs::metadata::MetadataRef::Absent(
+        ObjectId::from_digest([1; 32]),
+    ));
     apply(&mut reader, &erased, "alice");
     let target = reader.latest_item_seq();
     let result = reader.apply(
@@ -458,14 +486,20 @@ fn an_erased_creation_excuses_only_its_own_family() {
 fn a_restored_reader_still_knows_what_was_erased() {
     let (mut reader, id) = create("CHAT");
     let mut erased = event(&id, "CHAT::MESSAGE::CREATE", json!({}), None);
-    erased.set_metadata =
-        Some(synck_vcs::metadata::MetadataRef::Absent(ObjectId::from_digest([1; 32])));
+    erased.set_metadata = Some(synck_vcs::metadata::MetadataRef::Absent(
+        ObjectId::from_digest([1; 32]),
+    ));
     apply(&mut reader, &erased, "alice");
     let target = reader.latest_item_seq();
     let mut restored = ItemReader::from_cache(id.clone(), &reader.export_cache().unwrap()).unwrap();
     apply(
         &mut restored,
-        &event(&id, "CHAT::MESSAGE::SET_CONTENT", json!({"item_seq": target}), json_body("edited")),
+        &event(
+            &id,
+            "CHAT::MESSAGE::SET_CONTENT",
+            json!({"item_seq": target}),
+            json_body("edited"),
+        ),
         "alice",
     );
 }
@@ -488,7 +522,10 @@ fn tree_items_have_no_title_or_link_events() {
                 committer: "alice",
             },
         );
-        assert!(matches!(result, Err(ReadError::Unsupported { .. })), "{event_type}");
+        assert!(
+            matches!(result, Err(ReadError::Unsupported { .. })),
+            "{event_type}"
+        );
     }
 }
 
@@ -501,7 +538,9 @@ fn supplemental_links_do_not_hide_primary_content() {
             &id,
             "FILE::SET_CONTENT",
             Value::Null,
-            Some(EventContent::bytes(synck_vcs::types::ObjectId::parse(A).unwrap())),
+            Some(EventContent::bytes(
+                synck_vcs::types::ObjectId::parse(A).unwrap(),
+            )),
         ),
         "alice",
     );
@@ -540,31 +579,85 @@ fn supplemental_links_do_not_hide_primary_content() {
 #[test]
 fn owner_refs_keep_uuid_identity_and_independent_positions() {
     let (mut reader, owner) = create("FILE");
-    apply(&mut reader, &event(&owner, "FILE::SET_CONTENT", json!({"content":{"size":7}}), Some(EventContent::bytes(synck_vcs::types::ObjectId::parse(A).unwrap()))), "alice");
+    apply(
+        &mut reader,
+        &event(
+            &owner,
+            "FILE::SET_CONTENT",
+            json!({"content":{"size":7}}),
+            Some(EventContent::bytes(
+                synck_vcs::types::ObjectId::parse(A).unwrap(),
+            )),
+        ),
+        "alice",
+    );
     let version_id = Uuid::now_v7();
     let reference = synck_file_folder::file_versions::automatic_initial_ref_event(
-        &synck_vcs::types::RepoId::new(), &owner, &version_id.to_string(),
-        0, 2, 1,
-    ).unwrap();
+        &synck_vcs::types::RepoId::new(),
+        &owner,
+        &version_id.to_string(),
+        0,
+        2,
+        1,
+    )
+    .unwrap();
     assert!(reference.set_content.is_none());
-    reader.apply_ref(&reference, RefReadContext {
-        ref_seq: 1, created_at: now(), author: "author", committer: "committer",
-    }).unwrap();
-    let update: synck_vcs::types::RefEventProposal = synck_vcs::types::RefEventProposal::from_fields(json!({
-        "owner_item_id":owner,"event_type":"FILE_VERSION::SET_DESCRIPTION","base_ref_seq":1,
-        "set_metadata":{"file_item_id":owner,"version_id":version_id,"description":"Reviewed"}
-    })).unwrap();
-    reader.apply_ref(&update, RefReadContext {
-        ref_seq: 2, created_at: now(), author: "editor", committer: "committer",
-    }).unwrap();
-    apply(&mut reader, &event(&owner, "FILE::SET_CONTENT", json!({"content":{"size":9}}), Some(EventContent::bytes(synck_vcs::types::ObjectId::parse(B).unwrap()))), "alice");
+    reader
+        .apply_ref(
+            &reference,
+            RefReadContext {
+                ref_seq: 1,
+                created_at: now(),
+                author: "author",
+                committer: "committer",
+            },
+        )
+        .unwrap();
+    let update: synck_vcs::types::RefEventProposal =
+        synck_vcs::types::RefEventProposal::from_fields(json!({
+            "owner_item_id":owner,"event_type":"FILE_VERSION::SET_DESCRIPTION","base_ref_seq":1,
+            "set_metadata":{"file_item_id":owner,"version_id":version_id,"description":"Reviewed"}
+        }))
+        .unwrap();
+    reader
+        .apply_ref(
+            &update,
+            RefReadContext {
+                ref_seq: 2,
+                created_at: now(),
+                author: "editor",
+                committer: "committer",
+            },
+        )
+        .unwrap();
+    apply(
+        &mut reader,
+        &event(
+            &owner,
+            "FILE::SET_CONTENT",
+            json!({"content":{"size":9}}),
+            Some(EventContent::bytes(
+                synck_vcs::types::ObjectId::parse(B).unwrap(),
+            )),
+        ),
+        "alice",
+    );
     let retarget = synck_vcs::types::RefEventProposal::from_fields(json!({
         "owner_item_id":owner,"event_type":"FILE_VERSION::SET_REVISION","base_ref_seq":2,
         "set_metadata":{"file_item_id":owner,"version_id":version_id,"source_item_seq":3}
-    })).unwrap();
-    reader.apply_ref(&retarget, RefReadContext {
-        ref_seq: 3, created_at: now(), author: "editor", committer: "committer",
-    }).unwrap();
+    }))
+    .unwrap();
+    reader
+        .apply_ref(
+            &retarget,
+            RefReadContext {
+                ref_seq: 3,
+                created_at: now(),
+                author: "editor",
+                committer: "committer",
+            },
+        )
+        .unwrap();
     let snapshot = reader.snapshot().unwrap();
     assert_eq!(snapshot.projection.latest_item_seq, 3);
     assert_eq!(snapshot.latest_ref_seq, 3);
@@ -581,98 +674,320 @@ fn owner_refs_keep_uuid_identity_and_independent_positions() {
     assert!(version.metadata.get("source_commit_id").is_none());
 }
 
-
 #[test]
 fn reader_cache_restores_private_maps_and_continues_both_ledgers() {
-    let (mut chat,chat_id)=create("CHAT");
-    apply(&mut chat,&event(&chat_id,"CHAT::MESSAGE::CREATE",json!({}),json_body("before\0restart")),"alice");
-    let cache=chat.export_cache().unwrap();
-    let mut restored=ItemReader::from_cache(chat_id.clone(),&cache).unwrap();
-    assert_eq!(serde_json::to_value(chat.snapshot().unwrap()).unwrap(),serde_json::to_value(restored.snapshot().unwrap()).unwrap());
-    let edit=event(&chat_id,"CHAT::MESSAGE::SET_CONTENT",json!({"item_seq":2}),json_body("after restart"));
-    apply(&mut chat,&edit,"alice");apply(&mut restored,&edit,"alice");
-    assert_eq!(chat.export_cache().unwrap(),restored.export_cache().unwrap());
-    let (mut file,id)=create("FILE");
-    apply(&mut file,&event(&id,"FILE::SET_CONTENT",json!({"content":{"size":7}}),Some(EventContent::bytes(ObjectId::parse(A).unwrap()))),"alice");
-    let mut restored=ItemReader::from_cache(id.clone(),&file.export_cache().unwrap()).unwrap();
-    let reference=synck_file_folder::file_versions::automatic_initial_ref_event(&RepoId::new(),&id,&Uuid::now_v7().to_string(),0,2,1).unwrap();
-    for reader in [&mut file,&mut restored]{reader.apply_ref(&reference,RefReadContext{ref_seq:1,created_at:now(),author:"alice",committer:"alice"}).unwrap();}
-    assert_eq!(file.export_cache().unwrap(),restored.export_cache().unwrap());
-    assert_eq!(restored.snapshot().unwrap().subitems[0].blob_id.as_deref(),Some(A));
-    let empty=ItemReader::new(ItemId::new());
-    assert_eq!(ItemReader::from_cache(empty.item_id.clone(),&empty.export_cache().unwrap()).unwrap().latest_item_seq(),0);
+    let (mut chat, chat_id) = create("CHAT");
+    apply(
+        &mut chat,
+        &event(
+            &chat_id,
+            "CHAT::MESSAGE::CREATE",
+            json!({}),
+            json_body("before\0restart"),
+        ),
+        "alice",
+    );
+    let cache = chat.export_cache().unwrap();
+    let mut restored = ItemReader::from_cache(chat_id.clone(), &cache).unwrap();
+    assert_eq!(
+        serde_json::to_value(chat.snapshot().unwrap()).unwrap(),
+        serde_json::to_value(restored.snapshot().unwrap()).unwrap()
+    );
+    let edit = event(
+        &chat_id,
+        "CHAT::MESSAGE::SET_CONTENT",
+        json!({"item_seq":2}),
+        json_body("after restart"),
+    );
+    apply(&mut chat, &edit, "alice");
+    apply(&mut restored, &edit, "alice");
+    assert_eq!(
+        chat.export_cache().unwrap(),
+        restored.export_cache().unwrap()
+    );
+    let (mut file, id) = create("FILE");
+    apply(
+        &mut file,
+        &event(
+            &id,
+            "FILE::SET_CONTENT",
+            json!({"content":{"size":7}}),
+            Some(EventContent::bytes(ObjectId::parse(A).unwrap())),
+        ),
+        "alice",
+    );
+    let mut restored = ItemReader::from_cache(id.clone(), &file.export_cache().unwrap()).unwrap();
+    let reference = synck_file_folder::file_versions::automatic_initial_ref_event(
+        &RepoId::new(),
+        &id,
+        &Uuid::now_v7().to_string(),
+        0,
+        2,
+        1,
+    )
+    .unwrap();
+    for reader in [&mut file, &mut restored] {
+        reader
+            .apply_ref(
+                &reference,
+                RefReadContext {
+                    ref_seq: 1,
+                    created_at: now(),
+                    author: "alice",
+                    committer: "alice",
+                },
+            )
+            .unwrap();
+    }
+    assert_eq!(
+        file.export_cache().unwrap(),
+        restored.export_cache().unwrap()
+    );
+    assert_eq!(
+        restored.snapshot().unwrap().subitems[0].blob_id.as_deref(),
+        Some(A)
+    );
+    let empty = ItemReader::new(ItemId::new());
+    assert_eq!(
+        ItemReader::from_cache(empty.item_id.clone(), &empty.export_cache().unwrap())
+            .unwrap()
+            .latest_item_seq(),
+        0
+    );
 }
 #[test]
 fn reader_cache_rejects_damage_wrong_identity_version_and_poison() {
-    let (mut reader,id)=create("CHAT");let cache=reader.export_cache().unwrap();
-    assert!(ItemReader::from_cache(ItemId::new(),&cache).is_err());
-    let mut parsed:Value=serde_json::from_slice(&cache).unwrap();parsed["state"]["ref_seq"]=1.into();
-    assert!(ItemReader::from_cache(id.clone(),&serde_json::to_vec(&parsed).unwrap()).is_err());
-    let mut parsed:Value=serde_json::from_slice(&cache).unwrap();
-    assert_eq!(parsed["version"],4);
-    parsed["version"]=3.into();
-    assert!(ItemReader::from_cache(id.clone(),&serde_json::to_vec(&parsed).unwrap()).is_err());
-    assert!(ItemReader::from_cache(id.clone(),&cache[..cache.len()/2]).is_err());
-    let bad=event(&id,"CHAT::MESSAGE::SET_CONTENT",json!({"item_seq":999}),json_body("missing"));
-    assert!(reader.apply(&bad,ReadContext{item_seq:2,created_at:now(),occurred_at:None,author:"alice",committer:"alice"}).is_err());
+    let (mut reader, id) = create("CHAT");
+    let cache = reader.export_cache().unwrap();
+    assert!(ItemReader::from_cache(ItemId::new(), &cache).is_err());
+    let mut parsed: Value = serde_json::from_slice(&cache).unwrap();
+    parsed["state"]["ref_seq"] = 1.into();
+    assert!(ItemReader::from_cache(id.clone(), &serde_json::to_vec(&parsed).unwrap()).is_err());
+    let mut parsed: Value = serde_json::from_slice(&cache).unwrap();
+    assert_eq!(parsed["version"], 4);
+    parsed["version"] = 3.into();
+    assert!(ItemReader::from_cache(id.clone(), &serde_json::to_vec(&parsed).unwrap()).is_err());
+    assert!(ItemReader::from_cache(id.clone(), &cache[..cache.len() / 2]).is_err());
+    let bad = event(
+        &id,
+        "CHAT::MESSAGE::SET_CONTENT",
+        json!({"item_seq":999}),
+        json_body("missing"),
+    );
+    assert!(
+        reader
+            .apply(
+                &bad,
+                ReadContext {
+                    item_seq: 2,
+                    created_at: now(),
+                    occurred_at: None,
+                    author: "alice",
+                    committer: "alice"
+                }
+            )
+            .is_err()
+    );
     assert!(reader.export_cache().is_err());
 }
 
-
 #[test]
 fn borrowed_reader_queries_match_snapshot_without_transcript_clones() {
-    let (mut reader,id)=create("CHAT");
-    apply(&mut reader,&event(&id,"CHAT::MESSAGE::CREATE",json!({}),json_body("message")),"alice");
-    let snapshot=reader.snapshot().unwrap();
-    assert_eq!(serde_json::to_value(reader.projection().unwrap()).unwrap(),serde_json::to_value(&snapshot.projection).unwrap());
-    assert_eq!(serde_json::to_value(reader.chat_details().unwrap()).unwrap(),serde_json::to_value(&snapshot.chat).unwrap());
-    assert_eq!(serde_json::to_value(reader.subitem("CHAT::MESSAGE",2).unwrap()).unwrap(),serde_json::to_value(&snapshot.subitems[0]).unwrap());
-    assert!(reader.subitem("CHAT::REACTION",2).unwrap().is_none());
-    assert!(reader.subitem("CHAT::MESSAGE",99).unwrap().is_none());
-    let bad=event(&id,"CHAT::MESSAGE::SET_CONTENT",json!({"item_seq":999}),json_body("missing"));
-    assert!(reader.apply(&bad,ReadContext{item_seq:3,created_at:now(),occurred_at:None,author:"alice",committer:"alice"}).is_err());
-    assert!(reader.projection().is_err());assert!(reader.chat_details().is_err());assert!(reader.subitem("CHAT::MESSAGE",2).is_err());
+    let (mut reader, id) = create("CHAT");
+    apply(
+        &mut reader,
+        &event(
+            &id,
+            "CHAT::MESSAGE::CREATE",
+            json!({}),
+            json_body("message"),
+        ),
+        "alice",
+    );
+    let snapshot = reader.snapshot().unwrap();
+    assert_eq!(
+        serde_json::to_value(reader.projection().unwrap()).unwrap(),
+        serde_json::to_value(&snapshot.projection).unwrap()
+    );
+    assert_eq!(
+        serde_json::to_value(reader.chat_details().unwrap()).unwrap(),
+        serde_json::to_value(&snapshot.chat).unwrap()
+    );
+    assert_eq!(
+        serde_json::to_value(reader.subitem("CHAT::MESSAGE", 2).unwrap()).unwrap(),
+        serde_json::to_value(&snapshot.subitems[0]).unwrap()
+    );
+    assert!(reader.subitem("CHAT::REACTION", 2).unwrap().is_none());
+    assert!(reader.subitem("CHAT::MESSAGE", 99).unwrap().is_none());
+    let bad = event(
+        &id,
+        "CHAT::MESSAGE::SET_CONTENT",
+        json!({"item_seq":999}),
+        json_body("missing"),
+    );
+    assert!(
+        reader
+            .apply(
+                &bad,
+                ReadContext {
+                    item_seq: 3,
+                    created_at: now(),
+                    occurred_at: None,
+                    author: "alice",
+                    committer: "alice"
+                }
+            )
+            .is_err()
+    );
+    assert!(reader.projection().is_err());
+    assert!(reader.chat_details().is_err());
+    assert!(reader.subitem("CHAT::MESSAGE", 2).is_err());
 }
 
 #[test]
 fn chat_file_content_head_survives_rename_lifecycle_and_cache() {
     let (mut reader, id) = create("CHAT");
     let file = Uuid::now_v7();
-    apply(&mut reader, &event(&id,"CHAT::FILE::CREATE",json!({"meta":{"file_id":file,"name":"Draft.docx"}}),None),"alice");
-    assert!(reader.subitem("CHAT::FILE",2).unwrap().unwrap().content_position.is_none());
-    apply(&mut reader, &event(&id,"CHAT::FILE::SET_CONTENT",json!({"item_seq":2,"meta":{"file_id":file},"content":{"size":12}}),Some(EventContent::bytes(ObjectId::parse(A).unwrap()))),"alice");
-    apply(&mut reader, &event(&id,"CHAT::FILE::SET_METADATA",json!({"item_seq":2,"meta":{"file_id":file,"name":"Reviewed.docx"}}),None),"alice");
-    apply(&mut reader, &event(&id,"CHAT::FILE::TRASH",json!({"item_seq":2}),None),"alice");
-    let row=reader.subitem("CHAT::FILE",2).unwrap().unwrap();
-    assert_eq!(row.latest_position.seq,5);
-    assert_eq!(row.content_position.as_ref().unwrap().seq,3);
-    let restored=ItemReader::from_cache(id,&reader.export_cache().unwrap()).unwrap();
-    assert_eq!(restored.subitems_in_family("CHAT::FILE").unwrap().count(),1);
-    assert_eq!(restored.subitems_in_family("CHAT::MESSAGE").unwrap().count(),0);
-    assert_eq!(restored.subitem("CHAT::FILE",2).unwrap().unwrap().content_position.as_ref().unwrap().seq,3);
+    apply(
+        &mut reader,
+        &event(
+            &id,
+            "CHAT::FILE::CREATE",
+            json!({"meta":{"file_id":file,"name":"Draft.docx"}}),
+            None,
+        ),
+        "alice",
+    );
+    assert!(
+        reader
+            .subitem("CHAT::FILE", 2)
+            .unwrap()
+            .unwrap()
+            .content_position
+            .is_none()
+    );
+    apply(
+        &mut reader,
+        &event(
+            &id,
+            "CHAT::FILE::SET_CONTENT",
+            json!({"item_seq":2,"meta":{"file_id":file},"content":{"size":12}}),
+            Some(EventContent::bytes(ObjectId::parse(A).unwrap())),
+        ),
+        "alice",
+    );
+    apply(
+        &mut reader,
+        &event(
+            &id,
+            "CHAT::FILE::SET_METADATA",
+            json!({"item_seq":2,"meta":{"file_id":file,"name":"Reviewed.docx"}}),
+            None,
+        ),
+        "alice",
+    );
+    apply(
+        &mut reader,
+        &event(&id, "CHAT::FILE::TRASH", json!({"item_seq":2}), None),
+        "alice",
+    );
+    let row = reader.subitem("CHAT::FILE", 2).unwrap().unwrap();
+    assert_eq!(row.latest_position.seq, 5);
+    assert_eq!(row.content_position.as_ref().unwrap().seq, 3);
+    let restored = ItemReader::from_cache(id, &reader.export_cache().unwrap()).unwrap();
+    assert_eq!(
+        restored.subitems_in_family("CHAT::FILE").unwrap().count(),
+        1
+    );
+    assert_eq!(
+        restored
+            .subitems_in_family("CHAT::MESSAGE")
+            .unwrap()
+            .count(),
+        0
+    );
+    assert_eq!(
+        restored
+            .subitem("CHAT::FILE", 2)
+            .unwrap()
+            .unwrap()
+            .content_position
+            .as_ref()
+            .unwrap()
+            .seq,
+        3
+    );
 }
 
 #[test]
 fn chat_file_restore_applies_destination_metadata() {
-    for (family, key) in [("CHAT::FILE", "file_id"), ("CHAT::FILE_FOLDER", "folder_id")] {
+    for (family, key) in [
+        ("CHAT::FILE", "file_id"),
+        ("CHAT::FILE_FOLDER", "folder_id"),
+    ] {
         let (mut reader, id) = create("CHAT");
         let item = Uuid::now_v7();
         let parent = Uuid::now_v7();
         let mut original = json!({"name":"Original"});
         original[key] = json!(item);
-        apply(&mut reader, &event(&id, &format!("{family}::CREATE"), json!({"meta":original}), None), "alice");
-        apply(&mut reader, &event(&id, &format!("{family}::TRASH"), json!({"item_seq":2}), None), "alice");
+        apply(
+            &mut reader,
+            &event(
+                &id,
+                &format!("{family}::CREATE"),
+                json!({"meta":original}),
+                None,
+            ),
+            "alice",
+        );
+        apply(
+            &mut reader,
+            &event(
+                &id,
+                &format!("{family}::TRASH"),
+                json!({"item_seq":2}),
+                None,
+            ),
+            "alice",
+        );
         let mut replacement = json!({"name":"Restored", "parent_folder_id":parent});
         replacement[key] = json!(item);
-        apply(&mut reader, &event(&id, &format!("{family}::RESTORE"), json!({"item_seq":2,"meta":replacement}), None), "alice");
-        let row = reader.subitem(family,2).unwrap().unwrap();
+        apply(
+            &mut reader,
+            &event(
+                &id,
+                &format!("{family}::RESTORE"),
+                json!({"item_seq":2,"meta":replacement}),
+                None,
+            ),
+            "alice",
+        );
+        let row = reader.subitem(family, 2).unwrap().unwrap();
         assert_eq!(row.lifecycle, SubitemLifecycle::Live);
         assert_eq!(row.name.as_deref(), Some("Restored"));
         assert_eq!(row.parent_folder_id, Some(parent));
         assert!(row.content_position.is_none());
-        apply(&mut reader, &event(&id, &format!("{family}::TRASH"), json!({"item_seq":2}), None), "alice");
-        apply(&mut reader, &event(&id, &format!("{family}::RESTORE"), json!({"item_seq":2}), None), "alice");
-        let row = reader.subitem(family,2).unwrap().unwrap();
+        apply(
+            &mut reader,
+            &event(
+                &id,
+                &format!("{family}::TRASH"),
+                json!({"item_seq":2}),
+                None,
+            ),
+            "alice",
+        );
+        apply(
+            &mut reader,
+            &event(
+                &id,
+                &format!("{family}::RESTORE"),
+                json!({"item_seq":2}),
+                None,
+            ),
+            "alice",
+        );
+        let row = reader.subitem(family, 2).unwrap().unwrap();
         assert_eq!(row.name.as_deref(), Some("Restored"));
         assert_eq!(row.parent_folder_id, Some(parent));
     }

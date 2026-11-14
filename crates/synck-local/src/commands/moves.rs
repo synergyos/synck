@@ -194,11 +194,11 @@ impl Repository {
                                 .strip_prefix(root)
                                 .is_some_and(|p| p.starts_with('/'))
                     })))
-            {
-                return Err(LocalError::Invalid(
-                    "move crosses a sparse checkout boundary; widen selection first".into(),
-                ));
-            }
+        {
+            return Err(LocalError::Invalid(
+                "move crosses a sparse checkout boundary; widen selection first".into(),
+            ));
+        }
         let node = committed.get(&source).ok_or_else(|| {
             LocalError::Invalid(format!("move source is not a tracked live item: {source}"))
         })?;

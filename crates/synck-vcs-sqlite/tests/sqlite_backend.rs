@@ -27,12 +27,19 @@ fn backend() -> (tempfile::TempDir, SqliteStorage) {
 }
 
 fn create_event(name: &str) -> EventProposal {
-    EventProposal { set_link: None, merged_from: None,
+    EventProposal {
+        set_link: None,
+        merged_from: None,
         item_id: None,
         event_type: "FILE::CREATE".to_string(),
         set_metadata: None,
-        set_content: Some(synck_vcs::content::EventContent::bytes(synck_vcs::types::ObjectId::from_digest([7; 32]))),
-        create_item: Some(CreateItem { key: None, link: None, derived_from: None,
+        set_content: Some(synck_vcs::content::EventContent::bytes(
+            synck_vcs::types::ObjectId::from_digest([7; 32]),
+        )),
+        create_item: Some(CreateItem {
+            key: None,
+            link: None,
+            derived_from: None,
             item_type: "FILE".to_string(),
             parent_folder_id: None,
             name: Some(name.to_string()),
@@ -65,7 +72,9 @@ async fn state_verification_bounds_bytes_without_rejecting_large_item_values() {
     let mut state = backend.verification_state_store(repo_id.clone()).unwrap();
     let mut roots = Vec::new();
     for size in [9, 9, 17] {
-        let bytes = encode_node(&StateNode::ItemValue(ItemValue { link_folder_id: None, record_key: None,
+        let bytes = encode_node(&StateNode::ItemValue(ItemValue {
+            link_folder_id: None,
+            record_key: None,
             item_id: ItemId::new(),
             item_type: "FILE".to_string(),
             parent_folder_id: None,
@@ -249,7 +258,12 @@ fn ref_event(owner_item_id: ItemId, base_ref_seq: i64, event_type: &str) -> RefE
     RefEventProposal {
         owner_item_id,
         event_type: event_type.to_string(),
-        set_metadata: Some(synck_vcs::metadata::MetadataRef::new(serde_json::json!({"version_id": ItemId::new().as_str()})).unwrap()),
+        set_metadata: Some(
+            synck_vcs::metadata::MetadataRef::new(
+                serde_json::json!({"version_id": ItemId::new().as_str()}),
+            )
+            .unwrap(),
+        ),
         set_content: None,
         base_ref_seq,
     }
@@ -503,12 +517,21 @@ fn create_item_event(
     parent_folder_id: Option<ItemId>,
     name: &str,
 ) -> EventProposal {
-    EventProposal { set_link: None, merged_from: None,
+    EventProposal {
+        set_link: None,
+        merged_from: None,
         item_id: Some(item_id),
         event_type: format!("{item_type}::CREATE"),
         set_metadata: None,
-        set_content: (item_type == "FILE").then(|| synck_vcs::content::EventContent::bytes(synck_vcs::types::ObjectId::from_digest([7; 32]))),
-        create_item: Some(CreateItem { key: None, link: None, derived_from: None,
+        set_content: (item_type == "FILE").then(|| {
+            synck_vcs::content::EventContent::bytes(synck_vcs::types::ObjectId::from_digest(
+                [7; 32],
+            ))
+        }),
+        create_item: Some(CreateItem {
+            key: None,
+            link: None,
+            derived_from: None,
             item_type: item_type.to_string(),
             parent_folder_id,
             name: Some(name.to_string()),
@@ -529,7 +552,9 @@ fn set_parent_event(
     base_seq: i64,
     parent_folder_id: Option<ItemId>,
 ) -> EventProposal {
-    EventProposal { set_link: None, merged_from: None,
+    EventProposal {
+        set_link: None,
+        merged_from: None,
         item_id: Some(item_id),
         event_type: format!("{item_type}::SET_PARENT"),
         set_metadata: None,
@@ -551,7 +576,9 @@ fn lifecycle_event(
     base_seq: i64,
     in_trash: bool,
 ) -> EventProposal {
-    EventProposal { set_link: None, merged_from: None,
+    EventProposal {
+        set_link: None,
+        merged_from: None,
         item_id: Some(item_id),
         event_type: format!(
             "{item_type}::{}",
@@ -571,7 +598,9 @@ fn lifecycle_event(
 }
 
 fn trash_event(item_id: ItemId, base_seq: i64) -> EventProposal {
-    EventProposal { set_link: None, merged_from: None,
+    EventProposal {
+        set_link: None,
+        merged_from: None,
         item_id: Some(item_id),
         event_type: "FILE::TRASH".to_string(),
         set_metadata: None,
@@ -847,7 +876,9 @@ async fn state_store_publishes_complete_roots_and_enforces_foreign_keys() {
     // complete historical tree.
     let empty_item_bytes = encode_node(&StateNode::ItemLeaf(Vec::new())).unwrap();
     let connection = rusqlite::Connection::open(storage.state_index_path()).unwrap();
-    connection.pragma_update(None, "foreign_keys", "ON").unwrap();
+    connection
+        .pragma_update(None, "foreign_keys", "ON")
+        .unwrap();
     connection
         .execute(
             "UPDATE vcs_state_nodes SET payload = x'00'
@@ -869,7 +900,9 @@ async fn state_store_publishes_complete_roots_and_enforces_foreign_keys() {
         .unwrap();
     store.finish_batch(&[staged_root.node_id()]).await.unwrap();
     let connection = rusqlite::Connection::open(storage.state_index_path()).unwrap();
-    connection.pragma_update(None, "foreign_keys", "ON").unwrap();
+    connection
+        .pragma_update(None, "foreign_keys", "ON")
+        .unwrap();
     connection
         .execute(
             "DELETE FROM vcs_state_nodes WHERE repo_id = ?1 AND node_hash = ?2",
@@ -924,7 +957,9 @@ async fn state_store_publishes_complete_roots_and_enforces_foreign_keys() {
     drop(store);
 
     let connection = rusqlite::Connection::open(storage.state_index_path()).unwrap();
-    connection.pragma_update(None, "foreign_keys", "ON").unwrap();
+    connection
+        .pragma_update(None, "foreign_keys", "ON")
+        .unwrap();
     assert!(
         connection
             .execute(
@@ -976,7 +1011,9 @@ async fn projector_is_commit_bounded_handles_name_swaps_and_rebuilds_identically
     let alpha = created.created_items[0].item_id.clone();
     let beta = created.created_items[1].item_id.clone();
 
-    let rename = |item_id: ItemId, name: &str| EventProposal { set_link: None, merged_from: None,
+    let rename = |item_id: ItemId, name: &str| EventProposal {
+        set_link: None,
+        merged_from: None,
         item_id: Some(item_id),
         event_type: "FILE::RENAME".to_string(),
         set_metadata: None,
@@ -1131,7 +1168,9 @@ async fn projector_rejects_a_head_that_does_not_name_its_published_root() {
     drop(store);
 
     let connection = rusqlite::Connection::open(storage.state_index_path()).unwrap();
-    connection.pragma_update(None, "foreign_keys", "ON").unwrap();
+    connection
+        .pragma_update(None, "foreign_keys", "ON")
+        .unwrap();
     let wrong_root: Vec<u8> = connection
         .query_row(
              "SELECT node_hash FROM vcs_state_nodes
@@ -1205,7 +1244,9 @@ async fn rollback_discards_all_writes() {
     let item_id = ItemId::new();
     let mut transaction = storage.begin_txn().await.unwrap();
     transaction
-        .put_item(&ItemRow { link_folder_id: None, record_key: None,
+        .put_item(&ItemRow {
+            link_folder_id: None,
+            record_key: None,
             repo_id: repo_id.clone(),
             item_id: item_id.clone(),
             item_type: "FILE".to_string(),
@@ -1266,7 +1307,9 @@ async fn item_timestamp_order_and_cursor_are_chronological() {
     let first_id = ItemId::new();
     let second_id = ItemId::new();
 
-    let make_item = |item_id: ItemId, name: &str, created_at| ItemRow { link_folder_id: None, record_key: None,
+    let make_item = |item_id: ItemId, name: &str, created_at| ItemRow {
+        link_folder_id: None,
+        record_key: None,
         repo_id: repo_id.clone(),
         item_id,
         item_type: "FILE".to_string(),
@@ -1380,7 +1423,9 @@ async fn live_name_conflict_maps_to_unique_violation() {
     storage.init_schema().await.unwrap();
     let repo_id = RepoId::new();
     let now = Utc::now();
-    let item = |item_id| ItemRow { link_folder_id: None, record_key: None,
+    let item = |item_id| ItemRow {
+        link_folder_id: None,
+        record_key: None,
         repo_id: repo_id.clone(),
         item_id,
         item_type: "FILE".to_string(),
@@ -1406,7 +1451,9 @@ async fn live_name_conflict_maps_to_unique_violation() {
 async fn non_unique_constraint_is_not_reported_as_a_name_conflict() {
     let (_dir, storage) = backend();
     storage.init_schema().await.unwrap();
-    let item = ItemRow { link_folder_id: None, record_key: None,
+    let item = ItemRow {
+        link_folder_id: None,
+        record_key: None,
         repo_id: RepoId::new(),
         item_id: ItemId::new(),
         item_type: "FILE".to_string(),
@@ -1494,7 +1541,9 @@ async fn repo_enforces_base_sequence_and_operation_id() {
         .await
         .unwrap();
     let item_id = accepted.created_items[0].item_id.clone();
-    let stale = EventProposal { set_link: None, merged_from: None,
+    let stale = EventProposal {
+        set_link: None,
+        merged_from: None,
         item_id: Some(item_id),
         event_type: "FILE::TRASH".to_string(),
         set_metadata: None,
@@ -1548,12 +1597,19 @@ async fn federated_bootstrap_repeats_its_stream_once_per_proposal() {
     let repo_id = RepoId::new();
     let repo = Repo::new(Storage::new(Arc::new(storage)), CoreConfig::default());
     let stream = "bootstrap-stream".to_string();
-    let create = EventProposal { set_link: None, merged_from: None,
+    let create = EventProposal {
+        set_link: None,
+        merged_from: None,
         item_id: None,
         event_type: "FILE::CREATE".to_string(),
         set_metadata: None,
-        set_content: Some(synck_vcs::content::EventContent::bytes(synck_vcs::types::ObjectId::from_digest([7; 32]))),
-        create_item: Some(CreateItem { key: None, link: None, derived_from: None,
+        set_content: Some(synck_vcs::content::EventContent::bytes(
+            synck_vcs::types::ObjectId::from_digest([7; 32]),
+        )),
+        create_item: Some(CreateItem {
+            key: None,
+            link: None,
+            derived_from: None,
             item_type: "FILE".to_string(),
             parent_folder_id: None,
             name: Some("federated.txt".to_string()),
@@ -1566,7 +1622,9 @@ async fn federated_bootstrap_repeats_its_stream_once_per_proposal() {
         set_federation_stream_id: None,
         base_seq: None,
     };
-    let rebind = EventProposal { set_link: None, merged_from: None,
+    let rebind = EventProposal {
+        set_link: None,
+        merged_from: None,
         item_id: None,
         event_type: "FILE::FEDERATE".to_string(),
         set_metadata: None,
@@ -2207,11 +2265,7 @@ async fn sqlite_descendant_read_stops_at_the_overflow_sentinel() {
 
     let mut txn = storage.begin_txn().await.unwrap();
     let rows = txn
-        .list_non_tombstoned_descendants_bounded(
-            &repo_id,
-            &root_id,
-            9_999,
-        )
+        .list_non_tombstoned_descendants_bounded(&repo_id, &root_id, 9_999)
         .await
         .unwrap();
     assert_eq!(rows.len(), 9_999 + 1);
@@ -2266,9 +2320,7 @@ async fn checked_subtree_guards_have_no_size_cap_and_reject_overlap() {
             &[],
             &[SubtreeClosureGuard {
                 root_item_id: first_root_id.clone(),
-                expected_non_tombstoned_descendants: sorted_fake_descendants(
-                    9_999 + 1,
-                ),
+                expected_non_tombstoned_descendants: sorted_fake_descendants(9_999 + 1),
                 require_empty_live_descendants: false,
             }],
         )
@@ -2333,9 +2385,7 @@ async fn checked_subtree_guards_have_no_size_cap_and_reject_overlap() {
             &[],
             &[SubtreeClosureGuard {
                 root_item_id: first_root_id,
-                expected_non_tombstoned_descendants: sorted_fake_descendants(
-                    9_999,
-                ),
+                expected_non_tombstoned_descendants: sorted_fake_descendants(9_999),
                 require_empty_live_descendants: false,
             }],
         )
@@ -2432,25 +2482,47 @@ async fn checked_lifecycle_accepts_more_than_9999_descendants_atomically() {
     let children: Vec<_> = (0..10_000).map(|_| ItemId::new()).collect();
     let mut creates = vec![create_item_event(root.clone(), "FOLDER", None, "root")];
     creates.extend(children.iter().enumerate().map(|(index, id)| {
-        create_item_event(id.clone(), "FILE", Some(root.clone()), &format!("child-{index}"))
+        create_item_event(
+            id.clone(),
+            "FILE",
+            Some(root.clone()),
+            &format!("child-{index}"),
+        )
     }));
     repo.append(repo_id.clone(), commit(creates)).await.unwrap();
     let mut descendants: Vec<_> = children.iter().cloned().map(|id| (id, 1)).collect();
     descendants.sort_unstable_by(|a, b| a.0.cmp(&b.0));
     let mut changes = vec![lifecycle_event(root.clone(), "FOLDER", 1, true)];
-    changes.extend(children.iter().map(|id| lifecycle_event(id.clone(), "FILE", 1, true)));
-    let accepted = repo.append_file_folder_checked(
-        repo_id.clone(), commit(changes), &[], &[SubtreeClosureGuard {
-            root_item_id: root.clone(),
-            expected_non_tombstoned_descendants: descendants,
-            require_empty_live_descendants: false,
-        }],
-    ).await.unwrap();
-    let stored = repo.get_commit(repo_id.clone(), accepted.commit_id).await.unwrap().unwrap();
+    changes.extend(
+        children
+            .iter()
+            .map(|id| lifecycle_event(id.clone(), "FILE", 1, true)),
+    );
+    let accepted = repo
+        .append_file_folder_checked(
+            repo_id.clone(),
+            commit(changes),
+            &[],
+            &[SubtreeClosureGuard {
+                root_item_id: root.clone(),
+                expected_non_tombstoned_descendants: descendants,
+                require_empty_live_descendants: false,
+            }],
+        )
+        .await
+        .unwrap();
+    let stored = repo
+        .get_commit(repo_id.clone(), accepted.commit_id)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(stored.event_count, 10_001);
     for id in [root, children[0].clone(), children[9_999].clone()] {
         let item = repo.get_item(repo_id.clone(), id).await.unwrap().unwrap();
-        assert_eq!(item.lifecycle_state, synck_vcs::types::LifecycleState::Trash);
+        assert_eq!(
+            item.lifecycle_state,
+            synck_vcs::types::LifecycleState::Trash
+        );
         assert_eq!(item.head_seq, 2);
     }
 }
@@ -2561,8 +2633,13 @@ async fn sequencer_refuses_a_batch_that_inverts_item_order() {
     );
 }
 
-fn content_event(event_type: &str, content: Option<synck_vcs::content::EventContent>) -> EventProposal {
-    EventProposal { set_link: None, merged_from: None,
+fn content_event(
+    event_type: &str,
+    content: Option<synck_vcs::content::EventContent>,
+) -> EventProposal {
+    EventProposal {
+        set_link: None,
+        merged_from: None,
         item_id: None,
         event_type: event_type.to_string(),
         set_metadata: None,
@@ -2590,7 +2667,11 @@ fn federated(stream: &str, item_seq: i64, events: Vec<EventProposal>) -> Federat
     }
 }
 
-fn domain(domain_seq: i64, events: Vec<EventProposal>, ref_events: Vec<RefEventProposal>) -> FederatedDomainProposal {
+fn domain(
+    domain_seq: i64,
+    events: Vec<EventProposal>,
+    ref_events: Vec<RefEventProposal>,
+) -> FederatedDomainProposal {
     FederatedDomainProposal {
         domain_id: "domain".to_string(),
         domain_seq,
@@ -2613,23 +2694,36 @@ async fn content_only_federated_commits_follow_the_item_rules() {
     let mut bind = content_event("FILE::FEDERATE", None);
     bind.set_is_federated = Some(true);
     bind.set_federation_stream_id = Some(stream.to_string());
-    repo.ingest(repo_id.clone(), federated(stream, 1, vec![create_event("file.txt"), bind]))
-        .await
-        .unwrap();
-    let bytes = || synck_vcs::content::EventContent::bytes(synck_vcs::types::ObjectId::from_digest([8; 32]));
+    repo.ingest(
+        repo_id.clone(),
+        federated(stream, 1, vec![create_event("file.txt"), bind]),
+    )
+    .await
+    .unwrap();
+    let bytes = || {
+        synck_vcs::content::EventContent::bytes(synck_vcs::types::ObjectId::from_digest([8; 32]))
+    };
 
-    let not_bytes = synck_vcs::content::EventContent::body(synck_vcs::types::ObjectId::from_digest([8; 32]));
+    let not_bytes =
+        synck_vcs::content::EventContent::body(synck_vcs::types::ObjectId::from_digest([8; 32]));
     let error = repo
         .ingest_content_only_existing_item(
             repo_id.clone(),
-            federated(stream, 3, vec![content_event("FILE::SET_CONTENT", Some(not_bytes))]),
+            federated(
+                stream,
+                3,
+                vec![content_event("FILE::SET_CONTENT", Some(not_bytes))],
+            ),
         )
         .await
         .unwrap_err();
     assert!(matches!(error, CoreError::InvalidProposal(_)), "{error:?}");
 
     let mut merged = content_event("FILE::SET_CONTENT", Some(bytes()));
-    merged.merged_from = Some(ItemRevision { item_id: ItemId::new(), item_seq: 1 });
+    merged.merged_from = Some(ItemRevision {
+        item_id: ItemId::new(),
+        item_seq: 1,
+    });
     let error = repo
         .ingest_content_only_existing_item(repo_id.clone(), federated(stream, 3, vec![merged]))
         .await
@@ -2638,7 +2732,11 @@ async fn content_only_federated_commits_follow_the_item_rules() {
 
     repo.ingest_content_only_existing_item(
         repo_id.clone(),
-        federated(stream, 3, vec![content_event("FILE::SET_CONTENT", Some(bytes()))]),
+        federated(
+            stream,
+            3,
+            vec![content_event("FILE::SET_CONTENT", Some(bytes()))],
+        ),
     )
     .await
     .unwrap();
@@ -2679,7 +2777,10 @@ async fn domain_commits_follow_the_append_shape_rules() {
     let repo = Repo::new(Storage::new(Arc::new(storage)), CoreConfig::default());
     let item_id = ItemId::new();
     let invalid = async |proposal| {
-        let error = repo.ingest_domain(repo_id.clone(), proposal).await.unwrap_err();
+        let error = repo
+            .ingest_domain(repo_id.clone(), proposal)
+            .await
+            .unwrap_err();
         assert!(matches!(error, CoreError::InvalidProposal(_)), "{error:?}");
     };
 
@@ -2692,13 +2793,21 @@ async fn domain_commits_follow_the_append_shape_rules() {
     early.base_seq = Some(0);
     invalid(domain(
         1,
-        vec![early, create_item_event(item_id.clone(), "FILE", None, "file.txt")],
+        vec![
+            early,
+            create_item_event(item_id.clone(), "FILE", None, "file.txt"),
+        ],
         Vec::new(),
     ))
     .await;
 
     let create = || vec![create_item_event(item_id.clone(), "FILE", None, "file.txt")];
-    invalid(domain(1, create(), vec![ref_event(item_id.clone(), -1, "FILE_VERSION::CREATE")])).await;
+    invalid(domain(
+        1,
+        create(),
+        vec![ref_event(item_id.clone(), -1, "FILE_VERSION::CREATE")],
+    ))
+    .await;
     invalid(domain(
         1,
         create(),
@@ -2734,28 +2843,48 @@ async fn a_link_set_in_a_commit_needs_a_live_folder_whatever_it_was_before() {
             "create_item": CreateItem::record("TASK", None, link.cloned()),
         }))
     };
-    repo.append(repo_id.clone(), commit(vec![
-        folder(&trashed, "trashed"), folder(&doomed, "doomed"),
-        task(&in_trash, Some(&trashed)), task(&unfiled, None),
-    ])).await.unwrap();
-    repo.append(repo_id.clone(), commit(vec![event_of(serde_json::json!({
-        "item_id": trashed, "event_type": "FOLDER::TRASH", "base_seq": 1, "set_in_trash": true,
-    }))])).await.unwrap();
+    repo.append(
+        repo_id.clone(),
+        commit(vec![
+            folder(&trashed, "trashed"),
+            folder(&doomed, "doomed"),
+            task(&in_trash, Some(&trashed)),
+            task(&unfiled, None),
+        ]),
+    )
+    .await
+    .unwrap();
+    repo.append(
+        repo_id.clone(),
+        commit(vec![event_of(serde_json::json!({
+            "item_id": trashed, "event_type": "FOLDER::TRASH", "base_seq": 1, "set_in_trash": true,
+        }))]),
+    )
+    .await
+    .unwrap();
     repo.append(repo_id.clone(), commit(vec![event_of(serde_json::json!({
         "item_id": doomed, "event_type": "FOLDER::TOMBSTONE", "base_seq": 1, "set_tombstoned": true,
     }))])).await.unwrap();
 
     // A link that stays may point at a folder in the trash. Setting it again may not.
-    repo.append(repo_id.clone(), commit(vec![event_of(serde_json::json!({
-        "item_id": in_trash, "event_type": "TASK::SET_METADATA", "base_seq": 1,
-        "set_metadata": {"note": "still here"},
-    }))])).await.unwrap();
+    repo.append(
+        repo_id.clone(),
+        commit(vec![event_of(serde_json::json!({
+            "item_id": in_trash, "event_type": "TASK::SET_METADATA", "base_seq": 1,
+            "set_metadata": {"note": "still here"},
+        }))]),
+    )
+    .await
+    .unwrap();
     for (record, target, base_seq) in [(&in_trash, &trashed, 2), (&unfiled, &doomed, 1)] {
         let error = repo
-            .append(repo_id.clone(), commit(vec![event_of(serde_json::json!({
-                "item_id": record, "event_type": "TASK::SET_LINK", "base_seq": base_seq,
-                "set_link": target,
-            }))]))
+            .append(
+                repo_id.clone(),
+                commit(vec![event_of(serde_json::json!({
+                    "item_id": record, "event_type": "TASK::SET_LINK", "base_seq": base_seq,
+                    "set_link": target,
+                }))]),
+            )
             .await
             .unwrap_err();
         assert!(matches!(error, CoreError::InvalidProposal(_)), "{error}");
@@ -2775,13 +2904,19 @@ async fn tombstoning_a_folder_clears_or_tombstones_what_is_filed_there() {
             "create_item": CreateItem::record("TASK", None, Some(folder.clone())),
         }))
     };
-    repo.append(repo_id.clone(), commit(vec![
-        event_of(serde_json::json!({
-            "item_id": folder, "event_type": "FOLDER::CREATE",
-            "create_item": CreateItem::tree("FOLDER", None, "doomed"),
-        })),
-        task(&cleared), task(&gone),
-    ])).await.unwrap();
+    repo.append(
+        repo_id.clone(),
+        commit(vec![
+            event_of(serde_json::json!({
+                "item_id": folder, "event_type": "FOLDER::CREATE",
+                "create_item": CreateItem::tree("FOLDER", None, "doomed"),
+            })),
+            task(&cleared),
+            task(&gone),
+        ]),
+    )
+    .await
+    .unwrap();
     let tombstone = |id: &ItemId, kind: &str| {
         event_of(serde_json::json!({
             "item_id": id, "event_type": format!("{kind}::TOMBSTONE"), "base_seq": 1,
@@ -2797,9 +2932,16 @@ async fn tombstoning_a_folder_clears_or_tombstones_what_is_filed_there() {
     clear.event_type = "TASK::SET_LINK".to_string();
     clear.set_tombstoned = None;
     clear.set_link = Some(None);
-    repo.append(repo_id.clone(), commit(vec![
-        clear, tombstone(&gone, "TASK"), tombstone(&folder, "FOLDER"),
-    ])).await.unwrap();
+    repo.append(
+        repo_id.clone(),
+        commit(vec![
+            clear,
+            tombstone(&gone, "TASK"),
+            tombstone(&folder, "FOLDER"),
+        ]),
+    )
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
@@ -2809,26 +2951,47 @@ async fn a_folder_never_federates() {
     let repo_id = RepoId::new();
     let repo = Repo::new(Storage::new(Arc::new(storage)), CoreConfig::default());
     let id = ItemId::new();
-    repo.append(repo_id.clone(), commit(vec![event_of(serde_json::json!({
-        "item_id": id, "event_type": "FOLDER::CREATE",
-        "create_item": CreateItem::tree("FOLDER", None, "shared"),
-    }))])).await.unwrap();
+    repo.append(
+        repo_id.clone(),
+        commit(vec![event_of(serde_json::json!({
+            "item_id": id, "event_type": "FOLDER::CREATE",
+            "create_item": CreateItem::tree("FOLDER", None, "shared"),
+        }))]),
+    )
+    .await
+    .unwrap();
     let error = repo
-        .append(repo_id.clone(), commit(vec![event_of(serde_json::json!({
-            "item_id": id, "event_type": "FOLDER::FEDERATE", "base_seq": 1,
-            "set_is_federated": true, "set_federation_stream_id": "shared-folder",
-        }))]))
+        .append(
+            repo_id.clone(),
+            commit(vec![event_of(serde_json::json!({
+                "item_id": id, "event_type": "FOLDER::FEDERATE", "base_seq": 1,
+                "set_is_federated": true, "set_federation_stream_id": "shared-folder",
+            }))]),
+        )
         .await
         .unwrap_err();
-    assert!(matches!(error, CoreError::IllegalFederationTransition), "{error}");
+    assert!(
+        matches!(error, CoreError::IllegalFederationTransition),
+        "{error}"
+    );
     let error = repo
-        .ingest(repo_id.clone(), federated("bootstrap", 1, vec![event_of(serde_json::json!({
-            "event_type": "FOLDER::CREATE",
-            "create_item": CreateItem::tree("FOLDER", None, "bootstrap"),
-        }))]))
+        .ingest(
+            repo_id.clone(),
+            federated(
+                "bootstrap",
+                1,
+                vec![event_of(serde_json::json!({
+                    "event_type": "FOLDER::CREATE",
+                    "create_item": CreateItem::tree("FOLDER", None, "bootstrap"),
+                }))],
+            ),
+        )
         .await
         .unwrap_err();
-    assert!(matches!(error, CoreError::IllegalFederationTransition), "{error}");
+    assert!(
+        matches!(error, CoreError::IllegalFederationTransition),
+        "{error}"
+    );
 }
 
 #[tokio::test]
@@ -2845,58 +3008,100 @@ async fn filing_in_a_domain_repository_goes_through_the_domain() {
             "create_item": CreateItem::record(kind, key, link),
         }))
     };
-    repo.ingest_domain(repo_id.clone(), domain(1, vec![
-        event_of(serde_json::json!({
-            "item_id": folder, "event_type": "FOLDER::CREATE",
-            "create_item": CreateItem::tree("FOLDER", None, "Contracts"),
-        })),
-        record(&chat, "CHAT", None, None),
-        record(&shared, "TASK", None, Some(folder.clone())),
-    ], vec![])).await.unwrap();
+    repo.ingest_domain(
+        repo_id.clone(),
+        domain(
+            1,
+            vec![
+                event_of(serde_json::json!({
+                    "item_id": folder, "event_type": "FOLDER::CREATE",
+                    "create_item": CreateItem::tree("FOLDER", None, "Contracts"),
+                })),
+                record(&chat, "CHAT", None, None),
+                record(&shared, "TASK", None, Some(folder.clone())),
+            ],
+            vec![],
+        ),
+    )
+    .await
+    .unwrap();
 
     let error = repo
-        .append(repo_id.clone(), commit(vec![record(
-            &companion, "LOCAL_COMPANION", Some(chat.to_string()), Some(folder.clone()),
-        )]))
+        .append(
+            repo_id.clone(),
+            commit(vec![record(
+                &companion,
+                "LOCAL_COMPANION",
+                Some(chat.to_string()),
+                Some(folder.clone()),
+            )]),
+        )
         .await
         .unwrap_err();
     assert!(matches!(error, CoreError::InvalidProposal(_)), "{error}");
     let error = repo
-        .append(repo_id.clone(), commit(vec![event_of(serde_json::json!({
-            "item_id": chat, "event_type": "CHAT::SET_LINK", "base_seq": 1, "set_link": folder,
-        }))]))
+        .append(
+            repo_id.clone(),
+            commit(vec![event_of(serde_json::json!({
+                "item_id": chat, "event_type": "CHAT::SET_LINK", "base_seq": 1, "set_link": folder,
+            }))]),
+        )
         .await
         .unwrap_err();
     assert!(matches!(error, CoreError::InvalidProposal(_)), "{error}");
 
     // A companion without a link stays local, and a domain tombstone still applies.
-    repo.append(repo_id.clone(), commit(vec![record(
-        &companion, "LOCAL_COMPANION", Some(chat.to_string()), None,
-    )])).await.unwrap();
+    repo.append(
+        repo_id.clone(),
+        commit(vec![record(
+            &companion,
+            "LOCAL_COMPANION",
+            Some(chat.to_string()),
+            None,
+        )]),
+    )
+    .await
+    .unwrap();
     let tombstone = |id: &ItemId, kind: &str| {
         event_of(serde_json::json!({
             "item_id": id, "event_type": format!("{kind}::TOMBSTONE"), "base_seq": 1,
             "set_tombstoned": true,
         }))
     };
-    repo.ingest_domain(repo_id.clone(), domain(2, vec![
-        tombstone(&shared, "TASK"), tombstone(&folder, "FOLDER"),
-    ], vec![])).await.unwrap();
+    repo.ingest_domain(
+        repo_id.clone(),
+        domain(
+            2,
+            vec![tombstone(&shared, "TASK"), tombstone(&folder, "FOLDER")],
+            vec![],
+        ),
+    )
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
 async fn repository_head_excludes_accepted_unpublished_phantoms() {
-    let (_directory,backend) = backend();
+    let (_directory, backend) = backend();
     backend.init_schema().await.unwrap();
     let repo_id = RepoId::new();
-    let repo = Repo::new(Storage::new(Arc::new(backend.clone())),CoreConfig::default());
-    assert!(backend.repository_head_matches(&repo_id,0).unwrap());
-    repo.append(repo_id.clone(),commit(vec![create_event("first")])).await.unwrap();
-    assert!(!backend.repository_head_matches(&repo_id,0).unwrap());
-    repo.sequence_repo_activity(repo_id.clone(),10).await.unwrap();
-    assert!(backend.repository_head_matches(&repo_id,1).unwrap());
-    repo.append(repo_id.clone(),commit(vec![create_event("new-child")])).await.unwrap();
+    let repo = Repo::new(
+        Storage::new(Arc::new(backend.clone())),
+        CoreConfig::default(),
+    );
+    assert!(backend.repository_head_matches(&repo_id, 0).unwrap());
+    repo.append(repo_id.clone(), commit(vec![create_event("first")]))
+        .await
+        .unwrap();
+    assert!(!backend.repository_head_matches(&repo_id, 0).unwrap());
+    repo.sequence_repo_activity(repo_id.clone(), 10)
+        .await
+        .unwrap();
+    assert!(backend.repository_head_matches(&repo_id, 1).unwrap());
+    repo.append(repo_id.clone(), commit(vec![create_event("new-child")]))
+        .await
+        .unwrap();
     // The touched head did not change and publication did not run: checking
     // MAX(repo_seq) alone would still incorrectly accept the stale cursor.
-    assert!(!backend.repository_head_matches(&repo_id,1).unwrap());
+    assert!(!backend.repository_head_matches(&repo_id, 1).unwrap());
 }

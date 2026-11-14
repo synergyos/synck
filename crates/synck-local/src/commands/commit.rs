@@ -444,9 +444,8 @@ impl Repository {
     /// Status plus Windows interoperability warnings, from the same observation.
     pub async fn status_with_path_warnings(&self) -> Result<(Vec<Change>, Vec<PathBuf>)> {
         let (_, working, changes, _) = self.changes().await?;
-        let warnings = crate::path_warnings::long_paths(
-            self.root_path(), working.keys().map(String::as_str),
-        );
+        let warnings =
+            crate::path_warnings::long_paths(self.root_path(), working.keys().map(String::as_str));
         Ok((changes, warnings))
     }
 
@@ -465,7 +464,8 @@ impl Repository {
             message: message.map(str::to_string),
             ..Default::default()
         };
-        self.commit_selected_with(caller, inputs, &options, None, &HashMap::new()).await
+        self.commit_selected_with(caller, inputs, &options, None, &HashMap::new())
+            .await
     }
 
     /// Selected commit with direct-writer attribution; the configured author
@@ -506,24 +506,46 @@ impl Repository {
                 path = parent;
             }
         }
-        let reserved_paths: Vec<&str> = changes.iter()
-            .filter(|c| !(c.kind == ChangeKind::Add
-                && working.get(&c.path).is_some_and(|n| n.kind == NodeKind::Folder)
-                && changed_parents.contains(c.path.as_str())))
+        let reserved_paths: Vec<&str> = changes
+            .iter()
+            .filter(|c| {
+                !(c.kind == ChangeKind::Add
+                    && working
+                        .get(&c.path)
+                        .is_some_and(|n| n.kind == NodeKind::Folder)
+                    && changed_parents.contains(c.path.as_str()))
+            })
             .flat_map(|c| std::iter::once(c.path.as_str()).chain(c.source_path.as_deref()))
             .collect();
         self.guard_agent_paths(&reserved_paths)?;
         let captured = self.capture_changed_files(&committed, &working, &changes, captured_file)?;
-        let mut prepared = self.prepare_working_commit(&committed, &working, &changes, &working_ids, message, &captured)?;
+        let mut prepared = self.prepare_working_commit(
+            &committed,
+            &working,
+            &changes,
+            &working_ids,
+            message,
+            &captured,
+        )?;
         options.mark_file_write(&mut prepared.events);
         if !sources.is_empty() {
             let paths: HashMap<&ItemId, &String> = working_ids
                 .iter()
                 .map(|(path, item_id)| (item_id, path))
-                .chain(prepared.created_ids.iter().map(|(path, item_id)| (item_id, path)))
+                .chain(
+                    prepared
+                        .created_ids
+                        .iter()
+                        .map(|(path, item_id)| (item_id, path)),
+                )
                 .collect();
             for event in &mut prepared.events {
-                let Some(source) = event.item_id.as_ref().and_then(|id| paths.get(id)).and_then(|path| sources.get(*path)) else {
+                let Some(source) = event
+                    .item_id
+                    .as_ref()
+                    .and_then(|id| paths.get(id))
+                    .and_then(|path| sources.get(*path))
+                else {
                     continue;
                 };
                 match event.create_item.as_mut() {
@@ -535,7 +557,8 @@ impl Repository {
         }
         self.guard_agent_paths(&reserved_paths)?;
         if self.held() && self.remote().is_none() {
-            self.pin_held_objects(&captured.values().collect::<Vec<_>>()).await?;
+            self.pin_held_objects(&captured.values().collect::<Vec<_>>())
+                .await?;
         }
         let operation_id = options
             .operation_id
@@ -594,8 +617,7 @@ impl Repository {
         message: Option<&str>,
         objects: &HashMap<String, ObjectId>,
     ) -> Result<PreparedWorkingCommit> {
-        let built_intents =
-            build_intents(committed, working, changes, working_ids, objects, None)?;
+        let built_intents = build_intents(committed, working, changes, working_ids, objects, None)?;
         let mut intents = built_intents.intents;
         let current = self.current_file_folder_context(&mut intents)?;
         let built = materialize_events(self.config().repo_id(), message, intents, &current)?;
@@ -635,9 +657,17 @@ impl Repository {
             let size = node.size.expect("scanned FILE has size");
             if let Some((path, content)) = captured_file.filter(|(path, _)| *path == change.path) {
                 if content.size != size || self.plain_digest(&content.blob_id)? != digest {
-                    return Err(LocalError::Invalid("working bytes differ from the supplied file".into()));
+                    return Err(LocalError::Invalid(
+                        "working bytes differ from the supplied file".into(),
+                    ));
                 }
-                verify_working_file(self, path, &content.blob_id, i64::try_from(size).map_err(|_| LocalError::Invalid("file too large".into()))?)?;
+                verify_working_file(
+                    self,
+                    path,
+                    &content.blob_id,
+                    i64::try_from(size)
+                        .map_err(|_| LocalError::Invalid("file too large".into()))?,
+                )?;
                 objects.insert(change.path.clone(), content.blob_id.clone());
                 continue;
             }
@@ -711,7 +741,9 @@ impl Repository {
             return capture();
         }
         std::thread::scope(|scope| {
-            let workers = (0..threads).map(|_| scope.spawn(capture)).collect::<Vec<_>>();
+            let workers = (0..threads)
+                .map(|_| scope.spawn(capture))
+                .collect::<Vec<_>>();
             let mut captured = Vec::with_capacity(captures.len());
             let mut first_error = None;
             for worker in workers {

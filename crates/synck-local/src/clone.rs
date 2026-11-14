@@ -18,9 +18,7 @@ pub async fn clone_repository(
     include: &[String],
     hold: bool,
 ) -> Result<Repository> {
-    let origin = origin
-        .canonicalize()
-        .at("resolve clone origin", origin)?;
+    let origin = origin.canonicalize().at("resolve clone origin", origin)?;
     let store = origin.join(".synck");
     reject_network_filesystem(&store)?;
     let config_path = store.join("config.json");
@@ -47,9 +45,12 @@ pub async fn clone_repository(
         portable.item_at_path(path)?;
     }
     let (authority, origin_author) = portable.clone_source()?;
-    let author = author.map(str::to_string).or(origin_author).ok_or_else(|| {
-        LocalError::Invalid("the origin has no author; give one with --author".into())
-    })?;
+    let author = author
+        .map(str::to_string)
+        .or(origin_author)
+        .ok_or_else(|| {
+            LocalError::Invalid("the origin has no author; give one with --author".into())
+        })?;
     let (repo_id, storage_mode, mut head) = (
         portable.repo_id().clone(),
         portable.storage_mode(),
@@ -78,9 +79,12 @@ pub async fn clone_repository(
         let origin_history = synck_vcs_sqlite::SqliteStorage::new(store.join("repository.sqlite3"));
         origin_history
             .open_readonly()
-            .map_err(|error| LocalError::Integrity(format!("cannot read repository history: {error}")))?
+            .map_err(|error| {
+                LocalError::Integrity(format!("cannot read repository history: {error}"))
+            })?
             .execute("VACUUM INTO ?1", [path])?;
-        rusqlite::Connection::open(&history)?.query_row("PRAGMA journal_mode=WAL", [], |_| Ok(()))?;
+        rusqlite::Connection::open(&history)?
+            .query_row("PRAGMA journal_mode=WAL", [], |_| Ok(()))?;
         head = crate::repository::head_repo_seq(
             &synck_vcs_sqlite::SqliteStorage::new(history),
             &repo_id,
@@ -108,7 +112,15 @@ pub async fn clone_repository(
     crate::checkout::write_checkout(&metadata, &checkout)?;
     // The config names the origin, so it goes last: before it, the directory
     // opens as nothing.
-    let config = Config::clone_of(origin, repo_id, author, authority, checkout, storage_mode, hold);
+    let config = Config::clone_of(
+        origin,
+        repo_id,
+        author,
+        authority,
+        checkout,
+        storage_mode,
+        hold,
+    );
     let path = metadata.join("tmp").join("config.json");
     std::fs::write(&path, serde_json::to_vec_pretty(&config)?).at("write", &path)?;
     crate::repository::sync_file(&path)?;
@@ -157,7 +169,9 @@ fn network_filesystem(path: &Path) -> LocalError {
 /// shared there would corrupt.
 #[cfg(any(target_os = "macos", target_os = "ios", target_os = "freebsd"))]
 fn reject_network_filesystem(path: &Path) -> Result<()> {
-    let statfs = rustix::fs::statfs(path).map_err(std::io::Error::from).at("inspect filesystem", path)?;
+    let statfs = rustix::fs::statfs(path)
+        .map_err(std::io::Error::from)
+        .at("inspect filesystem", path)?;
     if statfs.f_flags & libc::MNT_LOCAL as u32 == 0 {
         return Err(network_filesystem(path));
     }
@@ -167,14 +181,16 @@ fn reject_network_filesystem(path: &Path) -> Result<()> {
 #[cfg(target_os = "linux")]
 fn reject_network_filesystem(path: &Path) -> Result<()> {
     const NETWORK: [i64; 6] = [
-        0x6969,             // NFS
-        0x517B,             // SMB
-        0xFF53_4D42,        // CIFS
-        0xFE53_4D42,        // SMB2
-        0x5346_414F,        // AFS
-        0x7375_7245,        // Coda
+        0x6969,      // NFS
+        0x517B,      // SMB
+        0xFF53_4D42, // CIFS
+        0xFE53_4D42, // SMB2
+        0x5346_414F, // AFS
+        0x7375_7245, // Coda
     ];
-    let statfs = rustix::fs::statfs(path).map_err(std::io::Error::from).at("inspect filesystem", path)?;
+    let statfs = rustix::fs::statfs(path)
+        .map_err(std::io::Error::from)
+        .at("inspect filesystem", path)?;
     if NETWORK.contains(&(statfs.f_type as i64)) {
         return Err(network_filesystem(path));
     }
@@ -193,13 +209,21 @@ fn reject_network_filesystem(path: &Path) -> Result<()> {
     let root: std::path::PathBuf = text.chars().take(3).collect::<String>().into();
     let wide: Vec<u16> = root.as_os_str().encode_wide().chain(Some(0)).collect();
     // SAFETY: `wide` is a NUL-terminated UTF-16 path that outlives the call.
-    if unsafe { windows_sys::Win32::Storage::FileSystem::GetDriveTypeW(wide.as_ptr()) } == DRIVE_REMOTE {
+    if unsafe { windows_sys::Win32::Storage::FileSystem::GetDriveTypeW(wide.as_ptr()) }
+        == DRIVE_REMOTE
+    {
         return Err(network_filesystem(path));
     }
     Ok(())
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "freebsd", target_os = "linux", windows)))]
+#[cfg(not(any(
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "freebsd",
+    target_os = "linux",
+    windows
+)))]
 fn reject_network_filesystem(_: &Path) -> Result<()> {
     Ok(())
 }

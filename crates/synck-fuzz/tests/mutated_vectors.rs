@@ -70,7 +70,9 @@ fn exercise(name: &str, check: fn(&[u8]), seeds: &[Vec<u8>]) {
 }
 
 fn vectors(name: &str) -> Value {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/spec/vectors").join(name);
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../docs/spec/vectors")
+        .join(name);
     serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
 }
 
@@ -97,12 +99,20 @@ fn hex_bytes(value: &Value, field: &str) -> Vec<Vec<u8>> {
 
 #[test]
 fn json_survives_mutation() {
-    exercise("json", synck_fuzz::json, &field_bytes(&vectors("json.json"), "text"));
+    exercise(
+        "json",
+        synck_fuzz::json,
+        &field_bytes(&vectors("json.json"), "text"),
+    );
 }
 
 #[test]
 fn bundles_survive_mutation() {
-    exercise("bundle", synck_fuzz::bundle, &field_bytes(&vectors("bundle.json")["cases"], "bundle"));
+    exercise(
+        "bundle",
+        synck_fuzz::bundle,
+        &field_bytes(&vectors("bundle.json")["cases"], "bundle"),
+    );
 }
 
 #[test]
@@ -114,7 +124,15 @@ fn objects_survive_mutation() {
 #[test]
 fn metadata_survives_mutation() {
     let vector = vectors("metadata.json");
-    exercise("metadata", synck_fuzz::metadata, &[vector["canonical_json"].as_str().unwrap().as_bytes().to_vec()]);
+    exercise(
+        "metadata",
+        synck_fuzz::metadata,
+        &[vector["canonical_json"]
+            .as_str()
+            .unwrap()
+            .as_bytes()
+            .to_vec()],
+    );
 }
 
 #[test]
@@ -168,14 +186,21 @@ fn emails_survive_mutation() {
 #[test]
 fn outlook_messages_survive_mutation() {
     let seed = fixture("ascii.msg.b64");
-    let seed: Vec<u8> = seed.into_iter().filter(|byte| !byte.is_ascii_whitespace()).collect();
+    let seed: Vec<u8> = seed
+        .into_iter()
+        .filter(|byte| !byte.is_ascii_whitespace())
+        .collect();
     exercise("msg", synck_fuzz::msg, &[STANDARD.decode(seed).unwrap()]);
 }
 
 #[test]
 fn chunks_survive_mutation() {
     let raw = [&5_u32.to_le_bytes()[..], b"hello"].concat();
-    let zstd = [&(0x8000_0040_u32).to_le_bytes()[..], b"\x28\xb5\x2f\xfd\x20\x40\x45\x00\x00\x10"].concat();
+    let zstd = [
+        &(0x8000_0040_u32).to_le_bytes()[..],
+        b"\x28\xb5\x2f\xfd\x20\x40\x45\x00\x00\x10",
+    ]
+    .concat();
     exercise("chunk", synck_fuzz::chunk, &[raw, zstd]);
 }
 

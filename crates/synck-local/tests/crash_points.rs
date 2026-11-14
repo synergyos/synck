@@ -20,9 +20,17 @@ fn interposer() -> &'static Path {
     LIBRARY.get_or_init(|| {
         let output = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("libcrash_points");
         let status = Command::new(std::env::var("RUSTC").unwrap_or_else(|_| "rustc".to_string()))
-            .args(["--edition=2024", "--crate-type=cdylib", "-Cpanic=abort", "-o"])
+            .args([
+                "--edition=2024",
+                "--crate-type=cdylib",
+                "-Cpanic=abort",
+                "-o",
+            ])
             .arg(&output)
-            .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/crash_points/interposer.rs"))
+            .arg(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/crash_points/interposer.rs"
+            ))
             .status()
             .unwrap();
         assert!(status.success());
@@ -34,8 +42,14 @@ fn synck(root: &Path, args: &[&str], crash_at: Option<usize>) -> Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_synck"));
     command.current_dir(root).args(args);
     if let Some(point) = crash_at {
-        let variable = if cfg!(target_os = "macos") { "DYLD_INSERT_LIBRARIES" } else { "LD_PRELOAD" };
-        command.env(variable, interposer()).env("SYNCK_CRASH_AT", point.to_string());
+        let variable = if cfg!(target_os = "macos") {
+            "DYLD_INSERT_LIBRARIES"
+        } else {
+            "LD_PRELOAD"
+        };
+        command
+            .env(variable, interposer())
+            .env("SYNCK_CRASH_AT", point.to_string());
     }
     command.output().unwrap()
 }
@@ -53,7 +67,10 @@ fn ok(root: &Path, args: &[&str]) -> String {
 
 fn commit_count(root: &Path) -> usize {
     let log = ok(root, &["log", "--json", "--limit", "1000"]);
-    serde_json::from_str::<serde_json::Value>(&log).unwrap()["commits"].as_array().unwrap().len()
+    serde_json::from_str::<serde_json::Value>(&log).unwrap()["commits"]
+        .as_array()
+        .unwrap()
+        .len()
 }
 
 /// Every working file, outside repository metadata.
@@ -67,7 +84,10 @@ fn tree(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
             if path.is_dir() {
                 visit(root, &path, files);
             } else {
-                files.insert(path.strip_prefix(root).unwrap().to_path_buf(), fs::read(&path).unwrap());
+                files.insert(
+                    path.strip_prefix(root).unwrap().to_path_buf(),
+                    fs::read(&path).unwrap(),
+                );
             }
         }
     }
@@ -77,7 +97,12 @@ fn tree(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
 }
 
 fn copy(from: &Path, to: &Path) {
-    let status = Command::new("cp").arg("-Rp").arg(from).arg(to).status().unwrap();
+    let status = Command::new("cp")
+        .arg("-Rp")
+        .arg(from)
+        .arg(to)
+        .status()
+        .unwrap();
     assert!(status.success());
 }
 
@@ -88,7 +113,10 @@ fn base(root: &Path) {
 
 fn base_in(mode: &str, root: &Path) {
     fs::create_dir(root).unwrap();
-    ok(root, &["init", "--author", "tester", "--storage-mode", mode]);
+    ok(
+        root,
+        &["init", "--author", "tester", "--storage-mode", mode],
+    );
     fs::create_dir(root.join("folder")).unwrap();
     fs::write(root.join("folder/keep.txt"), "keep\n").unwrap();
     fs::write(root.join("edit.txt"), "before\n").unwrap();
@@ -101,7 +129,11 @@ fn base_in(mode: &str, root: &Path) {
 /// Whatever a kill left, the repository can collect, and nothing stays behind.
 fn assert_clean_metadata(root: &Path, context: &str) {
     let gc = synck(root, &["gc"], None);
-    assert!(gc.status.success(), "{context}: {}", String::from_utf8_lossy(&gc.stderr));
+    assert!(
+        gc.status.success(),
+        "{context}: {}",
+        String::from_utf8_lossy(&gc.stderr)
+    );
     let names = |path: &str| -> Vec<String> {
         fs::read_dir(root.join(path))
             .unwrap()
@@ -117,12 +149,10 @@ fn assert_clean_metadata(root: &Path, context: &str) {
 }
 
 fn scenario(prepare: impl Fn(&Path), args: &[&str]) {
-    scenario_with(
-        |root| {
-            prepare(root);
-            args.iter().map(ToString::to_string).collect()
-        },
-    );
+    scenario_with(|root| {
+        prepare(root);
+        args.iter().map(ToString::to_string).collect()
+    });
 }
 
 fn scenario_with(prepare: impl Fn(&Path) -> Vec<String>) {
@@ -168,9 +198,17 @@ fn scenario_in(mode: &str, prepare: impl Fn(&Path) -> Vec<String>) {
         if String::from_utf8_lossy(&fsck.stderr).contains("explicit finalize is required") {
             ok(&crashed, &["repository", "finalize", "."]);
             let fsck = synck(&crashed, &["fsck"], None);
-            assert!(fsck.status.success(), "{context}: {}", String::from_utf8_lossy(&fsck.stderr));
+            assert!(
+                fsck.status.success(),
+                "{context}: {}",
+                String::from_utf8_lossy(&fsck.stderr)
+            );
         } else {
-            assert!(fsck.status.success(), "{context}: {}", String::from_utf8_lossy(&fsck.stderr));
+            assert!(
+                fsck.status.success(),
+                "{context}: {}",
+                String::from_utf8_lossy(&fsck.stderr)
+            );
         }
         let commits = commit_count(&crashed);
         assert!(
@@ -179,20 +217,35 @@ fn scenario_in(mode: &str, prepare: impl Fn(&Path) -> Vec<String>) {
         );
         if commits == commits_before {
             let retry = synck(&crashed, args, None);
-            assert!(retry.status.success(), "{context}: {}", String::from_utf8_lossy(&retry.stderr));
+            assert!(
+                retry.status.success(),
+                "{context}: {}",
+                String::from_utf8_lossy(&retry.stderr)
+            );
         }
         assert_eq!(commit_count(&crashed), expected_commits, "{context}");
         assert_eq!(tree(&crashed), expected_tree, "{context}");
         // The working tree is based on the commit it made, not left behind it.
-        assert_eq!(ok(&crashed, &["status", "--json"]), expected_status, "{context}");
+        assert_eq!(
+            ok(&crashed, &["status", "--json"]),
+            expected_status,
+            "{context}"
+        );
         let fsck = synck(&crashed, &["fsck"], None);
-        assert!(fsck.status.success(), "{context}: {}", String::from_utf8_lossy(&fsck.stderr));
+        assert!(
+            fsck.status.success(),
+            "{context}: {}",
+            String::from_utf8_lossy(&fsck.stderr)
+        );
         assert_clean_metadata(&crashed, &context);
 
         fs::remove_dir_all(&crashed).unwrap();
         point += 1;
     }
-    assert!(point > 5, "{args:?} reached only {point} mutations, so the interposer is not loaded");
+    assert!(
+        point > 5,
+        "{args:?} reached only {point} mutations, so the interposer is not loaded"
+    );
     eprintln!("{args:?}: {} mutations", point - 1);
 }
 
@@ -212,7 +265,10 @@ fn commit_survives_a_kill_at_every_mutation() {
 #[test]
 #[ignore = "kills a real process at every mutation"]
 fn move_survives_a_kill_at_every_mutation() {
-    scenario(|_| {}, &["mv", "-m", "moved", "edit.txt", "folder/moved.txt"]);
+    scenario(
+        |_| {},
+        &["mv", "-m", "moved", "edit.txt", "folder/moved.txt"],
+    );
 }
 
 #[test]
@@ -266,7 +322,10 @@ fn each_kill(root: &Path, run: &[&str], check: impl Fn(&Path, &str)) {
         check(&crashed, &format!("{run:?} killed at mutation {point}"));
         point += 1;
     }
-    assert!(point > 5, "{run:?} reached only {point} mutations, so the interposer is not loaded");
+    assert!(
+        point > 5,
+        "{run:?} reached only {point} mutations, so the interposer is not loaded"
+    );
     eprintln!("{run:?}: {} mutations", point - 1);
 }
 
@@ -333,7 +392,10 @@ fn checkout_survives_a_kill_at_every_mutation() {
     base(&source);
     let expected = tree(&source);
     let follower = directory.path().join("follower");
-    ok(&source, &["repository", "import", ".", follower.to_str().unwrap()]);
+    ok(
+        &source,
+        &["repository", "import", ".", follower.to_str().unwrap()],
+    );
     let args = ["repository", "checkout", ".", "--author", "reader"];
     each_kill(&follower, &args, |crashed, context| {
         succeeds(crashed, &args, context);
@@ -351,8 +413,21 @@ fn checkout_of_a_writer_survives_a_kill_at_every_mutation() {
     base(&source);
     let expected = tree(&source);
     let writer = directory.path().join("writer");
-    ok(&source, &["repository", "import", ".", writer.to_str().unwrap()]);
-    ok(&writer, &["repository", "activate", ".", "--author", "before", "--source-retired"]);
+    ok(
+        &source,
+        &["repository", "import", ".", writer.to_str().unwrap()],
+    );
+    ok(
+        &writer,
+        &[
+            "repository",
+            "activate",
+            ".",
+            "--author",
+            "before",
+            "--source-retired",
+        ],
+    );
     let args = ["repository", "checkout", ".", "--author", "reader"];
     each_kill(&writer, &args, |crashed, context| {
         succeeds(crashed, &args, context);
@@ -370,10 +445,24 @@ fn activating_after_a_killed_checkout_leaves_a_working_repository() {
     let source = directory.path().join("source");
     base(&source);
     let follower = directory.path().join("follower");
-    ok(&source, &["repository", "import", ".", follower.to_str().unwrap()]);
+    ok(
+        &source,
+        &["repository", "import", ".", follower.to_str().unwrap()],
+    );
     let args = ["repository", "checkout", ".", "--author", "reader"];
     each_kill(&follower, &args, |crashed, context| {
-        succeeds(crashed, &["repository", "activate", ".", "--author", "writer", "--source-retired"], context);
+        succeeds(
+            crashed,
+            &[
+                "repository",
+                "activate",
+                ".",
+                "--author",
+                "writer",
+                "--source-retired",
+            ],
+            context,
+        );
         succeeds(crashed, &["repository", "verify", "."], context);
     });
 }
@@ -385,7 +474,16 @@ const OPERATION: &str = "019a2900-0000-4000-8000-000000000001";
 fn create_file_survives_a_kill_at_every_mutation() {
     scenario(
         |root| fs::write(root.join("../source.txt"), "new\n").unwrap(),
-        &["repository", "create-file", "new.txt", "../source.txt", "-m", "add", "--operation-id", OPERATION],
+        &[
+            "repository",
+            "create-file",
+            "new.txt",
+            "../source.txt",
+            "-m",
+            "add",
+            "--operation-id",
+            OPERATION,
+        ],
     );
 }
 
@@ -399,7 +497,16 @@ fn replaying_an_operation_finishes_a_killed_acceptance() {
     base(&prepared);
     let source = directory.path().join("source.txt");
     fs::write(&source, "new\n").unwrap();
-    let args = ["repository", "create-file", "new.txt", source.to_str().unwrap(), "-m", "add", "--operation-id", OPERATION];
+    let args = [
+        "repository",
+        "create-file",
+        "new.txt",
+        source.to_str().unwrap(),
+        "-m",
+        "add",
+        "--operation-id",
+        OPERATION,
+    ];
     each_kill(&prepared, &args, |crashed, context| {
         succeeds(crashed, &args, context);
         succeeds(crashed, &["fsck"], context);
@@ -414,10 +521,24 @@ fn replaying_a_save_finishes_a_killed_acceptance() {
     base(&prepared);
     let source = directory.path().join("source.txt");
     fs::write(&source, "saved\n").unwrap();
-    let listed: serde_json::Value = serde_json::from_str(&ok(&prepared, &["item", "list"])).unwrap();
-    let entry = listed["items"].as_array().unwrap().iter().find(|i| i["name"] == "edit.txt");
+    let listed: serde_json::Value =
+        serde_json::from_str(&ok(&prepared, &["item", "list"])).unwrap();
+    let entry = listed["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["name"] == "edit.txt");
     let item = entry.unwrap()["item_id"].as_str().unwrap().to_string();
-    let args = ["repository", "save-file", &item, source.to_str().unwrap(), "-m", "save", "--operation-id", OPERATION];
+    let args = [
+        "repository",
+        "save-file",
+        &item,
+        source.to_str().unwrap(),
+        "-m",
+        "save",
+        "--operation-id",
+        OPERATION,
+    ];
     each_kill(&prepared, &args, |crashed, context| {
         succeeds(crashed, &args, context);
         succeeds(crashed, &["fsck"], context);
@@ -431,8 +552,20 @@ fn replaying_an_email_import_finishes_a_killed_acceptance() {
     let prepared = directory.path().join("prepared");
     base(&prepared);
     let source = directory.path().join("message.eml");
-    fs::write(&source, "From: a@example.com\r\nTo: b@example.com\r\nSubject: Hello\r\n\r\nBody\r\n").unwrap();
-    let args = ["repository", "import-email", source.to_str().unwrap(), "-m", "mail", "--operation-id", OPERATION];
+    fs::write(
+        &source,
+        "From: a@example.com\r\nTo: b@example.com\r\nSubject: Hello\r\n\r\nBody\r\n",
+    )
+    .unwrap();
+    let args = [
+        "repository",
+        "import-email",
+        source.to_str().unwrap(),
+        "-m",
+        "mail",
+        "--operation-id",
+        OPERATION,
+    ];
     each_kill(&prepared, &args, |crashed, context| {
         succeeds(crashed, &args, context);
         succeeds(crashed, &["fsck"], context);
@@ -445,11 +578,24 @@ fn save_file_survives_a_kill_at_every_mutation() {
     scenario_with(|root| {
         fs::write(root.join("../source.txt"), "saved\n").unwrap();
         let listed: serde_json::Value = serde_json::from_str(&ok(root, &["item", "list"])).unwrap();
-        let entry = listed["items"].as_array().unwrap().iter().find(|i| i["name"] == "edit.txt");
+        let entry = listed["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["name"] == "edit.txt");
         let item = entry.unwrap()["item_id"].as_str().unwrap().to_string();
-        ["repository", "save-file", &item, "../source.txt", "-m", "save", "--operation-id", OPERATION]
-            .map(str::to_string)
-            .to_vec()
+        [
+            "repository",
+            "save-file",
+            &item,
+            "../source.txt",
+            "-m",
+            "save",
+            "--operation-id",
+            OPERATION,
+        ]
+        .map(str::to_string)
+        .to_vec()
     });
 }
 
@@ -458,7 +604,8 @@ fn save_file_survives_a_kill_at_every_mutation() {
 fn import_email_survives_a_kill_at_every_mutation() {
     scenario(
         |root| {
-            let email = "From: a@example.com\r\nTo: b@example.com\r\nSubject: Hello\r\n\r\nBody\r\n";
+            let email =
+                "From: a@example.com\r\nTo: b@example.com\r\nSubject: Hello\r\n\r\nBody\r\n";
             fs::write(root.join("../message.eml"), email).unwrap();
         },
         &["repository", "import-email", "../message.eml", "-m", "mail"],
@@ -491,9 +638,18 @@ fn chunked_commit_survives_a_kill_at_every_mutation() {
 fn chunked_create_file_survives_a_kill_at_every_mutation() {
     scenario_in("CHUNKED", |root| {
         fs::write(root.join("../source.bin"), chunked_content()).unwrap();
-        ["repository", "create-file", "large.bin", "../source.bin", "-m", "add", "--operation-id", OPERATION]
-            .map(str::to_string)
-            .to_vec()
+        [
+            "repository",
+            "create-file",
+            "large.bin",
+            "../source.bin",
+            "-m",
+            "add",
+            "--operation-id",
+            OPERATION,
+        ]
+        .map(str::to_string)
+        .to_vec()
     });
 }
 
@@ -540,20 +696,38 @@ fn held_pull_survives_a_kill_at_every_mutation() {
             break;
         }
         let context = format!("held pull killed at mutation {point}");
-        assert_eq!(output.status.signal(), Some(SIGKILL), "{context}: {}", String::from_utf8_lossy(&output.stderr));
+        assert_eq!(
+            output.status.signal(),
+            Some(SIGKILL),
+            "{context}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
         let fsck = synck(&held, &["fsck"], None);
-        assert!(fsck.status.success(), "{context}: {}", String::from_utf8_lossy(&fsck.stderr));
+        assert!(
+            fsck.status.success(),
+            "{context}: {}",
+            String::from_utf8_lossy(&fsck.stderr)
+        );
         ok(&held, &["pull"]);
         assert_eq!(tree(&held), expected, "{context}");
-        let status: serde_json::Value = serde_json::from_str(&ok(&held, &["status", "--json"])).unwrap();
+        let status: serde_json::Value =
+            serde_json::from_str(&ok(&held, &["status", "--json"])).unwrap();
         assert_eq!(status["held_commits"], serde_json::json!([]), "{context}");
         assert_eq!(status["conflicts"][0]["path"], "edit.txt", "{context}");
         // Recorded once, whether the kill came before or after the record.
-        let withdrawn: serde_json::Value = serde_json::from_str(&ok(&held, &["withdrawn", "--json"])).unwrap();
-        assert_eq!(withdrawn["withdrawn"].as_array().unwrap().len(), 1, "{context}");
+        let withdrawn: serde_json::Value =
+            serde_json::from_str(&ok(&held, &["withdrawn", "--json"])).unwrap();
+        assert_eq!(
+            withdrawn["withdrawn"].as_array().unwrap().len(),
+            1,
+            "{context}"
+        );
         assert_eq!(withdrawn["withdrawn"][0]["label"], "w1", "{context}");
         point += 1;
     }
-    assert!(point > 5, "the pull reached only {point} mutations, so the interposer is not loaded");
+    assert!(
+        point > 5,
+        "the pull reached only {point} mutations, so the interposer is not loaded"
+    );
     eprintln!("held pull: {} mutations", point - 1);
 }

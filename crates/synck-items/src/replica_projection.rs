@@ -3,11 +3,12 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use synck_vcs::metadata::MetadataRef;
-use synck_vcs::types::{ObjectId, EventProposal, ItemId, ItemRevision, LifecycleState, is_record_type};
+use synck_vcs::types::{
+    EventProposal, ItemId, ItemRevision, LifecycleState, ObjectId, is_record_type,
+};
 
 use crate::metadata::{
-    ITEM_SUBTYPE_STANDARD,
-    ITEM_TREE_HIDDEN_METADATA_KEY, item_color_metadata_from_json,
+    ITEM_SUBTYPE_STANDARD, ITEM_TREE_HIDDEN_METADATA_KEY, item_color_metadata_from_json,
 };
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -77,7 +78,10 @@ pub fn apply_replica_item_event(
             name: create.name.clone().unwrap_or_default(),
             // Records are filed through their link; this is the display
             // folder, not a rewrite of their canonical non-tree parent.
-            parent_folder_id: create.parent_folder_id.clone().or_else(|| create.link.clone()),
+            parent_folder_id: create
+                .parent_folder_id
+                .clone()
+                .or_else(|| create.link.clone()),
             lifecycle_state: LifecycleState::Live,
             metadata_json: serde_json::json!({}),
             color_metadata: None,
@@ -107,7 +111,8 @@ pub fn apply_replica_item_event(
         item.name.clone_from(name);
     }
     if let Some(source) = proposal.merged_from.as_ref() {
-        item.merged_from.retain(|merged| merged.item_id != source.item_id);
+        item.merged_from
+            .retain(|merged| merged.item_id != source.item_id);
         item.merged_from.push(source.clone());
     }
     if let Some(tombstoned) = proposal.set_tombstoned {
@@ -144,7 +149,9 @@ pub fn apply_replica_item_event(
     }
     if proposal.event_type == "CHAT::SET_PROFILE"
         && proposal
-            .set_metadata.as_ref().and_then(synck_vcs::metadata::MetadataRef::value)
+            .set_metadata
+            .as_ref()
+            .and_then(synck_vcs::metadata::MetadataRef::value)
             .and_then(|metadata| metadata.get("chat_kind"))
             .and_then(serde_json::Value::as_str)
             .is_some_and(|kind| kind.eq_ignore_ascii_case("DIRECT"))
@@ -161,16 +168,22 @@ pub fn apply_replica_item_event(
     }
     set_record_title(&mut item, proposal)?;
     if proposal.replaces_content()
-        && let Some(content) = &proposal.set_content {
-            item.content_roles = content.roles().clone();
-        }
+        && let Some(content) = &proposal.set_content
+    {
+        item.content_roles = content.roles().clone();
+    }
     if item.item_type == "FILE"
         && proposal.replaces_content()
-        && let Some(blob_id) = proposal.set_content.as_ref().and_then(|content| content.only("bytes"))
+        && let Some(blob_id) = proposal
+            .set_content
+            .as_ref()
+            .and_then(|content| content.only("bytes"))
     {
         let previous_blob = item.content_blob_id.as_deref();
         let explicit_size = proposal
-            .set_metadata.as_ref().and_then(synck_vcs::metadata::MetadataRef::value)
+            .set_metadata
+            .as_ref()
+            .and_then(synck_vcs::metadata::MetadataRef::value)
             .and_then(|metadata| metadata.get("content"))
             .and_then(|content| content.get("size"))
             .and_then(serde_json::Value::as_i64)
@@ -223,7 +236,6 @@ pub fn resolve_item_date(
     (last_updated_at, "LAST_UPDATED".to_string())
 }
 
-
 const UNAVAILABLE_TITLE: &str = "(unavailable)";
 
 fn item_subtype(metadata: &serde_json::Value) -> Result<String, ReplicaProjectionError> {
@@ -261,7 +273,11 @@ fn set_record_title(
     if !set_title && proposal.event_type != format!("{}::CREATE", item.item_type) {
         return Ok(());
     }
-    if proposal.set_metadata.as_ref().is_some_and(|metadata| metadata.value().is_none()) {
+    if proposal
+        .set_metadata
+        .as_ref()
+        .is_some_and(|metadata| metadata.value().is_none())
+    {
         item.name = UNAVAILABLE_TITLE.to_string();
         if let serde_json::Value::Object(current) = &mut item.metadata_json {
             current.remove("title");
@@ -280,10 +296,14 @@ fn set_record_title(
             }
         }
         Some(_) => {
-            return Err(ReplicaProjectionError::Invalid("a title is nonempty".to_string()));
+            return Err(ReplicaProjectionError::Invalid(
+                "a title is nonempty".to_string(),
+            ));
         }
         None if set_title => {
-            return Err(ReplicaProjectionError::Invalid("SET_TITLE has no title".to_string()));
+            return Err(ReplicaProjectionError::Invalid(
+                "SET_TITLE has no title".to_string(),
+            ));
         }
         None if item.item_type == crate::email::ITEM_TYPE => {
             let subject = metadata
@@ -300,20 +320,30 @@ fn set_record_title(
 
 #[cfg(test)]
 mod tests {
-    use synck_vcs::types::EventContent;
     use super::*;
     use synck_vcs::types::CreateItem;
+    use synck_vcs::types::EventContent;
 
     #[test]
     fn create_and_content_project_exact_navigation_fields() {
         let item_id = ItemId::new();
         let now = Utc::now();
-        let create = EventProposal { set_link: None, merged_from: None,
+        let create = EventProposal {
+            set_link: None,
+            merged_from: None,
             item_id: Some(item_id.clone()),
             event_type: "FILE::CREATE".to_string(),
-            set_metadata: Some(synck_vcs::metadata::MetadataRef::new(serde_json::json!({"subtype":"STANDARD","color_metadata":"blue"})).unwrap()),
+            set_metadata: Some(
+                synck_vcs::metadata::MetadataRef::new(
+                    serde_json::json!({"subtype":"STANDARD","color_metadata":"blue"}),
+                )
+                .unwrap(),
+            ),
             set_content: None,
-            create_item: Some(CreateItem { key: None, link: None, derived_from: None,
+            create_item: Some(CreateItem {
+                key: None,
+                link: None,
+                derived_from: None,
                 item_type: "FILE".to_string(),
                 parent_folder_id: None,
                 name: Some("Report.PDF".to_string()),
@@ -333,8 +363,11 @@ mod tests {
         let mut content = create.clone();
         content.create_item = None;
         content.event_type = "FILE::SET_CONTENT".to_string();
-        content.set_metadata = Some(synck_vcs::metadata::MetadataRef::new(serde_json::json!({"content":{"size":42}})).unwrap());
-        content.set_content = Some(EventContent::bytes(ObjectId::from_digest([0xab;32])));
+        content.set_metadata = Some(
+            synck_vcs::metadata::MetadataRef::new(serde_json::json!({"content":{"size":42}}))
+                .unwrap(),
+        );
+        content.set_content = Some(EventContent::bytes(ObjectId::from_digest([0xab; 32])));
         content.base_seq = Some(1);
         let projected = apply_replica_item_event(Some(created), item_id, 2, &content, now, "actor")
             .expect("project content");
@@ -382,8 +415,7 @@ mod tests {
             "item_id": file, "event_type": "FILE::SET_METADATA", "base_seq": 2,
             "set_content": {"bytes": blob('c')}
         }));
-        let moved =
-            apply_replica_item_event(Some(erased), file, 3, &later, now, "actor").unwrap();
+        let moved = apply_replica_item_event(Some(erased), file, 3, &later, now, "actor").unwrap();
         assert_eq!(moved.content_blob_id, Some(blob('c')));
         assert_eq!(moved.content_item_seq, Some(3));
 
@@ -457,8 +489,8 @@ mod tests {
             "create_item": {"item_type": "EMAIL"}, "set_metadata": {"title": "first"}
         }))
         .unwrap();
-        let created = apply_replica_item_event(None, item_id.clone(), 1, &create, now, "actor")
-            .unwrap();
+        let created =
+            apply_replica_item_event(None, item_id.clone(), 1, &create, now, "actor").unwrap();
         assert_eq!(created.name, "first");
         let mut erased: EventProposal = EventProposal::from_fields(serde_json::json!({
             "item_id": item_id, "event_type": "EMAIL::SET_TITLE", "base_seq": 1,
@@ -475,12 +507,17 @@ mod tests {
     fn direct_chat_profile_is_tree_hidden_without_create_metadata() {
         let item_id = ItemId::new();
         let now = Utc::now();
-        let create = EventProposal { set_link: None, merged_from: None,
+        let create = EventProposal {
+            set_link: None,
+            merged_from: None,
             item_id: None,
             event_type: "CHAT::CREATE".to_string(),
             set_metadata: None,
             set_content: None,
-            create_item: Some(CreateItem { key: None, link: None, derived_from: None,
+            create_item: Some(CreateItem {
+                key: None,
+                link: None,
+                derived_from: None,
                 item_type: "CHAT".to_string(),
                 parent_folder_id: None,
                 name: Some("direct-chat-opaque".to_string()),
@@ -497,10 +534,15 @@ mod tests {
             .expect("project CHAT create");
         assert_eq!(created.metadata_json, serde_json::json!({}));
 
-        let profile = EventProposal { set_link: None, merged_from: None,
+        let profile = EventProposal {
+            set_link: None,
+            merged_from: None,
             item_id: None,
             event_type: "CHAT::SET_PROFILE".to_string(),
-            set_metadata: Some(synck_vcs::metadata::MetadataRef::new(serde_json::json!({"chat_kind": "DIRECT"})).unwrap()),
+            set_metadata: Some(
+                synck_vcs::metadata::MetadataRef::new(serde_json::json!({"chat_kind": "DIRECT"}))
+                    .unwrap(),
+            ),
             set_content: None,
             create_item: None,
             set_parent: None,

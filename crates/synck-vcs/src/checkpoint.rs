@@ -10,11 +10,7 @@ pub const REPOSITORY_FORMAT: u32 = 7;
 
 /// The predecessor of the first checkpoint, not a stored checkpoint itself.
 /// It names one history of one repository, so no chain validates anywhere else.
-pub fn genesis(
-    repo_id: &RepoId,
-    generation: &str,
-    encrypted: bool,
-) -> Result<[u8; 32], CoreError> {
+pub fn genesis(repo_id: &RepoId, generation: &str, encrypted: bool) -> Result<[u8; 32], CoreError> {
     let raw = |value: &str| {
         uuid::Uuid::parse_str(value)
             .map(uuid::Uuid::into_bytes)

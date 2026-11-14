@@ -63,7 +63,9 @@ fn replay(vector: &serde_json::Value, encrypted: bool) {
                 let seq = item_seq.entry(item_id.clone()).or_default();
                 *seq += 1;
                 let previous = parents.get(&item_id).cloned().flatten();
-                let before = previous.clone().filter(|_| event.get("set_parent").is_some());
+                let before = previous
+                    .clone()
+                    .filter(|_| event.get("set_parent").is_some());
                 let after = match (event.get("create_item"), event.get("set_parent")) {
                     (Some(create), _) => create["parent_folder_id"]
                         .as_str()
@@ -106,8 +108,10 @@ fn replay(vector: &serde_json::Value, encrypted: bool) {
             let events_digest = if position == 0 {
                 empty_commit_events_digest(index as i64 + 1)
             } else {
-                Sha256Digest::parse(sha256_prefixed_hex_from_digest_bytes(hasher.finalize().into()))
-                    .unwrap()
+                Sha256Digest::parse(sha256_prefixed_hex_from_digest_bytes(
+                    hasher.finalize().into(),
+                ))
+                .unwrap()
             };
             let author = "author".to_string();
             let message = commit["message"].as_str().map(str::to_string);
@@ -141,7 +145,11 @@ fn replay(vector: &serde_json::Value, encrypted: bool) {
                     .chain(ref_events.iter().map(VerifyCommitEvent::Ref)),
             );
             let valid = commit["valid"].as_bool().unwrap();
-            assert_eq!(findings.is_empty(), valid, "{name} commit {index}: {findings:?}");
+            assert_eq!(
+                findings.is_empty(),
+                valid,
+                "{name} commit {index}: {findings:?}"
+            );
             if !valid {
                 break;
             }

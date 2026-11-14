@@ -37,7 +37,9 @@ impl Proxy {
             for client in listener.incoming() {
                 let Ok(client) = client else { continue };
                 // A stopped server is a refused connection, as it would be.
-                let Ok(server) = TcpStream::connect(upstream) else { continue };
+                let Ok(server) = TcpStream::connect(upstream) else {
+                    continue;
+                };
                 let mute = Arc::new(AtomicBool::new(false));
                 let (armed, request_mute) = (armed_all.clone(), mute.clone());
                 let (from, to) = (client.try_clone().unwrap(), server.try_clone().unwrap());
@@ -69,7 +71,11 @@ impl Proxy {
                 });
             }
         });
-        Self { address, armed, swallowed }
+        Self {
+            address,
+            armed,
+            swallowed,
+        }
     }
 
     /// Swallow the response to the request after `pass` matching ones.
@@ -116,7 +122,9 @@ fn kill(mut child: Child) {
 }
 
 fn held(directory: &Path, token: &str) -> usize {
-    json(directory, token, &["status"])["held_commits"].as_array().map_or(0, Vec::len)
+    json(directory, token, &["status"])["held_commits"]
+        .as_array()
+        .map_or(0, Vec::len)
 }
 
 fn read(path: impl AsRef<Path>) -> String {
@@ -154,16 +162,27 @@ async fn clones_commit_different_items_and_meet_over_one() {
     std::fs::write(laptop.join("brief.txt"), "the laptop's draft\n").unwrap();
     ok(&laptop, token, &["commit", "-m", "Laptop draft"]);
     std::fs::write(phone.join("brief.txt"), "the phone's draft\n").unwrap();
-    assert_eq!(error_kind(&phone, token, &["commit", "-m", "Phone draft"]), "CONFLICT");
+    assert_eq!(
+        error_kind(&phone, token, &["commit", "-m", "Phone draft"]),
+        "CONFLICT"
+    );
     ok(&phone, token, &["pull"]);
     assert!(read(phone.join("brief.txt")).contains("<<<<<<< ours"));
-    assert!(!json(&phone, token, &["status"])["conflicts"].as_array().unwrap().is_empty());
+    assert!(
+        !json(&phone, token, &["status"])["conflicts"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
     std::fs::write(phone.join("brief.txt"), "both drafts, merged\n").unwrap();
     ok(&phone, token, &["resolve", "brief.txt"]);
     ok(&phone, token, &["commit", "-m", "Merge the drafts"]);
     assert_eq!(held(&phone, token), 0);
     ok(&fixture.origin, "", &["pull"]);
-    assert_eq!(read(fixture.origin.join("brief.txt")), "both drafts, merged\n");
+    assert_eq!(
+        read(fixture.origin.join("brief.txt")),
+        "both drafts, merged\n"
+    );
 
     // A held commit to an item the server changed since: push merges it
     // back into the working files and sends nothing until it is committed.
@@ -181,7 +200,10 @@ async fn clones_commit_different_items_and_meet_over_one() {
     ok(&draft, token, &["commit", "-m", "Merge the held draft"]);
     ok(&draft, token, &["push"]);
     ok(&fixture.origin, "", &["pull"]);
-    assert_eq!(read(fixture.origin.join("brief.txt")), "merged with the held draft\n");
+    assert_eq!(
+        read(fixture.origin.join("brief.txt")),
+        "merged with the held draft\n"
+    );
     ok(&draft, token, &["fsck"]);
 }
 
@@ -190,7 +212,9 @@ async fn an_upload_resumes_after_the_server_restarts() {
     let mut fixture = fixture().await;
     let address = fixture.address();
     let proxy = Proxy::start(address);
-    fixture.url = fixture.url.replace(&address.to_string(), &proxy.address.to_string());
+    fixture.url = fixture
+        .url
+        .replace(&address.to_string(), &proxy.address.to_string());
     let token = fixture.writer.clone();
     let laptop = fixture.clone("laptop", true);
     // A folder and 513 files: two pages, at offsets 0 and 512.
@@ -219,7 +243,12 @@ async fn an_upload_resumes_after_the_server_restarts() {
     assert_eq!(held(&laptop, &token), 0);
     assert_eq!(staged(), 0);
     ok(&fixture.origin, "", &["pull"]);
-    assert_eq!(std::fs::read_dir(fixture.origin.join("notes")).unwrap().count(), 513);
+    assert_eq!(
+        std::fs::read_dir(fixture.origin.join("notes"))
+            .unwrap()
+            .count(),
+        513
+    );
     ok(&fixture.origin, "", &["fsck"]);
 }
 
@@ -227,7 +256,9 @@ async fn an_upload_resumes_after_the_server_restarts() {
 async fn a_client_killed_before_its_receipt_finds_its_commit_accepted() {
     let mut fixture = fixture().await;
     let proxy = Proxy::start(fixture.address());
-    fixture.url = fixture.url.replace(&fixture.address().to_string(), &proxy.address.to_string());
+    fixture.url = fixture
+        .url
+        .replace(&fixture.address().to_string(), &proxy.address.to_string());
     let token = fixture.writer.clone();
     let phone = fixture.clone("phone", true);
     std::fs::write(phone.join("brief.txt"), "second draft\n").unwrap();

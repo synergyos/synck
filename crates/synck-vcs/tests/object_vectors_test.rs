@@ -1,13 +1,16 @@
 use sha2::{Digest, Sha256};
 use synck_vcs::object::{
     ENCRYPTED_PREFIX, EncryptedFrame, EncryptedFrameCheck, Form, HEADER_BYTES, Header, Object,
-    PREFIX, content_form, encrypted_aad, plain_id, segmented_plaintext_len,
-    verify_encrypted_frame, verify_stored,
+    PREFIX, content_form, encrypted_aad, plain_id, segmented_plaintext_len, verify_encrypted_frame,
+    verify_stored,
 };
 use synck_vcs::types::{ItemId, ObjectId, RepoId};
 
 fn vectors(name: &str) -> Vec<serde_json::Value> {
-    let path = format!("{}/../../docs/spec/vectors/{name}", env!("CARGO_MANIFEST_DIR"));
+    let path = format!(
+        "{}/../../docs/spec/vectors/{name}",
+        env!("CARGO_MANIFEST_DIR")
+    );
     serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
 }
 
@@ -22,7 +25,11 @@ fn external_object_vectors() {
             "SALTED" => Form::Salted,
             other => panic!("{name}: unknown form {other}"),
         };
-        assert_eq!(ObjectId::from_digest(Sha256::digest(&payload).into()), id, "{name}");
+        assert_eq!(
+            ObjectId::from_digest(Sha256::digest(&payload).into()),
+            id,
+            "{name}"
+        );
         let result = verify_stored(&id, form, &payload);
         assert_eq!(result.is_ok(), vector["valid"].as_bool().unwrap(), "{name}");
         if result.is_err() {
@@ -53,7 +60,11 @@ fn external_encrypted_frame_and_aad_vectors() {
         let name = vector["name"].as_str().unwrap();
         let stored = hex::decode(vector["payload_hex"].as_str().unwrap()).unwrap();
         let id = ObjectId::parse(vector["id"].as_str().unwrap()).unwrap();
-        assert_eq!(ObjectId::from_digest(Sha256::digest(&stored).into()), id, "{name}");
+        assert_eq!(
+            ObjectId::from_digest(Sha256::digest(&stored).into()),
+            id,
+            "{name}"
+        );
         assert_eq!(
             verify_encrypted_frame(&stored).is_ok(),
             vector["frame_valid"].as_bool().unwrap(),
@@ -82,8 +93,7 @@ fn segmented_frames_check_from_their_length() {
         "{}/../../docs/spec/vectors/encrypted-segments.json",
         env!("CARGO_MANIFEST_DIR")
     );
-    let vectors: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    let vectors: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
     let mut header = ENCRYPTED_PREFIX.to_vec();
     header.extend_from_slice(&2u16.to_be_bytes());
     header.extend_from_slice(&1u64.to_be_bytes());

@@ -16,9 +16,8 @@ use synck_vcs::repo::Repo;
 use synck_vcs::state::catch_up_state_index;
 use synck_vcs::storage::{SealedCommitInsert, Storage, StorageBackend, StorageTxn};
 use synck_vcs::types::{
-    parse_hashed_time,
     CommitId, CommitPk, EventInsertRow, ItemId, ItemRow, RefEventInsertRow, RepoId, Sha256Digest,
-    Timestamp, sha256_prefixed_hex_from_digest_bytes,
+    Timestamp, parse_hashed_time, sha256_prefixed_hex_from_digest_bytes,
 };
 use synck_vcs::verify::{
     SemanticVerifier, VerifyCommit, VerifyCommitEvent, VerifyEvent, VerifyItem, VerifyRefEvent,
@@ -309,21 +308,33 @@ async fn install(
     while let Some(record) = reader.read_record()? {
         match record {
             BundleRecord::Metadata(record) => {
-                if last_repo_seq.is_some() || items_started || domains_started || pending.is_some() {
+                if last_repo_seq.is_some() || items_started || domains_started || pending.is_some()
+                {
                     return Err("metadata objects must precede history".into());
                 }
                 if !metadata_ids.insert(record.object_id.clone()) {
                     return Err("duplicate metadata object".into());
                 }
-                if !record.payload_hex.bytes().all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f')) {
+                if !record
+                    .payload_hex
+                    .bytes()
+                    .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+                {
                     return Err("invalid metadata payload hex".into());
                 }
                 let bytes = hex::decode(record.payload_hex).map_err(detail)?;
                 if bytes.starts_with(synck_vcs::object::ENCRYPTED_PREFIX) != header.encrypted() {
                     return Err("metadata object has the wrong form for this repository".into());
                 }
-                synck_vcs::metadata::Metadata::verify_any(&record.object_id, bytes.clone()).map_err(detail)?;
-                crate::metadata::insert_payload(txn.conn().map_err(detail)?, repo_id, &record.object_id, &bytes).map_err(detail)?;
+                synck_vcs::metadata::Metadata::verify_any(&record.object_id, bytes.clone())
+                    .map_err(detail)?;
+                crate::metadata::insert_payload(
+                    txn.conn().map_err(detail)?,
+                    repo_id,
+                    &record.object_id,
+                    &bytes,
+                )
+                .map_err(detail)?;
             }
             BundleRecord::Commit(record) => {
                 if items_started || domains_started || pending.is_some() {

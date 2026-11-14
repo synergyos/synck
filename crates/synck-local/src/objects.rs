@@ -48,7 +48,10 @@ impl Repository {
     pub async fn gc(&self) -> Result<GcReport> {
         self.recover_current().await?;
         let expired_withdrawn = self.expire_withdrawn().await?;
-        Ok(GcReport { expired_withdrawn, ..self.portable_view()?.gc().await? })
+        Ok(GcReport {
+            expired_withdrawn,
+            ..self.portable_view()?.gc().await?
+        })
     }
 
     #[cfg(test)]
@@ -94,7 +97,9 @@ impl Repository {
     pub(crate) fn checkpoint_commit_objects(&self) -> Result<()> {
         match self.storage_mode() {
             StorageMode::Chunked => self.object_store().checkpoint(),
-            StorageMode::WholeFile => crate::repository::sync_directory(&self.store_path().join("objects")),
+            StorageMode::WholeFile => {
+                crate::repository::sync_directory(&self.store_path().join("objects"))
+            }
         }
     }
 
@@ -122,21 +127,37 @@ impl Repository {
         let identity = metadata_identity(&before, display)?;
 
         let regions = if let Some(kind) = OoxmlKind::from_path(relative) {
-            chunk_region_lengths(source.try_clone().at("open", display)?.into_std(), expected_size, kind)
-        } else { None };
+            chunk_region_lengths(
+                source.try_clone().at("open", display)?.into_std(),
+                expected_size,
+                kind,
+            )
+        } else {
+            None
+        };
         let mut source = source;
         std::io::Seek::rewind(&mut source).at("rewind capture source", display)?;
         let store = self.object_store();
-        let captured = crate::raw_object::capture(source, expected_size, regions,
+        let captured = crate::raw_object::capture(
+            source,
+            expected_size,
+            regions,
             &self.store_path().join("objects"),
             &self.store_path().join("tmp"),
-            (self.storage_mode() == StorageMode::Chunked).then_some(&store), checkpoint_chunk_store, base)?;
+            (self.storage_mode() == StorageMode::Chunked).then_some(&store),
+            checkpoint_chunk_store,
+            base,
+        )?;
         let after = root.symlink_metadata(relative).at("inspect", display)?;
-        if !after.file_type().is_file() || is_cap_link_or_reparse(&after)
+        if !after.file_type().is_file()
+            || is_cap_link_or_reparse(&after)
             || identity != metadata_identity(&after, display)?
-            || captured.plain_digest != expected_digest || captured.size != expected_size
+            || captured.plain_digest != expected_digest
+            || captured.size != expected_size
         {
-            return Err(LocalError::Invalid(format!("file changed while being captured: {display}")));
+            return Err(LocalError::Invalid(format!(
+                "file changed while being captured: {display}"
+            )));
         }
         Ok(captured.id)
     }
@@ -145,9 +166,16 @@ impl Repository {
         self.copy_blob(blob_id, size, &mut std::io::sink())
     }
 
-    pub(crate) fn copy_blob<W: Write>(&self, blob_id: &ObjectId, size: u64, target: &mut W) -> Result<()> {
+    pub(crate) fn copy_blob<W: Write>(
+        &self,
+        blob_id: &ObjectId,
+        size: u64,
+        target: &mut W,
+    ) -> Result<()> {
         let actual = self.portable_view()?.copy_blob(blob_id, target)?;
-        if actual != size { return Err(LocalError::Integrity("decoded object size mismatch".into())); }
+        if actual != size {
+            return Err(LocalError::Integrity("decoded object size mismatch".into()));
+        }
         Ok(())
     }
 
@@ -166,7 +194,12 @@ pub(crate) enum BlobReader<'a> {
 }
 
 impl BlobReader<'_> {
-    pub(crate) fn copy_blob<W: Write>(&self, blob_id: &ObjectId, size: u64, target: &mut W) -> Result<()> {
+    pub(crate) fn copy_blob<W: Write>(
+        &self,
+        blob_id: &ObjectId,
+        size: u64,
+        target: &mut W,
+    ) -> Result<()> {
         match self {
             Self::Chunked(reader) => reader.copy_blob(blob_id, size, target),
             Self::WholeFile(repository) => repository.copy_blob(blob_id, size, target),
@@ -220,12 +253,25 @@ pub(crate) fn verify_object_file(path: &Path, expected_digest: &str, size: u64) 
 }
 
 pub(crate) struct PlainDigest(pub(crate) Sha256);
-impl Default for PlainDigest { fn default() -> Self { Self(Sha256::new()) } }
-impl Write for PlainDigest {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> { self.0.update(bytes); Ok(bytes.len()) }
-    fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+impl Default for PlainDigest {
+    fn default() -> Self {
+        Self(Sha256::new())
+    }
 }
-impl PlainDigest { pub(crate) fn finish(self) -> String { hex::encode(self.0.finalize()) } }
+impl Write for PlainDigest {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.update(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+impl PlainDigest {
+    pub(crate) fn finish(self) -> String {
+        hex::encode(self.0.finalize())
+    }
+}
 
 impl Repository {
     /// A FILE's content object holds its plain bytes, so its ID is their SHA-256:
@@ -240,11 +286,11 @@ impl Repository {
 
 #[cfg(test)]
 mod tests {
-    use std::fs::File;
-    use uuid::Uuid;
     use super::*;
     use fastcdc::v2020::{FastCDC, Normalization};
+    use std::fs::File;
     use synck_vcs::types::CommitProposal;
+    use uuid::Uuid;
 
     use crate::chunk_store::{AVG_CHUNK, MAX_CHUNK, MIN_CHUNK};
 
@@ -332,14 +378,13 @@ mod tests {
                 )
                 .unwrap();
 
-            assert_eq!(mapping_digests(&repository, &id.as_bytes()), expected, "{name}");
+            assert_eq!(
+                mapping_digests(&repository, &id.as_bytes()),
+                expected,
+                "{name}"
+            );
             differs_from_generic |= expected != generic;
-            repository
-                .verify_blob(
-                    &id,
-                    bytes.len() as u64,
-                )
-                .unwrap();
+            repository.verify_blob(&id, bytes.len() as u64).unwrap();
         }
         assert!(differs_from_generic);
     }
@@ -550,6 +595,4 @@ mod tests {
             0
         );
     }
-
-
 }

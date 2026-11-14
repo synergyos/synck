@@ -120,7 +120,10 @@ impl ItemReader {
             }
         }
         for row in state.subitems {
-            for position in [&row.created_position, &row.latest_position].into_iter().chain(row.content_position.as_ref()) {
+            for position in [&row.created_position, &row.latest_position]
+                .into_iter()
+                .chain(row.content_position.as_ref())
+            {
                 let limit = match position.ledger {
                     HistoryLedger::Item => latest,
                     HistoryLedger::Ref => state.ref_seq,

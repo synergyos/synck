@@ -12,8 +12,8 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use rusqlite::{Connection, OpenFlags, params};
-use synck_vcs_sqlite::open_connection;
 use serde::Serialize;
+use synck_vcs_sqlite::open_connection;
 use uuid::Uuid;
 
 use crate::error::{IoContext, LocalError, Result};
@@ -293,16 +293,17 @@ pub(crate) fn guard(
     // Supplying credentials opts into reserved writes. Never silently fall back
     // to an unreserved write after a path was released or a token was lost.
     if !tokens.is_empty()
-        && let Some(paths) = paths {
-            for path in paths {
-                if !records
-                    .iter()
-                    .any(|r| tokens.contains(&r.token) && covers(&r.key, &path))
-                {
-                    return Err(LocalError::LockLost);
-                }
+        && let Some(paths) = paths
+    {
+        for path in paths {
+            if !records
+                .iter()
+                .any(|r| tokens.contains(&r.token) && covers(&r.key, &path))
+            {
+                return Err(LocalError::LockLost);
             }
         }
+    }
     Ok(())
 }
 
@@ -326,7 +327,9 @@ fn request_keys(paths: &[String], owner: &str, ttl: u64) -> Result<Vec<String>> 
 /// Whether any reservation exists, live or expired.
 pub(crate) fn any(metadata: &Path, repo_id: &str) -> Result<bool> {
     Ok(match open(metadata, repo_id, false)? {
-        Some(db) => db.query_row("SELECT EXISTS(SELECT 1 FROM reservations)", [], |r| r.get(0))?,
+        Some(db) => db.query_row("SELECT EXISTS(SELECT 1 FROM reservations)", [], |r| {
+            r.get(0)
+        })?,
         None => false,
     })
 }

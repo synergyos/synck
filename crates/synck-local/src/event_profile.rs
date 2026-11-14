@@ -5,10 +5,8 @@ use std::collections::HashMap;
 
 #[cfg(test)]
 use synck_file_folder::project_commit;
-use synck_file_folder::{ImmutableItemKind, validate_projected_proposal, project_commit_events};
-use synck_vcs::types::{
-    ObjectId, CommitEventRow, CommitRow, EventProposal, EventRow, ItemId,
-};
+use synck_file_folder::{ImmutableItemKind, project_commit_events, validate_projected_proposal};
+use synck_vcs::types::{CommitEventRow, CommitRow, EventProposal, EventRow, ItemId, ObjectId};
 
 pub(crate) enum LocalEvent {
     Create {
@@ -95,7 +93,10 @@ pub(crate) fn classify_commit(
             .or_else(|| created_types.get(&row.item_id).map(String::as_str))
             .or_else(|| item_kinds.get(&row.item_id).map(String::as_str))
             .ok_or_else(|| format!("missing immutable item kind for {}", row.item_id))?;
-        return Err(format!("unsupported local event {} targeting {item_type}", original.event_type));
+        return Err(format!(
+            "unsupported local event {} targeting {item_type}",
+            original.event_type
+        ));
     }
     if !visible.is_empty() {
         return Err("projected FILE/FOLDER changes do not match commit events".to_string());
@@ -136,7 +137,8 @@ fn decode_events(events: &[EventRow]) -> std::result::Result<Vec<EventProposal>,
     events
         .iter()
         .map(|event| {
-            event.proposal()
+            event
+                .proposal()
                 .map_err(|error| format!("invalid canonical event payload: {error}"))
         })
         .collect()
@@ -230,7 +232,10 @@ fn classify_projected_event(event: &EventProposal) -> std::result::Result<LocalE
         _ => return Err(format!("unsupported projected event {}", event.event_type)),
     };
     match event.event_type.as_str() {
-        "FOLDER::CREATE" => Ok(LocalEvent::Create { item_type, content: None }),
+        "FOLDER::CREATE" => Ok(LocalEvent::Create {
+            item_type,
+            content: None,
+        }),
         "FILE::CREATE" => Ok(LocalEvent::Create {
             item_type,
             content: Some(parse_content(event)?),
@@ -260,14 +265,18 @@ fn classify_projected_event(event: &EventProposal) -> std::result::Result<LocalE
 }
 
 pub(crate) fn parse_content(event: &EventProposal) -> std::result::Result<(ObjectId, i64), String> {
-    let blob_id = match event.set_content.as_ref().and_then(|content| content.only("bytes")) {
-        Some(blob_id) => {
-            ObjectId::parse(blob_id.as_str()).map_err(|error| error.to_string())?
-        }
+    let blob_id = match event
+        .set_content
+        .as_ref()
+        .and_then(|content| content.only("bytes"))
+    {
+        Some(blob_id) => ObjectId::parse(blob_id.as_str()).map_err(|error| error.to_string())?,
         _ => return Err("file content event has no blob".to_string()),
     };
     let content = event
-        .set_metadata.as_ref().and_then(synck_vcs::metadata::MetadataRef::value)
+        .set_metadata
+        .as_ref()
+        .and_then(synck_vcs::metadata::MetadataRef::value)
         .and_then(|value| value.as_object())
         .and_then(|object| object.get("content"))
         .and_then(|value| value.as_object())

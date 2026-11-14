@@ -1295,13 +1295,15 @@ fn generate_rfc822(
         push_header(&mut out, "Subject", value)?;
     }
     if let Some(value) = message.from.as_ref()
-        && let Some(value) = format_address(value) {
-            push_header(&mut out, "From", value.as_str())?;
-        }
+        && let Some(value) = format_address(value)
+    {
+        push_header(&mut out, "From", value.as_str())?;
+    }
     if let Some(value) = message.sender.as_ref()
-        && let Some(value) = format_address(value) {
-            push_header(&mut out, "Sender", value.as_str())?;
-        }
+        && let Some(value) = format_address(value)
+    {
+        push_header(&mut out, "Sender", value.as_str())?;
+    }
     push_address_list_header(&mut out, "Reply-To", &message.reply_to)?;
     push_address_list_header(&mut out, "To", &message.to)?;
     push_address_list_header(&mut out, "Cc", &message.cc)?;

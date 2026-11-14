@@ -9,15 +9,18 @@ use synck_file_folder::{
     project_proposal_events, validate_and_materialize, validate_projected_proposal,
 };
 use synck_vcs::types::{
-    ObjectId, COMMIT_FORMAT_VERSION, CommitId, CommitRow, EventContent, EventProposal, EventRow,
-    ItemId, RepoId, Sha256Digest, canonical_commit_bytes_for_hash, canonical_event_proposal_bytes,
-    compute_commit_id, compute_sha256_digest_bytes, sha256_prefixed_hex_from_digest_bytes,
+    COMMIT_FORMAT_VERSION, CommitId, CommitRow, EventContent, EventProposal, EventRow, ItemId,
+    ObjectId, RepoId, Sha256Digest, canonical_commit_bytes_for_hash,
+    canonical_event_proposal_bytes, compute_commit_id, compute_sha256_digest_bytes,
+    sha256_prefixed_hex_from_digest_bytes,
 };
 
 const INTENTS_FIXTURE: &str = include_str!("../../../docs/spec/vectors/file-folder/intents.json");
 const EVENTS_FIXTURE: &str = include_str!("../../../docs/spec/vectors/file-folder/events.json");
-const GROUPS_FIXTURE: &str = include_str!("../../../docs/spec/vectors/file-folder/change_groups.json");
-const CONFORMANCE_FIXTURE: &str = include_str!("../../../docs/spec/vectors/file-folder/conformance.json");
+const GROUPS_FIXTURE: &str =
+    include_str!("../../../docs/spec/vectors/file-folder/change_groups.json");
+const CONFORMANCE_FIXTURE: &str =
+    include_str!("../../../docs/spec/vectors/file-folder/conformance.json");
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -77,7 +80,9 @@ fn current(
 }
 
 fn event(item_id: ItemId, event_type: &str, base_seq: Option<i64>) -> EventProposal {
-    EventProposal { set_link: None, merged_from: None,
+    EventProposal {
+        set_link: None,
+        merged_from: None,
         item_id: Some(item_id),
         event_type: event_type.to_string(),
         set_metadata: None,
@@ -185,14 +190,19 @@ fn top_level_permutations_have_identical_operation_ids_and_event_fields() {
     assert_eq!(first_output.operation_id, second_output.operation_id);
     // Salts identify each materialization; the logical operation stays stable.
     let fields = |events: &[EventProposal]| -> Value {
-        Value::Array(events.iter().map(|event| {
-            let mut value = serde_json::to_value(event).unwrap();
-            if let Some(metadata) = &event.set_metadata {
-                value.as_object_mut().unwrap().remove("metadata_id");
-                value["set_metadata"] = metadata.value().unwrap().clone();
-            }
-            value
-        }).collect())
+        Value::Array(
+            events
+                .iter()
+                .map(|event| {
+                    let mut value = serde_json::to_value(event).unwrap();
+                    if let Some(metadata) = &event.set_metadata {
+                        value.as_object_mut().unwrap().remove("metadata_id");
+                        value["set_metadata"] = metadata.value().unwrap().clone();
+                    }
+                    value
+                })
+                .collect(),
+        )
     };
     assert_eq!(fields(&first_output.events), fields(&second_output.events));
     let expected: Value = serde_json::from_str(EVENTS_FIXTURE).unwrap();
@@ -882,7 +892,9 @@ fn lifecycle_rejects_mismatch_and_overlap_without_an_aggregate_size_cap() {
     };
     assert_eq!(
         validate_and_materialize(&repo_id(), &aggregate, &overflow_rows)
-            .unwrap().events.len(),
+            .unwrap()
+            .events
+            .len(),
         10_002
     );
     let overflow_child = item(10_099);
@@ -915,7 +927,9 @@ fn lifecycle_rejects_mismatch_and_overlap_without_an_aggregate_size_cap() {
     };
     assert_eq!(
         validate_and_materialize(&repo_id(), &oversized, &overflow_rows)
-            .unwrap().events.len(),
+            .unwrap()
+            .events
+            .len(),
         10_001
     );
 }
@@ -1015,17 +1029,27 @@ fn projector_preserves_visible_changes_and_profile_heads_only() {
     let file_id = item(1);
     let record_id = item(2);
     let mut create = event(file_id.clone(), "FILE::CREATE", None);
-    create.create_item = Some(synck_vcs::types::CreateItem { key: None, link: None, derived_from: None,
+    create.create_item = Some(synck_vcs::types::CreateItem {
+        key: None,
+        link: None,
+        derived_from: None,
         item_type: "FILE".to_string(),
         parent_folder_id: None,
         name: Some("file.txt".to_string()),
     });
     create.set_content = Some(EventContent::bytes(ObjectId::parse(digest('2')).unwrap()));
-    create.set_metadata = Some(synck_vcs::metadata::MetadataRef::new(json!({"content": {"size": 1}, "product": "kept with the first bytes"})).unwrap());
+    create.set_metadata = Some(
+        synck_vcs::metadata::MetadataRef::new(
+            json!({"content": {"size": 1}, "product": "kept with the first bytes"}),
+        )
+        .unwrap(),
+    );
     let mut omitted = event(file_id.clone(), "ITEM::DATA_LINK::PUT", None);
-    omitted.set_metadata = Some(synck_vcs::metadata::MetadataRef::new(json!({"record_id": "r"})).unwrap());
+    omitted.set_metadata =
+        Some(synck_vcs::metadata::MetadataRef::new(json!({"record_id": "r"})).unwrap());
     let mut out_of_profile = event(record_id.clone(), "ITEM::DATA_LINK::PUT", Some(1));
-    out_of_profile.set_metadata = Some(synck_vcs::metadata::MetadataRef::new(json!({"record_id": "r"})).unwrap());
+    out_of_profile.set_metadata =
+        Some(synck_vcs::metadata::MetadataRef::new(json!({"record_id": "r"})).unwrap());
     let (commit, rows) = accepted_commit(vec![create, omitted, out_of_profile], Some("mixed"));
     let group = project_commit(
         &commit,
@@ -1039,7 +1063,10 @@ fn projector_preserves_visible_changes_and_profile_heads_only() {
     .unwrap();
     assert_eq!(group.changes.len(), 1);
     let metadata = group.changes[0].event.set_metadata.as_ref().unwrap();
-    assert_eq!(metadata.get("product"), Some(&json!("kept with the first bytes")));
+    assert_eq!(
+        metadata.get("product"),
+        Some(&json!("kept with the first bytes"))
+    );
     assert_eq!(group.item_heads.len(), 1);
     assert_eq!(group.item_heads[0].head_seq, 2);
     let mut fixture: Value = serde_json::from_str(GROUPS_FIXTURE).unwrap();
@@ -1057,9 +1084,11 @@ fn projector_emits_head_only_groups_omits_out_of_profile_commits_and_keeps_tombs
     let folder_id = item(2);
     let record_id = item(3);
     let mut file_metadata = event(file_id.clone(), "FILE::SET_METADATA", Some(4));
-    file_metadata.set_metadata = Some(synck_vcs::metadata::MetadataRef::new(json!({"label": "x"})).unwrap());
+    file_metadata.set_metadata =
+        Some(synck_vcs::metadata::MetadataRef::new(json!({"label": "x"})).unwrap());
     let mut folder_link = event(folder_id.clone(), "ITEM::DATA_LINK::PUT", Some(7));
-    folder_link.set_metadata = Some(synck_vcs::metadata::MetadataRef::new(json!({"record_id": "r"})).unwrap());
+    folder_link.set_metadata =
+        Some(synck_vcs::metadata::MetadataRef::new(json!({"record_id": "r"})).unwrap());
     let (commit, rows) = accepted_commit(vec![file_metadata, folder_link], None);
     let group = project_commit(
         &commit,
@@ -1087,7 +1116,8 @@ fn projector_emits_head_only_groups_omits_out_of_profile_commits_and_keeps_tombs
     );
 
     let mut record_event = event(record_id.clone(), "ITEM::DATA_LINK::PUT", Some(2));
-    record_event.set_metadata = Some(synck_vcs::metadata::MetadataRef::new(json!({"record_id": "r"})).unwrap());
+    record_event.set_metadata =
+        Some(synck_vcs::metadata::MetadataRef::new(json!({"record_id": "r"})).unwrap());
     let (commit, rows) = accepted_commit(vec![record_event], None);
     assert!(
         project_commit(
@@ -1123,13 +1153,17 @@ fn projector_emits_head_only_groups_omits_out_of_profile_commits_and_keeps_tombs
 fn projector_omits_an_out_of_profile_item_created_and_mutated_in_one_commit() {
     let record_id = item(3);
     let mut create = event(record_id.clone(), "RECORD::CREATE", None);
-    create.create_item = Some(synck_vcs::types::CreateItem { key: None, link: None, derived_from: None,
+    create.create_item = Some(synck_vcs::types::CreateItem {
+        key: None,
+        link: None,
+        derived_from: None,
         item_type: "RECORD".to_string(),
         parent_folder_id: None,
         name: Some("record".to_string()),
     });
     let mut mutation = event(record_id, "RECORD::SET_METADATA", None);
-    mutation.set_metadata = Some(synck_vcs::metadata::MetadataRef::new(json!({"field": "value"})).unwrap());
+    mutation.set_metadata =
+        Some(synck_vcs::metadata::MetadataRef::new(json!({"field": "value"})).unwrap());
     let proposals = vec![create, mutation];
     validate_projected_proposal(None, &proposals, &[]).unwrap();
     let (commit, rows) = accepted_commit(proposals, None);
@@ -1190,18 +1224,23 @@ fn existing_item_can_move_into_a_folder_created_by_the_same_proposal() {
 fn projector_preserves_metadata_identity_and_rejects_unknown_keys() {
     let file_id = item(1);
     let mut content = event(file_id.clone(), "FILE::SET_CONTENT", Some(4));
-    content.set_content = Some(EventContent::bytes(synck_vcs::types::ObjectId::parse(digest('a')).unwrap()));
-    content.set_metadata = Some(synck_vcs::metadata::MetadataRef::new(json!({
-        "content": {"size": 7},
-        "upload_intent_id": "intent",
-        "revision_origin": "LOCAL",
-        "provenance": {
-            "source": "DESKTOP",
-            "committed_by": "actor",
-            "human_editor_ids": ["human"],
-            "primary_human_editor_id": "human"
-        }
-    })).unwrap());
+    content.set_content = Some(EventContent::bytes(
+        synck_vcs::types::ObjectId::parse(digest('a')).unwrap(),
+    ));
+    content.set_metadata = Some(
+        synck_vcs::metadata::MetadataRef::new(json!({
+            "content": {"size": 7},
+            "upload_intent_id": "intent",
+            "revision_origin": "LOCAL",
+            "provenance": {
+                "source": "DESKTOP",
+                "committed_by": "actor",
+                "human_editor_ids": ["human"],
+                "primary_human_editor_id": "human"
+            }
+        }))
+        .unwrap(),
+    );
     let kinds = [ImmutableItemKind {
         item_id: file_id.clone(),
         item_type: "FILE".to_string(),
@@ -1219,7 +1258,13 @@ fn projector_preserves_metadata_identity_and_rejects_unknown_keys() {
         content.set_metadata.as_ref().unwrap().id()
     );
 
-    let mut metadata = content.set_metadata.as_ref().unwrap().value().unwrap().clone();
+    let mut metadata = content
+        .set_metadata
+        .as_ref()
+        .unwrap()
+        .value()
+        .unwrap()
+        .clone();
     metadata["unknown"] = Value::Bool(true);
     content.set_metadata = Some(synck_vcs::metadata::MetadataRef::new(metadata).unwrap());
     assert_eq!(
@@ -1251,14 +1296,16 @@ fn projector_accepts_only_the_deployed_product_omission_shapes() {
         "ITEM::DATA_LINK::DELETE",
     ] {
         let mut proposal = event(file_id.clone(), event_type, Some(3));
-        proposal.set_metadata = Some(synck_vcs::metadata::MetadataRef::new(json!({"contract": "product"})).unwrap());
+        proposal.set_metadata =
+            Some(synck_vcs::metadata::MetadataRef::new(json!({"contract": "product"})).unwrap());
         validate_projected_proposal(None, &[proposal], &file_kind).unwrap();
     }
 
     {
         let event_type = "FOLDER::SET_METADATA";
         let mut proposal = event(folder_id.clone(), event_type, Some(5));
-        proposal.set_metadata = Some(synck_vcs::metadata::MetadataRef::new(json!({"contract": "product"})).unwrap());
+        proposal.set_metadata =
+            Some(synck_vcs::metadata::MetadataRef::new(json!({"contract": "product"})).unwrap());
         validate_projected_proposal(None, &[proposal], &folder_kind).unwrap();
     }
 
@@ -1270,7 +1317,8 @@ fn projector_accepts_only_the_deployed_product_omission_shapes() {
     }
 
     let mut malformed = event(file_id, "FILE::SET_METADATA", Some(3));
-    malformed.set_metadata = Some(synck_vcs::metadata::MetadataRef::new(json!({"contract": "product"})).unwrap());
+    malformed.set_metadata =
+        Some(synck_vcs::metadata::MetadataRef::new(json!({"contract": "product"})).unwrap());
     malformed.set_parent = Some(None);
     assert_eq!(
         validate_projected_proposal(None, &[malformed], &file_kind)
@@ -1279,9 +1327,12 @@ fn projector_accepts_only_the_deployed_product_omission_shapes() {
         SemanticErrorCode::MalformedProfileEvent
     );
 
-    assert!(synck_vcs::metadata::MetadataRef::new(json!({
-        "value": "x".repeat(synck_file_folder::MAX_EVENT_PAYLOAD_BYTES)
-    })).is_err());
+    assert!(
+        synck_vcs::metadata::MetadataRef::new(json!({
+            "value": "x".repeat(synck_file_folder::MAX_EVENT_PAYLOAD_BYTES)
+        }))
+        .is_err()
+    );
 }
 
 #[test]
@@ -1416,7 +1467,11 @@ fn accepted_commit(
         .into_iter()
         .map(
             |(index, item_id, item_seq, proposal, payload, digest)| EventRow {
-                metadata: proposal.set_metadata.as_ref().and_then(|value| value.payload()).cloned(),
+                metadata: proposal
+                    .set_metadata
+                    .as_ref()
+                    .and_then(|value| value.payload())
+                    .cloned(),
                 repo_id: repo_id.clone(),
                 item_id,
                 item_seq,

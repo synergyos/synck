@@ -3,7 +3,9 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use rusqlite::{Connection, OpenFlags};
-use synck_vcs_sqlite::{SqliteStorage, keep_wal_on_close, open_connection, validate_database_family};
+use synck_vcs_sqlite::{
+    SqliteStorage, keep_wal_on_close, open_connection, validate_database_family,
+};
 
 use crate::error::{LocalError, Result};
 
@@ -17,7 +19,10 @@ pub(crate) struct LocalDatabase {
 
 impl LocalDatabase {
     pub(crate) fn beside(history: &SqliteStorage) -> Self {
-        Self::new(history.clone(), history.path().with_extension("local.sqlite3"))
+        Self::new(
+            history.clone(),
+            history.path().with_extension("local.sqlite3"),
+        )
     }
 
     pub(crate) fn new(history: SqliteStorage, path: PathBuf) -> Self {
@@ -137,7 +142,11 @@ fn windows_uri_path(path: &str) -> String {
         path.strip_prefix(r"\\?\").unwrap_or(path).to_string()
     };
     let path = path.replace('\\', "/");
-    if path.starts_with("//") { path } else { format!("/{path}") }
+    if path.starts_with("//") {
+        path
+    } else {
+        format!("/{path}")
+    }
 }
 
 #[cfg(test)]
@@ -147,7 +156,10 @@ mod tests {
 
     #[test]
     fn windows_paths_become_uri_paths_without_authority() {
-        assert_eq!(windows_uri_path(r"\\?\D:\a\repo\x.sqlite3"), "/D:/a/repo/x.sqlite3");
+        assert_eq!(
+            windows_uri_path(r"\\?\D:\a\repo\x.sqlite3"),
+            "/D:/a/repo/x.sqlite3"
+        );
         assert_eq!(windows_uri_path(r"C:\repo"), "/C:/repo");
         assert_eq!(
             windows_uri_path(r"\\?\UNC\host\share\repo"),

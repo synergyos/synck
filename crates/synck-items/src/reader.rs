@@ -10,7 +10,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 mod cache;
 use serde_json::Value;
-use synck_vcs::types::{ObjectId, EventContent, EventProposal, ItemId, RefEventProposal, RepoId};
+use synck_vcs::types::{EventContent, EventProposal, ItemId, ObjectId, RefEventProposal, RepoId};
 use uuid::Uuid;
 
 use crate::{replica_projection, subitems};
@@ -82,7 +82,6 @@ pub struct ReadablePosition {
     pub seq: i64,
 }
 
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ReadableSubitem {
     pub family: String,
@@ -119,8 +118,6 @@ pub struct ChatDetails {
     pub assistants: BTreeSet<String>,
     pub participants: BTreeMap<String, subitems::ChatUserParticipantEvent>,
 }
-
-
 
 /// Preserved supplemental application data; it is not executed by public replay.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -204,7 +201,9 @@ impl ItemReader {
     }
 
     /// Borrow the current projection without cloning the item's subitems.
-    pub fn projection(&self) -> Result<Option<&replica_projection::ReplicaItemProjection>, ReadError> {
+    pub fn projection(
+        &self,
+    ) -> Result<Option<&replica_projection::ReplicaItemProjection>, ReadError> {
         self.ensure_readable()?;
         Ok(self.projection.as_ref())
     }
@@ -217,15 +216,26 @@ impl ItemReader {
 
     /// Look up a sequence-identified subitem in O(log n), without a full snapshot.
     /// UUID-identified owner refs use the separate ref ledger and are not returned.
-    pub fn subitem(&self, family: &str, item_seq: i64) -> Result<Option<&ReadableSubitem>, ReadError> {
+    pub fn subitem(
+        &self,
+        family: &str,
+        item_seq: i64,
+    ) -> Result<Option<&ReadableSubitem>, ReadError> {
         self.ensure_readable()?;
-        Ok(self.subitems.get(&(family.to_owned(), SubitemIdentity::Sequence(item_seq))))
+        Ok(self
+            .subitems
+            .get(&(family.to_owned(), SubitemIdentity::Sequence(item_seq))))
     }
 
     /// Borrow one sequence-subitem family without cloning the full transcript.
-    pub fn subitems_in_family<'a>(&'a self, family: &'a str) -> Result<impl Iterator<Item = &'a ReadableSubitem>, ReadError> {
+    pub fn subitems_in_family<'a>(
+        &'a self,
+        family: &'a str,
+    ) -> Result<impl Iterator<Item = &'a ReadableSubitem>, ReadError> {
         self.ensure_readable()?;
-        Ok(self.subitems.range((family.to_owned(), SubitemIdentity::Sequence(i64::MIN))..)
+        Ok(self
+            .subitems
+            .range((family.to_owned(), SubitemIdentity::Sequence(i64::MIN))..)
             .take_while(move |((name, _), _)| name == family)
             .map(|(_, row)| row))
     }
@@ -289,7 +299,10 @@ impl ItemReader {
         if kind != "FILE" {
             return Err(unsupported(kind, &event.event_type));
         }
-        let expected = self.ref_seq.checked_add(1).ok_or_else(|| invalid("ref sequence overflow"))?;
+        let expected = self
+            .ref_seq
+            .checked_add(1)
+            .ok_or_else(|| invalid("ref sequence overflow"))?;
         if ctx.ref_seq != expected {
             return Err(invalid("noncontiguous ref sequence"));
         }
@@ -300,7 +313,9 @@ impl ItemReader {
                 return Ok(());
             }
             let meta = event
-                .set_metadata.as_ref().and_then(synck_vcs::metadata::MetadataRef::value)
+                .set_metadata
+                .as_ref()
+                .and_then(synck_vcs::metadata::MetadataRef::value)
                 .ok_or_else(|| invalid("version ref metadata missing"))?;
             if uuid(meta, "file_item_id")?
                 != Uuid::parse_str(self.item_id.as_str()).expect("typed item ID")
@@ -417,7 +432,11 @@ impl ItemReader {
         .to_string();
         if let Some(content) = &event.set_content
             && let Some(id) = content.get("body")
-                && content.object("body").is_none() && !self.body_erased { return Err(ReadError::NeedsContent(id.clone())); }
+            && content.object("body").is_none()
+            && !self.body_erased
+        {
+            return Err(ReadError::NeedsContent(id.clone()));
+        }
         let mut projection = replica_projection::apply_replica_item_event(
             self.projection.clone(),
             self.item_id.clone(),
@@ -441,8 +460,12 @@ impl ItemReader {
             _ => return Err(unsupported(&kind, &event.event_type)),
         }
         if kind == "FILE" && event.replaces_content() {
-            let blob = projection.content_blob_id.clone().ok_or_else(|| invalid("FILE revision has no bytes"))?;
-            self.file_revisions.insert(context.item_seq, (blob, projection.size));
+            let blob = projection
+                .content_blob_id
+                .clone()
+                .ok_or_else(|| invalid("FILE revision has no bytes"))?;
+            self.file_revisions
+                .insert(context.item_seq, (blob, projection.size));
         }
         self.projection = Some(projection);
         Ok(())
@@ -455,7 +478,11 @@ impl ItemReader {
         _ctx: &ReadContext<'_>,
         projection: &mut replica_projection::ReplicaItemProjection,
     ) -> Result<(), ReadError> {
-        let meta = event.set_metadata.as_ref().and_then(synck_vcs::metadata::MetadataRef::value).unwrap_or(&Value::Null);
+        let meta = event
+            .set_metadata
+            .as_ref()
+            .and_then(synck_vcs::metadata::MetadataRef::value)
+            .unwrap_or(&Value::Null);
         let erased = is_erased(&event.set_metadata);
         if matches!(
             event.event_type.as_str(),
@@ -480,7 +507,11 @@ impl ItemReader {
             self.ancillary_events.push(AncillaryEvent {
                 item_seq: _ctx.item_seq,
                 event_type: event.event_type.clone(),
-                metadata: event.set_metadata.as_ref().and_then(synck_vcs::metadata::MetadataRef::value).cloned(),
+                metadata: event
+                    .set_metadata
+                    .as_ref()
+                    .and_then(synck_vcs::metadata::MetadataRef::value)
+                    .cloned(),
                 content: event.set_content.clone(),
             });
             return Ok(());
@@ -582,7 +613,8 @@ impl ItemReader {
         let family = kind.event_type_create().strip_suffix("::CREATE").unwrap();
         if is_erased(&event.set_metadata) {
             if verb == Verb::Create {
-                self.erased_subitem_creations.insert((family.into(), ctx.item_seq));
+                self.erased_subitem_creations
+                    .insert((family.into(), ctx.item_seq));
             }
             return Ok(());
         }
@@ -590,20 +622,40 @@ impl ItemReader {
         let target = if creating {
             ctx.item_seq
         } else {
-            subitems::meta_get_i64(event.set_metadata.as_ref().and_then(synck_vcs::metadata::MetadataRef::value), "item_seq")
-                .ok_or_else(|| invalid("subitem mutation missing stable item_seq"))?
+            subitems::meta_get_i64(
+                event
+                    .set_metadata
+                    .as_ref()
+                    .and_then(synck_vcs::metadata::MetadataRef::value),
+                "item_seq",
+            )
+            .ok_or_else(|| invalid("subitem mutation missing stable item_seq"))?
         };
         let key = (family.into(), SubitemIdentity::Sequence(target));
-        let meta = subitems::reconstruct_subitem_meta(event.set_metadata.as_ref().and_then(synck_vcs::metadata::MetadataRef::value));
+        let meta = subitems::reconstruct_subitem_meta(
+            event
+                .set_metadata
+                .as_ref()
+                .and_then(synck_vcs::metadata::MetadataRef::value),
+        );
         let content = if self.body_erased {
             Value::Null
         } else {
             subitems::reconstruct_subitem_content(
-                event.set_metadata.as_ref().and_then(synck_vcs::metadata::MetadataRef::value),
+                event
+                    .set_metadata
+                    .as_ref()
+                    .and_then(synck_vcs::metadata::MetadataRef::value),
                 event.set_content.as_ref(),
             )
         };
-        let parent = subitems::meta_get_i64(event.set_metadata.as_ref().and_then(synck_vcs::metadata::MetadataRef::value), "parent_item_seq");
+        let parent = subitems::meta_get_i64(
+            event
+                .set_metadata
+                .as_ref()
+                .and_then(synck_vcs::metadata::MetadataRef::value),
+            "parent_item_seq",
+        );
         let previous = self.subitems.get(&key);
         let mut row = if creating {
             if previous.is_some() {
@@ -615,7 +667,10 @@ impl ItemReader {
             row
         } else {
             let Some(mut row) = previous.cloned() else {
-                return if self.erased_subitem_creations.contains(&(family.to_string(), target)) {
+                return if self
+                    .erased_subitem_creations
+                    .contains(&(family.to_string(), target))
+                {
                     Ok(())
                 } else {
                     Err(invalid("subitem mutation before creation"))
@@ -631,7 +686,9 @@ impl ItemReader {
             }
         }
         row.latest_position.seq = ctx.item_seq;
-        if event.set_content.is_some() && matches!(verb, Verb::Create | Verb::SetContent | Verb::SetMetadata) {
+        if event.set_content.is_some()
+            && matches!(verb, Verb::Create | Verb::SetContent | Verb::SetMetadata)
+        {
             row.content_position = Some(row.latest_position.clone());
         }
         let removed_folder = (kind == Kind::ChatFileFolder
@@ -689,16 +746,31 @@ impl ItemReader {
     ) -> Result<(), ReadError> {
         use synck_file_folder::file_versions as versions;
         let meta = event
-            .set_metadata.as_ref().and_then(synck_vcs::metadata::MetadataRef::value)
+            .set_metadata
+            .as_ref()
+            .and_then(synck_vcs::metadata::MetadataRef::value)
             .ok_or_else(|| invalid("named-version metadata missing"))?;
         let id = uuid(meta, "version_id")?;
         let owner = uuid(meta, "file_item_id")?;
         let key = (family.into(), SubitemIdentity::Uuid(id));
-        let source = if matches!(event.event_type.as_str(), versions::VERSION_CREATE_EVENT | versions::VERSION_SET_REVISION_EVENT) {
-            let seq = meta.get("source_item_seq").and_then(Value::as_i64).filter(|seq| *seq > 0)
+        let source = if matches!(
+            event.event_type.as_str(),
+            versions::VERSION_CREATE_EVENT | versions::VERSION_SET_REVISION_EVENT
+        ) {
+            let seq = meta
+                .get("source_item_seq")
+                .and_then(Value::as_i64)
+                .filter(|seq| *seq > 0)
                 .ok_or_else(|| invalid("named version requires source_item_seq"))?;
-            Some(self.file_revisions.get(&seq).cloned().ok_or_else(|| invalid("named version refers to missing FILE revision"))?)
-        } else { None };
+            Some(
+                self.file_revisions
+                    .get(&seq)
+                    .cloned()
+                    .ok_or_else(|| invalid("named version refers to missing FILE revision"))?,
+            )
+        } else {
+            None
+        };
         let mut row = if event.event_type == versions::VERSION_CREATE_EVENT {
             if self.subitems.contains_key(&key) {
                 return Err(invalid("duplicate named version"));
@@ -784,7 +856,9 @@ impl ItemReader {
     }
 
     fn relabel_versions(&mut self, family: &str) -> Result<(), ReadError> {
-        let mut keys = self.subitems.iter()
+        let mut keys = self
+            .subitems
+            .iter()
             .filter(|(_, row)| row.family == family && row.lifecycle == SubitemLifecycle::Live)
             .map(|(key, row)| {
                 (
@@ -927,7 +1001,6 @@ fn initialize_subitem(
             row.name = Some(fields.snapshot_name);
             row.metadata = fields.meta;
         }
-
     }
     Ok(())
 }
@@ -941,7 +1014,13 @@ fn update_subitem(
     content: &Value,
     ctx: &ReadContext<'_>,
 ) -> Result<(), ReadError> {
-    let replacement = subitems::meta_get_json(event.set_metadata.as_ref().and_then(synck_vcs::metadata::MetadataRef::value), "meta");
+    let replacement = subitems::meta_get_json(
+        event
+            .set_metadata
+            .as_ref()
+            .and_then(synck_vcs::metadata::MetadataRef::value),
+        "meta",
+    );
     if matches!(verb, Verb::Trash | Verb::Restore | Verb::Tombstone) {
         row.lifecycle = lifecycle_for_event(&event.event_type)?;
         // A file restore can select a new live parent or resolve a name collision.
@@ -1044,14 +1123,11 @@ fn update_subitem(
             row.parent_folder_id = fields.parent_folder_id;
             row.metadata = fields.meta;
         }
-
     }
     if !content.is_null() && !matches!(kind, Kind::EmailAttachment) {
         if matches!(
             kind,
-            Kind::ChatMessage
-                | Kind::ChatMessageReaction
-                | Kind::ChatAttachment
+            Kind::ChatMessage | Kind::ChatMessageReaction | Kind::ChatAttachment
         ) {
             if let Some(patch) = content.as_object() {
                 if !row.content.is_object() {
@@ -1068,8 +1144,6 @@ fn update_subitem(
     row.latest_position.seq = ctx.item_seq;
     Ok(())
 }
-
-
 
 #[cfg(test)]
 mod tests;

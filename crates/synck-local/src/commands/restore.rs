@@ -471,8 +471,7 @@ impl Repository {
         }
         if let Some(expected) = expected {
             let all = self.complete_file_tree().await?;
-            let mut observed =
-                crate::worktree::scan_canonical_without_ignore(self.root(), &all)?;
+            let mut observed = crate::worktree::scan_canonical_without_ignore(self.root(), &all)?;
             self.filter_checkout_observation(&mut observed);
             if worktree_restore_manifest(&observed, &HashMap::new())? != expected {
                 return Err(LocalError::Invalid("working tree changed during checkout materialization; preserve the files and retry recovery after resolving the change".into()));

@@ -1,5 +1,5 @@
 use serde::{Deserialize, Deserializer, Serialize};
-use synck_vcs::types::{ObjectId, CommitId, EventProposal, ItemId, RepoId, Timestamp};
+use synck_vcs::types::{CommitId, EventProposal, ItemId, ObjectId, RepoId, Timestamp};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "UPPERCASE")]

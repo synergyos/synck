@@ -13,15 +13,14 @@ use synck_vcs::types::{
     compute_commit_id, compute_sha256_digest_bytes, sha256_prefixed_hex_from_digest_bytes,
 };
 
-#[cfg(windows)]
-use super::{RevertItemState, entry_matches_revert_state};
 use super::{
-    CommitOutcome,
-    WORKTREE_RESTORE_INTENT_NAME, WORKTREE_RESTORE_INTENT_VERSION, WORKTREE_RESTORE_STAGE_NAME,
-    WorktreeRestoreIntent, build_recover_intent, build_revert_intent,
+    CommitOutcome, WORKTREE_RESTORE_INTENT_NAME, WORKTREE_RESTORE_INTENT_VERSION,
+    WORKTREE_RESTORE_STAGE_NAME, WorktreeRestoreIntent, build_recover_intent, build_revert_intent,
     build_worktree_restore_items, materialize_events, proposal_item_kind_requirements,
     worktree_restore_manifest,
 };
+#[cfg(windows)]
+use super::{RevertItemState, entry_matches_revert_state};
 use crate::LocalError;
 use crate::event_profile::classify_commit;
 use crate::init;
@@ -53,8 +52,7 @@ fn canonical_events(events: &[EventProposal]) -> Vec<serde_json::Value> {
         .iter()
         .map(|event| {
             let mut value: serde_json::Value =
-                serde_json::from_slice(&canonical_event_proposal_bytes(event).unwrap())
-                    .unwrap();
+                serde_json::from_slice(&canonical_event_proposal_bytes(event).unwrap()).unwrap();
             if let Some(metadata) = event.set_metadata.as_ref().and_then(|m| m.value()) {
                 let object = value.as_object_mut().unwrap();
                 object.remove("metadata_id");
@@ -88,7 +86,11 @@ fn accepted_rows(
         aggregate_digest.update([synck_vcs::types::COMMIT_EVENT_FAMILY_ITEM]);
         aggregate_digest.update(digest);
         rows.push(EventRow {
-            metadata: event.set_metadata.as_ref().and_then(|value| value.payload()).cloned(),
+            metadata: event
+                .set_metadata
+                .as_ref()
+                .and_then(|value| value.payload())
+                .cloned(),
             repo_id: repo_id.clone(),
             item_id,
             item_seq: *item_seq,
@@ -635,8 +637,7 @@ async fn commit_captured_snapshot_then(repository: &Repository, mutate: impl FnO
         .capture_changed_files(&BTreeMap::new(), &working, &changes, None)
         .unwrap();
     let built_intents =
-        super::build_intents(&committed, &working, &changes, &working_ids, &objects, None)
-            .unwrap();
+        super::build_intents(&committed, &working, &changes, &working_ids, &objects, None).unwrap();
     let mut intents = built_intents.intents;
     let current = repository
         .current_file_folder_context(&mut intents)
@@ -697,9 +698,7 @@ async fn post_capture_filesystem_changes_remain_dirty() {
                 fs::remove_file(root.join("document.bin")).unwrap();
                 fs::rename(root.join("replacement.bin"), root.join("document.bin")).unwrap();
             }
-            "rename" => {
-                fs::rename(root.join("document.bin"), root.join("renamed.bin")).unwrap()
-            }
+            "rename" => fs::rename(root.join("document.bin"), root.join("renamed.bin")).unwrap(),
             "delete" => fs::remove_file(root.join("document.bin")).unwrap(),
             "file-to-folder" => {
                 fs::remove_file(root.join("document.bin")).unwrap();
@@ -828,8 +827,7 @@ async fn item_history_rejects_target_event_corruption_after_projection() {
         .unwrap()
         .item_id
         .clone();
-    let connection =
-        rusqlite::Connection::open(root.join(".synck/repository.sqlite3")).unwrap();
+    let connection = rusqlite::Connection::open(root.join(".synck/repository.sqlite3")).unwrap();
     connection
         .execute(
             "UPDATE vcs_events SET payload = x'7b7d'
@@ -859,8 +857,7 @@ async fn commit_history_carries_tree_types_and_event_display_subjects() {
     fs::write(root.join("Folder/book.xlsx"), b"content").unwrap();
     init(root, "author").await.unwrap();
     let repository = Repository::discover(root).await.unwrap();
-    let CommitOutcome::Committed(commit_id) =
-        repository.commit("initial content").await.unwrap()
+    let CommitOutcome::Committed(commit_id) = repository.commit("initial content").await.unwrap()
     else {
         panic!("initial content commit was unexpectedly clean");
     };

@@ -126,7 +126,9 @@ impl Repository {
             let old_bytes = old
                 .map(|(_, node)| self.read_object_bytes(&objects, node))
                 .transpose()?;
-            let new_bytes = new.map(|node| self.read_object_bytes(&objects, node)).transpose()?;
+            let new_bytes = new
+                .map(|node| self.read_object_bytes(&objects, node))
+                .transpose()?;
             if let Some(entry) = text_diff_entry(
                 old.map(|(path, _)| path.to_string()),
                 new.map(|_| change.path.clone()),
@@ -161,7 +163,11 @@ impl Repository {
         Ok(FileBytes::Bytes(bytes))
     }
 
-    pub(crate) fn read_working_bytes(&self, display: &str, node: &WorkingNode) -> Result<FileBytes> {
+    pub(crate) fn read_working_bytes(
+        &self,
+        display: &str,
+        node: &WorkingNode,
+    ) -> Result<FileBytes> {
         let size = node
             .size
             .ok_or_else(|| LocalError::Integrity(format!("working FILE has no size: {display}")))?;
@@ -253,14 +259,23 @@ fn text_diff_entry(
         let kind = if old_text == new_text {
             TextDiffKind::Binary
         } else {
-            let patch = unified(old_path.as_deref(), new_path.as_deref(), &old_text, &new_text)?;
+            let patch = unified(
+                old_path.as_deref(),
+                new_path.as_deref(),
+                &old_text,
+                &new_text,
+            )?;
             if old_sections || new_sections {
                 TextDiffKind::Document(section_headers(&patch, &old_text, &new_text))
             } else {
                 TextDiffKind::Document(patch)
             }
         };
-        return Ok(Some(TextDiffEntry { old_path, new_path, kind }));
+        return Ok(Some(TextDiffEntry {
+            old_path,
+            new_path,
+            kind,
+        }));
     }
     let old_text = std::str::from_utf8(&old)
         .ok()
@@ -316,8 +331,15 @@ fn section_headers(patch: &str, old_text: &str, new_text: &str) -> String {
                 let (start, length) = range.split_once(',').unwrap_or((range, "1"));
                 let (start, length): (usize, usize) = (start.parse().ok()?, length.parse().ok()?);
                 // An empty range starts after its line, any other at it.
-                let before = if length == 0 { start } else { start.saturating_sub(1) };
-                lines[..before.min(lines.len())].iter().rev().find(|line| is_section(line))
+                let before = if length == 0 {
+                    start
+                } else {
+                    start.saturating_sub(1)
+                };
+                lines[..before.min(lines.len())]
+                    .iter()
+                    .rev()
+                    .find(|line| is_section(line))
             });
         match section {
             Some(section) => {
@@ -334,12 +356,18 @@ fn section_headers(patch: &str, old_text: &str, new_text: &str) -> String {
 
 fn is_section(line: &str) -> bool {
     ["Page ", "Slide ", "Sheet "].iter().any(|name| {
-        line.strip_prefix(name)
-            .is_some_and(|number| !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit()))
+        line.strip_prefix(name).is_some_and(|number| {
+            !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit())
+        })
     })
 }
 
-fn unified(old_path: Option<&str>, new_path: Option<&str>, old_text: &str, new_text: &str) -> Result<String> {
+fn unified(
+    old_path: Option<&str>,
+    new_path: Option<&str>,
+    old_text: &str,
+    new_text: &str,
+) -> Result<String> {
     let old_label = old_path.map_or_else(|| "/dev/null".to_string(), |path| format!("a/{path}"));
     let new_label = new_path.map_or_else(|| "/dev/null".to_string(), |path| format!("b/{path}"));
     let mut options = DiffOptions::new();
@@ -459,10 +487,15 @@ mod tests {
 
     fn diff_kind(old: Vec<u8>, new: Vec<u8>) -> TextDiffKind {
         let path = Some("Contracts/lease.docx".to_string());
-        text_diff_entry(path.clone(), path, Some(FileBytes::Bytes(old)), Some(FileBytes::Bytes(new)))
-            .unwrap()
-            .unwrap()
-            .kind
+        text_diff_entry(
+            path.clone(),
+            path,
+            Some(FileBytes::Bytes(old)),
+            Some(FileBytes::Bytes(new)),
+        )
+        .unwrap()
+        .unwrap()
+        .kind
     }
 
     #[test]
@@ -475,7 +508,8 @@ mod tests {
         assert!(patch.starts_with("--- a/Contracts/lease.docx\n+++ b/Contracts/lease.docx\n"));
         assert!(patch.contains("-Term: 12 months\n+Term: 24 months\n"));
 
-        let restyled = docx("<w:p><w:r><w:rPr><w:b/></w:rPr><w:t>Term: 12 months</w:t></w:r></w:p>");
+        let restyled =
+            docx("<w:p><w:r><w:rPr><w:b/></w:rPr><w:t>Term: 12 months</w:t></w:r></w:p>");
         assert_eq!(diff_kind(old.clone(), restyled), TextDiffKind::Binary);
         assert_eq!(diff_kind(old, b"not a zip".to_vec()), TextDiffKind::Binary);
     }
@@ -490,12 +524,23 @@ mod tests {
                 .collect();
             format!("BT /F1 10 Tf {} ET", lines.join(" "))
         };
-        let old = crate::pdf_text::tests::pages(&[&page(&["Intro"]), &page(&["One", "Two", "Three", "Four", "Five", "Six"])]);
-        let new = crate::pdf_text::tests::pages(&[&page(&["Intro"]), &page(&["One", "Two", "Three", "Four", "5", "Six"])]);
+        let old = crate::pdf_text::tests::pages(&[
+            &page(&["Intro"]),
+            &page(&["One", "Two", "Three", "Four", "Five", "Six"]),
+        ]);
+        let new = crate::pdf_text::tests::pages(&[
+            &page(&["Intro"]),
+            &page(&["One", "Two", "Three", "Four", "5", "Six"]),
+        ]);
         let path = Some("Reports/q3.pdf".to_string());
-        let entry = text_diff_entry(path.clone(), path, Some(FileBytes::Bytes(old)), Some(FileBytes::Bytes(new)))
-            .unwrap()
-            .unwrap();
+        let entry = text_diff_entry(
+            path.clone(),
+            path,
+            Some(FileBytes::Bytes(old)),
+            Some(FileBytes::Bytes(new)),
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(
             entry.kind,
             TextDiffKind::Document(

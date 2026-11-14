@@ -162,7 +162,8 @@ impl EncryptedFrameCheck {
 impl std::io::Write for EncryptedFrameCheck {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
         let room = FRAME_HEADER_BYTES.saturating_sub(self.start.len());
-        self.start.extend_from_slice(&bytes[..bytes.len().min(room)]);
+        self.start
+            .extend_from_slice(&bytes[..bytes.len().min(room)]);
         self.length += bytes.len() as u64;
         Ok(bytes.len())
     }

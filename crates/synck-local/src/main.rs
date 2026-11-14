@@ -909,7 +909,11 @@ async fn run(cli: Cli) -> Result<ExitCode, (LocalError, bool)> {
     }
     if matches!(&cli.command, Command::Instructions) {
         if cli.json {
-            print_outcome(true, json!({"instructions": INSTRUCTIONS}), format_args!(""));
+            print_outcome(
+                true,
+                json!({"instructions": INSTRUCTIONS}),
+                format_args!(""),
+            );
         } else {
             print!("{INSTRUCTIONS}");
         }
@@ -938,8 +942,12 @@ async fn run(cli: Cli) -> Result<ExitCode, (LocalError, bool)> {
     } = &cli.command
     {
         let (repo_id, repairs) = synck_local::portable::init_repository_with_name_repair(
-            directory, author, *storage_mode,
-        ).await.map_err(|error| (error, false))?;
+            directory,
+            author,
+            *storage_mode,
+        )
+        .await
+        .map_err(|error| (error, false))?;
         if !cli.json {
             print_name_repairs(&repairs);
         }
@@ -958,18 +966,35 @@ async fn run(cli: Cli) -> Result<ExitCode, (LocalError, bool)> {
         hold,
     } = &cli.command
     {
-        let url = origin.to_str().filter(|text| text.starts_with("https://") || text.starts_with("http://"));
+        let url = origin
+            .to_str()
+            .filter(|text| text.starts_with("https://") || text.starts_with("http://"));
         let repository = match url {
             Some(url) => {
                 let token = std::env::var("SYNCK_TOKEN").map_err(|_| {
-                    (LocalError::Invalid("give the server token in SYNCK_TOKEN".into()), false)
+                    (
+                        LocalError::Invalid("give the server token in SYNCK_TOKEN".into()),
+                        false,
+                    )
                 })?;
                 let author = author.as_deref().ok_or_else(|| {
-                    (LocalError::Invalid("an HTTPS clone needs --author".into()), false)
+                    (
+                        LocalError::Invalid("an HTTPS clone needs --author".into()),
+                        false,
+                    )
                 })?;
                 synck_local::clone_remote(url, &token, destination, author, include, *hold).await
             }
-            None => synck_local::clone_repository(origin, destination, author.as_deref(), include, *hold).await,
+            None => {
+                synck_local::clone_repository(
+                    origin,
+                    destination,
+                    author.as_deref(),
+                    include,
+                    *hold,
+                )
+                .await
+            }
         }
         .map_err(|error| (error, false))?;
         print_outcome(
@@ -993,36 +1018,36 @@ async fn run(cli: Cli) -> Result<ExitCode, (LocalError, bool)> {
         Command::Storage {
             command: Some(StorageCommand::Optimize)
         }
-    )
-        && let Some(changed) = synck_local::portable::optimize_complete_repository(&current)
-            .await
-            .map_err(|error| (error, false))?
-        {
-            print_optimized(cli.json, changed);
-            return Ok(ExitCode::SUCCESS);
-        }
+    ) && let Some(changed) = synck_local::portable::optimize_complete_repository(&current)
+        .await
+        .map_err(|error| (error, false))?
+    {
+        print_optimized(cli.json, changed);
+        return Ok(ExitCode::SUCCESS);
+    }
     if matches!(
         cli.command,
         Command::Fsck {
             rebuild_state_index: false
         }
-    )
-        && let Some(report) =
-            open_waiting_async(|| synck_local::portable::verify_complete_repository(&current))
+    ) && let Some(report) =
+        open_waiting_async(|| synck_local::portable::verify_complete_repository(&current))
             .await
             .map_err(|error| (error, true))?
-        {
-            println!(
-                "{}",
-                serde_json::to_string(&report).map_err(|e| (LocalError::from(e), true))?
-            );
-            return Ok(ExitCode::SUCCESS);
-        }
+    {
+        println!(
+            "{}",
+            serde_json::to_string(&report).map_err(|e| (LocalError::from(e), true))?
+        );
+        return Ok(ExitCode::SUCCESS);
+    }
     let integrity_command = matches!(cli.command, Command::Fsck { .. });
     let mut repository = open_waiting_async(|| Repository::discover_complete(&current))
         .await
         .map_err(|error| (error, integrity_command))?;
-    repository.set_agent_lock_tokens(&cli.lock_token).map_err(|e| (e, false))?;
+    repository
+        .set_agent_lock_tokens(&cli.lock_token)
+        .map_err(|e| (e, false))?;
     if uses_worktree(&cli.command)
         && let Ok(executable) = std::env::current_exe()
     {
@@ -1030,10 +1055,19 @@ async fn run(cli: Cli) -> Result<ExitCode, (LocalError, bool)> {
     }
     let sends = repository.sends_at_once() && makes_commits(&cli.command);
     let code = run_checkout(cli, &mut repository, current, align_change_markers).await?;
-    if sends && repository.held_commits().await.map_err(|error| (error, false))?.is_some_and(|held| !held.is_empty()) {
+    if sends
+        && repository
+            .held_commits()
+            .await
+            .map_err(|error| (error, false))?
+            .is_some_and(|held| !held.is_empty())
+    {
         // The commit stands here either way; what was not sent stays held.
         if let Err(error) = repository.push().await {
-            eprintln!("synck: held here, not sent: {}", visible_lines(&error.to_string()));
+            eprintln!(
+                "synck: held here, not sent: {}",
+                visible_lines(&error.to_string())
+            );
         }
     }
     Ok(code)
@@ -2873,7 +2907,11 @@ fn change_summary(total: usize, shown: Option<usize>) -> String {
 
 /// A commit's place in the history, or `held` for a proposal not yet sent.
 fn sequence_label(commit: &LogEntry, held: bool) -> String {
-    if held { "held".to_string() } else { commit.repo_seq.to_string() }
+    if held {
+        "held".to_string()
+    } else {
+        commit.repo_seq.to_string()
+    }
 }
 
 /// `origin`, or what a clone was made from and what it has not sent yet.
@@ -2884,7 +2922,10 @@ fn role(info: &RepositoryInfo, held: Option<&[String]>) -> String {
     let mut line = format!("clone of {}", visible(origin));
     match held {
         Some(held) if !held.is_empty() => {
-            line.push_str(&format!(", {} waiting to be sent; push sends them", counted(held.len(), "commit", "commits")));
+            line.push_str(&format!(
+                ", {} waiting to be sent; push sends them",
+                counted(held.len(), "commit", "commits")
+            ));
         }
         _ if info.hold => line.push_str(", holding commits until push"),
         _ => {}
@@ -3019,7 +3060,10 @@ fn status_json(changes: &[synck_local::Change]) -> Value {
 
 fn print_path_warnings(paths: &[PathBuf]) {
     for path in paths {
-        eprintln!("warning: path exceeds 260 UTF-16 units; other Windows applications may reject it: {:?}", path);
+        eprintln!(
+            "warning: path exceeds 260 UTF-16 units; other Windows applications may reject it: {:?}",
+            path
+        );
     }
 }
 

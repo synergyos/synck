@@ -94,7 +94,10 @@ pub(crate) fn physical_core_findings(
     Ok(findings)
 }
 
-fn check_physical_database(connection: &rusqlite::Connection, findings: &mut Findings) -> Result<()> {
+fn check_physical_database(
+    connection: &rusqlite::Connection,
+    findings: &mut Findings,
+) -> Result<()> {
     let mut statement = connection.prepare("PRAGMA integrity_check")?;
     let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
     for row in rows {
@@ -337,11 +340,10 @@ pub(crate) fn verify_projection(
     if applied != Some(maximum) {
         return Ok(());
     }
-    let actual_count: i64 = connection.query_row(
-        "SELECT count(*) FROM local_file_heads",
-        [],
-        |row| row.get(0),
-    )?;
+    let actual_count: i64 =
+        connection.query_row("SELECT count(*) FROM local_file_heads", [], |row| {
+            row.get(0)
+        })?;
     if usize::try_from(actual_count).ok() != Some(expected.len()) {
         findings.push("local file-head projection row count mismatch".to_string());
     }

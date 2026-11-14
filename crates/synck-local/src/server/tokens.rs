@@ -76,7 +76,11 @@ impl Secret {
     }
 
     fn text(&self) -> String {
-        format!("{PREFIX}{}_{}", self.id, URL_SAFE_NO_PAD.encode(self.secret))
+        format!(
+            "{PREFIX}{}_{}",
+            self.id,
+            URL_SAFE_NO_PAD.encode(self.secret)
+        )
     }
 }
 
@@ -112,7 +116,9 @@ impl Presented {
                 .secret_sha256
                 .iter()
                 .zip(stored)
-                .fold(0_u8, |difference, (left, right)| difference | (left ^ right))
+                .fold(0_u8, |difference, (left, right)| {
+                    difference | (left ^ right)
+                })
                 == 0
     }
 }
@@ -135,7 +141,9 @@ fn valid_name(name: &str) -> Result<()> {
 pub fn add(root: &Path, name: &str, access: Access, repositories: &[RepoId]) -> Result<String> {
     valid_name(name)?;
     if repositories.is_empty() {
-        return Err(Error::Invalid("grant the token at least one repository".into()));
+        return Err(Error::Invalid(
+            "grant the token at least one repository".into(),
+        ));
     }
     let secret = Secret::generate();
     let created_at = SystemTime::now()
@@ -150,7 +158,9 @@ pub fn add(root: &Path, name: &str, access: Access, repositories: &[RepoId]) -> 
         |row| row.get(0),
     )?;
     if taken {
-        return Err(Error::Invalid(format!("a token named {name} exists; revoke it first")));
+        return Err(Error::Invalid(format!(
+            "a token named {name} exists; revoke it first"
+        )));
     }
     txn.execute(
         "INSERT INTO tokens (id, name, access, secret_sha256, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -174,9 +184,10 @@ pub fn add(root: &Path, name: &str, access: Access, repositories: &[RepoId]) -> 
 
 pub fn list(root: &Path) -> Result<Vec<TokenInfo>> {
     let conn = open_existing(root)?;
-    let mut tokens = conn.prepare("SELECT id, name, access, created_at FROM tokens ORDER BY name")?;
-    let mut grants =
-        conn.prepare("SELECT repo_id FROM token_repositories WHERE token_id = ?1 ORDER BY repo_id")?;
+    let mut tokens =
+        conn.prepare("SELECT id, name, access, created_at FROM tokens ORDER BY name")?;
+    let mut grants = conn
+        .prepare("SELECT repo_id FROM token_repositories WHERE token_id = ?1 ORDER BY repo_id")?;
     let rows = tokens.query_map([], |row| {
         Ok((
             row.get::<_, String>(0)?,
@@ -190,9 +201,7 @@ pub fn list(root: &Path) -> Result<Vec<TokenInfo>> {
         let (id, name, access, created_at) = row?;
         let repositories = grants
             .query_map([&id], |row| row.get::<_, String>(0))?
-            .map(|repo| {
-                RepoId::parse(repo?).map_err(|error| Error::State(error.to_string()))
-            })
+            .map(|repo| RepoId::parse(repo?).map_err(|error| Error::State(error.to_string())))
             .collect::<Result<_>>()?;
         infos.push(TokenInfo {
             name,
@@ -263,7 +272,10 @@ mod tests {
         assert_eq!(presented.id, secret.id);
         assert!(presented.matches(Sha256::digest(secret.secret).as_slice()));
         for text in ["", "synck_v1_a_b", "Bearer", &text[..74]] {
-            assert!(matches!(Presented::parse(text), Err(Error::Unauthenticated)));
+            assert!(matches!(
+                Presented::parse(text),
+                Err(Error::Unauthenticated)
+            ));
         }
     }
 }

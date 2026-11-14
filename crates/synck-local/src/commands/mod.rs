@@ -19,12 +19,13 @@ use synck_file_folder::{
 };
 use synck_vcs::naming::compute_name_key;
 use synck_vcs::state::{
-    ItemValue, NamespaceKey, item_namespace, RootHeader, StateIndexStore, StateProjectorStore, StateRootId, StateTree,
+    ItemValue, NamespaceKey, RootHeader, StateIndexStore, StateProjectorStore, StateRootId,
+    StateTree, item_namespace,
 };
 use synck_vcs::types::{
-    ObjectId, COMMIT_EVENT_FAMILY_ITEM, COMMIT_EVENT_FAMILY_REF, CommitEventRow, CommitId,
-    CommitProposal, CommitRow, EventProposal, EventRow, EventsDigest, ItemId, ItemRevision, LifecycleState,
-    RefEventProposal, RepoEventCursor, RepoId, SubtreeClosureGuard,
+    COMMIT_EVENT_FAMILY_ITEM, COMMIT_EVENT_FAMILY_REF, CommitEventRow, CommitId, CommitProposal,
+    CommitRow, EventProposal, EventRow, EventsDigest, ItemId, ItemRevision, LifecycleState,
+    ObjectId, RefEventProposal, RepoEventCursor, RepoId, SubtreeClosureGuard,
     canonical_commit_bytes_for_hash, canonical_event_proposal_bytes,
     canonical_ref_event_proposal_bytes, compute_commit_id, compute_sha256_digest_bytes,
     sha256_digest_to_digest_bytes, sha256_prefixed_hex_from_digest_bytes,
@@ -74,20 +75,20 @@ mod tests;
 mod withdrawn;
 
 pub use commit::*;
-pub use history::*;
 pub use held::PushOutcome;
 pub(crate) use held::{
-    HELD_FILE, Held, PINS_DIRECTORY, Pin, PinnedUntil, apply, empty_history, is_conflict, pin_path, proposal_from_rows,
-    read_held, stored_proposal, write_held,
+    HELD_FILE, Held, PINS_DIRECTORY, Pin, PinnedUntil, apply, empty_history, is_conflict, pin_path,
+    proposal_from_rows, read_held, stored_proposal, write_held,
 };
-pub use withdrawn::{WITHDRAWN_DAYS, WithdrawnFileVersion, WithdrawnSave};
-pub(crate) use withdrawn::live_withdrawn_objects;
+pub use history::*;
+use moves::*;
 pub use pull::{Conflict, PullOutcome};
 use pull::{PULL_INTENT_NAME, PULL_STAGE_NAME};
-use moves::*;
 pub use recover::*;
 pub(crate) use restore::*;
 use revert::*;
+pub(crate) use withdrawn::live_withdrawn_objects;
+pub use withdrawn::{WITHDRAWN_DAYS, WithdrawnFileVersion, WithdrawnSave};
 
 const PAGE_SIZE: usize = 1_024;
 const MAX_EVENT_PAGE_SIZE: usize = 10_000;
@@ -550,7 +551,8 @@ fn path_depth(path: &str) -> usize {
 }
 
 fn parse_event(event: &synck_vcs::types::EventRow) -> Result<EventProposal> {
-    event.proposal()
+    event
+        .proposal()
         .map_err(|error| LocalError::Integrity(format!("invalid event payload: {error}")))
 }
 
@@ -577,7 +579,11 @@ fn validate_historical_item_event(event: &EventRow, item_id: &ItemId) -> Result<
 }
 
 fn content_from_event(event: &EventProposal) -> Result<(ObjectId, i64)> {
-    let blob_id = match event.set_content.as_ref().and_then(|content| content.only("bytes")) {
+    let blob_id = match event
+        .set_content
+        .as_ref()
+        .and_then(|content| content.only("bytes"))
+    {
         Some(blob_id) => ObjectId::parse(blob_id.as_str()).map_err(|error| {
             LocalError::Integrity(format!("invalid blob identifier in event: {error}"))
         })?,
@@ -588,7 +594,9 @@ fn content_from_event(event: &EventProposal) -> Result<(ObjectId, i64)> {
         }
     };
     let size = event
-        .set_metadata.as_ref().and_then(synck_vcs::metadata::MetadataRef::value)
+        .set_metadata
+        .as_ref()
+        .and_then(synck_vcs::metadata::MetadataRef::value)
         .and_then(|value| value.pointer("/content/size"))
         .and_then(serde_json::Value::as_i64)
         .filter(|size| *size >= 0)
@@ -651,27 +659,59 @@ mod durable_events {
         event: EventProposal,
         metadata_hex: Option<String>,
     }
-    pub fn serialize<S: serde::Serializer>(events: &[EventProposal], serializer: S) -> Result<S::Ok, S::Error> {
-        events.iter().map(|event| {
-            let metadata_hex = event.set_metadata.as_ref().map(|reference| reference.payload()
-                .map(|metadata| hex::encode(metadata.payload()))
-                .ok_or_else(|| serde::ser::Error::custom("recovery intent requires metadata bytes"))).transpose()?;
-            Ok(Record { event:event.clone(), metadata_hex })
-        }).collect::<Result<Vec<_>, S::Error>>()?.serialize(serializer)
+    pub fn serialize<S: serde::Serializer>(
+        events: &[EventProposal],
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        events
+            .iter()
+            .map(|event| {
+                let metadata_hex = event
+                    .set_metadata
+                    .as_ref()
+                    .map(|reference| {
+                        reference
+                            .payload()
+                            .map(|metadata| hex::encode(metadata.payload()))
+                            .ok_or_else(|| {
+                                serde::ser::Error::custom("recovery intent requires metadata bytes")
+                            })
+                    })
+                    .transpose()?;
+                Ok(Record {
+                    event: event.clone(),
+                    metadata_hex,
+                })
+            })
+            .collect::<Result<Vec<_>, S::Error>>()?
+            .serialize(serializer)
     }
-    pub fn deserialize<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Vec<EventProposal>, D::Error> {
-        Vec::<Record>::deserialize(deserializer)?.into_iter().map(|mut record| {
-            match (&mut record.event.set_metadata, record.metadata_hex) {
-                (Some(reference), Some(bytes)) => {
-                    let bytes = hex::decode(bytes).map_err(serde::de::Error::custom)?;
-                    let metadata = synck_vcs::metadata::Metadata::verify(&reference.id(), bytes).map_err(serde::de::Error::custom)?;
-                    reference.resolve(metadata).map_err(serde::de::Error::custom)?;
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Vec<EventProposal>, D::Error> {
+        Vec::<Record>::deserialize(deserializer)?
+            .into_iter()
+            .map(|mut record| {
+                match (&mut record.event.set_metadata, record.metadata_hex) {
+                    (Some(reference), Some(bytes)) => {
+                        let bytes = hex::decode(bytes).map_err(serde::de::Error::custom)?;
+                        let metadata =
+                            synck_vcs::metadata::Metadata::verify(&reference.id(), bytes)
+                                .map_err(serde::de::Error::custom)?;
+                        reference
+                            .resolve(metadata)
+                            .map_err(serde::de::Error::custom)?;
+                    }
+                    (None, None) => {}
+                    _ => {
+                        return Err(serde::de::Error::custom(
+                            "recovery metadata does not match event",
+                        ));
+                    }
                 }
-                (None, None) => {}
-                _ => return Err(serde::de::Error::custom("recovery metadata does not match event")),
-            }
-            Ok(record.event)
-        }).collect()
+                Ok(record.event)
+            })
+            .collect()
     }
 }
 
@@ -893,7 +933,8 @@ impl Repository {
             ],
             |row| row.get(0),
         )?;
-        operation_id.ok_or_else(|| LocalError::Integrity(format!("commit {commit_id} has no operation ID")))
+        operation_id
+            .ok_or_else(|| LocalError::Integrity(format!("commit {commit_id} has no operation ID")))
     }
 
     pub(crate) fn operation_commit_id(&self, operation_id: &str) -> Result<Option<String>> {

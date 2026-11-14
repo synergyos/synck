@@ -17,15 +17,15 @@ mod inspection;
 mod integrity;
 mod local_database;
 mod monitor;
-mod name_repairs;
 mod name_repair_journal;
+mod name_repairs;
 mod objects;
-mod raw_object;
-mod path_warnings;
 mod office_text;
 mod ooxml;
+mod path_warnings;
 mod pdf_text;
 pub mod portable;
+mod raw_object;
 mod remote;
 mod repository;
 pub mod server;
@@ -35,8 +35,8 @@ mod working_tree_edit;
 mod worktree;
 
 pub use commands::{
-    Conflict, PullOutcome, PushOutcome, CommitEvent, CommitEventPage, CommitOutcome, DeletedEntry,
-    DetailedEventLogEntry, DetailedLogEntry, EventHistoryCommit, HistoryCommit, LogEntry,
+    CommitEvent, CommitEventPage, CommitOutcome, Conflict, DeletedEntry, DetailedEventLogEntry,
+    DetailedLogEntry, EventHistoryCommit, HistoryCommit, LogEntry, PullOutcome, PushOutcome,
     VersionEntry, WITHDRAWN_DAYS, WithdrawnFileVersion, WithdrawnSave,
 };
 pub use comparison::{
@@ -50,8 +50,8 @@ pub use inspection::{
 };
 pub use integrity::FsckReport;
 pub use monitor::{MonitorStatus, run_monitor_server};
-pub use objects::{GcReport, StorageReport};
 pub use name_repairs::NameRepair;
+pub use objects::{GcReport, StorageReport};
 pub use repository::{HiddenFilesMode, Repository, create_default_synckignore};
 pub use versions::NamedVersionEntry;
 pub use working_tree_edit::{WorkingTreeEntry, WorkingTreeEntryKind, WorkingTreeSnapshot};

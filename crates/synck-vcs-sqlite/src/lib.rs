@@ -3,10 +3,10 @@
 pub mod bundle;
 mod connection;
 mod history;
+mod metadata;
 pub mod schema;
 mod state;
 mod storage;
-mod metadata;
 
 pub use connection::{keep_wal_on_close, open_connection};
 pub use state::SqliteStateStore;
@@ -23,5 +23,8 @@ fn bundled_sqlite_includes_wal_reset_fix() {
 
 #[test]
 fn published_schema_matches_standalone_specification() {
-    assert_eq!(include_str!("schema.sql"), include_str!("../../../docs/spec/history.sql"));
+    assert_eq!(
+        include_str!("schema.sql"),
+        include_str!("../../../docs/spec/history.sql")
+    );
 }

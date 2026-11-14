@@ -815,7 +815,9 @@ mod tests {
     };
 
     fn item(head_seq: i64) -> ItemValue {
-        ItemValue { link_folder_id: None, record_key: None,
+        ItemValue {
+            link_folder_id: None,
+            record_key: None,
             item_id: ItemId::parse("01890f2a-7c00-7000-8000-000000000002").unwrap(),
             item_type: "FILE".to_string(),
             parent_folder_id: None,
@@ -1194,12 +1196,19 @@ mod tests {
     fn one_create_commit() -> (RepoId, OneCommitSource) {
         let repo_id = RepoId::new();
         let item_id = ItemId::new();
-        let proposal = EventProposal { set_link: None, merged_from: None,
+        let proposal = EventProposal {
+            set_link: None,
+            merged_from: None,
             item_id: Some(item_id.clone()),
             event_type: "FILE::CREATE".to_string(),
             set_metadata: None,
-            set_content: Some(crate::content::EventContent::bytes(crate::types::ObjectId::from_digest([7; 32]))),
-            create_item: Some(CreateItem { key: None, link: None, derived_from: None,
+            set_content: Some(crate::content::EventContent::bytes(
+                crate::types::ObjectId::from_digest([7; 32]),
+            )),
+            create_item: Some(CreateItem {
+                key: None,
+                link: None,
+                derived_from: None,
                 item_type: "FILE".to_string(),
                 parent_folder_id: None,
                 name: Some("report.txt".to_string()),
@@ -1238,7 +1247,11 @@ mod tests {
             events_digest,
         };
         let event = EventRow {
-                metadata: proposal.set_metadata.as_ref().and_then(|value| value.payload()).cloned(),
+            metadata: proposal
+                .set_metadata
+                .as_ref()
+                .and_then(|value| value.payload())
+                .cloned(),
             repo_id: repo_id.clone(),
             item_id,
             item_seq: 1,

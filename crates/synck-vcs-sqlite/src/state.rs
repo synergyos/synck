@@ -77,10 +77,13 @@ impl SqliteStorage {
         connection
             .pragma_update(None, "synchronous", "NORMAL")
             .map_err(sql_error)?;
-        let empty: bool = connection.query_row(
-            "SELECT NOT EXISTS(SELECT 1 FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%')",
-            [], |row| row.get(0),
-        ).map_err(sql_error)?;
+        let empty: bool = connection
+            .query_row(
+                "SELECT NOT EXISTS(SELECT 1 FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%')",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(sql_error)?;
         if empty {
             // A killed process must leave no partial schema behind.
             connection
@@ -90,10 +93,15 @@ impl SqliteStorage {
         let expected = Connection::open_in_memory().map_err(sql_error)?;
         expected.execute_batch(STATE_SCHEMA).map_err(sql_error)?;
         if crate::schema::inspect(&connection, "").map_err(sql_error)?
-            != crate::schema::inspect(&expected, "").map_err(sql_error)? {
-            return Err(StateError::Storage("invalid historical-state cache schema; remove the cache and rebuild it".into()));
+            != crate::schema::inspect(&expected, "").map_err(sql_error)?
+        {
+            return Err(StateError::Storage(
+                "invalid historical-state cache schema; remove the cache and rebuild it".into(),
+            ));
         }
-        connection.execute_batch(PROJECTOR_TEMP_SCHEMA).map_err(sql_error)?;
+        connection
+            .execute_batch(PROJECTOR_TEMP_SCHEMA)
+            .map_err(sql_error)?;
         Ok(SqliteStateStore {
             connection,
             repo_id,

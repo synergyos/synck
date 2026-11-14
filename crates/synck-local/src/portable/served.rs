@@ -17,7 +17,10 @@ use super::*;
 /// Commits accepted here are found again by this operation ID; the prefix keeps
 /// a client's IDs apart from the repository's other writes.
 fn sync_operation_id(operation_id: &str) -> String {
-    format!("sync:{}", hex::encode(Sha256::digest(operation_id.as_bytes())))
+    format!(
+        "sync:{}",
+        hex::encode(Sha256::digest(operation_id.as_bytes()))
+    )
 }
 
 /// Core sequences in pages of this many commits.
@@ -102,7 +105,8 @@ impl ServedRepository {
             .with_encrypted(config.encrypted);
         let mut wal_indexes = vec![storage.open_readonly().map_err(corrupt)?];
         if config.storage_mode == StorageMode::Chunked {
-            let store = ChunkStore::new(root.join(".synck").join(OBJECT_STORE_FILE), &config.repo_id);
+            let store =
+                ChunkStore::new(root.join(".synck").join(OBJECT_STORE_FILE), &config.repo_id);
             wal_indexes.push(store.open_readonly()?);
         }
         Ok(Self {
@@ -146,7 +150,10 @@ impl ServedRepository {
     }
 
     fn object_store(&self) -> ChunkStore {
-        ChunkStore::new(self.root.join(".synck").join(OBJECT_STORE_FILE), &self.repo_id)
+        ChunkStore::new(
+            self.root.join(".synck").join(OBJECT_STORE_FILE),
+            &self.repo_id,
+        )
     }
 
     pub fn has_object(&self, id: &ObjectId) -> Result<bool> {
@@ -161,29 +168,43 @@ impl ServedRepository {
             .as_str()
             .strip_prefix("sha256:")
             .ok_or_else(|| corrupt("object ID has no digest"))?;
-        let objects = self.metadata.open_dir_nofollow("objects").map_err(corrupt)?;
+        let objects = self
+            .metadata
+            .open_dir_nofollow("objects")
+            .map_err(corrupt)?;
         match objects.symlink_metadata(name) {
             Ok(_) => Ok(true),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
-            Err(error) => Err(error).at("inspect object", self.root.join(".synck/objects").join(name)),
+            Err(error) => Err(error).at(
+                "inspect object",
+                self.root.join(".synck/objects").join(name),
+            ),
         }
     }
 
     /// A metadata object's exact bytes from history, which protocol 1 serves
     /// at the same route as content. Blocking.
     pub fn metadata_object(&self, id: &ObjectId) -> Result<Option<Vec<u8>>> {
-        self.storage.metadata_object(&self.repo_id, id).map_err(corrupt)
+        self.storage
+            .metadata_object(&self.repo_id, id)
+            .map_err(corrupt)
     }
 
     /// What an object pack of `ids` holds, read through one connection to each
     /// database: a metadata object's bytes, or a content object's size. `None`
     /// when one of them is not stored. Blocking.
     pub fn pack_entries(&self, ids: &[ObjectId]) -> Result<Option<Vec<PackEntry>>> {
-        let metadata = self.storage.metadata_objects(&self.repo_id, ids).map_err(corrupt)?;
+        let metadata = self
+            .storage
+            .metadata_objects(&self.repo_id, ids)
+            .map_err(corrupt)?;
         let chunks = (self.storage_mode == StorageMode::Chunked)
             .then(|| self.object_store().reader())
             .transpose()?;
-        let objects = self.metadata.open_dir_nofollow("objects").map_err(corrupt)?;
+        let objects = self
+            .metadata
+            .open_dir_nofollow("objects")
+            .map_err(corrupt)?;
         let mut entries = Vec::with_capacity(ids.len());
         for (id, metadata) in ids.iter().zip(metadata) {
             if let Some(bytes) = metadata {
@@ -193,11 +214,19 @@ impl ServedRepository {
             let size = match &chunks {
                 Some(chunks) => chunks.blob_size(id)?,
                 None => {
-                    let name = id.as_str().strip_prefix("sha256:").ok_or_else(|| corrupt("object ID has no digest"))?;
+                    let name = id
+                        .as_str()
+                        .strip_prefix("sha256:")
+                        .ok_or_else(|| corrupt("object ID has no digest"))?;
                     match objects.symlink_metadata(name) {
                         Ok(entry) => Some(entry.len()),
                         Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-                        Err(error) => return Err(error).at("inspect object", self.root.join(".synck/objects").join(name)),
+                        Err(error) => {
+                            return Err(error).at(
+                                "inspect object",
+                                self.root.join(".synck/objects").join(name),
+                            );
+                        }
                     }
                 }
             };
@@ -211,7 +240,13 @@ impl ServedRepository {
 
     /// Write the object pack of `ids`, as `pack_entries` found them, ending
     /// after the object that brings it to `budget` bytes. Blocking.
-    pub fn write_pack(&self, ids: &[ObjectId], entries: Vec<PackEntry>, budget: u64, out: &mut dyn Write) -> Result<()> {
+    pub fn write_pack(
+        &self,
+        ids: &[ObjectId],
+        entries: Vec<PackEntry>,
+        budget: u64,
+        out: &mut dyn Write,
+    ) -> Result<()> {
         let chunks = (self.storage_mode == StorageMode::Chunked)
             .then(|| self.object_store().reader())
             .transpose()?;
@@ -228,8 +263,12 @@ impl ServedRepository {
             header.extend(size.to_be_bytes());
             out.write_all(&header).at("send object pack", &self.root)?;
             match (entry, &chunks) {
-                (PackEntry::Metadata(bytes), _) => out.write_all(&bytes).at("send object pack", &self.root)?,
-                (PackEntry::Content(_), Some(chunks)) => chunks.copy_blob(id, size, &mut &mut *out)?,
+                (PackEntry::Metadata(bytes), _) => {
+                    out.write_all(&bytes).at("send object pack", &self.root)?
+                }
+                (PackEntry::Content(_), Some(chunks)) => {
+                    chunks.copy_blob(id, size, &mut &mut *out)?
+                }
                 (PackEntry::Content(_), None) => {
                     if copy_stored(&self.root, &self.metadata, None, id, out)? != size {
                         return Err(corrupt(format!("object {id} changed size while sent")));
@@ -254,7 +293,10 @@ impl ServedRepository {
     /// Store each source's bytes as its ID, under one repository lock. An
     /// object's form is checked when a commit names it, since only the commit
     /// gives it a role. Blocking: waits for the lock.
-    pub fn install_objects<'a>(&self, objects: impl IntoIterator<Item = (&'a ObjectId, &'a Path)>) -> Result<()> {
+    pub fn install_objects<'a>(
+        &self,
+        objects: impl IntoIterator<Item = (&'a ObjectId, &'a Path)>,
+    ) -> Result<()> {
         let metadata = self.root.join(".synck");
         let _lock = crate::repository::acquire_lock(&metadata, true)?;
         match self.metadata.create_dir("tmp") {
@@ -279,7 +321,10 @@ impl ServedRepository {
                 None,
             )?;
             if captured.id != *id {
-                return Err(invalid(format!("object bytes are {}, not {id}", captured.id)));
+                return Err(invalid(format!(
+                    "object bytes are {}, not {id}",
+                    captured.id
+                )));
             }
         }
         Ok(())
@@ -331,12 +376,17 @@ impl ServedRepository {
             .await?
         {
             if commit.commit_id != proposal.commit_id {
-                return Err(invalid("operation ID was already used for a different commit"));
+                return Err(invalid(
+                    "operation ID was already used for a different commit",
+                ));
             }
             return Ok(Acceptance::Accepted(self.receipt(commit)?));
         }
         if let Some(head) = proposal.repository_head
-            && !self.storage.repository_head_matches(&self.repo_id,head).map_err(corrupt)?
+            && !self
+                .storage
+                .repository_head_matches(&self.repo_id, head)
+                .map_err(corrupt)?
         {
             // A cursor fence can fail without any touched item changing (for
             // example, a new child elsewhere). The client must pull full history.
@@ -348,7 +398,10 @@ impl ServedRepository {
         if !tokens.is_empty() || agent_locks::any(&metadata, repo_id)? {
             let paths = self.proposal_paths(&proposal).await?;
             let paths: Vec<&str> = paths.iter().map(String::as_str).collect();
-            let scope = agent_locks::Scope { metadata: &metadata, tree: None };
+            let scope = agent_locks::Scope {
+                metadata: &metadata,
+                tree: None,
+            };
             agent_locks::guard(&scope, repo_id, tokens, Some(&paths))?;
         }
         let mut missing = self.unusable_objects(&core, &proposal).await?;
@@ -366,7 +419,12 @@ impl ServedRepository {
             .events
             .iter()
             .filter_map(|event| event.item_id.clone())
-            .chain(proposal.ref_events.iter().map(|event| event.owner_item_id.clone()))
+            .chain(
+                proposal
+                    .ref_events
+                    .iter()
+                    .map(|event| event.owner_item_id.clone()),
+            )
             .chain(proposal.guards.iter().map(|guard| guard.item_id.clone()))
             .collect();
         items.sort();
@@ -441,7 +499,12 @@ impl ServedRepository {
         let mut item_types: HashMap<ItemId, String> = proposal
             .events
             .iter()
-            .filter_map(|event| Some((event.item_id.clone()?, event.create_item.as_ref()?.item_type.clone())))
+            .filter_map(|event| {
+                Some((
+                    event.item_id.clone()?,
+                    event.create_item.as_ref()?.item_type.clone(),
+                ))
+            })
             .collect();
         let stored: Vec<ItemId> = proposal
             .events
@@ -466,7 +529,11 @@ impl ServedRepository {
             }
         }
         for event in &proposal.ref_events {
-            for id in event.set_content.iter().flat_map(|content| content.values()) {
+            for id in event
+                .set_content
+                .iter()
+                .flat_map(|content| content.values())
+            {
                 forms.entry(id.clone()).or_insert(Form::Opaque);
             }
         }
@@ -506,13 +573,22 @@ impl ServedRepository {
             .events
             .iter()
             .filter_map(|event| event.set_metadata.as_ref())
-            .chain(proposal.ref_events.iter().filter_map(|event| event.set_metadata.as_ref()))
+            .chain(
+                proposal
+                    .ref_events
+                    .iter()
+                    .filter_map(|event| event.set_metadata.as_ref()),
+            )
             .map(|metadata| metadata.id())
             .collect();
         let mut missing = Vec::new();
         let mut uploaded = Vec::new();
         let store = self.object_store();
-        for id in self.storage.missing_metadata(&self.repo_id, ids).map_err(corrupt)? {
+        for id in self
+            .storage
+            .missing_metadata(&self.repo_id, ids)
+            .map_err(corrupt)?
+        {
             if !self.holds_object(&store, &id)? {
                 missing.push(id);
                 continue;
@@ -536,7 +612,9 @@ impl ServedRepository {
         let mut stored: HashMap<ItemId, Option<(Option<ItemId>, Option<String>)>> = HashMap::new();
         let mut placed: HashMap<ItemId, (Option<ItemId>, Option<String>)> = HashMap::new();
         for event in &proposal.events {
-            let Some(item_id) = &event.item_id else { continue };
+            let Some(item_id) = &event.item_id else {
+                continue;
+            };
             let mut place = match &event.create_item {
                 Some(create) => (create.parent_folder_id.clone(), create.name.clone()),
                 None => match placed.get(item_id) {
@@ -557,7 +635,11 @@ impl ServedRepository {
         }
         let empty = HashMap::new();
         let mut paths = BTreeSet::new();
-        for item_id in proposal.events.iter().filter_map(|event| event.item_id.as_ref()) {
+        for item_id in proposal
+            .events
+            .iter()
+            .filter_map(|event| event.item_id.as_ref())
+        {
             paths.extend(self.path(&mut stored, &empty, item_id).await?);
             paths.extend(self.path(&mut stored, &placed, item_id).await?);
         }
@@ -626,7 +708,14 @@ impl ServedRepository {
     pub fn reserve(&self, paths: Vec<String>, owner: &str, ttl: u64) -> Result<AgentLease> {
         let metadata = self.root.join(".synck");
         let _lock = crate::repository::acquire_lock(&metadata, true)?;
-        agent_locks::reserve(&metadata, self.repo_id.as_str(), paths, owner, ttl, REMOTE_TREE)
+        agent_locks::reserve(
+            &metadata,
+            self.repo_id.as_str(),
+            paths,
+            owner,
+            ttl,
+            REMOTE_TREE,
+        )
     }
 
     pub fn renew_reservation(&self, token: &str, ttl: u64) -> Result<()> {

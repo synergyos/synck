@@ -110,8 +110,15 @@ fn received_text_cannot_drive_the_terminal() {
     let log = run(root, &["log"]);
     assert!(log.contains(r"line\u{1b}]0;title\u{7}\u{202e}one"), "{log}");
     assert!(log.contains(r"ana\u{1b}[2J"), "{log}");
-    for output in [log, run(root, &["log", "--oneline"]), run(root, &["show", "HEAD"])] {
-        assert!(!output.contains(['\u{1b}', '\u{7}', '\u{202e}']), "{output}");
+    for output in [
+        log,
+        run(root, &["log", "--oneline"]),
+        run(root, &["show", "HEAD"]),
+    ] {
+        assert!(
+            !output.contains(['\u{1b}', '\u{7}', '\u{202e}']),
+            "{output}"
+        );
     }
 
     let exact = json(root, &["log", "--json"]);
@@ -143,11 +150,7 @@ fn init_alias_and_empty_directory_share_defaults() {
 fn help_exposes_only_supported_local_workflows() {
     let temp = tempfile::tempdir().unwrap();
     let help = run(temp.path(), &["--help"]);
-    for command in [
-        "workspace",
-        "import",
-        "restore-archive",
-    ] {
+    for command in ["workspace", "import", "restore-archive"] {
         assert!(
             !help
                 .lines()
@@ -346,7 +349,8 @@ async fn history_commands_refuse_partial_changes_across_checkout_boundaries() {
 fn verification_aliases_reject_corrupt_checkout_state_without_repairing_it() {
     let temp = tempfile::tempdir().unwrap();
     run(temp.path(), &["init", "--author", "tester"]);
-    let db = rusqlite::Connection::open(temp.path().join(".synck/repository.local.sqlite3")).unwrap();
+    let db =
+        rusqlite::Connection::open(temp.path().join(".synck/repository.local.sqlite3")).unwrap();
     assert_eq!(
         db.execute("UPDATE local_file_heads SET blob_id='invalid'", [])
             .unwrap(),
@@ -377,7 +381,8 @@ fn verification_aliases_reject_corrupt_checkout_state_without_repairing_it() {
 fn verification_accepts_a_projection_behind_history() {
     let temp = tempfile::tempdir().unwrap();
     run(temp.path(), &["init", "--author", "tester"]);
-    let db = rusqlite::Connection::open(temp.path().join(".synck/repository.local.sqlite3")).unwrap();
+    let db =
+        rusqlite::Connection::open(temp.path().join(".synck/repository.local.sqlite3")).unwrap();
     db.execute(
         "UPDATE local_projection_state SET applied_repo_seq = applied_repo_seq - 1",
         [],
@@ -397,7 +402,17 @@ fn repeating_a_write_finishes_one_killed_before_acceptance() {
     let source = source.to_str().unwrap();
 
     std::fs::write(root.join("new.txt"), "saved\n").unwrap();
-    run(&root, &["repository", "create-file", "new.txt", source, "-m", "create"]);
+    run(
+        &root,
+        &[
+            "repository",
+            "create-file",
+            "new.txt",
+            source,
+            "-m",
+            "create",
+        ],
+    );
     let listed = json(&root, &["item", "list"]);
     let items = listed["items"].as_array().unwrap();
     let item = items.iter().find(|i| i["name"] == "new.txt").unwrap();
@@ -405,7 +420,10 @@ fn repeating_a_write_finishes_one_killed_before_acceptance() {
 
     std::fs::write(temp.path().join("source.txt"), "again\n").unwrap();
     std::fs::write(root.join("new.txt"), "again\n").unwrap();
-    run(&root, &["repository", "save-file", item, source, "-m", "save"]);
+    run(
+        &root,
+        &["repository", "save-file", item, source, "-m", "save"],
+    );
     assert!(run(&root, &["status"]).contains("working tree clean"));
 
     std::fs::write(root.join("new.txt"), "other work\n").unwrap();
@@ -415,7 +433,10 @@ fn repeating_a_write_finishes_one_killed_before_acceptance() {
         .output()
         .unwrap();
     assert!(!refused.status.success());
-    assert_eq!(std::fs::read(root.join("new.txt")).unwrap(), b"other work\n");
+    assert_eq!(
+        std::fs::read(root.join("new.txt")).unwrap(),
+        b"other work\n"
+    );
 }
 
 #[test]
@@ -438,34 +459,81 @@ fn item_commands_take_repository_paths() {
     fs::write(&source, "final\n").unwrap();
     fs::write(root.join("Matters/Case A/brief.txt"), "final\n").unwrap();
     let source = source.to_str().unwrap();
-    run(&root, &["repository", "save-file", "Matters/Case A/brief.txt", source, "-m", "save"]);
-    let copy = json(&root, &[
-        "repository", "duplicate", "Matters/Case A/brief.txt", "copy.txt",
-        "--parent", "Matters/Case A", "-m", "copy",
-    ]);
-    assert_eq!(fs::read(root.join("Matters/Case A/copy.txt")).unwrap(), b"final\n");
+    run(
+        &root,
+        &[
+            "repository",
+            "save-file",
+            "Matters/Case A/brief.txt",
+            source,
+            "-m",
+            "save",
+        ],
+    );
+    let copy = json(
+        &root,
+        &[
+            "repository",
+            "duplicate",
+            "Matters/Case A/brief.txt",
+            "copy.txt",
+            "--parent",
+            "Matters/Case A",
+            "-m",
+            "copy",
+        ],
+    );
+    assert_eq!(
+        fs::read(root.join("Matters/Case A/copy.txt")).unwrap(),
+        b"final\n"
+    );
     assert_eq!(
         json(&root, &["item", "show", "Matters/Case A/copy.txt"])["item"]["projection"]["item_id"],
         copy["item_id"]
     );
     fs::write(root.join("Matters/Case A/brief.txt"), "taken in\n").unwrap();
     fs::write(temp.path().join("source.txt"), "taken in\n").unwrap();
-    run(&root, &[
-        "repository", "save-file", &brief, source, "-m", "take in",
-        "--merged-from", "Matters/Case A/copy.txt@1",
-    ]);
+    run(
+        &root,
+        &[
+            "repository",
+            "save-file",
+            &brief,
+            source,
+            "-m",
+            "take in",
+            "--merged-from",
+            "Matters/Case A/copy.txt@1",
+        ],
+    );
     let exported = temp.path().join("exported.txt");
-    run(&root, &["item", "export", "Matters/Case A/brief.txt", exported.to_str().unwrap()]);
+    run(
+        &root,
+        &[
+            "item",
+            "export",
+            "Matters/Case A/brief.txt",
+            exported.to_str().unwrap(),
+        ],
+    );
     assert_eq!(fs::read(&exported).unwrap(), b"taken in\n");
 
-    for missing in ["Matters/Case B/brief.txt", "Matters/Case A/brief.txt/x", "", "Matters//brief.txt"] {
+    for missing in [
+        "Matters/Case B/brief.txt",
+        "Matters/Case A/brief.txt/x",
+        "",
+        "Matters//brief.txt",
+    ] {
         let output = Command::new(env!("CARGO_BIN_EXE_synck"))
             .current_dir(&root)
             .args(["item", "show", missing])
             .output()
             .unwrap();
         assert!(!output.status.success(), "{missing}");
-        assert!(String::from_utf8_lossy(&output.stderr).contains("no live item"), "{missing}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("no live item"),
+            "{missing}"
+        );
     }
 }
 
@@ -478,7 +546,8 @@ fn restore_tree_visits_an_earlier_commit_and_commits_a_rollback() {
     fs::write(root.join("Docs/notes.txt"), "notes\n").unwrap();
     run(&root, &["init", "--author", "tester"]);
     run(&root, &["commit", "-m", "one"]);
-    let id = |path: &str| json(&root, &["item", "show", path])["item"]["projection"]["item_id"].clone();
+    let id =
+        |path: &str| json(&root, &["item", "show", path])["item"]["projection"]["item_id"].clone();
     let (plan, notes) = (id("plan.txt"), id("Docs/notes.txt"));
 
     fs::write(root.join("plan.txt"), "second\n").unwrap();
@@ -495,7 +564,10 @@ fn restore_tree_visits_an_earlier_commit_and_commits_a_rollback() {
     assert_eq!(fs::read(root.join("scratch.tmp")).unwrap(), b"ignored\n");
     let changes = json(&root, &["status", "--json"])["changes"].clone();
     assert_eq!(changes.as_array().unwrap().len(), 3, "{changes}");
-    assert_eq!(json(&root, &["--json", "restore-tree", "HEAD~1"])["restored"], false);
+    assert_eq!(
+        json(&root, &["--json", "restore-tree", "HEAD~1"])["restored"],
+        false
+    );
 
     run(&root, &["restore-tree"]);
     assert_eq!(fs::read(root.join("plan.txt")).unwrap(), b"second\n");
@@ -528,8 +600,14 @@ fn clones_share_one_history_and_never_overwrite_each_other() {
     fs::write(origin.join("b.txt"), b"b\n").unwrap();
     run(&origin, &["init", "--author", "origin"]);
     run(&origin, &["commit", "-m", "start"]);
-    run(temp.path(), &["clone", "origin", "full", "--author", "full"]);
-    run(temp.path(), &["clone", "origin", "docs", "--include", "docs"]);
+    run(
+        temp.path(),
+        &["clone", "origin", "full", "--author", "full"],
+    );
+    run(
+        temp.path(),
+        &["clone", "origin", "docs", "--include", "docs"],
+    );
     let (full, docs) = (temp.path().join("full"), temp.path().join("docs"));
     // History and content stay in the origin; a clone keeps its working state.
     for name in ["repository.sqlite3", "objects", "object-store.sqlite3"] {
@@ -554,7 +632,10 @@ fn clones_share_one_history_and_never_overwrite_each_other() {
     // The origin's files are based on its own last commit; pull brings the rest.
     assert!(run(&origin, &["status"]).contains("working tree clean"));
     let pulled = json(&origin, &["pull", "--json"]);
-    assert_eq!(pulled["updated"], serde_json::json!(["b.txt", "docs/a.txt"]));
+    assert_eq!(
+        pulled["updated"],
+        serde_json::json!(["b.txt", "docs/a.txt"])
+    );
     assert_eq!(fs::read(origin.join("b.txt")).unwrap(), b"b full\n");
     assert!(run(&origin, &["status"]).contains("working tree clean"));
 
@@ -587,29 +668,50 @@ fn pull_merges_text_and_keeps_both_versions_of_anything_else() {
     fs::write(b.join("plan.bin"), b"plan\0b").unwrap();
 
     // A commit stops; pull merges.
-    assert_eq!(fails(&b, &["commit", "-m", "b", "--json"])["error"]["kind"], "CONFLICT");
+    assert_eq!(
+        fails(&b, &["commit", "-m", "b", "--json"])["error"]["kind"],
+        "CONFLICT"
+    );
     let pulled = json(&b, &["pull", "--json"]);
-    assert_eq!(pulled["conflicts"], serde_json::json!(["c.txt", "plan.bin"]));
-    assert_eq!(fs::read(b.join("a.txt")).unwrap(), b"1 origin\n2\n3\n4\n5 b\n");
+    assert_eq!(
+        pulled["conflicts"],
+        serde_json::json!(["c.txt", "plan.bin"])
+    );
+    assert_eq!(
+        fs::read(b.join("a.txt")).unwrap(),
+        b"1 origin\n2\n3\n4\n5 b\n"
+    );
     assert_eq!(
         fs::read(b.join("c.txt")).unwrap(),
         b"<<<<<<< ours\nx b\n=======\nx origin\n>>>>>>> theirs\ny\n"
     );
     assert_eq!(fs::read(b.join("plan.bin")).unwrap(), b"plan\0b");
-    assert_eq!(fs::read(b.join("plan.~theirs.bin")).unwrap(), b"plan\0origin");
+    assert_eq!(
+        fs::read(b.join("plan.~theirs.bin")).unwrap(),
+        b"plan\0origin"
+    );
     let status = json(&b, &["status", "--json"]);
     assert_eq!(status["conflicts"][1]["theirs"], "plan.~theirs.bin");
 
     // Nothing is committed until every conflict is resolved.
-    assert_eq!(fails(&b, &["commit", "-m", "b", "--json"])["error"]["kind"], "CONFLICT");
-    assert_eq!(fails(&b, &["resolve", "c.txt", "--json"])["error"]["kind"], "INVALID");
+    assert_eq!(
+        fails(&b, &["commit", "-m", "b", "--json"])["error"]["kind"],
+        "CONFLICT"
+    );
+    assert_eq!(
+        fails(&b, &["resolve", "c.txt", "--json"])["error"]["kind"],
+        "INVALID"
+    );
     fs::write(b.join("c.txt"), b"x both\ny\n").unwrap();
     fs::remove_file(b.join("plan.~theirs.bin")).unwrap();
     run(&b, &["resolve", "c.txt", "plan.bin"]);
     assert!(json(&b, &["status", "--json"]).get("conflicts").is_none());
     run(&b, &["commit", "-m", "b merged"]);
     run(&origin, &["pull"]);
-    assert_eq!(fs::read(origin.join("a.txt")).unwrap(), b"1 origin\n2\n3\n4\n5 b\n");
+    assert_eq!(
+        fs::read(origin.join("a.txt")).unwrap(),
+        b"1 origin\n2\n3\n4\n5 b\n"
+    );
     assert_eq!(fs::read(origin.join("c.txt")).unwrap(), b"x both\ny\n");
 }
 
@@ -624,7 +726,10 @@ fn an_alternative_folder_is_duplicated_and_adopted_with_its_sources() {
     run(&root, &["init", "--author", "a"]);
     run(&root, &["commit", "-m", "start"]);
     run(&root, &["duplicate", "Design", "Option B"]);
-    assert_eq!(fs::read(root.join("Option B/sub/spec.txt")).unwrap(), b"spec\n");
+    assert_eq!(
+        fs::read(root.join("Option B/sub/spec.txt")).unwrap(),
+        b"spec\n"
+    );
     let created = json(&root, &["show", "HEAD", "--events", "--json"]).to_string();
     assert!(created.contains("derived_from"), "{created}");
 
@@ -658,17 +763,40 @@ fn a_reservation_holds_in_every_clone() {
     run(temp.path(), &["clone", "origin", "a", "--author", "a"]);
     run(temp.path(), &["clone", "origin", "b", "--author", "b"]);
     let (a, b) = (temp.path().join("a"), temp.path().join("b"));
-    let lease = json(&a, &["--json", "lock", "acquire", "report.docx", "--owner", "agent-a"]);
+    let lease = json(
+        &a,
+        &[
+            "--json",
+            "lock",
+            "acquire",
+            "report.docx",
+            "--owner",
+            "agent-a",
+        ],
+    );
     let token = lease["result"]["token"].as_str().unwrap().to_string();
 
     // Another clone sees the holder and cannot commit the file or take it.
     let status = json(&b, &["status", "--json"]);
     assert_eq!(status["reservations"][0]["owner"], "agent-a");
     fs::write(b.join("report.docx"), b"b\n").unwrap();
-    assert_eq!(fails(&b, &["commit", "-m", "b", "--json"])["error"]["kind"], "LOCKED");
+    assert_eq!(
+        fails(&b, &["commit", "-m", "b", "--json"])["error"]["kind"],
+        "LOCKED"
+    );
     run(&b, &["restore", "report.docx"]);
     assert_eq!(
-        fails(&b, &["--json", "lock", "acquire", "report.docx", "--owner", "agent-b"])["error"]["kind"],
+        fails(
+            &b,
+            &[
+                "--json",
+                "lock",
+                "acquire",
+                "report.docx",
+                "--owner",
+                "agent-b"
+            ]
+        )["error"]["kind"],
         "LOCKED"
     );
 
@@ -680,7 +808,11 @@ fn a_reservation_holds_in_every_clone() {
     run(&b, &["pull"]);
     assert_eq!(fs::read(b.join("report.docx")).unwrap(), b"r a\n");
     run(&a, &["lock", "release", &token]);
-    assert!(json(&b, &["status", "--json"]).get("reservations").is_none());
+    assert!(
+        json(&b, &["status", "--json"])
+            .get("reservations")
+            .is_none()
+    );
 }
 
 #[test]
@@ -692,7 +824,10 @@ fn held_clones_keep_commits_until_push_with_their_ids() {
     fs::write(origin.join("b.txt"), b"b\n").unwrap();
     run(&origin, &["init", "--author", "origin"]);
     run(&origin, &["commit", "-m", "start"]);
-    run(temp.path(), &["clone", "origin", "held", "--hold", "--include", "docs"]);
+    run(
+        temp.path(),
+        &["clone", "origin", "held", "--hold", "--include", "docs"],
+    );
     let held = temp.path().join("held");
     run(&held, &["monitor", "start"]);
     run(&held, &["monitor", "stop"]);
@@ -713,7 +848,10 @@ fn held_clones_keep_commits_until_push_with_their_ids() {
     run(&origin, &["commit", "-m", "origin b"]);
     let pushed = json(&held, &["push", "--json"]);
     assert_eq!(pushed["pushed"], serde_json::json!([first, second]));
-    assert_eq!(json(&held, &["status", "--json"])["held_commits"], serde_json::json!([]));
+    assert_eq!(
+        json(&held, &["status", "--json"])["held_commits"],
+        serde_json::json!([])
+    );
     run(&origin, &["pull"]);
     assert_eq!(fs::read(origin.join("docs/c.txt")).unwrap(), b"c held\n");
     run(&origin, &["fsck"]);
@@ -737,7 +875,13 @@ fn held_clones_keep_commits_until_push_with_their_ids() {
     fs::write(held.join("docs/a.txt"), b"a both\n").unwrap();
     run(&held, &["resolve", "docs/a.txt"]);
     run(&held, &["commit", "-m", "both"]);
-    assert_eq!(json(&held, &["push", "--json"])["pushed"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        json(&held, &["push", "--json"])["pushed"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
     run(&origin, &["pull"]);
     assert_eq!(fs::read(origin.join("docs/a.txt")).unwrap(), b"a both\n");
     assert!(run(&held, &["status"]).starts_with("clone of "));
@@ -784,9 +928,17 @@ fn withdrawn_saves_keep_their_ids_and_bytes_until_they_expire() {
     assert_eq!(listed[1]["commit_id"], mine);
     assert_eq!(listed[1]["changes"][0]["path"], "a.txt");
     let pointer = fails(&held, &["show", mine.as_str().unwrap(), "--json"]);
-    assert!(pointer["error"]["message"].as_str().unwrap().contains("withdrawn as w1"));
+    assert!(
+        pointer["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("withdrawn as w1")
+    );
     assert_eq!(
-        json(&held, &["withdrawn", "show", mine.as_str().unwrap(), "--json"])["withdrawn"]["label"],
+        json(
+            &held,
+            &["withdrawn", "show", mine.as_str().unwrap(), "--json"]
+        )["withdrawn"]["label"],
         "w1"
     );
 
@@ -795,21 +947,36 @@ fn withdrawn_saves_keep_their_ids_and_bytes_until_they_expire() {
     fs::write(held.join("a.txt"), b"a theirs\n").unwrap();
     run(&held, &["resolve", "a.txt"]);
     run(&origin, &["gc"]);
-    run(&held, &["withdrawn", "export", "w1", "a.txt", "../mine.txt"]);
+    run(
+        &held,
+        &["withdrawn", "export", "w1", "a.txt", "../mine.txt"],
+    );
     assert_eq!(fs::read(temp.path().join("mine.txt")).unwrap(), b"a mine\n");
     run(&held, &["commit", "-m", "y again"]);
     let pushed = json(&held, &["push", "--json"])["pushed"].clone();
     assert_eq!(pushed[0], clean);
-    assert_eq!(json(&held, &["withdrawn", "--json"])["withdrawn"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        json(&held, &["withdrawn", "--json"])["withdrawn"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
     run(&held, &["fsck"]);
 
     // Discarded or expired, a withdrawn save is gone and its bytes are free.
-    assert_eq!(json(&held, &["withdrawn", "discard", "w2", "--json"])["discarded"], serde_json::json!(["w2"]));
+    assert_eq!(
+        json(&held, &["withdrawn", "discard", "w2", "--json"])["discarded"],
+        serde_json::json!(["w2"])
+    );
     let path = held.join(".synck/withdrawn.json");
     let mut file: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     file["saves"][0]["withdrawn_at"] = Value::from("2020-01-01T00:00:00Z");
     fs::write(&path, serde_json::to_vec(&file).unwrap()).unwrap();
-    assert_eq!(json(&held, &["withdrawn", "--json"])["withdrawn"], serde_json::json!([]));
+    assert_eq!(
+        json(&held, &["withdrawn", "--json"])["withdrawn"],
+        serde_json::json!([])
+    );
     // A clone's gc collects the origin's store.
     let collected = json(&held, &["gc", "--json"]);
     assert_eq!(collected["expired_withdrawn"], serde_json::json!(["w1"]));
@@ -941,16 +1108,31 @@ async fn a_file_write_refuses_a_rename_onto_its_path_and_a_merge_that_records_no
     init_repository(&root, "tester").await.unwrap();
     let source = temp.path().join("source.txt");
     fs::write(&source, b"same").unwrap();
-    let options = || WriteOptions { message: Some("m".into()), ..Default::default() };
+    let options = || WriteOptions {
+        message: Some("m".into()),
+        ..Default::default()
+    };
     let mut repo = PortableRepository::open(&root).unwrap();
-    let (first, _) = repo.create_file_with(None, "a.txt", &source, &options()).await.unwrap();
-    let (other, _) = repo.create_file_with(None, "b.txt", &source, &options()).await.unwrap();
+    let (first, _) = repo
+        .create_file_with(None, "a.txt", &source, &options())
+        .await
+        .unwrap();
+    let (other, _) = repo
+        .create_file_with(None, "b.txt", &source, &options())
+        .await
+        .unwrap();
 
     let merge = WriteOptions {
-        merged_from: Some(ItemRevision { item_id: other.clone(), item_seq: 1 }),
+        merged_from: Some(ItemRevision {
+            item_id: other.clone(),
+            item_seq: 1,
+        }),
         ..options()
     };
-    let error = repo.save_file_with(&first, &source, None, &merge).await.unwrap_err();
+    let error = repo
+        .save_file_with(&first, &source, None, &merge)
+        .await
+        .unwrap_err();
     assert!(error.to_string().contains("records nothing"), "{error}");
 
     drop(repo);
@@ -972,19 +1154,41 @@ async fn an_operation_id_names_one_request_with_its_sources() {
     init_repository(&root, "tester").await.unwrap();
     let source = temp.path().join("source.txt");
     fs::write(&source, b"first").unwrap();
-    let plain = WriteOptions { message: Some("m".into()), ..Default::default() };
+    let plain = WriteOptions {
+        message: Some("m".into()),
+        ..Default::default()
+    };
     let mut repo = PortableRepository::open(&root).unwrap();
-    let (file, _) = repo.create_file_with(None, "a.txt", &source, &plain).await.unwrap();
-    let (other, _) = repo.create_file_with(None, "b.txt", &source, &plain).await.unwrap();
+    let (file, _) = repo
+        .create_file_with(None, "a.txt", &source, &plain)
+        .await
+        .unwrap();
+    let (other, _) = repo
+        .create_file_with(None, "b.txt", &source, &plain)
+        .await
+        .unwrap();
     fs::write(&source, b"second").unwrap();
-    let write = WriteOptions { operation_id: Some(uuid::Uuid::from_u128(9)), ..plain };
-    repo.save_file_with(&file, &source, None, &write).await.unwrap();
-    repo.save_file_with(&file, &source, None, &write).await.unwrap();
+    let write = WriteOptions {
+        operation_id: Some(uuid::Uuid::from_u128(9)),
+        ..plain
+    };
+    repo.save_file_with(&file, &source, None, &write)
+        .await
+        .unwrap();
+    repo.save_file_with(&file, &source, None, &write)
+        .await
+        .unwrap();
     let merge = WriteOptions {
-        merged_from: Some(ItemRevision { item_id: other, item_seq: 1 }),
+        merged_from: Some(ItemRevision {
+            item_id: other,
+            item_seq: 1,
+        }),
         ..write
     };
-    let error = repo.save_file_with(&file, &source, None, &merge).await.unwrap_err();
+    let error = repo
+        .save_file_with(&file, &source, None, &merge)
+        .await
+        .unwrap_err();
     assert!(error.to_string().contains("already used"), "{error}");
 }
 
@@ -992,8 +1196,10 @@ async fn an_operation_id_names_one_request_with_its_sources() {
 fn a_missing_projection_row_is_a_finding() {
     let temp = tempfile::tempdir().unwrap();
     run(temp.path(), &["init", "--author", "tester"]);
-    let db = rusqlite::Connection::open(temp.path().join(".synck/repository.local.sqlite3")).unwrap();
-    db.execute("DELETE FROM local_projection_state", []).unwrap();
+    let db =
+        rusqlite::Connection::open(temp.path().join(".synck/repository.local.sqlite3")).unwrap();
+    db.execute("DELETE FROM local_projection_state", [])
+        .unwrap();
     drop(db);
     let output = Command::new(env!("CARGO_BIN_EXE_synck"))
         .current_dir(temp.path())
@@ -1033,11 +1239,21 @@ async fn gc_ignores_foreign_files_and_clears_staging_a_kill_left() {
     run(&source, &["gc"]);
 
     let follower = temp.path().join("follower");
-    run(&source, &["repository", "import", ".", follower.to_str().unwrap()]);
+    run(
+        &source,
+        &["repository", "import", ".", follower.to_str().unwrap()],
+    );
     fs::create_dir_all(follower.join(".synck/tmp")).unwrap();
     fs::write(follower.join(".synck/tmp/object-killed"), b"partial").unwrap();
-    PortableRepository::open(&follower).unwrap().gc().await.unwrap();
-    assert_eq!(fs::read_dir(follower.join(".synck/tmp")).unwrap().count(), 0);
+    PortableRepository::open(&follower)
+        .unwrap()
+        .gc()
+        .await
+        .unwrap();
+    assert_eq!(
+        fs::read_dir(follower.join(".synck/tmp")).unwrap().count(),
+        0
+    );
 }
 
 #[tokio::test]
@@ -1048,7 +1264,10 @@ async fn a_follower_ignores_checkout_state_until_its_config_names_a_writer() {
     fs::create_dir(&source).unwrap();
     run(&source, &["init", "--author", "tester"]);
     let follower = temp.path().join("follower");
-    run(&source, &["repository", "import", ".", follower.to_str().unwrap()]);
+    run(
+        &source,
+        &["repository", "import", ".", follower.to_str().unwrap()],
+    );
     // What a kill between publishing checkout.json and config.json leaves.
     fs::write(
         follower.join(".synck/checkout.json"),
@@ -1070,7 +1289,17 @@ async fn a_follower_ignores_checkout_state_until_its_config_names_a_writer() {
 
     // Activation makes a writer, which would read these files.
     let copy = copy_of("activated");
-    run(&copy, &["repository", "activate", ".", "--author", "writer", "--source-retired"]);
+    run(
+        &copy,
+        &[
+            "repository",
+            "activate",
+            ".",
+            "--author",
+            "writer",
+            "--source-retired",
+        ],
+    );
     assert!(!copy.join(".synck/checkout.json").exists());
     assert!(!copy.join(".synck/checkout-source.json").exists());
     run(&copy, &["repository", "verify", "."]);
@@ -1091,10 +1320,21 @@ fn an_operation_id_makes_an_email_import_safe_to_repeat() {
     fs::create_dir(&root).unwrap();
     run(&root, &["init", "--author", "tester"]);
     let email = temp.path().join("message.eml");
-    fs::write(&email, "From: a@example.com\r\nTo: b@example.com\r\nSubject: Hello\r\n\r\nBody\r\n").unwrap();
+    fs::write(
+        &email,
+        "From: a@example.com\r\nTo: b@example.com\r\nSubject: Hello\r\n\r\nBody\r\n",
+    )
+    .unwrap();
     let source = email.to_str().unwrap();
-    let import = ["repository", "import-email", source, "-m", "mail",
-        "--operation-id", "019a2900-0000-4000-8000-000000000001"];
+    let import = [
+        "repository",
+        "import-email",
+        source,
+        "-m",
+        "mail",
+        "--operation-id",
+        "019a2900-0000-4000-8000-000000000001",
+    ];
     let first = run(&root, &import);
     assert_eq!(run(&root, &import), first);
     let listed = json(&root, &["item", "list"]);
@@ -1139,7 +1379,8 @@ fn verification_rejects_valid_but_incorrect_checkout_projection_values() {
     ] {
         let temp = tempfile::tempdir().unwrap();
         run(temp.path(), &["init", "--author", "tester"]);
-        let db = rusqlite::Connection::open(temp.path().join(".synck/repository.local.sqlite3")).unwrap();
+        let db = rusqlite::Connection::open(temp.path().join(".synck/repository.local.sqlite3"))
+            .unwrap();
         db.execute(&format!("UPDATE local_file_heads SET {assignment}"), [])
             .unwrap();
         for command in [
@@ -1256,7 +1497,16 @@ async fn direct_file_writes_carry_attribution_base_checks_and_replay() {
             created
         );
         let id = created.0;
-        let first_id = ObjectId::parse(repo.show_item(&id, None).await.unwrap().item.projection.content_blob_id.unwrap()).unwrap();
+        let first_id = ObjectId::parse(
+            repo.show_item(&id, None)
+                .await
+                .unwrap()
+                .item
+                .projection
+                .content_blob_id
+                .unwrap(),
+        )
+        .unwrap();
 
         fs::write(&source, b"second").unwrap();
         let error = repo

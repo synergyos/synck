@@ -102,7 +102,11 @@ impl CommitEnvelopeValidator {
     pub fn begin(commit: &VerifyCommit, previous_repo_seq: &mut Option<i64>) -> Self {
         let mut findings = Vec::new();
         if let Err(error) = crate::limits::validate_commit_metadata(
-            &commit.author_id, &commit.committer_id, commit.message.as_deref(), None) {
+            &commit.author_id,
+            &commit.committer_id,
+            commit.message.as_deref(),
+            None,
+        ) {
             findings.push(error.to_string());
         }
         let label = commit
@@ -115,9 +119,11 @@ impl CommitEnvelopeValidator {
                     None if seq != 1 => {
                         findings.push(format!("{label}: first repository sequence must be 1"));
                     }
-                    Some(previous) if previous.checked_add(1) != Some(seq) => findings.push(format!(
-                        "{label}: repository sequence must be consecutive after {previous}"
-                    )),
+                    Some(previous) if previous.checked_add(1) != Some(seq) => {
+                        findings.push(format!(
+                            "{label}: repository sequence must be consecutive after {previous}"
+                        ))
+                    }
                     _ => {}
                 }
                 *previous_repo_seq = Some(seq);
@@ -353,7 +359,8 @@ impl CommitEnvelopeValidator {
         let expected_ref_seq = owner.head_seq.saturating_add(1);
         if event.ref_seq != expected_ref_seq {
             self.findings.push(format!(
-                "{context}: ref sequence is {}, expected {expected_ref_seq}", event.ref_seq
+                "{context}: ref sequence is {}, expected {expected_ref_seq}",
+                event.ref_seq
             ));
         }
         owner.head_seq = event.ref_seq;
@@ -517,12 +524,19 @@ mod tests {
     }
 
     fn create_proposal() -> EventProposal {
-        EventProposal { set_link: None, merged_from: None,
+        EventProposal {
+            set_link: None,
+            merged_from: None,
             item_id: None,
             event_type: "FILE::CREATE".to_string(),
             set_metadata: None,
-            set_content: Some(crate::content::EventContent::bytes(crate::types::ObjectId::from_digest([7; 32]))),
-            create_item: Some(CreateItem { key: None, link: None, derived_from: None,
+            set_content: Some(crate::content::EventContent::bytes(
+                crate::types::ObjectId::from_digest([7; 32]),
+            )),
+            create_item: Some(CreateItem {
+                key: None,
+                link: None,
+                derived_from: None,
                 item_type: "FILE".to_string(),
                 parent_folder_id: None,
                 name: Some("file.txt".to_string()),

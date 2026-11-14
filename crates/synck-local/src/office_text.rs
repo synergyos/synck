@@ -204,7 +204,12 @@ fn cells(xml: &str, strings: &[String], out: &mut String) -> Option<()> {
         Node::Close("c") => {
             let shown = match kind.as_str() {
                 "s" if !value.is_empty() => {
-                    match value.trim().parse::<usize>().ok().and_then(|index| strings.get(index)) {
+                    match value
+                        .trim()
+                        .parse::<usize>()
+                        .ok()
+                        .and_then(|index| strings.get(index))
+                    {
                         Some(string) => string.clone(),
                         None => {
                             broken = true;
@@ -314,7 +319,9 @@ fn tag_end(rest: &str) -> Option<usize> {
 }
 
 fn split_tag(tag: &str) -> (&str, &str) {
-    let end = tag.find(|c: char| c.is_ascii_whitespace()).unwrap_or(tag.len());
+    let end = tag
+        .find(|c: char| c.is_ascii_whitespace())
+        .unwrap_or(tag.len());
     (local(&tag[..end]), &tag[end..])
 }
 
@@ -419,7 +426,14 @@ mod tests {
             out,
             "  A1: Rent\n  B1: 1200.5\n  D1: 3600 (=SUM(B1:B3))\n  E1: TRUE\n  F1: a < b\n  G1: Kit\n"
         );
-        assert!(cells(r#"<c r="A1" t="s"><v>7</v></c>"#, &strings, &mut String::new()).is_none());
+        assert!(
+            cells(
+                r#"<c r="A1" t="s"><v>7</v></c>"#,
+                &strings,
+                &mut String::new()
+            )
+            .is_none()
+        );
     }
 
     #[test]
@@ -440,8 +454,14 @@ mod tests {
         assert_eq!(attribute(r#" s="1" r='B2' t="s""#, "r"), Some("B2"));
         assert_eq!(attribute(r#" rr="X" r="A1""#, "r"), Some("A1"));
         assert_eq!(attribute(r#" s="1""#, "t"), None);
-        assert_eq!(numbered("ppt/slides/slide12.xml", "ppt/slides/slide"), Some(12));
+        assert_eq!(
+            numbered("ppt/slides/slide12.xml", "ppt/slides/slide"),
+            Some(12)
+        );
         assert_eq!(numbered("ppt/slides/slide.xml", "ppt/slides/slide"), None);
-        assert_eq!(numbered("ppt/slides/slide1.xml.rels", "ppt/slides/slide"), None);
+        assert_eq!(
+            numbered("ppt/slides/slide1.xml.rels", "ppt/slides/slide"),
+            None
+        );
     }
 }

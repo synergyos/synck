@@ -2,7 +2,9 @@
 
 use crate::naming::{NameError, namespace_key};
 use crate::state::ItemValue;
-use crate::types::{CreateItem, EventProposal, ItemId, ItemRevision, ItemRow, LifecycleState, SequencingMode};
+use crate::types::{
+    CreateItem, EventProposal, ItemId, ItemRevision, ItemRow, LifecycleState, SequencingMode,
+};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ItemState {
@@ -133,13 +135,20 @@ pub fn apply_event(
             return Err(TransitionError::Invalid("set_link on a tree item"));
         }
     } else if proposal.set_name.is_some() || proposal.set_parent.is_some() {
-        return Err(TransitionError::Invalid("set_name or set_parent on a record"));
+        return Err(TransitionError::Invalid(
+            "set_name or set_parent on a record",
+        ));
     }
     if proposal.replaces_content() {
-        let content = proposal.set_content.as_ref().expect("event replaces content");
+        let content = proposal
+            .set_content
+            .as_ref()
+            .expect("event replaces content");
         match state.item_type.as_str() {
             "FILE" if content.only("bytes").is_none() => {
-                return Err(TransitionError::Invalid("a FILE's content is exactly its bytes"));
+                return Err(TransitionError::Invalid(
+                    "a FILE's content is exactly its bytes",
+                ));
             }
             "FOLDER" => return Err(TransitionError::Invalid("a FOLDER has no content")),
             _ => {}
@@ -155,7 +164,9 @@ pub fn apply_event(
         && (state.sequencing_mode == SequencingMode::Federated
             || proposal.set_is_federated == Some(true))
     {
-        return Err(TransitionError::Invalid("a federated event has no source revision"));
+        return Err(TransitionError::Invalid(
+            "a federated event has no source revision",
+        ));
     }
     if let Some(parent) = proposal.set_parent.as_ref() {
         state.parent_folder_id.clone_from(parent);
@@ -213,7 +224,8 @@ mod tests {
             create_item: None,
             set_parent: None,
             set_name: None,
-            set_link: None, merged_from: None,
+            set_link: None,
+            merged_from: None,
             set_tombstoned: None,
             set_in_trash: None,
             set_is_federated: None,

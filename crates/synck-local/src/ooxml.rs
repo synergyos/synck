@@ -35,7 +35,9 @@ impl ReaderAt for CursorPreservingFile {
 struct OffsetReader<R>(R, u64);
 impl<R: ReaderAt> ReaderAt for OffsetReader<R> {
     fn read_at(&self, bytes: &mut [u8], offset: u64) -> std::io::Result<usize> {
-        let offset = offset.checked_add(self.1).ok_or_else(|| std::io::Error::other("object offset overflow"))?;
+        let offset = offset
+            .checked_add(self.1)
+            .ok_or_else(|| std::io::Error::other("object offset overflow"))?;
         self.0.read_at(bytes, offset)
     }
 }
@@ -87,7 +89,12 @@ pub(crate) fn chunk_region_lengths(
     chunk_region_lengths_at(file, source_size, kind, 0)
 }
 
-pub(crate) fn chunk_region_lengths_at(file: File, source_size: u64, kind: OoxmlKind, base: u64) -> Option<Vec<u64>> {
+pub(crate) fn chunk_region_lengths_at(
+    file: File,
+    source_size: u64,
+    kind: OoxmlKind,
+    base: u64,
+) -> Option<Vec<u64>> {
     let mut buffer = vec![0_u8; RECOMMENDED_BUFFER_SIZE];
     #[cfg(not(windows))]
     let reader = FileReader::from(file);

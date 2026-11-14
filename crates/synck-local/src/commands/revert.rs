@@ -230,7 +230,10 @@ pub(super) fn materialize_revert(
     .map_err(LocalError::from)
 }
 
-pub(super) fn revert_blob_ref(item: &RevertIntentItem, before: &RevertItemState) -> Result<BlobRef> {
+pub(super) fn revert_blob_ref(
+    item: &RevertIntentItem,
+    before: &RevertItemState,
+) -> Result<BlobRef> {
     Ok(BlobRef {
         blob_id: before.blob_id.clone().ok_or_else(|| {
             LocalError::Integrity(format!("revert FILE {} has no blob", item.item_id))
@@ -495,15 +498,27 @@ pub(super) fn validate_revert_intent(
     Ok(())
 }
 
-pub(super) fn same_event_proposals(left: &[EventProposal], right: &[EventProposal]) -> Result<bool> {
+pub(super) fn same_event_proposals(
+    left: &[EventProposal],
+    right: &[EventProposal],
+) -> Result<bool> {
     if left.len() != right.len() {
         return Ok(false);
     }
     left.iter()
         .zip(right)
         .map(|(left, right)| {
-            if left.set_metadata.as_ref().and_then(synck_vcs::metadata::MetadataRef::value)
-                != right.set_metadata.as_ref().and_then(synck_vcs::metadata::MetadataRef::value) { return Ok(false); }
+            if left
+                .set_metadata
+                .as_ref()
+                .and_then(synck_vcs::metadata::MetadataRef::value)
+                != right
+                    .set_metadata
+                    .as_ref()
+                    .and_then(synck_vcs::metadata::MetadataRef::value)
+            {
+                return Ok(false);
+            }
             let mut right = right.clone();
             right.set_metadata = left.set_metadata.clone();
             Ok(canonical_event_proposal_bytes(left)? == canonical_event_proposal_bytes(&right)?)
@@ -625,7 +640,10 @@ pub(super) fn expected_revert_commit_id(intent: &RevertIntent, author: &str) -> 
     Ok(compute_commit_id(&commit))
 }
 
-pub(super) fn validate_inverse_stage_entries(stage: &Path, items: &[RevertIntentItem]) -> Result<()> {
+pub(super) fn validate_inverse_stage_entries(
+    stage: &Path,
+    items: &[RevertIntentItem],
+) -> Result<()> {
     let expected: HashSet<&str> = items.iter().map(|item| item.item_id.as_str()).collect();
     for entry in std::fs::read_dir(stage).at("read revert staging", stage)? {
         let entry = entry.at("read revert staging", stage)?;
@@ -669,7 +687,11 @@ pub(super) fn entry_matches_revert_state(
             }
             let digest = match &state.plain_digest {
                 Some(digest) => digest.clone(),
-                None => repository.plain_digest(state.blob_id.as_ref().ok_or_else(|| LocalError::Integrity("revert FILE has neither content nor plaintext digest".into()))?)?,
+                None => repository.plain_digest(state.blob_id.as_ref().ok_or_else(|| {
+                    LocalError::Integrity(
+                        "revert FILE has neither content nor plaintext digest".into(),
+                    )
+                })?)?,
             };
             let size = u64::try_from(state.size.ok_or_else(|| {
                 LocalError::Integrity("revert FILE state has no size".to_string())
@@ -1227,7 +1249,11 @@ impl Repository {
         Ok(())
     }
 
-    pub(super) fn publish_revert_folder(&self, stage: &Path, item: &RevertIntentItem) -> Result<()> {
+    pub(super) fn publish_revert_folder(
+        &self,
+        stage: &Path,
+        item: &RevertIntentItem,
+    ) -> Result<()> {
         let before = item.before.as_ref().expect("filtered revert folder");
         let target = self.root_path().join(display_to_path(&before.path));
         if entry_matches_revert_state(self, &target, "FOLDER", before)? {

@@ -1143,7 +1143,6 @@ pub fn validate_file_version_ref_description(
     }
 }
 
-
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ItemDataLink {
     pub link_key: String,

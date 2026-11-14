@@ -3,8 +3,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde_json::Value;
 use synck_vcs::naming::compute_name_key;
 use synck_vcs::types::{
-    ObjectId, COMMIT_EVENT_FAMILY_ITEM, COMMIT_EVENT_FAMILY_REF, COMMIT_FORMAT_VERSION,
-    CommitEventRow, CommitRow, EventProposal, EventRow, EventsDigest, ItemId, RefEventProposal,
+    COMMIT_EVENT_FAMILY_ITEM, COMMIT_EVENT_FAMILY_REF, COMMIT_FORMAT_VERSION, CommitEventRow,
+    CommitRow, EventProposal, EventRow, EventsDigest, ItemId, ObjectId, RefEventProposal,
     RefEventRow, canonical_event_proposal_bytes, canonical_ref_event_proposal_bytes,
     canonical_stored_commit_bytes_for_hash, compute_commit_id, compute_sha256_digest_bytes,
     sha256_prefixed_hex_from_digest_bytes,
@@ -20,13 +20,8 @@ const KNOWN_FILE_OMISSIONS: &[&str] = &[
     "FILE::REVISION_SUPPRESS",
     "FILE::REVISION_UNSUPPRESS",
 ];
-const KNOWN_FOLDER_OMISSIONS: &[&str] = &[
-    "FOLDER::SET_METADATA",
-];
-const KNOWN_ITEM_OMISSIONS: &[&str] = &[
-    "ITEM::DATA_LINK::PUT",
-    "ITEM::DATA_LINK::DELETE",
-];
+const KNOWN_FOLDER_OMISSIONS: &[&str] = &["FOLDER::SET_METADATA"];
+const KNOWN_ITEM_OMISSIONS: &[&str] = &["ITEM::DATA_LINK::PUT", "ITEM::DATA_LINK::DELETE"];
 
 pub fn project_commit(
     commit: &CommitRow,
@@ -356,13 +351,12 @@ fn parse_and_verify_events<'a>(
                 "ref event payload digest mismatch",
             ));
         }
-        let proposal: RefEventProposal =
-            row.proposal().map_err(|failure| {
-                error(
-                    SemanticErrorCode::MalformedProfileEvent,
-                    format!("ref event payload does not decode strictly: {failure}"),
-                )
-            })?;
+        let proposal: RefEventProposal = row.proposal().map_err(|failure| {
+            error(
+                SemanticErrorCode::MalformedProfileEvent,
+                format!("ref event payload does not decode strictly: {failure}"),
+            )
+        })?;
         if canonical_ref_event_proposal_bytes(&proposal).map_err(core_canonical_error)?
             != row.payload
         {
@@ -664,7 +658,10 @@ fn require_create_shape(
         && proposal.set_is_federated.is_none()
         && proposal.set_federation_stream_id.is_none();
     require_shape(valid, "malformed CREATE event")?;
-    let name = proposal.create_item.as_ref().and_then(|create| create.name.as_deref());
+    let name = proposal
+        .create_item
+        .as_ref()
+        .and_then(|create| create.name.as_deref());
     require_shape(name.is_some(), "malformed CREATE event")?;
     compute_name_key(name.unwrap_or_default()).map_err(|failure| {
         error(
@@ -711,8 +708,10 @@ fn validate_content_event(proposal: &EventProposal) -> Result<(), SemanticError>
 
 /// `FILE::SET_CONTENT` metadata has a closed key set. `FILE::CREATE` does not.
 fn validate_file_bytes(proposal: &EventProposal, closed_keys: bool) -> Result<(), SemanticError> {
-    let has_bytes =
-        proposal.set_content.as_ref().is_some_and(|content| content.only("bytes").is_some());
+    let has_bytes = proposal
+        .set_content
+        .as_ref()
+        .is_some_and(|content| content.only("bytes").is_some());
     require_shape(has_bytes, "FILE content event lacks exactly its bytes")?;
     let blob_id = proposal
         .set_content
@@ -735,12 +734,14 @@ fn validate_file_bytes(proposal: &EventProposal, closed_keys: bool) -> Result<()
                 "FILE content metadata is missing",
             )
         })?;
-    if closed_keys && metadata.keys().any(|key| {
-        !matches!(
-            key.as_str(),
-            "content" | "upload_intent_id" | "revision_origin" | "provenance"
-        )
-    }) {
+    if closed_keys
+        && metadata.keys().any(|key| {
+            !matches!(
+                key.as_str(),
+                "content" | "upload_intent_id" | "revision_origin" | "provenance"
+            )
+        })
+    {
         return Err(error(
             SemanticErrorCode::MalformedProfileEvent,
             "FILE::SET_CONTENT has an unknown metadata decoration",
@@ -968,7 +969,12 @@ mod tests {
         let proposal = RefEventProposal {
             owner_item_id: owner_item_id.clone(),
             event_type: "FILE_VERSION::CREATE".to_string(),
-            set_metadata: Some(synck_vcs::metadata::MetadataRef::new(serde_json::json!({"file_item_id": owner_item_id.as_str()})).unwrap()),
+            set_metadata: Some(
+                synck_vcs::metadata::MetadataRef::new(
+                    serde_json::json!({"file_item_id": owner_item_id.as_str()}),
+                )
+                .unwrap(),
+            ),
             set_content: None,
             base_ref_seq: 0,
         };
@@ -1007,7 +1013,11 @@ mod tests {
             events_digest,
         };
         let row = RefEventRow {
-                metadata: proposal.set_metadata.as_ref().and_then(|value| value.payload()).cloned(),
+            metadata: proposal
+                .set_metadata
+                .as_ref()
+                .and_then(|value| value.payload())
+                .cloned(),
             repo_id,
             owner_item_id,
             ref_seq: 1,

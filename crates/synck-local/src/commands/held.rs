@@ -83,10 +83,13 @@ pub(crate) fn read_held(metadata: &Path) -> Result<Held> {
 }
 
 pub(crate) fn write_held(metadata: &Path, held: &Held) -> Result<()> {
-    let path = metadata.join("tmp").join(format!("held-{}.tmp", Uuid::new_v4()));
+    let path = metadata
+        .join("tmp")
+        .join(format!("held-{}.tmp", Uuid::new_v4()));
     std::fs::write(&path, serde_json::to_vec(held)?).at("write", &path)?;
     crate::repository::sync_file(&path)?;
-    crate::repository::replace_file(&path, &metadata.join(HELD_FILE)).at("publish held state", &path)?;
+    crate::repository::replace_file(&path, &metadata.join(HELD_FILE))
+        .at("publish held state", &path)?;
     sync_directory(metadata)
 }
 
@@ -97,14 +100,22 @@ pub(crate) fn pin_path(store: &Path, clone: &Path) -> PathBuf {
 }
 
 fn core(storage: SqliteStorage) -> Repo {
-    Repo::new(Storage::new(std::sync::Arc::new(storage)), CoreConfig::default())
+    Repo::new(
+        Storage::new(std::sync::Arc::new(storage)),
+        CoreConfig::default(),
+    )
 }
 
 /// A history at `path` with no commits yet, for commits to be replayed into.
 pub(crate) async fn empty_history(path: PathBuf, repo_id: &RepoId) -> Result<SqliteStorage> {
     let storage = SqliteStorage::new(path);
-    storage.init_schema().await.map_err(|error| LocalError::Integrity(error.to_string()))?;
-    core(storage.clone()).sequence_repo_activity(repo_id.clone(), 1).await?;
+    storage
+        .init_schema()
+        .await
+        .map_err(|error| LocalError::Integrity(error.to_string()))?;
+    core(storage.clone())
+        .sequence_repo_activity(repo_id.clone(), 1)
+        .await?;
     storage
         .project_imported_history(repo_id)
         .await
@@ -149,15 +160,23 @@ pub(crate) fn proposal_from_rows(
         match row {
             CommitEventRow::Item(row) => {
                 let mut event: EventProposal = serde_json::from_slice(&row.payload)?;
-                if let (Some(reference), Some(metadata)) = (event.set_metadata.as_mut(), row.metadata) {
-                    reference.resolve(metadata).map_err(|error| LocalError::Integrity(error.to_string()))?;
+                if let (Some(reference), Some(metadata)) =
+                    (event.set_metadata.as_mut(), row.metadata)
+                {
+                    reference
+                        .resolve(metadata)
+                        .map_err(|error| LocalError::Integrity(error.to_string()))?;
                 }
                 events.push(event);
             }
             CommitEventRow::Ref(row) => {
                 let mut event: RefEventProposal = serde_json::from_slice(&row.payload)?;
-                if let (Some(reference), Some(metadata)) = (event.set_metadata.as_mut(), row.metadata) {
-                    reference.resolve(metadata).map_err(|error| LocalError::Integrity(error.to_string()))?;
+                if let (Some(reference), Some(metadata)) =
+                    (event.set_metadata.as_mut(), row.metadata)
+                {
+                    reference
+                        .resolve(metadata)
+                        .map_err(|error| LocalError::Integrity(error.to_string()))?;
                 }
                 ref_events.push(event);
             }
@@ -186,13 +205,20 @@ pub(crate) fn proposal_from_rows(
 /// Items the proposal changes that `target` has moved past: an item at
 /// another head, or a folder it deletes that holds a live item the proposal
 /// does not delete too.
-pub(crate) async fn stale_items(target: &Repo, repo_id: &RepoId, events: &[EventProposal]) -> Result<Vec<ItemId>> {
+pub(crate) async fn stale_items(
+    target: &Repo,
+    repo_id: &RepoId,
+    events: &[EventProposal],
+) -> Result<Vec<ItemId>> {
     let bases: BTreeMap<&ItemId, i64> = events
         .iter()
         .filter_map(|event| Some((event.item_id.as_ref()?, event.base_seq?)))
         .collect();
     let rows: HashMap<ItemId, synck_vcs::types::ItemRow> = target
-        .get_items(repo_id.clone(), bases.keys().map(|id| (*id).clone()).collect())
+        .get_items(
+            repo_id.clone(),
+            bases.keys().map(|id| (*id).clone()).collect(),
+        )
         .await?
         .into_iter()
         .map(|row| (row.item_id.clone(), row))
@@ -208,7 +234,10 @@ pub(crate) async fn stale_items(target: &Repo, repo_id: &RepoId, events: &[Event
         .filter_map(|event| event.item_id.as_ref())
         .collect();
     for root in &deleted {
-        if rows.get(*root).is_none_or(|row| row.item_type.as_str() != "FOLDER") {
+        if rows
+            .get(*root)
+            .is_none_or(|row| row.item_type.as_str() != "FOLDER")
+        {
             continue;
         }
         let descendants: Vec<ItemId> = target
@@ -240,7 +269,11 @@ pub(crate) async fn apply(
     if !stale.is_empty() {
         return Ok(Err(stale));
     }
-    let items: Vec<ItemId> = proposal.events.iter().filter_map(|event| event.item_id.clone()).collect();
+    let items: Vec<ItemId> = proposal
+        .events
+        .iter()
+        .filter_map(|event| event.item_id.clone())
+        .collect();
     let accepted = match target
         .append_file_folder_checked_with_refs(repo_id.clone(), proposal, ref_events, &[], &[])
         .await
@@ -278,7 +311,11 @@ async fn replay(
             let seq = commit
                 .repo_seq
                 .ok_or_else(|| LocalError::Integrity("unsequenced commit in history".into()))?;
-            if target.get_commit(repo_id.clone(), commit.commit_id.clone()).await?.is_none() {
+            if target
+                .get_commit(repo_id.clone(), commit.commit_id.clone())
+                .await?
+                .is_none()
+            {
                 let (proposal, ref_events) = stored_proposal(source, repo_id, &commit).await?;
                 if let Err(items) = apply(target, repo_id, &commit, proposal, ref_events).await? {
                     return Ok(Err(items));
@@ -319,7 +356,14 @@ impl Repository {
     pub(super) async fn take_in_origin(&self) -> Result<std::result::Result<(), Vec<ItemId>>> {
         let mut held = read_held(self.metadata_path())?;
         let head = self.head_repo_seq()?;
-        let last = match replay(&self.origin_core(), self.core(), self.repository_id(), held.origin_seq).await? {
+        let last = match replay(
+            &self.origin_core(),
+            self.core(),
+            self.repository_id(),
+            held.origin_seq,
+        )
+        .await?
+        {
             Ok(last) => last,
             Err(items) => return Ok(Err(items)),
         };
@@ -344,14 +388,23 @@ impl Repository {
         loop {
             let commits = self.held_commits().await?.unwrap_or_default();
             if commits.is_empty() {
-                return Err(LocalError::Integrity("the origin's history does not replay without held commits".into()));
+                return Err(LocalError::Integrity(
+                    "the origin's history does not replay without held commits".into(),
+                ));
             }
             let conflicting: HashSet<&ItemId> = items.iter().collect();
             let mut keep = commits.len() - 1;
             for (index, commit_id) in commits.iter().enumerate() {
-                let commit_id = CommitId::parse(commit_id).map_err(|error| LocalError::Integrity(error.to_string()))?;
-                let events = self.core().list_events_for_commit(self.repository_id().clone(), commit_id, UNBOUNDED).await?;
-                if events.iter().any(|event| conflicting.contains(&event.item_id)) {
+                let commit_id = CommitId::parse(commit_id)
+                    .map_err(|error| LocalError::Integrity(error.to_string()))?;
+                let events = self
+                    .core()
+                    .list_events_for_commit(self.repository_id().clone(), commit_id, UNBOUNDED)
+                    .await?;
+                if events
+                    .iter()
+                    .any(|event| conflicting.contains(&event.item_id))
+                {
                     keep = index;
                     break;
                 }
@@ -370,10 +423,18 @@ impl Repository {
     /// held commits remain before them.
     async fn unwind_held(&self, withdrawn: &[String], keeps: bool) -> Result<Vec<String>> {
         let skip: HashSet<&str> = withdrawn.iter().map(String::as_str).collect();
-        let held_ids: HashSet<String> = self.held_commits().await?.unwrap_or_default().into_iter().collect();
+        let held_ids: HashSet<String> = self
+            .held_commits()
+            .await?
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
         let saves = self.build_withdrawn(withdrawn).await?;
         let repo_id = self.repository_id();
-        let directory = self.metadata_path().join("tmp").join(format!("unwind-{}", Uuid::new_v4()));
+        let directory = self
+            .metadata_path()
+            .join("tmp")
+            .join(format!("unwind-{}", Uuid::new_v4()));
         std::fs::create_dir(&directory).at("create", &directory)?;
         let result = async {
             let storage = empty_history(directory.join("repository.sqlite3"), repo_id).await?;
@@ -382,12 +443,15 @@ impl Repository {
             let mut baseline = None;
             let mut from = 1;
             loop {
-                let page = self.core().list_commits_by_repo_seq(repo_id.clone(), from, None, PAGE).await?;
+                let page = self
+                    .core()
+                    .list_commits_by_repo_seq(repo_id.clone(), from, None, PAGE)
+                    .await?;
                 let done = page.len() < PAGE;
                 for commit in page {
-                    let seq = commit
-                        .repo_seq
-                        .ok_or_else(|| LocalError::Integrity("unsequenced commit in history".into()))?;
+                    let seq = commit.repo_seq.ok_or_else(|| {
+                        LocalError::Integrity("unsequenced commit in history".into())
+                    })?;
                     from = seq + 1;
                     if seq > old_baseline && baseline.is_none() {
                         baseline = Some(crate::repository::head_repo_seq(&storage, repo_id)?);
@@ -395,13 +459,17 @@ impl Repository {
                     if skip.contains(commit.commit_id.as_str()) {
                         continue;
                     }
-                    let (mut proposal, ref_events) = stored_proposal(self.core(), repo_id, &commit).await?;
+                    let (mut proposal, ref_events) =
+                        stored_proposal(self.core(), repo_id, &commit).await?;
                     if held_ids.contains(commit.commit_id.as_str()) {
                         // Kept as made: an HTTPS clone tells a sent commit by
                         // an operation ID equal to its commit ID.
                         proposal.operation_id = Some(self.commit_operation_id(&commit.commit_id)?);
                     }
-                    if apply(&target, repo_id, &commit, proposal, ref_events).await?.is_err() {
+                    if apply(&target, repo_id, &commit, proposal, ref_events)
+                        .await?
+                        .is_err()
+                    {
                         return Err(LocalError::Integrity(format!(
                             "commit {} does not replay without the withdrawn commits",
                             commit.commit_id
@@ -419,9 +487,16 @@ impl Repository {
                 baseline: baseline.unwrap_or(head),
                 // Commits through `pushed_seq` precede every held one, so they
                 // keep their sequences.
-                held: Held { pushed_seq: if keeps { held.pushed_seq } else { head }, ..held },
+                held: Held {
+                    pushed_seq: if keeps { held.pushed_seq } else { head },
+                    ..held
+                },
             };
-            rusqlite::Connection::open(storage.path())?.query_row("PRAGMA journal_mode=WAL", [], |_| Ok(()))?;
+            rusqlite::Connection::open(storage.path())?.query_row(
+                "PRAGMA journal_mode=WAL",
+                [],
+                |_| Ok(()),
+            )?;
             self.write_json_intent(UNWIND_INTENT_NAME, "unwind", &unwind)?;
             // Recorded before the copy loses them; an unwind cut short forgets them.
             let labels = self.add_withdrawn(saves)?;
@@ -431,7 +506,9 @@ impl Repository {
             let mut destination = rusqlite::Connection::open(self.storage().path())?;
             let step = rusqlite::backup::Backup::new(&source, &mut destination)?.step(-1)?;
             if step != rusqlite::backup::StepResult::Done {
-                return Err(LocalError::Integrity(format!("history copy was not replaced: {step:?}")));
+                return Err(LocalError::Integrity(format!(
+                    "history copy was not replaced: {step:?}"
+                )));
             }
             Ok((unwind, labels))
         }
@@ -450,7 +527,9 @@ impl Repository {
     /// projection is rebuilt from the new copy at the next recovery.
     fn finish_unwind(&self, unwind: &Unwind) -> Result<()> {
         write_held(self.metadata_path(), &unwind.held)?;
-        self.local_db().open_writable()?.execute("DELETE FROM local_projection_state", [])?;
+        self.local_db()
+            .open_writable()?
+            .execute("DELETE FROM local_projection_state", [])?;
         self.advance_baseline(unwind.baseline)?;
         self.clear_intent(UNWIND_INTENT_NAME)
     }
@@ -462,8 +541,14 @@ impl Repository {
             return Ok(());
         };
         for commit_id in &unwind.commits {
-            let commit_id = CommitId::parse(commit_id).map_err(|error| LocalError::Integrity(error.to_string()))?;
-            if self.core().get_commit(self.repository_id().clone(), commit_id).await?.is_some() {
+            let commit_id = CommitId::parse(commit_id)
+                .map_err(|error| LocalError::Integrity(error.to_string()))?;
+            if self
+                .core()
+                .get_commit(self.repository_id().clone(), commit_id)
+                .await?
+                .is_some()
+            {
                 self.forget_withdrawn(&unwind.commits)?;
                 return self.clear_intent(UNWIND_INTENT_NAME);
             }
@@ -483,7 +568,10 @@ impl Repository {
         let mut commits = Vec::new();
         let mut from = held.pushed_seq + 1;
         loop {
-            let page = self.core().list_commits_by_repo_seq(repo_id.clone(), from, None, PAGE).await?;
+            let page = self
+                .core()
+                .list_commits_by_repo_seq(repo_id.clone(), from, None, PAGE)
+                .await?;
             let done = page.len() < PAGE;
             for commit in page {
                 from = commit.repo_seq.unwrap_or(from) + 1;
@@ -495,7 +583,10 @@ impl Repository {
                         .await?
                         .is_some_and(|replayed| replayed.commit_id == commit.commit_id)
                 } else {
-                    origin.get_commit(repo_id.clone(), commit.commit_id.clone()).await?.is_some()
+                    origin
+                        .get_commit(repo_id.clone(), commit.commit_id.clone())
+                        .await?
+                        .is_some()
                 };
                 if !sent {
                     commits.push(commit.commit_id.to_string());
@@ -518,15 +609,23 @@ impl Repository {
         }
         let pulled = self.pull().await?;
         if !pulled.unwound.is_empty() {
-            return Err(LocalError::HeldMerged { paths: pulled.unwound, withdrawn: pulled.withdrawn });
+            return Err(LocalError::HeldMerged {
+                paths: pulled.unwound,
+                withdrawn: pulled.withdrawn,
+            });
         }
         let pushed = self.held_commits().await?.unwrap_or_default();
         // A reservation from any working tree refuses these commits as it
         // would have refused them unheld.
         let mut items = Vec::new();
         for commit_id in &pushed {
-            let commit_id = CommitId::parse(commit_id).map_err(|error| LocalError::Integrity(error.to_string()))?;
-            for event in self.core().list_events_for_commit(self.repository_id().clone(), commit_id, UNBOUNDED).await? {
+            let commit_id = CommitId::parse(commit_id)
+                .map_err(|error| LocalError::Integrity(error.to_string()))?;
+            for event in self
+                .core()
+                .list_events_for_commit(self.repository_id().clone(), commit_id, UNBOUNDED)
+                .await?
+            {
                 items.push(event.item_id);
             }
         }
@@ -537,13 +636,16 @@ impl Repository {
         let mut held = read_held(self.metadata_path())?;
         let origin = self.origin_core();
         // The origin's lock is held, so nothing has reached it since the pull.
-        if let Err(items) = replay(self.core(), &origin, self.repository_id(), held.pushed_seq).await? {
+        if let Err(items) =
+            replay(self.core(), &origin, self.repository_id(), held.pushed_seq).await?
+        {
             return Err(LocalError::HeldConflict {
                 paths: self.item_paths(&items).await?,
             });
         }
         held.pushed_seq = self.head_repo_seq()?;
-        held.origin_seq = crate::repository::head_repo_seq(&self.origin_storage(), self.repository_id())?;
+        held.origin_seq =
+            crate::repository::head_repo_seq(&self.origin_storage(), self.repository_id())?;
         write_held(self.metadata_path(), &held)?;
         self.pin_held_objects(&[]).await?;
         Ok(PushOutcome { pushed })
@@ -554,7 +656,10 @@ impl Repository {
     /// `extra` about to be committed, before the commit that uses them.
     pub(super) async fn pin_held_objects(&self, extra: &[&ObjectId]) -> Result<()> {
         let held = read_held(self.metadata_path())?;
-        let mut objects: BTreeSet<String> = extra.iter().map(|id| id.as_str()[7..].to_string()).collect();
+        let mut objects: BTreeSet<String> = extra
+            .iter()
+            .map(|id| id.as_str()[7..].to_string())
+            .collect();
         let mut cursor = Some(RepoEventCursor {
             repo_seq: held.pushed_seq,
             commit_event_idx: i32::MAX,
@@ -568,7 +673,12 @@ impl Repository {
             for row in &page {
                 let references = synck_items::references::commit_event_references(row)
                     .map_err(|error| LocalError::Integrity(error.to_string()))?;
-                objects.extend(references.objects.iter().map(|id| id.as_str()[7..].to_string()));
+                objects.extend(
+                    references
+                        .objects
+                        .iter()
+                        .map(|id| id.as_str()[7..].to_string()),
+                );
                 cursor = Some(RepoEventCursor {
                     repo_seq: row.repo_seq().unwrap_or(i64::MAX),
                     commit_event_idx: row.commit_event_idx(),
@@ -578,7 +688,12 @@ impl Repository {
                 break;
             }
         }
-        if self.held_commits().await?.is_none_or(|commits| commits.is_empty()) && extra.is_empty() {
+        if self
+            .held_commits()
+            .await?
+            .is_none_or(|commits| commits.is_empty())
+            && extra.is_empty()
+        {
             objects.clear();
         }
         let withdrawn = self.withdrawn_pins()?;
@@ -596,7 +711,11 @@ impl Repository {
         let pins = self.store_path().join(PINS_DIRECTORY);
         match std::fs::create_dir(&pins) {
             Err(error) if error.kind() != std::io::ErrorKind::AlreadyExists => {
-                return Err(LocalError::Io { action: "create pins directory", path: pins, source: error });
+                return Err(LocalError::Io {
+                    action: "create pins directory",
+                    path: pins,
+                    source: error,
+                });
             }
             _ => {}
         }
@@ -605,7 +724,10 @@ impl Repository {
             objects,
             withdrawn,
         };
-        let temporary = self.store_path().join("tmp").join(format!("pin-{}.tmp", Uuid::new_v4()));
+        let temporary = self
+            .store_path()
+            .join("tmp")
+            .join(format!("pin-{}.tmp", Uuid::new_v4()));
         std::fs::write(&temporary, serde_json::to_vec(&pin)?).at("write", &temporary)?;
         crate::repository::sync_file(&temporary)?;
         crate::repository::replace_file(&temporary, &path).at("publish held-object pin", &path)?;

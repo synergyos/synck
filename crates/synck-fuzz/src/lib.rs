@@ -138,7 +138,12 @@ fn tempfile() -> std::io::Result<std::fs::File> {
         std::process::id(),
         std::thread::current().id()
     ));
-    let file = std::fs::File::options().read(true).write(true).create(true).truncate(true).open(&path)?;
+    let file = std::fs::File::options()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&path)?;
     std::fs::remove_file(&path)?;
     Ok(file)
 }

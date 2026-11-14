@@ -45,7 +45,16 @@ pub async fn send_with(
     let request = request.body(Body::from(body)).unwrap();
     let response = router.clone().oneshot(request).await.unwrap();
     let status = response.status();
-    (status, response.into_body().collect().await.unwrap().to_bytes().to_vec())
+    (
+        status,
+        response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .to_vec(),
+    )
 }
 
 pub fn status_of(body: &[u8]) -> String {
@@ -120,4 +129,3 @@ pub fn upload(
         .unwrap();
     (pages, request)
 }
-

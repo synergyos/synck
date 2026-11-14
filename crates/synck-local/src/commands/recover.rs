@@ -257,7 +257,10 @@ pub(super) fn validate_recover_intent(
     Ok(accepted)
 }
 
-pub(super) fn validate_recover_names(nodes: &HashMap<ItemId, HistoryNode>, selected: &[ItemId]) -> Result<()> {
+pub(super) fn validate_recover_names(
+    nodes: &HashMap<ItemId, HistoryNode>,
+    selected: &[ItemId],
+) -> Result<()> {
     let selected_set: HashSet<&ItemId> = selected.iter().collect();
     let mut occupied: HashMap<(Option<ItemId>, String), ItemId> = HashMap::new();
     for (item_id, node) in nodes {

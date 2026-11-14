@@ -109,10 +109,20 @@ async fn former_sidecar_names_are_ordinary_files() {
     let name = ".__synck_file_version_set_visible";
     fs::write(root.join(name), b"content").unwrap();
     let mut repository = Repository::discover(root).await.unwrap();
-    repository.set_hidden_files_mode(synck_local::HiddenFilesMode::Track).unwrap();
+    repository
+        .set_hidden_files_mode(synck_local::HiddenFilesMode::Track)
+        .unwrap();
     repository.commit("capture ordinary file").await.unwrap();
     assert!(repository.status().await.unwrap().is_empty());
-    repository.move_path(root, Path::new(name), Path::new(".__synck_file_version_set_moved"), "rename").await.unwrap();
+    repository
+        .move_path(
+            root,
+            Path::new(name),
+            Path::new(".__synck_file_version_set_moved"),
+            "rename",
+        )
+        .await
+        .unwrap();
     assert!(repository.status().await.unwrap().is_empty());
 }
 
@@ -531,7 +541,11 @@ async fn make_whole_file_repository(root: &Path, remove_object_database: bool) {
         .unwrap();
     for entry in fs::read_dir(archive.join(".synck/objects")).unwrap() {
         let entry = entry.unwrap();
-        fs::copy(entry.path(), root.join(".synck/objects").join(entry.file_name())).unwrap();
+        fs::copy(
+            entry.path(),
+            root.join(".synck/objects").join(entry.file_name()),
+        )
+        .unwrap();
     }
     let path = root.join(".synck/config.json");
     let mut config: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
@@ -614,12 +628,22 @@ async fn chunking_reuses_content_after_an_early_insertion() {
     let repository = Repository::discover(root).await.unwrap();
     repository.commit("initial").await.unwrap();
 
-    let first_digest = hex::decode(object_digests(&repository, root, "document.bin").await.remove(0)).unwrap();
+    let first_digest = hex::decode(
+        object_digests(&repository, root, "document.bin")
+            .await
+            .remove(0),
+    )
+    .unwrap();
     let mut edited = original.clone();
     edited.splice(96 * 1024..96 * 1024, [0x5a; 4096]);
     fs::write(root.join("document.bin"), &edited).unwrap();
     repository.commit("insert content").await.unwrap();
-    let second_digest = hex::decode(object_digests(&repository, root, "document.bin").await.remove(1)).unwrap();
+    let second_digest = hex::decode(
+        object_digests(&repository, root, "document.bin")
+            .await
+            .remove(1),
+    )
+    .unwrap();
 
     let connection = rusqlite::Connection::open(root.join(".synck/object-store.sqlite3")).unwrap();
     let chunk_digests = |blob_digest: &[u8]| {
@@ -762,7 +786,9 @@ async fn whole_file_mode_never_uses_office_chunking() {
     let repository = Repository::discover(root).await.unwrap();
     repository.commit("Office document").await.unwrap();
 
-    let digest = object_digests(&repository, root, "document.docx").await.remove(0);
+    let digest = object_digests(&repository, root, "document.docx")
+        .await
+        .remove(0);
     assert!(root.join(".synck/objects").join(&digest).is_file());
     assert!(!root.join(".synck/object-store.sqlite3").exists());
     assert!(repository.fsck().await.unwrap().is_empty());
@@ -1320,7 +1346,10 @@ async fn local_repository_round_trip() {
     repository.archive(&archive).await.unwrap();
     let archived = synck_local::portable::PortableRepository::open(&archive).unwrap();
     archived.verify().await.unwrap();
-    for (digest, bytes) in committed.iter().zip([b"first".as_slice(), b"second".as_slice()]) {
+    for (digest, bytes) in committed
+        .iter()
+        .zip([b"first".as_slice(), b"second".as_slice()])
+    {
         let id = synck_vcs::types::ObjectId::parse(format!("sha256:{digest}")).unwrap();
         let mut actual = Vec::new();
         archived.copy_blob(&id, &mut actual).unwrap();
@@ -2429,7 +2458,12 @@ async fn repository_open_migrates_local_schema_15_to_record_skipped_entries() {
     let root = temporary.path();
     fs::write(root.join("file.txt"), b"content").unwrap();
     init(root, "author").await.unwrap();
-    Repository::discover(root).await.unwrap().commit("initial").await.unwrap();
+    Repository::discover(root)
+        .await
+        .unwrap()
+        .commit("initial")
+        .await
+        .unwrap();
     let database = root.join(".synck/repository.local.sqlite3");
     let connection = rusqlite::Connection::open(&database).unwrap();
     connection
@@ -2446,7 +2480,9 @@ async fn repository_open_migrates_local_schema_15_to_record_skipped_entries() {
     assert_eq!(repository.skipped_entries().unwrap(), ["link"]);
     let version: i64 = rusqlite::Connection::open(&database)
         .unwrap()
-        .query_row("SELECT version FROM local_schema_meta", [], |row| row.get(0))
+        .query_row("SELECT version FROM local_schema_meta", [], |row| {
+            row.get(0)
+        })
         .unwrap();
     assert_eq!(version, 16);
 }
@@ -2458,7 +2494,12 @@ async fn repository_open_migrates_local_schema_14_keeping_every_row() {
     fs::create_dir(root.join("folder")).unwrap();
     fs::write(root.join("folder/file.txt"), b"content").unwrap();
     let repo_id = init(root, "author").await.unwrap();
-    Repository::discover(root).await.unwrap().commit("initial").await.unwrap();
+    Repository::discover(root)
+        .await
+        .unwrap()
+        .commit("initial")
+        .await
+        .unwrap();
     let metadata = root.join(".synck");
     let database = metadata.join("repository.local.sqlite3");
     let tables = [
@@ -2470,7 +2511,9 @@ async fn repository_open_migrates_local_schema_14_keeping_every_row() {
     ];
     let count = |connection: &rusqlite::Connection, table: &str| -> i64 {
         connection
-            .query_row(&format!("SELECT count(*) FROM {table}"), [], |row| row.get(0))
+            .query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
+                row.get(0)
+            })
             .unwrap()
     };
 
@@ -2518,7 +2561,9 @@ async fn repository_open_migrates_local_schema_14_keeping_every_row() {
     assert!(repository.status().await.unwrap().is_empty());
     let connection = rusqlite::Connection::open(&database).unwrap();
     let version: i64 = connection
-        .query_row("SELECT version FROM local_schema_meta", [], |row| row.get(0))
+        .query_row("SELECT version FROM local_schema_meta", [], |row| {
+            row.get(0)
+        })
         .unwrap();
     assert_eq!(version, 16);
     for (table, expected) in tables.into_iter().zip(counts) {
@@ -2531,7 +2576,8 @@ async fn worktree_cache_schema_rejects_incomplete_file_fingerprints() {
     let temporary = tempfile::tempdir().unwrap();
     init(temporary.path(), "author").await.unwrap();
     let connection =
-        rusqlite::Connection::open(temporary.path().join(".synck/repository.local.sqlite3")).unwrap();
+        rusqlite::Connection::open(temporary.path().join(".synck/repository.local.sqlite3"))
+            .unwrap();
     let result = connection.execute(
         "INSERT INTO local_worktree_entries(
              path, node_kind, device_id, file_id, size_bytes,
@@ -2783,7 +2829,10 @@ async fn scanner_skips_untracked_symlinks_and_refuses_tracked_ones() {
 
     symlink("brief.txt", root.join("docs/alias")).unwrap();
     assert!(repository.status().await.unwrap().is_empty());
-    assert_eq!(repository.skipped_entries().unwrap(), ["docs/alias", "link"]);
+    assert_eq!(
+        repository.skipped_entries().unwrap(),
+        ["docs/alias", "link"]
+    );
 
     fs::remove_file(root.join("docs/brief.txt")).unwrap();
     symlink("alias", root.join("docs/brief.txt")).unwrap();
@@ -2859,7 +2908,10 @@ async fn fsck_reports_corrupt_object_bytes() {
         .await
         .unwrap()
         .remove(0);
-    corrupt_blob(temporary.path(), version.blob_id.strip_prefix("sha256:").unwrap());
+    corrupt_blob(
+        temporary.path(),
+        version.blob_id.strip_prefix("sha256:").unwrap(),
+    );
     let findings = repository.fsck().await.unwrap();
     assert!(
         findings
@@ -2887,7 +2939,8 @@ async fn missing_projection_rebuilds_from_authoritative_history() {
     repository.commit("initial").await.unwrap();
 
     let connection =
-        rusqlite::Connection::open(temporary.path().join(".synck/repository.local.sqlite3")).unwrap();
+        rusqlite::Connection::open(temporary.path().join(".synck/repository.local.sqlite3"))
+            .unwrap();
     connection
         .execute_batch("DELETE FROM local_projection_state; DELETE FROM local_file_heads;")
         .unwrap();
@@ -2966,7 +3019,11 @@ async fn shared_profile_rejects_a_case_variant_nested_control_component() {
 
     let accepted_before = repository.log(None).await.unwrap().len();
     let error = repository.commit("reserved path").await.unwrap_err();
-    assert!(error.to_string().contains("reserved for the control directory"));
+    assert!(
+        error
+            .to_string()
+            .contains("reserved for the control directory")
+    );
     assert_eq!(repository.log(None).await.unwrap().len(), accepted_before);
 }
 
@@ -3051,7 +3108,9 @@ async fn commit_never_reuses_a_corrupt_existing_object() {
     fs::write(&file, b"second").unwrap();
     repository.commit("second").await.unwrap();
 
-    let first_digest = object_digests(&repository, temporary.path(), "file").await.remove(0);
+    let first_digest = object_digests(&repository, temporary.path(), "file")
+        .await
+        .remove(0);
     corrupt_blob(temporary.path(), &first_digest);
     fs::write(&file, b"first").unwrap();
     // Equal bytes share an ID, so the writer checks the stored object first.
@@ -3280,10 +3339,13 @@ async fn init_renames_all_invalid_names_with_noncolliding_fixes() {
     }
     fs::create_dir(root.join("folder?")).unwrap();
     fs::write(root.join("folder?/NUL.txt"), b"keep").unwrap();
-    let (_, repairs) =
-        synck_local::portable::init_repository_with_name_repair(root, "author", synck_local::StorageMode::Chunked)
-            .await
-            .unwrap();
+    let (_, repairs) = synck_local::portable::init_repository_with_name_repair(
+        root,
+        "author",
+        synck_local::StorageMode::Chunked,
+    )
+    .await
+    .unwrap();
     let renamed = repairs
         .iter()
         .map(|repair| (repair.from.as_str(), repair.to.as_str()))
@@ -3294,14 +3356,20 @@ async fn init_renames_all_invalid_names_with_noncolliding_fixes() {
         ("folder?", "folder_"),
         ("folder?/NUL.txt", "folder_/_NUL.txt"),
     ] {
-        assert!(renamed.contains(&expected), "missing {expected:?}: {renamed:?}");
+        assert!(
+            renamed.contains(&expected),
+            "missing {expected:?}: {renamed:?}"
+        );
     }
     assert_eq!(repairs.len(), 4);
     assert_eq!(fs::read(root.join("bad_name")).unwrap(), b"bad_name");
     assert_eq!(fs::read(root.join("bad_name (2)")).unwrap(), b"bad:name");
     assert_eq!(fs::read(root.join("bad_name (3)")).unwrap(), b"bad?name");
     assert_eq!(fs::read(root.join("folder_/_NUL.txt")).unwrap(), b"keep");
-    assert_eq!(fs::read(root.join("ignored:entry")).unwrap(), b"ignored:entry");
+    assert_eq!(
+        fs::read(root.join("ignored:entry")).unwrap(),
+        b"ignored:entry"
+    );
 }
 
 #[cfg(unix)]
@@ -3328,10 +3396,26 @@ async fn deleted_caches_rebuild_without_losing_edits_or_preferences() {
     fs::write(root.join("mail/message.eml"), b"original").unwrap();
     fs::write(root.join("file.txt"), b"first").unwrap();
     let mut repository = Repository::discover(root).await.unwrap();
-    repository.set_hidden_files_mode(HiddenFilesMode::Track).unwrap();
+    repository
+        .set_hidden_files_mode(HiddenFilesMode::Track)
+        .unwrap();
     repository.commit("add files").await.unwrap();
-    repository.move_path(root, Path::new("mail"), Path::new("renamed"), "move mail folder").await.unwrap();
-    let before = repository.log(None).await.unwrap().into_iter().map(|c| c.commit_id).collect::<Vec<_>>();
+    repository
+        .move_path(
+            root,
+            Path::new("mail"),
+            Path::new("renamed"),
+            "move mail folder",
+        )
+        .await
+        .unwrap();
+    let before = repository
+        .log(None)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|c| c.commit_id)
+        .collect::<Vec<_>>();
     drop(repository);
     for name in ["repository.local.sqlite3", "repository.state.sqlite3"] {
         fs::remove_file(root.join(".synck").join(name)).unwrap();
@@ -3342,11 +3426,35 @@ async fn deleted_caches_rebuild_without_losing_edits_or_preferences() {
     assert_eq!(repository.hidden_files_mode(), HiddenFilesMode::Track);
     let changes = repository.status().await.unwrap();
     assert_eq!(changes.len(), 2, "{changes:?}");
-    assert!(changes.iter().any(|c| c.path == "file.txt" && c.kind == ChangeKind::Modify));
-    assert!(changes.iter().any(|c| c.path == ".hidden-new" && c.kind == ChangeKind::Add));
-    assert_eq!(fs::read(root.join("renamed/message.eml")).unwrap(), b"original");
-    let after = repository.log(None).await.unwrap().into_iter().map(|c| c.commit_id).collect::<Vec<_>>();
+    assert!(
+        changes
+            .iter()
+            .any(|c| c.path == "file.txt" && c.kind == ChangeKind::Modify)
+    );
+    assert!(
+        changes
+            .iter()
+            .any(|c| c.path == ".hidden-new" && c.kind == ChangeKind::Add)
+    );
+    assert_eq!(
+        fs::read(root.join("renamed/message.eml")).unwrap(),
+        b"original"
+    );
+    let after = repository
+        .log(None)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|c| c.commit_id)
+        .collect::<Vec<_>>();
     assert_eq!(before, after);
     fs::write(root.join("renamed/message.eml"), b"changed").unwrap();
-    assert!(repository.status().await.unwrap().iter().any(|c| c.path == "renamed/message.eml"));
+    assert!(
+        repository
+            .status()
+            .await
+            .unwrap()
+            .iter()
+            .any(|c| c.path == "renamed/message.eml")
+    );
 }

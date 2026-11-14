@@ -139,7 +139,11 @@ mod tests {
         }
         first.abort();
         let seen = finished.clone();
-        assert!(jobs.run(move || Ok(seen.load(Ordering::SeqCst))).await.unwrap());
+        assert!(
+            jobs.run(move || Ok(seen.load(Ordering::SeqCst)))
+                .await
+                .unwrap()
+        );
 
         jobs.close();
         assert!(matches!(jobs.run(|| Ok(())).await, Err(Error::Overloaded)));

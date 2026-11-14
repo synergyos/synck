@@ -50,13 +50,8 @@ pub(crate) fn capture<R: Read>(
             Vec::new()
         };
         let base = base.map(crate::chunk_store::blob_digest).transpose()?;
-        let (digest, stored_size) = store.stage_blob_regions(
-            staging_key,
-            size,
-            &mut reader,
-            &boundaries,
-            base.as_ref(),
-        )?;
+        let (digest, stored_size) =
+            store.stage_blob_regions(staging_key, size, &mut reader, &boundaries, base.as_ref())?;
         if stored_size != size || reader.size != size {
             return Err(LocalError::Invalid(
                 "file changed while being captured".into(),
@@ -98,7 +93,10 @@ pub(crate) fn capture<R: Read>(
             }
             output.flush().at("flush object", &temporary)?;
             let file = cap_std::fs::File::from_std(
-                output.into_inner().map_err(|error| error.into_error()).at("flush object", &temporary)?,
+                output
+                    .into_inner()
+                    .map_err(|error| error.into_error())
+                    .at("flush object", &temporary)?,
             );
             // Unchecked, a barrier orders the bytes before the caller's one
             // full flush of the objects folder.
@@ -142,14 +140,12 @@ pub(crate) fn capture<R: Read>(
 mod tests {
     use super::*;
 
-    fn stored(
-        captured: &Captured,
-        objects: &Path,
-        store: Option<&ChunkStore>,
-    ) -> Vec<u8> {
+    fn stored(captured: &Captured, objects: &Path, store: Option<&ChunkStore>) -> Vec<u8> {
         let mut output = Vec::new();
         match store {
-            Some(store) => store.copy_blob(&captured.id, captured.size, &mut output).unwrap(),
+            Some(store) => store
+                .copy_blob(&captured.id, captured.size, &mut output)
+                .unwrap(),
             None => output = std::fs::read(objects.join(&captured.plain_digest)).unwrap(),
         }
         output
@@ -163,7 +159,17 @@ mod tests {
         ChunkStore::create(&path, &repo).unwrap();
         let store = ChunkStore::new(path, &repo);
         for mode in [None, Some(&store)] {
-            let captured = capture(&b""[..], 0, None, directory.path(), directory.path(), mode, true, None).unwrap();
+            let captured = capture(
+                &b""[..],
+                0,
+                None,
+                directory.path(),
+                directory.path(),
+                mode,
+                true,
+                None,
+            )
+            .unwrap();
             assert!(stored(&captured, directory.path(), mode).is_empty());
             assert_eq!(captured.plain_digest, hex::encode(Sha256::digest(b"")));
             synck_vcs::object::verify_stored(&captured.id, synck_vcs::object::Form::Plain, b"")
@@ -181,8 +187,17 @@ mod tests {
         let bytes = (0..700_000).map(|i| (i * 17) as u8).collect::<Vec<_>>();
         for mode in [None, Some(&store)] {
             let capture_bytes = || {
-                capture(bytes.as_slice(), bytes.len() as u64, None, directory.path(), directory.path(), mode, true, None)
-                    .unwrap()
+                capture(
+                    bytes.as_slice(),
+                    bytes.len() as u64,
+                    None,
+                    directory.path(),
+                    directory.path(),
+                    mode,
+                    true,
+                    None,
+                )
+                .unwrap()
             };
             let (first, second) = (capture_bytes(), capture_bytes());
             assert_eq!(first.id, second.id);

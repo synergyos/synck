@@ -63,7 +63,11 @@ fn read_conflicts(metadata: &Path) -> Result<Vec<Merged>> {
     match std::fs::read(&path) {
         Ok(bytes) => Ok(serde_json::from_slice(&bytes)?),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
-        Err(source) => Err(LocalError::Io { action: "read", path, source }),
+        Err(source) => Err(LocalError::Io {
+            action: "read",
+            path,
+            source,
+        }),
     }
 }
 
@@ -71,13 +75,17 @@ fn write_conflicts(metadata: &Path, records: &[Merged]) -> Result<()> {
     let target = metadata.join(CONFLICTS_FILE);
     if records.is_empty() {
         return match std::fs::remove_file(&target) {
-            Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
-                Err(LocalError::Io { action: "remove", path: target, source: error })
-            }
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(LocalError::Io {
+                action: "remove",
+                path: target,
+                source: error,
+            }),
             _ => sync_directory(metadata),
         };
     }
-    let path = metadata.join("tmp").join(format!("conflicts-{}.tmp", Uuid::new_v4()));
+    let path = metadata
+        .join("tmp")
+        .join(format!("conflicts-{}.tmp", Uuid::new_v4()));
     std::fs::write(&path, serde_json::to_vec(records)?).at("write", &path)?;
     crate::repository::sync_file(&path)?;
     crate::repository::replace_file(&path, &target).at("publish conflicts", &target)?;
@@ -86,7 +94,9 @@ fn write_conflicts(metadata: &Path, records: &[Merged]) -> Result<()> {
 
 fn text(bytes: FileBytes) -> Option<String> {
     match bytes {
-        FileBytes::Bytes(bytes) => String::from_utf8(bytes).ok().filter(|text| !text.contains('\0')),
+        FileBytes::Bytes(bytes) => String::from_utf8(bytes)
+            .ok()
+            .filter(|text| !text.contains('\0')),
         FileBytes::TooLarge => None,
     }
 }
@@ -140,7 +150,8 @@ fn same_state(left: Option<&RevertItemState>, right: Option<&RevertItemState>) -
 }
 
 fn under(path: &str, ancestor: &str) -> bool {
-    path.strip_prefix(ancestor).is_some_and(|rest| rest.starts_with('/'))
+    path.strip_prefix(ancestor)
+        .is_some_and(|rest| rest.starts_with('/'))
 }
 
 /// The writes that take `working` from `base` to `head` without touching a
@@ -198,7 +209,9 @@ fn plan_pull(
                     && before.live
                     && item.after.live
                     && item.after.path == *path
-                    && base.get(path).is_some_and(|node| node.item_id == item.item_id)
+                    && base
+                        .get(path)
+                        .is_some_and(|node| node.item_id == item.item_id)
                 {
                     merges.push(path.clone());
                 } else {
@@ -260,7 +273,10 @@ fn plan_pull(
         .filter_map(|item| item.before.as_ref().filter(|state| state.live))
         .map(|state| state.path.as_str())
         .collect();
-    for state in items.iter().filter_map(|item| item.before.as_ref().filter(|state| state.live)) {
+    for state in items
+        .iter()
+        .filter_map(|item| item.before.as_ref().filter(|state| state.live))
+    {
         if let Some((parent, _)) = state.path.rsplit_once('/')
             && !targets.contains(parent)
             && working_ids.get(parent) != head.get(parent).map(|node| &node.item_id)
@@ -323,7 +339,11 @@ impl Repository {
                 from_repo_seq: from,
                 to_repo_seq: from,
                 updated: Vec::new(),
-                conflicts: self.conflicts()?.into_iter().map(|conflict| conflict.path).collect(),
+                conflicts: self
+                    .conflicts()?
+                    .into_iter()
+                    .map(|conflict| conflict.path)
+                    .collect(),
                 unwound,
                 withdrawn,
             });
@@ -335,19 +355,25 @@ impl Repository {
         let settled: HashSet<ItemId> = records
             .iter()
             .filter(|record| {
-                head.get(&record.path)
-                    .is_some_and(|node| node.item_id == record.item_id && node.head_seq == record.head_seq)
-                    && working.get(&record.path).and_then(|node| node.digest_hex.as_deref())
-                        == Some(record.digest.as_str())
+                head.get(&record.path).is_some_and(|node| {
+                    node.item_id == record.item_id && node.head_seq == record.head_seq
+                }) && working
+                    .get(&record.path)
+                    .and_then(|node| node.digest_hex.as_deref())
+                    == Some(record.digest.as_str())
             })
             .map(|record| record.item_id.clone())
             .collect();
         let plan = plan_pull(&base, &head, &working, &working_ids, merge, &settled)?;
         if !plan.conflicts.is_empty() {
             return Err(if merge {
-                LocalError::CannotMerge { paths: plan.conflicts }
+                LocalError::CannotMerge {
+                    paths: plan.conflicts,
+                }
             } else {
-                LocalError::ChangedOnBothSides { paths: plan.conflicts }
+                LocalError::ChangedOnBothSides {
+                    paths: plan.conflicts,
+                }
             });
         }
         let items = plan.items;
@@ -362,9 +388,14 @@ impl Repository {
             let theirs = &head[path];
             let resolution = self.resolve_both(path, base.get(path), theirs, &working[path])?;
             let (digest, theirs_path, conflicted) = match &resolution {
-                Resolution::Text { bytes, conflicted } => (hex::encode(Sha256::digest(bytes)), None, *conflicted),
+                Resolution::Text { bytes, conflicted } => {
+                    (hex::encode(Sha256::digest(bytes)), None, *conflicted)
+                }
                 Resolution::Both { theirs } => (
-                    working[path].digest_hex.clone().expect("scanned FILE has digest"),
+                    working[path]
+                        .digest_hex
+                        .clone()
+                        .expect("scanned FILE has digest"),
                     Some(theirs.clone()),
                     true,
                 ),
@@ -423,7 +454,11 @@ impl Repository {
             from_repo_seq: from,
             to_repo_seq: target,
             updated,
-            conflicts: self.conflicts()?.into_iter().map(|conflict| conflict.path).collect(),
+            conflicts: self
+                .conflicts()?
+                .into_iter()
+                .map(|conflict| conflict.path)
+                .collect(),
             unwound,
             withdrawn,
         })
@@ -432,7 +467,11 @@ impl Repository {
     /// Take in the origin's or the server's newer commits, or return the
     /// items of the first one held commits keep this history from taking.
     pub(super) async fn take_in_items(&self) -> Result<std::result::Result<(), Vec<ItemId>>> {
-        if self.remote().is_some() { self.take_in_remote_items().await } else { self.take_in_origin().await }
+        if self.remote().is_some() {
+            self.take_in_remote_items().await
+        } else {
+            self.take_in_origin().await
+        }
     }
 
     /// Merge one file changed on both sides. `base` is absent when both sides
@@ -462,12 +501,20 @@ impl Repository {
                 let mut options = diffy::MergeOptions::new();
                 options.set_conflict_style(diffy::ConflictStyle::Merge);
                 return Ok(match options.merge(&base, &mine, &theirs) {
-                    Ok(merged) => Resolution::Text { bytes: merged.into_bytes(), conflicted: false },
-                    Err(marked) => Resolution::Text { bytes: marked.into_bytes(), conflicted: true },
+                    Ok(merged) => Resolution::Text {
+                        bytes: merged.into_bytes(),
+                        conflicted: false,
+                    },
+                    Err(marked) => Resolution::Text {
+                        bytes: marked.into_bytes(),
+                        conflicted: true,
+                    },
                 });
             }
         }
-        Ok(Resolution::Both { theirs: self.theirs_path(path)? })
+        Ok(Resolution::Both {
+            theirs: self.theirs_path(path)?,
+        })
     }
 
     /// `<stem>.~theirs.<ext>` beside `path`, numbered when taken.
@@ -481,7 +528,11 @@ impl Repository {
             _ => (name, None),
         };
         for number in 1..=100 {
-            let tag = if number == 1 { "~theirs".to_string() } else { format!("~theirs-{number}") };
+            let tag = if number == 1 {
+                "~theirs".to_string()
+            } else {
+                format!("~theirs-{number}")
+            };
             let name = match extension {
                 Some(extension) => format!("{stem}.{tag}.{extension}"),
                 None => format!("{stem}.{tag}"),
@@ -490,11 +541,15 @@ impl Repository {
                 Some(folder) => format!("{folder}/{name}"),
                 None => name,
             };
-            if std::fs::symlink_metadata(self.root_path().join(display_to_path(&candidate))).is_err() {
+            if std::fs::symlink_metadata(self.root_path().join(display_to_path(&candidate)))
+                .is_err()
+            {
                 return Ok(candidate);
             }
         }
-        Err(LocalError::Invalid(format!("no free name beside {path} for the repository's version")))
+        Err(LocalError::Invalid(format!(
+            "no free name beside {path} for the repository's version"
+        )))
     }
 
     /// Replace a working file with `bytes`, atomically.
@@ -507,20 +562,37 @@ impl Repository {
         let name = relative
             .file_name()
             .ok_or_else(|| LocalError::Invalid(format!("invalid merge path: {display}")))?;
-        let parent_dir = self.root().open_dir_nofollow(parent).at("open merge parent", parent)?;
+        let parent_dir = self
+            .root()
+            .open_dir_nofollow(parent)
+            .at("open merge parent", parent)?;
         let temporary = format!(".synck-tmp-{}", Uuid::new_v4());
         let mut options = OpenOptions::new();
-        options.create_new(true).write(true).follow(FollowSymlinks::No);
-        let mut file = parent_dir.open_with(&temporary, &options).at("create temporary file", display)?;
+        options
+            .create_new(true)
+            .write(true)
+            .follow(FollowSymlinks::No);
+        let mut file = parent_dir
+            .open_with(&temporary, &options)
+            .at("create temporary file", display)?;
         if let Err(error) = file
             .write_all(bytes)
             .and_then(|()| sync_ordered(&file))
             .at("write merged file", display)
         {
-            parent_dir.remove_file(&temporary).at("remove temporary file", display)?;
+            parent_dir
+                .remove_file(&temporary)
+                .at("remove temporary file", display)?;
             return Err(error);
         }
-        self.publish_temporary_file(&parent_dir, &self.root_path().join(parent), &temporary, name, Path::new(display), true)
+        self.publish_temporary_file(
+            &parent_dir,
+            &self.root_path().join(parent),
+            &temporary,
+            name,
+            Path::new(display),
+            true,
+        )
     }
 
     /// Files a pull merged with conflicts, or kept both versions of.
@@ -528,14 +600,25 @@ impl Repository {
         Ok(read_conflicts(self.metadata_path())?
             .into_iter()
             .filter(|record| record.conflicted)
-            .map(|record| Conflict { path: record.path, theirs: record.theirs })
+            .map(|record| Conflict {
+                path: record.path,
+                theirs: record.theirs,
+            })
             .collect())
     }
 
     /// A commit waits until every conflict is resolved.
     pub(crate) fn reject_unresolved(&self) -> Result<()> {
-        let paths: Vec<String> = self.conflicts()?.into_iter().map(|conflict| conflict.path).collect();
-        if paths.is_empty() { Ok(()) } else { Err(LocalError::Unresolved { paths }) }
+        let paths: Vec<String> = self
+            .conflicts()?
+            .into_iter()
+            .map(|conflict| conflict.path)
+            .collect();
+        if paths.is_empty() {
+            Ok(())
+        } else {
+            Err(LocalError::Unresolved { paths })
+        }
     }
 
     /// Mark conflicts resolved. A text file must no longer hold markers.
@@ -544,8 +627,13 @@ impl Repository {
         let mut resolved = Vec::new();
         for input in inputs {
             let path = normalize_input_path(self.root_path(), caller, input)?;
-            let Some(index) = records.iter().position(|record| record.conflicted && record.path == path) else {
-                return Err(LocalError::Invalid(format!("no unresolved conflict at {path}")));
+            let Some(index) = records
+                .iter()
+                .position(|record| record.conflicted && record.path == path)
+            else {
+                return Err(LocalError::Invalid(format!(
+                    "no unresolved conflict at {path}"
+                )));
             };
             if records[index].theirs.is_none() {
                 let file = self.root_path().join(display_to_path(&path));
@@ -554,7 +642,9 @@ impl Repository {
                     .lines()
                     .any(|line| CONFLICT_MARKERS.contains(&line))
                 {
-                    return Err(LocalError::Invalid(format!("{path} still has conflict markers")));
+                    return Err(LocalError::Invalid(format!(
+                        "{path} still has conflict markers"
+                    )));
                 }
             }
             records.remove(index);
@@ -585,7 +675,9 @@ impl Repository {
             || intent.target_repo_seq <= intent.baseline
             || intent.target_repo_seq > self.head_repo_seq()?
         {
-            return Err(LocalError::Integrity("pull intent has invalid fixed fields".into()));
+            return Err(LocalError::Integrity(
+                "pull intent has invalid fixed fields".into(),
+            ));
         }
         self.complete_pull(&intent).await
     }

@@ -125,9 +125,10 @@ pub(crate) fn validate_config(config: &Config) -> Result<()> {
         ));
     }
     if let Some(transition) = &checkout.pending
-        && let Some(paths) = &transition.previous_paths {
-            normalize_paths(paths)?;
-        }
+        && let Some(paths) = &transition.previous_paths
+    {
+        normalize_paths(paths)?;
+    }
     Ok(())
 }
 
@@ -137,9 +138,12 @@ impl Repository {
         #[cfg(windows)]
         {
             let tree = self.complete_file_tree().await?;
-            Ok(crate::path_warnings::long_paths(self.root_path(), tree.keys()
-                .filter(|path| selected(self.checkout_paths().unwrap_or(&[]), path))
-                .map(String::as_str)))
+            Ok(crate::path_warnings::long_paths(
+                self.root_path(),
+                tree.keys()
+                    .filter(|path| selected(self.checkout_paths().unwrap_or(&[]), path))
+                    .map(String::as_str),
+            ))
         }
         #[cfg(not(windows))]
         Ok(Vec::new())
@@ -290,8 +294,7 @@ impl Repository {
             };
             if node.kind != observed.kind
                 || (node.kind == NodeKind::File
-                    && (node.plain_digest.as_deref()
-                        != observed.digest_hex.as_deref()
+                    && (node.plain_digest.as_deref() != observed.digest_hex.as_deref()
                         || node.size.and_then(|s| u64::try_from(s).ok()) != observed.size))
             {
                 return Err(LocalError::Invalid(format!(

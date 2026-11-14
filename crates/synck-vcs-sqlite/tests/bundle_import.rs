@@ -41,7 +41,9 @@ fn create(kind: &str) -> EventProposal {
     }))
     .unwrap();
     if kind == "FILE" {
-        event.set_content = Some(EventContent::bytes(synck_vcs::types::ObjectId::from_digest([7; 32])));
+        event.set_content = Some(EventContent::bytes(
+            synck_vcs::types::ObjectId::from_digest([7; 32]),
+        ));
     }
     event
 }
@@ -100,7 +102,9 @@ async fn fixture() -> (tempfile::TempDir, SqliteStorage, RepoId, Vec<Value>) {
         vec![RefEventProposal {
             owner_item_id: file.item_id.clone(),
             event_type: "FILE_VERSION::CREATE".into(),
-            set_metadata: Some(synck_vcs::metadata::MetadataRef::new(json!({"version_id":ItemId::new()})).unwrap()),
+            set_metadata: Some(
+                synck_vcs::metadata::MetadataRef::new(json!({"version_id":ItemId::new()})).unwrap(),
+            ),
             set_content: None,
             base_ref_seq: 0,
         }],
@@ -119,7 +123,8 @@ async fn fixture() -> (tempfile::TempDir, SqliteStorage, RepoId, Vec<Value>) {
 
 // Serialize the existing public wire DTOs from independent source storage.
 async fn export_records(source: &SqliteStorage, repo_id: &RepoId) -> Vec<Value> {
-    let mut records = vec![json!(BundleHeaderRecord { encrypted: false,
+    let mut records = vec![json!(BundleHeaderRecord {
+        encrypted: false,
         r#type: "synck_vcs_bundle_header".into(),
         bundle_format_version: BUNDLE_FORMAT_VERSION,
         repo_id: repo_id.to_string(),
@@ -141,7 +146,12 @@ async fn export_records(source: &SqliteStorage, repo_id: &RepoId) -> Vec<Value> 
     })];
     let connection = source.open_readonly().unwrap();
     let mut statement = connection.prepare("SELECT object_id, payload FROM vcs_metadata_objects WHERE repo_id=?1 ORDER BY object_id").unwrap();
-    for row in statement.query_map([repo_id.as_str()], |row| Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?))).unwrap() {
+    for row in statement
+        .query_map([repo_id.as_str()], |row| {
+            Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?))
+        })
+        .unwrap()
+    {
         let (digest, payload) = row.unwrap();
         records.push(json!({"type":"metadata", "object_id":format!("sha256:{}", hex::encode(digest)), "payload_hex":hex::encode(payload)}));
     }
@@ -296,17 +306,44 @@ async fn bundle_metadata_preserves_salts_and_rolls_back_invalid_objects() {
     valid.insert(1, record.clone());
     let target = SqliteStorage::new(directory.path().join("metadata.sqlite"));
     target.import_bundle(&mut input(&valid)).await.unwrap();
-    assert_eq!(target.get_metadata(&repo_id, &metadata.id()).unwrap().unwrap().payload(), metadata.payload());
+    assert_eq!(
+        target
+            .get_metadata(&repo_id, &metadata.id())
+            .unwrap()
+            .unwrap()
+            .payload(),
+        metadata.payload()
+    );
     for case in 0..3 {
         let mut invalid = valid.clone();
         match case {
             0 => invalid[1]["payload_hex"] = json!("00".repeat(metadata.payload().len())),
             1 => invalid.insert(2, record.clone()),
-            _ => { invalid.remove(1); invalid.push(record.clone()); },
+            _ => {
+                invalid.remove(1);
+                invalid.push(record.clone());
+            }
         }
-        let target = SqliteStorage::new(directory.path().join(format!("invalid-metadata-{case}.sqlite")));
-        assert!(matches!(target.import_bundle(&mut input(&invalid)).await, Err(ImportFailure::BeforeCommit(_))));
-        assert_eq!(target.open_readonly().unwrap().query_row("SELECT count(*) FROM vcs_metadata_objects", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
+        let target = SqliteStorage::new(
+            directory
+                .path()
+                .join(format!("invalid-metadata-{case}.sqlite")),
+        );
+        assert!(matches!(
+            target.import_bundle(&mut input(&invalid)).await,
+            Err(ImportFailure::BeforeCommit(_))
+        ));
+        assert_eq!(
+            target
+                .open_readonly()
+                .unwrap()
+                .query_row("SELECT count(*) FROM vcs_metadata_objects", [], |row| row
+                    .get::<_, i64>(
+                    0
+                ))
+                .unwrap(),
+            0
+        );
     }
 }
 

@@ -14,7 +14,7 @@ use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use synck_vcs::naming::compute_name_key;
-use synck_vcs::types::{ObjectId, ItemCursor, ItemId, ItemRow, LifecycleState};
+use synck_vcs::types::{ItemCursor, ItemId, ItemRow, LifecycleState, ObjectId};
 use uuid::Uuid;
 
 use crate::error::{IoContext, LocalError, Result};
@@ -205,7 +205,11 @@ impl Repository {
         let committed = self.committed_tree().await?;
         let (ignore, _) = load_ignore(self.root())?;
         scan_tree_unvalidated(
-            self.root(), &committed, &ignore, self.discovery_hidden_mode(), true,
+            self.root(),
+            &committed,
+            &ignore,
+            self.discovery_hidden_mode(),
+            true,
         )
     }
 
@@ -340,7 +344,10 @@ impl Repository {
                 .insert(
                     path.clone(),
                     CommittedNode {
-                        plain_digest: blob_id.as_ref().map(|id| self.plain_digest(id)).transpose()?,
+                        plain_digest: blob_id
+                            .as_ref()
+                            .map(|id| self.plain_digest(id))
+                            .transpose()?,
                         item_id: item.item_id,
                         kind,
                         head_seq: item.head_seq,
@@ -355,18 +362,17 @@ impl Repository {
                 )));
             }
         }
-        if apply_selection
-            && let Some(paths) = self.checkout_paths() {
-                tree.retain(|path, _| crate::checkout::selected(paths, path));
-                for path in tree.keys() {
-                    crate::checkout::normalize_paths(std::slice::from_ref(path))?;
-                    if path.split('/').any(|part| part.starts_with(".synck-tmp-")) {
-                        return Err(LocalError::Integrity(format!(
-                            "reserved checkout path: {path}"
-                        )));
-                    }
+        if apply_selection && let Some(paths) = self.checkout_paths() {
+            tree.retain(|path, _| crate::checkout::selected(paths, path));
+            for path in tree.keys() {
+                crate::checkout::normalize_paths(std::slice::from_ref(path))?;
+                if path.split('/').any(|part| part.starts_with(".synck-tmp-")) {
+                    return Err(LocalError::Integrity(format!(
+                        "reserved checkout path: {path}"
+                    )));
                 }
             }
+        }
         Ok(tree)
     }
 
@@ -428,12 +434,7 @@ impl Repository {
             .collect();
         let changes = diff(committed, working, &matched, &working_ids);
         let identities = next_identity_records(committed, working, &records, &matched);
-        publish_worktree_observation(
-            self.local_db(),
-            scan,
-            &identities,
-            &records,
-        )?;
+        publish_worktree_observation(self.local_db(), scan, &identities, &records)?;
         Ok((changes, working_ids))
     }
 
@@ -450,12 +451,7 @@ impl Repository {
         let records = load_identity_records(self.local_db())?;
         let matched = reconcile_identities(&committed, working, &records);
         let identities = next_identity_records(&committed, working, &records, &matched);
-        publish_worktree_observation(
-            self.local_db(),
-            &scan,
-            &identities,
-            &records,
-        )?;
+        publish_worktree_observation(self.local_db(), &scan, &identities, &records)?;
         Ok(())
     }
 
@@ -636,8 +632,7 @@ impl Repository {
                 .as_ref()
                 .is_some_and(|c| c.pending.is_none())
             {
-                let records =
-                    load_identity_records(self.local_db())?;
+                let records = load_identity_records(self.local_db())?;
                 let matched = reconcile_identities(committed, &scan.working, &records);
                 if let Some((item_id, moved_to)) = matched
                     .iter()
@@ -1048,13 +1043,7 @@ pub(crate) fn scan_materialized_tree(
     let ignore = GitignoreBuilder::new(".")
         .build()
         .map_err(|error| LocalError::Invalid(format!("cannot build workspace scanner: {error}")))?;
-    scan_tree(
-        root,
-        committed,
-        &ignore,
-        NativeHiddenMode::Observe,
-        false,
-    )
+    scan_tree(root, committed, &ignore, NativeHiddenMode::Observe, false)
 }
 
 pub(crate) fn scan_canonical_without_ignore(
@@ -1069,7 +1058,13 @@ pub(crate) fn scan_canonical_without_ignore(
 // need repair.
 pub(crate) fn validate_initial_tree(root: &Dir, ignore_root: &Dir) -> Result<bool> {
     let (ignore, _) = load_ignore(ignore_root)?;
-    let working = scan_tree_unvalidated(root, &BTreeMap::new(), &ignore, NativeHiddenMode::Ignore, true)?;
+    let working = scan_tree_unvalidated(
+        root,
+        &BTreeMap::new(),
+        &ignore,
+        NativeHiddenMode::Ignore,
+        true,
+    )?;
     Ok(!crate::name_repairs::plan(root, &working)?.is_empty())
 }
 
@@ -1097,9 +1092,8 @@ fn scan_tree(
     native_hidden_mode: NativeHiddenMode,
     repository_root: bool,
 ) -> Result<BTreeMap<String, WorkingNode>> {
-    let working = scan_tree_unvalidated(
-        root, committed, ignore, native_hidden_mode, repository_root,
-    )?;
+    let working =
+        scan_tree_unvalidated(root, committed, ignore, native_hidden_mode, repository_root)?;
     crate::name_repairs::validate(root, &working)?;
     Ok(working)
 }
@@ -1429,14 +1423,21 @@ pub(crate) fn decode_incarnation(
 }
 
 fn validate_plain_digest(digest: &str) -> Result<()> {
-    if digest.len() != 64 || !digest.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
-        return Err(LocalError::Integrity("invalid cached plaintext SHA-256 digest".into()));
+    if digest.len() != 64
+        || !digest
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
+        return Err(LocalError::Integrity(
+            "invalid cached plaintext SHA-256 digest".into(),
+        ));
     }
     Ok(())
 }
 
 fn load_worktree_cache(local: &crate::local_database::LocalDatabase) -> Result<WorktreeCache> {
-    let connection = local.open_readonly()
+    let connection = local
+        .open_readonly()
         .map_err(|error| LocalError::Integrity(format!("cannot read worktree cache: {error}")))?;
     let mut statement = connection.prepare(
         "SELECT path, node_kind, device_id, file_id, birth_seconds, birth_nanos, size_bytes,
@@ -1654,7 +1655,8 @@ fn publish_worktree_observation(
 ) -> Result<()> {
     let working = &scan.working;
     let incremental_scopes = scan.incremental_scopes.as_deref();
-    let mut connection = local.open_writable()
+    let mut connection = local
+        .open_writable()
         .map_err(|error| LocalError::Invalid(format!("cannot update worktree cache: {error}")))?;
     let transaction = connection.transaction()?;
     if let Some(scopes) = incremental_scopes {
@@ -1720,7 +1722,10 @@ fn publish_worktree_observation(
     }
     transaction.execute("DELETE FROM local_worktree_skipped", [])?;
     for path in &scan.skipped {
-        transaction.execute("INSERT INTO local_worktree_skipped(path) VALUES (?1)", [path])?;
+        transaction.execute(
+            "INSERT INTO local_worktree_skipped(path) VALUES (?1)",
+            [path],
+        )?;
     }
     transaction.execute(
         "INSERT INTO local_worktree_scan_state(
@@ -1797,9 +1802,10 @@ fn build_item_path(
             item.item_id
         )));
     }
-    let name = item.name.as_deref().ok_or_else(|| {
-        LocalError::Integrity(format!("tree item {} has no name", item.item_id))
-    })?;
+    let name = item
+        .name
+        .as_deref()
+        .ok_or_else(|| LocalError::Integrity(format!("tree item {} has no name", item.item_id)))?;
     compute_name_key(name).map_err(|error| {
         LocalError::Integrity(format!("invalid stored item name {name:?}: {error}"))
     })?;
@@ -1833,7 +1839,8 @@ fn build_item_path(
 fn load_file_heads(
     local: &crate::local_database::LocalDatabase,
 ) -> Result<HashMap<ItemId, (i64, ObjectId, i64)>> {
-    let connection = local.open_readonly()
+    let connection = local
+        .open_readonly()
         .map_err(|error| LocalError::Integrity(format!("cannot read file heads: {error}")))?;
     let mut statement = connection.prepare(
         "SELECT item_id, item_seq, blob_id, size_bytes

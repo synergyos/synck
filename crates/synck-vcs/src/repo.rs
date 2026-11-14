@@ -7,30 +7,31 @@ mod admission;
 
 use admission::{
     CommitHeader, EventPlacement, MissingCreateId, ResolvedEvents, apply_events, assign_ref_seqs,
-    check_base_seq_shape, check_base_seqs, check_final_state, check_ref_bases, insert_sealed_commit,
-    observe_ref_bases, observed_base_seqs, reject_source_revisions, resolve_events, seed_items,
-    structural_targets,
+    check_base_seq_shape, check_base_seqs, check_final_state, check_ref_bases,
+    insert_sealed_commit, observe_ref_bases, observed_base_seqs, reject_source_revisions,
+    resolve_events, seed_items, structural_targets,
 };
 
 use crate::config::CoreConfig;
 use crate::errors::{CoreError, StorageError};
-use crate::limits::validate_commit_metadata;
 use crate::invariants::{
     Invariant, InvariantContext, OperationKind, SequencingModeRule, TombstoneFinality,
     check_file_folder_live_parent_closure, check_folder_acyclicity,
     check_parent_existence_and_type,
 };
+use crate::limits::validate_commit_metadata;
 use crate::naming::{NameError, NameErrorKind};
 use crate::sequencer::Sequencer;
 use crate::storage::{SealedCommitInsert, Storage, StorageTxn};
-use crate::transition::{ItemState, TransitionError, check_source_revision, apply_event as apply_item_event};
+use crate::transition::{
+    ItemState, TransitionError, apply_event as apply_item_event, check_source_revision,
+};
 use crate::types::{
-    AcceptedCommit, COMMIT_EVENT_FAMILY_ITEM, COMMIT_EVENT_FAMILY_REF,
-    COMMIT_FORMAT_VERSION, CommitEventRow, CommitPk, CommitProposal, CommitRow,
-    CreateItem, CreatedItemInfo, EventInsertRow, EventProposal, EventRow, EventsDigest,
-    FederatedDomainProposal, FederatedProposal,
-    IngestedCommit, IngestedDomainCommit, ItemCursor, ItemId, ItemRow, LifecycleState,
-    RefEventInsertRow, RefEventProposal, RepoEventCursor, RepoId, SequencingMode,
+    AcceptedCommit, COMMIT_EVENT_FAMILY_ITEM, COMMIT_EVENT_FAMILY_REF, COMMIT_FORMAT_VERSION,
+    CommitEventRow, CommitPk, CommitProposal, CommitRow, CreateItem, CreatedItemInfo,
+    EventInsertRow, EventProposal, EventRow, EventsDigest, FederatedDomainProposal,
+    FederatedProposal, IngestedCommit, IngestedDomainCommit, ItemCursor, ItemId, ItemRow,
+    LifecycleState, RefEventInsertRow, RefEventProposal, RepoEventCursor, RepoId, SequencingMode,
     SubtreeClosureGuard, Timestamp,
 };
 use crate::types::{
@@ -227,10 +228,7 @@ impl Repo {
     }
 
     pub fn new(storage: Storage, config: CoreConfig) -> Self {
-        Self {
-            storage,
-            config,
-        }
+        Self { storage, config }
     }
 
     fn validate_payload_limits(
@@ -663,9 +661,7 @@ impl Repo {
             Vec::new(),
             AppendBaseSeqMode::RequirePresent,
             guards,
-            AppendProfile::FileFolder {
-                subtree_guards,
-            },
+            AppendProfile::FileFolder { subtree_guards },
         )
         .await
     }
@@ -685,9 +681,7 @@ impl Repo {
             ref_events,
             AppendBaseSeqMode::RequirePresent,
             guards,
-            AppendProfile::FileFolder {
-                subtree_guards,
-            },
+            AppendProfile::FileFolder { subtree_guards },
         )
         .await
     }
@@ -712,9 +706,7 @@ impl Repo {
             ref_events,
             AppendBaseSeqMode::RequirePresent,
             guards,
-            AppendProfile::FileFolder {
-                subtree_guards,
-            },
+            AppendProfile::FileFolder { subtree_guards },
             OperationKind::Append,
         )
         .await
@@ -1114,7 +1106,10 @@ impl Repo {
         // Unfederate must be ingested, not appended.
         for ev in proposal.events.iter().filter(|ev| ev.changes_federation()) {
             let bound = ev.set_is_federated == Some(true)
-                && ev.set_federation_stream_id.as_deref().is_some_and(|id| !id.is_empty());
+                && ev
+                    .set_federation_stream_id
+                    .as_deref()
+                    .is_some_and(|id| !id.is_empty());
             if !bound || ev.modifies_item() {
                 return Err(CoreError::IllegalFederationTransition);
             }
@@ -1394,8 +1389,7 @@ impl Repo {
             } else {
                 BTreeSet::new()
             };
-        let transitions =
-            apply_events(&repo_id, &mut items, &proposal.events, &event_item_ids)?;
+        let transitions = apply_events(&repo_id, &mut items, &proposal.events, &event_item_ids)?;
         let (ref_event_seqs, ref_head_after) =
             assign_ref_seqs(&repo_id, &items, &ref_events, &ref_head_before)?;
         check_final_state(
@@ -1409,12 +1403,12 @@ impl Repo {
         // A domain's tombstone cannot clear a local link, so filing goes through the domain.
         let sets_link = proposal.events.iter().any(|event| {
             matches!(event.set_link, Some(Some(_)))
-                || event.create_item.as_ref().is_some_and(|create| create.link.is_some())
+                || event
+                    .create_item
+                    .as_ref()
+                    .is_some_and(|create| create.link.is_some())
         });
-        if self.config.follows_domains
-            && sets_link
-            && txn.has_federation_domain(&repo_id).await?
-        {
+        if self.config.follows_domains && sets_link && txn.has_federation_domain(&repo_id).await? {
             return Err(CoreError::InvalidProposal(
                 "a repository following a federation domain files through the domain".to_string(),
             ));
@@ -2346,7 +2340,11 @@ impl Repo {
 
         reject_source_revisions(&proposal.events)?;
         let resolved = resolve_events(&proposal.events, MissingCreateId::Reject)?;
-        check_base_seq_shape(&proposal.events, &resolved, AppendBaseSeqMode::RequirePresent)?;
+        check_base_seq_shape(
+            &proposal.events,
+            &resolved,
+            AppendBaseSeqMode::RequirePresent,
+        )?;
         let event_item_ids = &resolved.event_item_ids;
         let create_item_ids = &resolved.create_item_ids;
         let observed_base_seq = observed_base_seqs(&proposal.events, event_item_ids)?;
@@ -2579,7 +2577,12 @@ fn map_create_error(
     create: &CreateItem,
     err: NameError,
 ) -> CoreError {
-    map_name_error(repo_id, Some(item_id), create.name.as_deref().unwrap_or_default(), err)
+    map_name_error(
+        repo_id,
+        Some(item_id),
+        create.name.as_deref().unwrap_or_default(),
+        err,
+    )
 }
 
 fn map_transition_error(
@@ -3032,7 +3035,6 @@ pub fn validate_payload_limits(
         .chain(ref_events.iter().map(canonical_ref_event_proposal_bytes))
         .collect()
 }
-
 
 #[cfg(test)]
 mod commit_metadata_limit_tests {

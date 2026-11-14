@@ -15,7 +15,10 @@ use super::*;
 
 /// `path` and everything under it, keyed by the path relative to it ("" for
 /// `path` itself).
-fn subtree<'a>(tree: &'a BTreeMap<String, CommittedNode>, path: &str) -> BTreeMap<String, &'a CommittedNode> {
+fn subtree<'a>(
+    tree: &'a BTreeMap<String, CommittedNode>,
+    path: &str,
+) -> BTreeMap<String, &'a CommittedNode> {
     tree.iter()
         .filter_map(|(entry, node)| {
             if entry == path {
@@ -31,7 +34,11 @@ fn subtree<'a>(tree: &'a BTreeMap<String, CommittedNode>, path: &str) -> BTreeMa
 }
 
 fn join(root: &str, relative: &str) -> String {
-    if relative.is_empty() { root.to_string() } else { format!("{root}/{relative}") }
+    if relative.is_empty() {
+        root.to_string()
+    } else {
+        format!("{root}/{relative}")
+    }
 }
 
 fn revision(node: &CommittedNode) -> ItemRevision {
@@ -50,7 +57,10 @@ impl Repository {
         for change in &changes {
             if let Some(path) = paths.iter().find(|path| {
                 path_in_scope(&change.path, path)
-                    || change.source_path.as_deref().is_some_and(|source| path_in_scope(source, path))
+                    || change
+                        .source_path
+                        .as_deref()
+                        .is_some_and(|source| path_in_scope(source, path))
             }) {
                 return Err(LocalError::Invalid(format!(
                     "{path} has uncommitted changes; commit or restore them first"
@@ -61,7 +71,10 @@ impl Repository {
     }
 
     fn require_selected(&self, path: &str) -> Result<()> {
-        if self.checkout_paths().is_some_and(|paths| !crate::checkout::selected(paths, path)) {
+        if self
+            .checkout_paths()
+            .is_some_and(|paths| !crate::checkout::selected(paths, path))
+        {
             return Err(LocalError::Invalid(format!(
                 "{path} is outside this working tree's checkout; widen it first"
             )));
@@ -80,7 +93,9 @@ impl Repository {
         let source = normalize_input_path(self.root_path(), caller, source)?;
         let destination = normalize_input_path(self.root_path(), caller, destination)?;
         if path_in_scope(&destination, &source) {
-            return Err(LocalError::Invalid("an alternative cannot be inside its source".into()));
+            return Err(LocalError::Invalid(
+                "an alternative cannot be inside its source".into(),
+            ));
         }
         self.require_selected(&destination)?;
         self.guard_agent_paths(&[&destination])?;
@@ -98,8 +113,12 @@ impl Repository {
             self.write_alternative_entry(&path, node, false)?;
             sources.insert(path, revision(node));
         }
-        let message = message.map_or_else(|| format!("Duplicate {source} as {destination}"), str::to_string);
-        self.commit_alternative(&destination, message, &sources).await
+        let message = message.map_or_else(
+            || format!("Duplicate {source} as {destination}"),
+            str::to_string,
+        );
+        self.commit_alternative(&destination, message, &sources)
+            .await
     }
 
     /// Make `original` match `alternative`, keeping the original's identity.
@@ -113,7 +132,9 @@ impl Repository {
         let alternative = normalize_input_path(self.root_path(), caller, alternative)?;
         let original = normalize_input_path(self.root_path(), caller, original)?;
         if path_in_scope(&alternative, &original) || path_in_scope(&original, &alternative) {
-            return Err(LocalError::Invalid("an alternative and its original cannot contain each other".into()));
+            return Err(LocalError::Invalid(
+                "an alternative and its original cannot contain each other".into(),
+            ));
         }
         self.require_selected(&alternative)?;
         self.require_selected(&original)?;
@@ -124,20 +145,29 @@ impl Repository {
         match (theirs.get(""), ours.get("")) {
             (Some(left), Some(right)) if left.kind == right.kind => {}
             (Some(_), Some(_)) => {
-                return Err(LocalError::Invalid("an alternative and its original must both be files or both folders".into()));
+                return Err(LocalError::Invalid(
+                    "an alternative and its original must both be files or both folders".into(),
+                ));
             }
             _ => {
-                return Err(LocalError::Invalid(format!("{alternative} and {original} must both be committed")));
+                return Err(LocalError::Invalid(format!(
+                    "{alternative} and {original} must both be committed"
+                )));
             }
         }
 
         // Remove what the alternative lacks, deepest first, then write what
         // it has, shallowest first.
         for (relative, node) in ours.iter().rev() {
-            if theirs.get(relative).is_some_and(|other| other.kind == node.kind) {
+            if theirs
+                .get(relative)
+                .is_some_and(|other| other.kind == node.kind)
+            {
                 continue;
             }
-            let path = self.root_path().join(display_to_path(&join(&original, relative)));
+            let path = self
+                .root_path()
+                .join(display_to_path(&join(&original, relative)));
             match node.kind {
                 NodeKind::File => std::fs::remove_file(&path).at("remove", &path)?,
                 NodeKind::Folder => std::fs::remove_dir(&path).at("remove", &path)?,
@@ -147,17 +177,27 @@ impl Repository {
         for (relative, node) in &theirs {
             let path = join(&original, relative);
             let current = ours.get(relative).filter(|other| other.kind == node.kind);
-            if current.is_some_and(|current| node.kind == NodeKind::Folder || current.blob_id == node.blob_id) {
+            if current.is_some_and(|current| {
+                node.kind == NodeKind::Folder || current.blob_id == node.blob_id
+            }) {
                 continue;
             }
             self.write_alternative_entry(&path, node, current.is_some())?;
             sources.insert(path, revision(node));
         }
-        let message = message.map_or_else(|| format!("Adopt {alternative} into {original}"), str::to_string);
+        let message = message.map_or_else(
+            || format!("Adopt {alternative} into {original}"),
+            str::to_string,
+        );
         self.commit_alternative(&original, message, &sources).await
     }
 
-    fn write_alternative_entry(&self, path: &str, node: &CommittedNode, overwrite: bool) -> Result<()> {
+    fn write_alternative_entry(
+        &self,
+        path: &str,
+        node: &CommittedNode,
+        overwrite: bool,
+    ) -> Result<()> {
         match node.kind {
             NodeKind::Folder => {
                 let path = self.root_path().join(display_to_path(path));
@@ -182,7 +222,13 @@ impl Repository {
             message: Some(message),
             ..Default::default()
         };
-        self.commit_selected_with(self.root_path(), &[PathBuf::from(path)], &options, None, sources)
-            .await
+        self.commit_selected_with(
+            self.root_path(),
+            &[PathBuf::from(path)],
+            &options,
+            None,
+            sources,
+        )
+        .await
     }
 }

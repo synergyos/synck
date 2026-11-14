@@ -37,7 +37,8 @@ fn canonical(records: &[ProposalRecord]) -> Result<Vec<u8>> {
 }
 
 fn timestamp(seconds: i64) -> Result<Timestamp> {
-    Timestamp::from_timestamp(seconds, 0).ok_or_else(|| Error::State("upload expiry out of range".into()))
+    Timestamp::from_timestamp(seconds, 0)
+        .ok_or_else(|| Error::State("upload expiry out of range".into()))
 }
 
 /// Every page of an upload in order, checked by a fresh verifier.
@@ -94,7 +95,10 @@ impl Uploads {
         let now = Utc::now();
         let mut verifiers = self.verifiers.lock().expect("upload verifiers");
         let mut conn = open_existing(&self.state_root)?;
-        conn.execute("DELETE FROM uploads WHERE expires_at <= ?1", [now.timestamp()])?;
+        conn.execute(
+            "DELETE FROM uploads WHERE expires_at <= ?1",
+            [now.timestamp()],
+        )?;
         verifiers.retain(|_, (_, expires_at)| *expires_at > now);
         let key = (repository.repo_id.clone(), page.operation_id.clone());
         let upload: Option<(String, i64)> = conn
@@ -108,8 +112,11 @@ impl Uploads {
             None if page.offset != 0 => return Err(ProtocolError::UploadExpired.into()),
             None => {
                 let expires_at = timestamp((now + LIFETIME).timestamp())?;
-                let verifier =
-                    ProposalVerifier::new(repository.clone(), page.operation_id.clone(), expires_at)?;
+                let verifier = ProposalVerifier::new(
+                    repository.clone(),
+                    page.operation_id.clone(),
+                    expires_at,
+                )?;
                 (verifier, expires_at, false)
             }
             Some((generation, _)) if generation != repository.generation.to_string() => {
@@ -221,13 +228,20 @@ impl Uploads {
         )?;
         let stored: String = connection.query_row(
             "SELECT request_digest FROM submissions WHERE repo_id=?1 AND operation_id=?2",
-            params![repo_id.as_str(),operation_id],|row|row.get(0),
+            params![repo_id.as_str(), operation_id],
+            |row| row.get(0),
         )?;
-        if stored != request_digest.as_str() { return Err(Error::OperationReused); }
+        if stored != request_digest.as_str() {
+            return Err(Error::OperationReused);
+        }
         Ok(())
     }
 
-    pub(crate) fn submitted(&self, repo_id: &RepoId, operation_id: &str) -> Result<Option<Sha256Digest>> {
+    pub(crate) fn submitted(
+        &self,
+        repo_id: &RepoId,
+        operation_id: &str,
+    ) -> Result<Option<Sha256Digest>> {
         let digest: Option<String> = open_existing(&self.state_root)?
             .query_row(
                 "SELECT request_digest FROM submissions WHERE repo_id = ?1 AND operation_id = ?2",
@@ -236,7 +250,9 @@ impl Uploads {
             )
             .optional()?;
         digest
-            .map(|digest| Sha256Digest::parse(digest).map_err(|error| Error::State(error.to_string())))
+            .map(|digest| {
+                Sha256Digest::parse(digest).map_err(|error| Error::State(error.to_string()))
+            })
             .transpose()
     }
 }

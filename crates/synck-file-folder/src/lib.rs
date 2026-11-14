@@ -24,13 +24,13 @@ pub use model::{
 };
 pub use operation::{canonical_operation_bytes, compute_operation_id, normalize_intents};
 pub use project::{
-    validate_projected_proposal, project_commit, project_commit_events, project_proposal_events,
+    project_commit, project_commit_events, project_proposal_events, validate_projected_proposal,
 };
 
 /// Public profile identifier.
 pub const PROFILE_ID: &str = "synck-file-folder-v1";
 
-pub use synck_vcs::limits::{MAX_MESSAGE_BYTES, MAX_EVENT_PAYLOAD_BYTES};
+pub use synck_vcs::limits::{MAX_EVENT_PAYLOAD_BYTES, MAX_MESSAGE_BYTES};
 pub const MAX_SAFE_JSON_INTEGER: u64 = 9_007_199_254_740_991;
 
 /// Parse the durable bytes referenced by one canonical FILE content event.
@@ -48,7 +48,11 @@ pub fn file_blob_reference(
     if !is_file_content_event(&event.event_type) {
         return Ok(None);
     }
-    let blob_id = event.set_content.as_ref().and_then(|content| content.only("bytes")).ok_or_else(|| {
+    let blob_id = event
+        .set_content
+        .as_ref()
+        .and_then(|content| content.only("bytes"))
+        .ok_or_else(|| {
             SemanticError::new(
                 SemanticErrorCode::MalformedProfileEvent,
                 "FILE content event lacks a blob",
@@ -168,7 +172,10 @@ mod tests {
         );
 
         let mut malformed = event.clone();
-        malformed.set_metadata = Some(synck_vcs::metadata::MetadataRef::new(serde_json::json!({"content": {"size": -1}})).unwrap());
+        malformed.set_metadata = Some(
+            synck_vcs::metadata::MetadataRef::new(serde_json::json!({"content": {"size": -1}}))
+                .unwrap(),
+        );
         assert!(file_blob_reference(&malformed).is_err());
 
         let mut unrelated = event;

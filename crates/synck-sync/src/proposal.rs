@@ -20,8 +20,13 @@ pub struct ValidatedProposal {
 /// must also finish its staged ProposalVerifier and run Core acceptance checks.
 pub fn validate_submit(request: &SubmitRequest) -> Result<ValidatedProposal, ProtocolError> {
     request.repository.validate()?;
-    if request.repository_head.is_some_and(|head| head > i64::MAX as u64) {
-        return Err(invalid("repository head does not fit the canonical representation"));
+    if request
+        .repository_head
+        .is_some_and(|head| head > i64::MAX as u64)
+    {
+        return Err(invalid(
+            "repository head does not fit the canonical representation",
+        ));
     }
     let metadata = &request.metadata;
     synck_vcs::limits::validate_commit_metadata(

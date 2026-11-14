@@ -2,8 +2,8 @@
 //!
 //! The source schema in a header is provenance, not a target schema instruction.
 //! Only the current bundle encoding is accepted.
-use crate::limits::{MAX_BUNDLE_RECORD_BYTES, MAX_EVENT_PAYLOAD_BYTES};
 use crate::errors::CoreError;
+use crate::limits::{MAX_BUNDLE_RECORD_BYTES, MAX_EVENT_PAYLOAD_BYTES};
 use crate::types::{
     COMMIT_FORMAT_VERSION, EventProposal, RefEventProposal, RepoId, Sha256Digest,
     canonical_event_proposal_bytes, canonical_ref_event_proposal_bytes,
@@ -179,7 +179,11 @@ fn require_fields(value: &serde_json::Value, kind: &str, fields: &[&str]) -> Res
 }
 
 fn decode_commit_record(value: serde_json::Value) -> Result<BundleCommitRecord, String> {
-    require_fields(&value, "commit", &["operation_id", "message", "occurred_at"])?;
+    require_fields(
+        &value,
+        "commit",
+        &["operation_id", "message", "occurred_at"],
+    )?;
     let record: BundleCommitRecord =
         serde_json::from_value(value).map_err(|error| format!("decode commit: {error}"))?;
     if record
@@ -189,8 +193,13 @@ fn decode_commit_record(value: serde_json::Value) -> Result<BundleCommitRecord, 
     {
         return Err("operation_id must be null or nonblank".to_string());
     }
-    crate::limits::validate_commit_metadata(&record.author_id, &record.committer_id,
-        record.message.as_deref(), record.operation_id.as_deref()).map_err(|e| e.to_string())?;
+    crate::limits::validate_commit_metadata(
+        &record.author_id,
+        &record.committer_id,
+        record.message.as_deref(),
+        record.operation_id.as_deref(),
+    )
+    .map_err(|e| e.to_string())?;
     Ok(record)
 }
 
@@ -264,7 +273,11 @@ impl<'a> BundleReader<'a> {
         if end.digest.as_str() != sha256_prefixed_hex_from_digest_bytes(digest) {
             return Err("bundle digest mismatch".to_string());
         }
-        if self.line().map_err(|_| "bytes after the end record")?.is_some() {
+        if self
+            .line()
+            .map_err(|_| "bytes after the end record")?
+            .is_some()
+        {
             return Err("bytes after the end record".to_string());
         }
         self.checkpoint = Some(end.checkpoint);
@@ -314,7 +327,11 @@ fn decode_record(kind: &str, value: serde_json::Value) -> Result<BundleRecord, S
         ),
         "commit" => BundleRecord::Commit(decode_commit_record(value)?),
         "event" => {
-            require_fields(&value, "event", &["parent_folder_id", "parent_folder_id_before"])?;
+            require_fields(
+                &value,
+                "event",
+                &["parent_folder_id", "parent_folder_id_before"],
+            )?;
             BundleRecord::Event(
                 serde_json::from_value(value).map_err(|error| format!("decode event: {error}"))?,
             )
@@ -490,8 +507,7 @@ pub fn validate_bundle_event_payload_json_and_digest(
     }
 
     let event_hash = compute_sha256_digest_bytes(payload_bytes);
-    let expected_event_digest =
-        Sha256Digest::parse_stored(event_payload_digest)?;
+    let expected_event_digest = Sha256Digest::parse_stored(event_payload_digest)?;
     if sha256_digest_to_digest_bytes(&expected_event_digest) != event_hash {
         return Err("event_payload_digest mismatch".to_string());
     }
@@ -512,8 +528,7 @@ pub fn validate_bundle_ref_event_payload_json_and_digest(
         return Err("payload_json is not canonical RefEventProposal bytes".to_string());
     }
     let event_hash = compute_sha256_digest_bytes(payload_bytes);
-    let expected_event_digest =
-        Sha256Digest::parse_stored(event_payload_digest)?;
+    let expected_event_digest = Sha256Digest::parse_stored(event_payload_digest)?;
     if sha256_digest_to_digest_bytes(&expected_event_digest) != event_hash {
         return Err("event_payload_digest mismatch".to_string());
     }
@@ -631,7 +646,9 @@ mod bundle_tests {
     #[test]
     fn canonical_payload_json_digest_matches() {
         let item_id = crate::types::ItemId::new();
-        let ev = EventProposal { set_link: None, merged_from: None,
+        let ev = EventProposal {
+            set_link: None,
+            merged_from: None,
             item_id: Some(item_id),
             event_type: "ITEM::NOTE".to_string(),
             set_metadata: None,
@@ -733,19 +750,26 @@ mod bundle_tests {
         }
 
         fn gen_event_proposal(rng: &mut XorShift64) -> EventProposal {
-            EventProposal { set_link: None, merged_from: None,
+            EventProposal {
+                set_link: None,
+                merged_from: None,
                 item_id: Some(gen_item_id(rng)),
                 event_type: "ITEM::NOTE".to_string(),
                 set_metadata: if rng.next_bool() {
-                    Some(crate::metadata::MetadataRef::new(serde_json::json!({
-                        "k": gen_string(rng, 16),
-                        "n": (rng.next_u64() % 1_000_000) as i64
-                    })).unwrap())
+                    Some(
+                        crate::metadata::MetadataRef::new(serde_json::json!({
+                            "k": gen_string(rng, 16),
+                            "n": (rng.next_u64() % 1_000_000) as i64
+                        }))
+                        .unwrap(),
+                    )
                 } else {
                     None
                 },
                 set_content: if rng.next_bool() {
-                    Some(EventContent::bytes(crate::types::ObjectId::from_digest([rng.next_u64() as u8;32])))
+                    Some(EventContent::bytes(crate::types::ObjectId::from_digest(
+                        [rng.next_u64() as u8; 32],
+                    )))
                 } else {
                     None
                 },

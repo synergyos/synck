@@ -246,7 +246,9 @@ mod tests {
 
     fn item_value(number: u64, head_seq: i64) -> ItemValue {
         let item_id = item_id(number);
-        ItemValue { link_folder_id: None, record_key: None,
+        ItemValue {
+            link_folder_id: None,
+            record_key: None,
             item_id,
             item_type: "FILE".to_string(),
             parent_folder_id: None,
@@ -960,7 +962,10 @@ mod tests {
             repo_seq: 0,
             commit_id: None,
             item_map_root: StateTree::new(&mut store).empty_item_root().await.unwrap(),
-            namespace_root: StateTree::new(&mut store).empty_namespace_root().await.unwrap(),
+            namespace_root: StateTree::new(&mut store)
+                .empty_namespace_root()
+                .await
+                .unwrap(),
         };
         let root_id = StateTree::new(&mut store)
             .store_root(expected.clone())

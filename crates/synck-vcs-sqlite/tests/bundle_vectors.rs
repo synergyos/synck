@@ -13,6 +13,11 @@ async fn external_bundle_vectors() {
         let target = SqliteStorage::new(directory.path().join(format!("{index}.sqlite")));
         let bundle = case["bundle"].as_str().unwrap().as_bytes().to_vec();
         let result = target.import_bundle(&mut Cursor::new(bundle)).await;
-        assert_eq!(result.is_ok(), case["valid"].as_bool().unwrap(), "{name}: {:?}", result.err());
+        assert_eq!(
+            result.is_ok(),
+            case["valid"].as_bool().unwrap(),
+            "{name}: {:?}",
+            result.err()
+        );
     }
 }

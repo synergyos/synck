@@ -127,7 +127,10 @@ pub(super) fn begin_replay_commit(commit: CommitRow) -> Result<ReplayAccumulator
     })
 }
 
-pub(super) fn append_replay_event(replay: &mut ReplayAccumulator, event: CommitEventRow) -> Result<()> {
+pub(super) fn append_replay_event(
+    replay: &mut ReplayAccumulator,
+    event: CommitEventRow,
+) -> Result<()> {
     if event.repo_seq() != replay.commit.repo_seq || event.commit_id() != &replay.commit.commit_id {
         return Err(LocalError::Integrity(format!(
             "repository sequence {} contains multiple commits",
@@ -332,7 +335,10 @@ pub(super) async fn ref_commit_event_presentation<S: StateIndexStore>(
 }
 
 pub(super) fn commit_event_display_item_id(proposal: &EventProposal) -> Result<ItemId> {
-    proposal.item_id.clone().ok_or_else(|| LocalError::Integrity("commit event has no item ID".into()))
+    proposal
+        .item_id
+        .clone()
+        .ok_or_else(|| LocalError::Integrity("commit event has no item ID".into()))
 }
 
 pub(super) async fn historical_parent_name<S: StateIndexStore>(
@@ -361,7 +367,10 @@ pub(crate) fn checked_commit_event_count(event_count: i32, commit_id: &CommitId)
     })
 }
 
-pub(super) fn history_path(item_id: &ItemId, nodes: &HashMap<ItemId, HistoryNode>) -> Result<Option<String>> {
+pub(super) fn history_path(
+    item_id: &ItemId,
+    nodes: &HashMap<ItemId, HistoryNode>,
+) -> Result<Option<String>> {
     let Some(_) = nodes.get(item_id) else {
         return Ok(None);
     };
@@ -392,7 +401,9 @@ pub(super) fn validate_historical_namespace_delta(
     Ok(())
 }
 
-pub(super) fn initial_historical_changes(items: BTreeMap<ItemId, ItemValue>) -> Result<Vec<Change>> {
+pub(super) fn initial_historical_changes(
+    items: BTreeMap<ItemId, ItemValue>,
+) -> Result<Vec<Change>> {
     let mut paths = HashMap::new();
     let mut visiting = HashSet::new();
     let mut changes = Vec::new();
@@ -901,7 +912,9 @@ impl Repository {
         let commit = match self.resolve_revision(input).await {
             Err(LocalError::Invalid(detail)) => {
                 return Err(LocalError::Invalid(match self.withdrawn_label(input)? {
-                    Some(label) => format!("{input} was withdrawn as {label}; run synck withdrawn show {label}"),
+                    Some(label) => format!(
+                        "{input} was withdrawn as {label}; run synck withdrawn show {label}"
+                    ),
                     None => detail,
                 }));
             }
@@ -1124,13 +1137,11 @@ impl Repository {
                             "commit {commit_id} event {index} has an inconsistent envelope"
                         )));
                     }
-                    let proposal: EventProposal = event.proposal().map_err(
-                        |error| {
-                            LocalError::Integrity(format!(
-                                "commit {commit_id} event {index} has invalid canonical JSON: {error}"
-                            ))
-                        },
-                    )?;
+                    let proposal: EventProposal = event.proposal().map_err(|error| {
+                        LocalError::Integrity(format!(
+                            "commit {commit_id} event {index} has invalid canonical JSON: {error}"
+                        ))
+                    })?;
                     if proposal.item_id.as_ref() != Some(&event.item_id)
                         || proposal.event_type != event.event_type
                     {
@@ -1271,8 +1282,8 @@ impl Repository {
                 }
             }
         }
-        let calculated_events_digest = calculate_commit_digest
-            .then(|| commit_hasher.finish(Some(repo_seq)).to_string());
+        let calculated_events_digest =
+            calculate_commit_digest.then(|| commit_hasher.finish(Some(repo_seq)).to_string());
         Ok((output, calculated_events_digest))
     }
 
@@ -1766,8 +1777,7 @@ impl Repository {
                 continue;
             };
             // A record has no path.
-            if selected_item.lifecycle_state != LifecycleState::Live
-                || selected_item.name.is_none()
+            if selected_item.lifecycle_state != LifecycleState::Live || selected_item.name.is_none()
             {
                 continue;
             }
@@ -1829,7 +1839,10 @@ impl Repository {
         Ok(items)
     }
 
-    pub(super) async fn historical_items_before(&self, repo_seq: i64) -> Result<BTreeMap<ItemId, ItemValue>> {
+    pub(super) async fn historical_items_before(
+        &self,
+        repo_seq: i64,
+    ) -> Result<BTreeMap<ItemId, ItemValue>> {
         let Some(previous_repo_seq) = self.previous_repo_seq(repo_seq)? else {
             return Ok(BTreeMap::new());
         };
@@ -1854,7 +1867,10 @@ impl Repository {
         self.historical_nodes_from_state(items)
     }
 
-    pub(super) async fn historical_nodes_before(&self, repo_seq: i64) -> Result<HashMap<ItemId, HistoryNode>> {
+    pub(super) async fn historical_nodes_before(
+        &self,
+        repo_seq: i64,
+    ) -> Result<HashMap<ItemId, HistoryNode>> {
         let items = self.historical_items_before(repo_seq).await?;
         self.historical_nodes_from_state(items)
     }
@@ -1921,7 +1937,10 @@ impl Repository {
                 .insert(
                     path.clone(),
                     CommittedNode {
-                        plain_digest: blob_id.as_ref().map(|id| self.plain_digest(id)).transpose()?,
+                        plain_digest: blob_id
+                            .as_ref()
+                            .map(|id| self.plain_digest(id))
+                            .transpose()?,
                         item_id,
                         kind,
                         head_seq: item.head_seq,
@@ -2096,9 +2115,14 @@ impl Repository {
                         ))
                     })?;
                 if let Some(bytes) = metadata {
-                    let reference = proposal.set_metadata.as_mut().ok_or_else(|| LocalError::Integrity("unexpected metadata payload".into()))?;
-                    let resolved = synck_vcs::metadata::Metadata::verify(&reference.id(), bytes).map_err(|e| LocalError::Integrity(e.to_string()))?;
-                    reference.resolve(resolved).map_err(|e| LocalError::Integrity(e.to_string()))?;
+                    let reference = proposal.set_metadata.as_mut().ok_or_else(|| {
+                        LocalError::Integrity("unexpected metadata payload".into())
+                    })?;
+                    let resolved = synck_vcs::metadata::Metadata::verify(&reference.id(), bytes)
+                        .map_err(|e| LocalError::Integrity(e.to_string()))?;
+                    reference
+                        .resolve(resolved)
+                        .map_err(|e| LocalError::Integrity(e.to_string()))?;
                 }
                 if canonical_event_proposal_bytes(&proposal)? != payload
                     || proposal.item_id.as_ref() != Some(&item_id)
@@ -2432,7 +2456,10 @@ impl Repository {
         counts
     }
 
-    pub(super) async fn replay_history(&self, through_repo_seq: Option<i64>) -> Result<ReplayResult> {
+    pub(super) async fn replay_history(
+        &self,
+        through_repo_seq: Option<i64>,
+    ) -> Result<ReplayResult> {
         if self.checkout_paths().is_some() {
             self.catch_up_state_index().await?;
             let head = if let Some(seq) = through_repo_seq {

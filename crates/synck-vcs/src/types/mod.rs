@@ -7,12 +7,12 @@
 use std::fmt;
 use std::str::FromStr;
 
+use crate::metadata::{Metadata, MetadataRef};
 use chrono::{DateTime, Utc};
 use serde::de::Error as _;
 use serde::{Deserialize, Serialize};
 use serde::{Deserializer, Serializer};
 use uuid::Uuid;
-use crate::metadata::{Metadata, MetadataRef};
 
 /// Domain timestamp type.
 ///
@@ -527,7 +527,11 @@ pub struct EventInsertRow {
 pub struct RefEventProposal {
     pub owner_item_id: ItemId,
     pub event_type: EventType,
-    #[serde(default, rename = "metadata_id", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "metadata_id",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub set_metadata: Option<MetadataRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub set_content: Option<EventContent>,
@@ -659,7 +663,11 @@ pub struct EventProposal {
     pub item_id: Option<ItemId>,
     pub event_type: EventType,
     /// Non‑structural metadata associated with this event (tags, labels, etc.).
-    #[serde(default, rename = "metadata_id", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "metadata_id",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub set_metadata: Option<MetadataRef>,
     /// Complete snapshot of content roles and their object IDs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -721,15 +729,26 @@ pub struct EventProposal {
     pub base_seq: Option<i64>,
 }
 
-
-fn application_metadata(value: &mut serde_json::Value) -> Result<Option<MetadataRef>, serde_json::Error> {
-    let Some(fields) = value.as_object_mut() else { return Ok(None); };
-    let Some(metadata) = fields.remove("set_metadata") else { return Ok(None); };
+fn application_metadata(
+    value: &mut serde_json::Value,
+) -> Result<Option<MetadataRef>, serde_json::Error> {
+    let Some(fields) = value.as_object_mut() else {
+        return Ok(None);
+    };
+    let Some(metadata) = fields.remove("set_metadata") else {
+        return Ok(None);
+    };
     if fields.contains_key("metadata_id") {
-        return Err(serde::de::Error::custom("metadata_id and application metadata are mutually exclusive"));
+        return Err(serde::de::Error::custom(
+            "metadata_id and application metadata are mutually exclusive",
+        ));
     }
-    if metadata.is_null() { return Ok(None); }
-    MetadataRef::new(metadata).map(Some).map_err(serde::de::Error::custom)
+    if metadata.is_null() {
+        return Ok(None);
+    }
+    MetadataRef::new(metadata)
+        .map(Some)
+        .map_err(serde::de::Error::custom)
 }
 
 impl EventProposal {
@@ -766,7 +785,9 @@ impl EventProposal {
     pub fn from_fields(mut value: serde_json::Value) -> Result<Self, serde_json::Error> {
         let metadata = application_metadata(&mut value)?;
         let mut event: Self = serde_json::from_value(value)?;
-        if metadata.is_some() { event.set_metadata = metadata; }
+        if metadata.is_some() {
+            event.set_metadata = metadata;
+        }
         Ok(event)
     }
 }
@@ -775,15 +796,21 @@ impl RefEventProposal {
     pub fn from_fields(mut value: serde_json::Value) -> Result<Self, serde_json::Error> {
         let metadata = application_metadata(&mut value)?;
         let mut event: Self = serde_json::from_value(value)?;
-        if metadata.is_some() { event.set_metadata = metadata; }
+        if metadata.is_some() {
+            event.set_metadata = metadata;
+        }
         Ok(event)
     }
 }
 
 impl EventRow {
     pub fn proposal(&self) -> Result<EventProposal, serde_json::Error> {
-        crate::limits::check_bytes("event payload", self.payload.len(), crate::limits::MAX_EVENT_PAYLOAD_BYTES)
-            .map_err(serde::de::Error::custom)?;
+        crate::limits::check_bytes(
+            "event payload",
+            self.payload.len(),
+            crate::limits::MAX_EVENT_PAYLOAD_BYTES,
+        )
+        .map_err(serde::de::Error::custom)?;
         let mut event: EventProposal = serde_json::from_slice(&self.payload)?;
         canonical_event_proposal_bytes(&event).map_err(serde::de::Error::custom)?;
         resolve_metadata(&mut event.set_metadata, self.metadata.as_ref())?;
@@ -793,8 +820,12 @@ impl EventRow {
 
 impl RefEventRow {
     pub fn proposal(&self) -> Result<RefEventProposal, serde_json::Error> {
-        crate::limits::check_bytes("event payload", self.payload.len(), crate::limits::MAX_EVENT_PAYLOAD_BYTES)
-            .map_err(serde::de::Error::custom)?;
+        crate::limits::check_bytes(
+            "event payload",
+            self.payload.len(),
+            crate::limits::MAX_EVENT_PAYLOAD_BYTES,
+        )
+        .map_err(serde::de::Error::custom)?;
         let mut event: RefEventProposal = serde_json::from_slice(&self.payload)?;
         canonical_ref_event_proposal_bytes(&event).map_err(serde::de::Error::custom)?;
         resolve_metadata(&mut event.set_metadata, self.metadata.as_ref())?;
@@ -802,10 +833,16 @@ impl RefEventRow {
     }
 }
 
-fn resolve_metadata(reference: &mut Option<MetadataRef>, metadata: Option<&Metadata>) -> Result<(), serde_json::Error> {
+fn resolve_metadata(
+    reference: &mut Option<MetadataRef>,
+    metadata: Option<&Metadata>,
+) -> Result<(), serde_json::Error> {
     if let Some(metadata) = metadata {
-        reference.as_mut().ok_or_else(|| serde::de::Error::custom("unexpected metadata payload"))?
-            .resolve(metadata.clone()).map_err(serde::de::Error::custom)?;
+        reference
+            .as_mut()
+            .ok_or_else(|| serde::de::Error::custom("unexpected metadata payload"))?
+            .resolve(metadata.clone())
+            .map_err(serde::de::Error::custom)?;
     }
     Ok(())
 }
@@ -867,13 +904,18 @@ const RECORD_ITEM_TYPES: &[&str] = &[
 ];
 
 impl CreateItem {
-    pub fn tree(item_type: impl Into<String>, parent: Option<ItemId>, name: impl Into<String>) -> Self {
+    pub fn tree(
+        item_type: impl Into<String>,
+        parent: Option<ItemId>,
+        name: impl Into<String>,
+    ) -> Self {
         Self {
             item_type: item_type.into(),
             parent_folder_id: parent,
             name: Some(name.into()),
             key: None,
-            link: None, derived_from: None,
+            link: None,
+            derived_from: None,
         }
     }
 
@@ -911,7 +953,11 @@ impl CreateItem {
             if key.is_empty() {
                 return invalid("a record key must not be empty");
             }
-            crate::limits::check_bytes("record key", key.len(), crate::limits::MAX_RECORD_KEY_BYTES)?;
+            crate::limits::check_bytes(
+                "record key",
+                key.len(),
+                crate::limits::MAX_RECORD_KEY_BYTES,
+            )?;
         }
         Ok(())
     }
@@ -1061,14 +1107,17 @@ fn validate_hashed_json(value: &serde_json::Value, depth: usize) -> Result<(), C
         }
         Ok(())
     };
-    if matches!(value, Value::Array(_) | Value::Object(_)) && depth >= crate::limits::MAX_JSON_DEPTH {
+    if matches!(value, Value::Array(_) | Value::Object(_)) && depth >= crate::limits::MAX_JSON_DEPTH
+    {
         return invalid("hashed JSON nests more than 64 levels".to_string());
     }
     match value {
         Value::Number(number) => {
             let exact = number
                 .as_i64()
-                .filter(|integer| (-MAX_SAFE_JSON_INTEGER..=MAX_SAFE_JSON_INTEGER).contains(integer))
+                .filter(|integer| {
+                    (-MAX_SAFE_JSON_INTEGER..=MAX_SAFE_JSON_INTEGER).contains(integer)
+                })
                 .is_some_and(|integer| integer.to_string() == number.to_string());
             if !exact {
                 return invalid(format!(
@@ -1126,9 +1175,9 @@ pub fn sha256_prefixed_hex_from_digest_bytes(bytes: [u8; 32]) -> String {
 /// sequence as eight big-endian bytes. Nothing else tells two such commits
 /// apart, and no run of 33-byte event records can equal these bytes.
 pub fn empty_commit_events_digest(repo_seq: i64) -> Sha256Digest {
-    Sha256Digest::parse(sha256_prefixed_hex_from_digest_bytes(compute_sha256_digest_bytes(
-        &repo_seq.to_be_bytes(),
-    )))
+    Sha256Digest::parse(sha256_prefixed_hex_from_digest_bytes(
+        compute_sha256_digest_bytes(&repo_seq.to_be_bytes()),
+    ))
     .expect("internal SHA-256 digest is valid")
 }
 
@@ -1220,15 +1269,24 @@ pub fn canonical_event_proposal_bytes(ev: &EventProposal) -> Result<Vec<u8>, Cor
             )));
         }
         if create.item_type == "FILE"
-            && ev.set_content.as_ref().and_then(|content| content.get("bytes")).is_none()
+            && ev
+                .set_content
+                .as_ref()
+                .and_then(|content| content.get("bytes"))
+                .is_none()
         {
             return Err(CoreError::InvalidProposal(
                 "a FILE is created with its first bytes".to_string(),
             ));
         }
     }
-    for name in ev.create_item.as_ref().and_then(|item| item.name.as_deref()).into_iter()
-        .chain(ev.set_name.as_deref()) {
+    for name in ev
+        .create_item
+        .as_ref()
+        .and_then(|item| item.name.as_deref())
+        .into_iter()
+        .chain(ev.set_name.as_deref())
+    {
         crate::limits::check_bytes("name", name.len(), crate::limits::MAX_NAME_BYTES)?;
     }
     let value = serde_json::to_value(ev).map_err(|e| {
@@ -1237,7 +1295,11 @@ pub fn canonical_event_proposal_bytes(ev: &EventProposal) -> Result<Vec<u8>, Cor
         ))
     })?;
     let bytes = canonical_json_bytes(&value)?;
-    crate::limits::check_bytes("event payload", bytes.len(), crate::limits::MAX_EVENT_PAYLOAD_BYTES)?;
+    crate::limits::check_bytes(
+        "event payload",
+        bytes.len(),
+        crate::limits::MAX_EVENT_PAYLOAD_BYTES,
+    )?;
     Ok(bytes)
 }
 
@@ -1250,7 +1312,11 @@ pub fn canonical_ref_event_proposal_bytes(ev: &RefEventProposal) -> Result<Vec<u
         ))
     })?;
     let bytes = canonical_json_bytes(&value)?;
-    crate::limits::check_bytes("event payload", bytes.len(), crate::limits::MAX_EVENT_PAYLOAD_BYTES)?;
+    crate::limits::check_bytes(
+        "event payload",
+        bytes.len(),
+        crate::limits::MAX_EVENT_PAYLOAD_BYTES,
+    )?;
     Ok(bytes)
 }
 
@@ -1336,7 +1402,10 @@ mod tests {
     fn a_hashed_time_has_one_spelling() {
         let time = "2026-10-28T12:00:00.000000000Z";
         assert!(parse_hashed_time(time).is_ok());
-        for other in ["2026-10-28T12:00:00Z", "2026-10-28T13:00:00.000000000+01:00"] {
+        for other in [
+            "2026-10-28T12:00:00Z",
+            "2026-10-28T13:00:00.000000000+01:00",
+        ] {
             assert!(parse_hashed_time(other).is_err(), "{other}");
         }
     }
@@ -1419,7 +1488,9 @@ mod tests {
 
     #[test]
     fn canonical_event_proposal_bytes_are_utf8_json() {
-        let ev = EventProposal { set_link: None, merged_from: None,
+        let ev = EventProposal {
+            set_link: None,
+            merged_from: None,
             item_id: Some(ItemId::parse("01890c6c-1111-7777-8888-aaaaaaaaaaaa").unwrap()),
             event_type: "ITEM::NOTE".to_string(),
             set_metadata: None,
@@ -1440,12 +1511,17 @@ mod tests {
 
     #[test]
     fn canonical_event_accepts_integers_at_the_limit() {
-        let ev = EventProposal { set_link: None, merged_from: None,
+        let ev = EventProposal {
+            set_link: None,
+            merged_from: None,
             item_id: Some(ItemId::parse("01890c6c-1111-7777-8888-aaaaaaaaaaaa").unwrap()),
             event_type: "ITEM::NOTE".to_string(),
-            set_metadata: Some(crate::metadata::MetadataRef::new(serde_json::json!({
-                "integers": [-MAX_SAFE_JSON_INTEGER, MAX_SAFE_JSON_INTEGER],
-            })).unwrap()),
+            set_metadata: Some(
+                crate::metadata::MetadataRef::new(serde_json::json!({
+                    "integers": [-MAX_SAFE_JSON_INTEGER, MAX_SAFE_JSON_INTEGER],
+                }))
+                .unwrap(),
+            ),
             set_content: None,
             create_item: None,
             set_parent: None,
@@ -1479,7 +1555,9 @@ mod tests {
     fn commit_times_outside_the_format_years_are_refused() {
         let digest = Sha256Digest::parse(format!("sha256:{}", "0".repeat(64))).unwrap();
         let header = |time: &str| {
-            let time = DateTime::parse_from_rfc3339(time).unwrap().with_timezone(&Utc);
+            let time = DateTime::parse_from_rfc3339(time)
+                .unwrap()
+                .with_timezone(&Utc);
             canonical_commit_bytes_for_hash(
                 &"a".to_string(),
                 &"b".to_string(),
@@ -1497,10 +1575,22 @@ mod tests {
 
     #[test]
     fn canonical_metadata_rejects_numbers_outside_the_integer_range() {
-        for integer in ["9007199254740992", "-9007199254740992", "-9223372036854775808", "9223372036854775807", "18446744073709551615", "1000000000000000000000", "1.5", "1e3"] {
-            let value: serde_json::Value = serde_json::from_str(&format!(r#"{{"outer":{{"inner":[{integer}]}}}}"#)).unwrap();
+        for integer in [
+            "9007199254740992",
+            "-9007199254740992",
+            "-9223372036854775808",
+            "9223372036854775807",
+            "18446744073709551615",
+            "1000000000000000000000",
+            "1.5",
+            "1e3",
+        ] {
+            let value: serde_json::Value =
+                serde_json::from_str(&format!(r#"{{"outer":{{"inner":[{integer}]}}}}"#)).unwrap();
             let error = canonical_json_bytes(&value).unwrap_err();
-            assert!(matches!(error, CoreError::InvalidProposal(ref message) if message.contains("not an integer within")));
+            assert!(
+                matches!(error, CoreError::InvalidProposal(ref message) if message.contains("not an integer within"))
+            );
             assert!(MetadataRef::new(value).is_err());
         }
     }
@@ -1561,7 +1651,9 @@ mod tests {
         let item_id = ItemId::parse("01890c6c-1111-7777-8888-aaaaaaaaaaaa").unwrap();
 
         // No change => set_parent is absent.
-        let no_change = EventProposal { set_link: None, merged_from: None,
+        let no_change = EventProposal {
+            set_link: None,
+            merged_from: None,
             item_id: Some(item_id.clone()),
             event_type: "FILE::SET_PARENT".to_string(),
             set_metadata: None,

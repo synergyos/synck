@@ -61,7 +61,10 @@ pub(super) fn resolve_events(
             ));
         }
         resolved.event_item_ids.push(item_id.clone());
-        resolved.created_items.push(CreatedItemInfo { event_idx: idx, item_id });
+        resolved.created_items.push(CreatedItemInfo {
+            event_idx: idx,
+            item_id,
+        });
     }
     for created in &resolved.created_items {
         let first_idx = resolved
@@ -93,9 +96,10 @@ pub(super) fn check_base_seq_shape(
                 .then_some("base_seq must be null for events targeting a newly created item")
         } else {
             match mode {
-                AppendBaseSeqMode::RequirePresent => ev.base_seq.is_none().then_some(
-                    "base_seq must be present for events targeting an existing item",
-                ),
+                AppendBaseSeqMode::RequirePresent => ev
+                    .base_seq
+                    .is_none()
+                    .then_some("base_seq must be present for events targeting an existing item"),
                 AppendBaseSeqMode::MaterializeUnderItemLocks => ev.base_seq.is_some().then_some(
                     "base_seq must be null for append-mode commits targeting an existing item",
                 ),
@@ -167,7 +171,9 @@ pub(super) fn observe_ref_bases(
                 "base_ref_seq must be non-negative".to_string(),
             ));
         }
-        if *observed.entry(event.owner_item_id.clone()).or_insert(event.base_ref_seq)
+        if *observed
+            .entry(event.owner_item_id.clone())
+            .or_insert(event.base_ref_seq)
             != event.base_ref_seq
         {
             return Err(CoreError::InvalidProposal(
@@ -186,10 +192,12 @@ pub(super) fn check_ref_bases(
 ) -> Result<HashMap<ItemId, i64>, CoreError> {
     let mut heads = HashMap::with_capacity(bases.len());
     for (owner_item_id, base_ref_seq) in bases {
-        let row = items.get(owner_item_id).ok_or_else(|| CoreError::ItemNotFound {
-            repo_id: repo_id.clone(),
-            item_id: owner_item_id.clone(),
-        })?;
+        let row = items
+            .get(owner_item_id)
+            .ok_or_else(|| CoreError::ItemNotFound {
+                repo_id: repo_id.clone(),
+                item_id: owner_item_id.clone(),
+            })?;
         if row.ref_head_seq != *base_ref_seq {
             return Err(CoreError::RefBaseSeqMismatch {
                 repo_id: repo_id.clone(),
@@ -253,10 +261,12 @@ pub(super) fn seed_items(
     let mut items = HashMap::with_capacity(item_ids.len());
     for item_id in item_ids {
         if !create_item_ids.contains(item_id) {
-            let row = existing.remove(item_id).ok_or_else(|| CoreError::ItemNotFound {
-                repo_id: repo_id.clone(),
-                item_id: item_id.clone(),
-            })?;
+            let row = existing
+                .remove(item_id)
+                .ok_or_else(|| CoreError::ItemNotFound {
+                    repo_id: repo_id.clone(),
+                    item_id: item_id.clone(),
+                })?;
             tombstone.check(ctx, item_id, &row, &[])?;
             mode_rule.check(ctx, item_id, &row, &[])?;
             items.insert(item_id.clone(), row);
@@ -280,7 +290,13 @@ pub(super) fn seed_items(
             .expect("created item must have a corresponding event");
         let state = ItemState::from_create(create, sequencing_mode, None)
             .map_err(|error| map_create_error(repo_id, item_id, create, error))?;
-        let row = new_item_row(repo_id, item_id.clone(), state, created_at, author_id.to_string());
+        let row = new_item_row(
+            repo_id,
+            item_id.clone(),
+            state,
+            created_at,
+            author_id.to_string(),
+        );
         tombstone.check(ctx, item_id, &row, &events[idx..=idx])?;
         mode_rule.check(ctx, item_id, &row, &events[idx..=idx])?;
         items.insert(item_id.clone(), row);
@@ -348,7 +364,10 @@ pub(super) fn structural_targets(event: &EventProposal) -> impl Iterator<Item = 
         .as_ref()
         .and_then(|create| create.parent_folder_id.as_ref());
     let moved_to = event.set_parent.as_ref().and_then(Option::as_ref);
-    created_parent.into_iter().chain(moved_to).chain(link_target(event))
+    created_parent
+        .into_iter()
+        .chain(moved_to)
+        .chain(link_target(event))
 }
 
 pub(super) fn reject_source_revisions(events: &[EventProposal]) -> Result<(), CoreError> {
@@ -404,11 +423,15 @@ impl Repo {
         };
         let commit_pk = CommitPk::new();
         let mut digest = EventsDigest::default();
-        let mut payloads = self.validate_payload_limits(events, ref_events)?.into_iter();
+        let mut payloads = self
+            .validate_payload_limits(events, ref_events)?
+            .into_iter();
         let mut event_rows = Vec::with_capacity(events.len());
         for (idx, (ev, payload)) in events.iter().zip(payloads.by_ref()).enumerate() {
             let item_id = &placement.item_ids[idx];
-            let item = items.get(item_id).expect("event item id must exist in items map");
+            let item = items
+                .get(item_id)
+                .expect("event item id must exist in items map");
             validate_event_for_item(item_id, item.item_type.as_str(), ev)?;
             self.require_metadata_form(ev.set_metadata.as_ref())?;
             self.require_name_form(ev)?;
@@ -422,7 +445,11 @@ impl Repo {
                 item_id: item_id.clone(),
                 item_seq: placement.item_seqs[idx],
                 event_type: ev.event_type.clone(),
-                metadata: ev.set_metadata.as_ref().and_then(|value| value.payload()).cloned(),
+                metadata: ev
+                    .set_metadata
+                    .as_ref()
+                    .and_then(|value| value.payload())
+                    .cloned(),
                 payload,
                 event_payload_digest: event_hash,
                 created_at: header.created_at,
@@ -442,7 +469,11 @@ impl Repo {
                 owner_item_id: event.owner_item_id.clone(),
                 ref_seq: ref_seqs[idx],
                 event_type: event.event_type.clone(),
-                metadata: event.set_metadata.as_ref().and_then(|value| value.payload()).cloned(),
+                metadata: event
+                    .set_metadata
+                    .as_ref()
+                    .and_then(|value| value.payload())
+                    .cloned(),
                 payload,
                 event_payload_digest: event_hash,
                 created_at: header.created_at,

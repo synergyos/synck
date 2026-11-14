@@ -17,18 +17,18 @@
 
 #![forbid(unsafe_code)]
 
+mod assigned;
 pub mod bundle;
+mod case_folding;
 pub mod checkpoint;
 pub mod config;
-pub mod limits;
 pub mod content;
 pub mod envelope;
 pub mod errors;
 pub mod invariants;
-mod assigned;
-mod case_folding;
-pub mod naming;
+pub mod limits;
 pub mod metadata;
+pub mod naming;
 pub mod object;
 pub mod repo;
 pub mod sequencer;

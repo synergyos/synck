@@ -4,11 +4,11 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use serde_json::{Value, json};
 
+use crate::content::EventContent;
 use crate::envelope::{CommitEnvelopeValidator, EnvelopeItemState, EnvelopeRefState};
 pub use crate::envelope::{VerifyCommit, VerifyEvent, VerifyRefEvent};
 use crate::naming::namespace_key;
 use crate::transition::{ItemState, apply_event as apply_item_event, check_source_revision};
-use crate::content::EventContent;
 use crate::types::{
     EventProposal, ItemId, LifecycleState, SequencingMode, canonical_json_bytes,
     compute_sha256_digest_bytes, sha256_prefixed_hex_from_digest_bytes,
@@ -369,7 +369,9 @@ impl SemanticVerifier {
             }
         }
         for (item_id, before) in touched {
-            if let Some(folder) = before.as_ref().and_then(|state| state.link_folder_id.as_ref())
+            if let Some(folder) = before
+                .as_ref()
+                .and_then(|state| state.link_folder_id.as_ref())
                 && let Some(records) = self.linked_records.get_mut(folder)
             {
                 records.remove(item_id);
@@ -396,7 +398,10 @@ impl SemanticVerifier {
                 }
             }
             if let Some(stream) = &state.federation_stream_id
-                && self.federation_streams.insert(stream.clone(), item_id.clone()).is_some()
+                && self
+                    .federation_streams
+                    .insert(stream.clone(), item_id.clone())
+                    .is_some()
             {
                 report("duplicate federation stream");
             }
@@ -480,15 +485,14 @@ impl SemanticVerifier {
                     return;
                 }
             };
-            self.replayed_items
-                .insert(
-                    event.item_id.clone(),
-                    ReplayedItem {
-                        state,
-                        head_seq: 0,
-                        content: None,
-                    },
-                );
+            self.replayed_items.insert(
+                event.item_id.clone(),
+                ReplayedItem {
+                    state,
+                    head_seq: 0,
+                    content: None,
+                },
+            );
         }
         let Some(item) = self.replayed_items.get_mut(&event.item_id) else {
             return;
@@ -585,12 +589,19 @@ mod tests {
 
     fn valid_history() -> (VerifyCommit, Vec<VerifyEvent>, VerifyItem) {
         let item_id = ItemId::new();
-        let proposal = EventProposal { set_link: None, merged_from: None,
+        let proposal = EventProposal {
+            set_link: None,
+            merged_from: None,
             item_id: Some(item_id.clone()),
             event_type: "FILE::CREATE".to_string(),
             set_metadata: None,
-            set_content: Some(crate::content::EventContent::bytes(crate::types::ObjectId::from_digest([7; 32]))),
-            create_item: Some(CreateItem { key: None, link: None, derived_from: None,
+            set_content: Some(crate::content::EventContent::bytes(
+                crate::types::ObjectId::from_digest([7; 32]),
+            )),
+            create_item: Some(CreateItem {
+                key: None,
+                link: None,
+                derived_from: None,
                 item_type: "FILE".to_string(),
                 parent_folder_id: None,
                 name: Some("file.txt".to_string()),
@@ -641,7 +652,9 @@ mod tests {
             parent_folder_id: None,
             parent_folder_id_before: None,
         };
-        let item = VerifyItem { link_folder_id: None, record_key: None,
+        let item = VerifyItem {
+            link_folder_id: None,
+            record_key: None,
             item_id,
             item_type: "FILE".to_string(),
             parent_folder_id: None,
@@ -742,7 +755,12 @@ mod tests {
         let proposal = RefEventProposal {
             owner_item_id: owner_item_id.clone(),
             event_type: "FILE_VERSION::CREATE".to_string(),
-            set_metadata: Some(crate::metadata::MetadataRef::new(serde_json::json!({"file_item_id": owner_item_id.as_str()})).unwrap()),
+            set_metadata: Some(
+                crate::metadata::MetadataRef::new(
+                    serde_json::json!({"file_item_id": owner_item_id.as_str()}),
+                )
+                .unwrap(),
+            ),
             set_content: None,
             base_ref_seq: 0,
         };
@@ -776,7 +794,9 @@ mod tests {
     fn ref_after_owner_tombstone_is_rejected_at_event_position() {
         let (create_commit, create_events, _) = valid_history();
         let item_id = create_events[0].item_id.clone();
-        let tombstone = EventProposal { set_link: None, merged_from: None,
+        let tombstone = EventProposal {
+            set_link: None,
+            merged_from: None,
             item_id: Some(item_id.clone()),
             event_type: "FILE::TOMBSTONE".to_string(),
             set_metadata: None,
@@ -836,10 +856,14 @@ mod tests {
         );
 
         let mut ref_event = verify_ref_event(item_id.clone(), 0);
-        let item_proposal = EventProposal { set_link: None, merged_from: None,
+        let item_proposal = EventProposal {
+            set_link: None,
+            merged_from: None,
             item_id: Some(item_id.clone()),
             event_type: "FILE::SET_METADATA".to_string(),
-            set_metadata: Some(crate::metadata::MetadataRef::new(serde_json::json!({"key": "value"})).unwrap()),
+            set_metadata: Some(
+                crate::metadata::MetadataRef::new(serde_json::json!({"key": "value"})).unwrap(),
+            ),
             set_content: None,
             create_item: None,
             set_parent: None,

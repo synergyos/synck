@@ -153,12 +153,15 @@ impl Server {
             published: accepted.published,
         };
         if let Some(digest) = self.uploads.submitted(repo_id, &request.operation_id)?
-            && let Some(accepted) = Handle::current().block_on(repository.accepted(&request.operation_id))?
+            && let Some(accepted) =
+                Handle::current().block_on(repository.accepted(&request.operation_id))?
         {
             if digest != validated.request_digest {
                 return Err(Error::OperationReused);
             }
-            return Ok(SubmitResult::Accepted { receipt: receipt(accepted) });
+            return Ok(SubmitResult::Accepted {
+                receipt: receipt(accepted),
+            });
         }
         let (validated, records) = self.uploads.staged(&request)?;
         let mut proposal = Proposal {
@@ -185,7 +188,9 @@ impl Server {
         match Handle::current().block_on(repository.accept(proposal))? {
             Acceptance::Accepted(accepted) => {
                 self.uploads.remove(repo_id, &request.operation_id)?;
-                Ok(SubmitResult::Accepted { receipt: receipt(accepted) })
+                Ok(SubmitResult::Accepted {
+                    receipt: receipt(accepted),
+                })
             }
             Acceptance::Conflict(items) => Ok(SubmitResult::Conflict { items }),
             Acceptance::MissingObjects(objects) => Err(Error::ObjectsMissing(objects)),
@@ -212,7 +217,9 @@ pub fn router(server: Arc<Server>) -> Router {
         )
         .route(
             &format!("{sync}/leases"),
-            get(leases).post(reserve).layer(DefaultBodyLimit::max(MAX_LEASE_BYTES)),
+            get(leases)
+                .post(reserve)
+                .layer(DefaultBodyLimit::max(MAX_LEASE_BYTES)),
         )
         .route(&format!("{sync}/leases/renew"), post(renew))
         .route(&format!("{sync}/leases/release"), post(release))
@@ -222,7 +229,9 @@ pub fn router(server: Arc<Server>) -> Router {
         )
         .route(
             &format!("{sync}/objects"),
-            post(download_objects).layer(DefaultBodyLimit::max(MAX_SUBMIT_BYTES)).put(upload_objects),
+            post(download_objects)
+                .layer(DefaultBodyLimit::max(MAX_SUBMIT_BYTES))
+                .put(upload_objects),
         )
         .route(
             &format!("{sync}/objects/{{object_id}}"),
@@ -258,7 +267,9 @@ async fn upload_page(
     let repository = server.authorize(&headers, &repo_id, Access::Write).await?;
     let page: ProposalPage = json(&body)?;
     if page.operation_id != operation_id || page.offset != offset {
-        return Err(Error::Invalid("the page names another operation or offset".into()));
+        return Err(Error::Invalid(
+            "the page names another operation or offset".into(),
+        ));
     }
     let job = server.clone();
     let ack = server
@@ -362,8 +373,13 @@ async fn leases(
     headers: HeaderMap,
 ) -> Result<Json<Leases>> {
     let repository = server.authorize(&headers, &repo_id, Access::Read).await?;
-    let locks = server.jobs.run(move || Ok(repository.reservations()?)).await?;
-    Ok(Json(Leases { locks: leased(locks) }))
+    let locks = server
+        .jobs
+        .run(move || Ok(repository.reservations()?))
+        .await?;
+    Ok(Json(Leases {
+        locks: leased(locks),
+    }))
 }
 
 async fn reserve(
@@ -411,7 +427,9 @@ async fn release(
         .jobs
         .run(move || Ok(repository.release_reservation(&request.token)?))
         .await?;
-    Ok(Json(Released { released: released as u64 }))
+    Ok(Json(Released {
+        released: released as u64,
+    }))
 }
 
 async fn break_leases(
@@ -426,7 +444,9 @@ async fn break_leases(
         .jobs
         .run(move || Ok(repository.break_reservations(&request.paths)?))
         .await?;
-    Ok(Json(Released { released: released as u64 }))
+    Ok(Json(Released {
+        released: released as u64,
+    }))
 }
 
 fn object_id(text: &str) -> Result<ObjectId> {
@@ -441,11 +461,19 @@ async fn download_object(
     let repository = server.authorize(&headers, &repo_id, Access::Read).await?;
     let id = object_id(&object_id_text)?;
     let (checked, checked_id) = (repository.clone(), id.clone());
-    if let Some(bytes) = server.jobs.run(move || Ok(checked.metadata_object(&checked_id)?)).await? {
+    if let Some(bytes) = server
+        .jobs
+        .run(move || Ok(checked.metadata_object(&checked_id)?))
+        .await?
+    {
         return Ok(([(header::CONTENT_TYPE, "application/octet-stream")], bytes).into_response());
     }
     let (checked, checked_id) = (repository.clone(), id.clone());
-    if !server.jobs.run(move || Ok(checked.has_object(&checked_id)?)).await? {
+    if !server
+        .jobs
+        .run(move || Ok(checked.has_object(&checked_id)?))
+        .await?
+    {
         return Err(Error::ObjectMissing);
     }
     let body = server
@@ -474,7 +502,11 @@ fn body_reader(body: Body) -> impl AsyncRead + Unpin {
 
 /// Write an object upload to the state root's `tmp`, refusing bytes that
 /// do not hash to `id`.
-async fn stage(server: &Server, mut bytes: impl AsyncRead + Unpin, id: &ObjectId) -> Result<Staged> {
+async fn stage(
+    server: &Server,
+    mut bytes: impl AsyncRead + Unpin,
+    id: &ObjectId,
+) -> Result<Staged> {
     let mut name = [0_u8; 16];
     rand::rng().fill_bytes(&mut name);
     let staged = Staged(
@@ -555,10 +587,13 @@ async fn upload_objects(
             .await
             .map_err(|error| Error::Invalid(format!("object pack: {error}")))?;
         if staged.len() == MAX_PACK_OBJECTS {
-            return Err(Error::Invalid(format!("an object pack holds at most {MAX_PACK_OBJECTS} objects")));
+            return Err(Error::Invalid(format!(
+                "an object pack holds at most {MAX_PACK_OBJECTS} objects"
+            )));
         }
         let (id, size) = header.split_at(PACK_HEADER_BYTES - 8);
-        let id = object_id(std::str::from_utf8(id).map_err(|error| Error::Invalid(error.to_string()))?)?;
+        let id =
+            object_id(std::str::from_utf8(id).map_err(|error| Error::Invalid(error.to_string()))?)?;
         let size = u64::from_be_bytes(size.try_into().expect("eight bytes"));
         let file = stage(&server, (&mut body).take(size), &id).await?;
         staged.push((id, file));
@@ -585,7 +620,9 @@ async fn download_objects(
     let repository = server.authorize(&headers, &repo_id, Access::Read).await?;
     let request: ObjectRequest = json(&body)?;
     if request.objects.is_empty() || request.objects.len() > MAX_PACK_OBJECTS {
-        return Err(Error::Invalid(format!("ask for 1 to {MAX_PACK_OBJECTS} objects")));
+        return Err(Error::Invalid(format!(
+            "ask for 1 to {MAX_PACK_OBJECTS} objects"
+        )));
     }
     let checked = repository.clone();
     let ids = request.objects;

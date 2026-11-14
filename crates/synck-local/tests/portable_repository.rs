@@ -5,13 +5,14 @@ use std::sync::Arc;
 
 use serde_json::json;
 use sha2::{Digest, Sha256};
+use synck_local::portable::{
+    Authority, BundleSnapshot, PortableRepository, WriteOptions, import_repository,
+    materialize_repository,
+};
 use synck_vcs::bundle::BundleReader;
+use synck_vcs::config::CoreConfig;
 use synck_vcs::metadata::MetadataRef;
 use synck_vcs::object::{Object, plain_id};
-use synck_local::portable::{
-    Authority, BundleSnapshot, PortableRepository, WriteOptions, import_repository, materialize_repository,
-};
-use synck_vcs::config::CoreConfig;
 use synck_vcs::repo::Repo;
 use synck_vcs::storage::{Storage, StorageBackend};
 use synck_vcs::types::{
@@ -76,7 +77,11 @@ async fn fixture_with_domain(domain: bool) -> Fixture {
         CoreConfig::default(),
     );
     let empty = plain_id(b"");
-    fs::write(metadata.join("objects").join(hex::encode(empty.as_bytes())), b"").unwrap();
+    fs::write(
+        metadata.join("objects").join(hex::encode(empty.as_bytes())),
+        b"",
+    )
+    .unwrap();
     let mut file_creation = creation(&file, "FILE", Some(folder.clone()), "original.txt");
     file_creation.set_content = Some(EventContent::bytes(empty));
     file_creation.set_metadata = Some(MetadataRef::new(json!({"content":{"size":0}})).unwrap());
@@ -159,7 +164,12 @@ async fn complete_mixed_repository_reads_offline_and_keeps_exact_history_and_bod
     assert_eq!(repository.authority(), Authority::Follower);
     let report = repository.verify().await.unwrap();
     assert_eq!(
-        (report.commits, report.items, report.objects, report.metadata),
+        (
+            report.commits,
+            report.items,
+            report.objects,
+            report.metadata
+        ),
         (2, 3, 3, 3)
     );
     assert_eq!(
@@ -195,10 +205,16 @@ async fn complete_mixed_repository_reads_offline_and_keeps_exact_history_and_bod
     let canonical = destination.join(".synck/repository.sqlite3");
     let cache = canonical.with_extension("state.sqlite3");
     let canonical_bytes = fs::read(&canonical).unwrap();
-    repository.list_historical_items(1, None, None, 1).await.unwrap();
+    repository
+        .list_historical_items(1, None, None, 1)
+        .await
+        .unwrap();
     fs::remove_file(&cache).unwrap();
     repository.verify().await.unwrap();
-    assert!(!cache.exists(), "verification must not require a state cache");
+    assert!(
+        !cache.exists(),
+        "verification must not require a state cache"
+    );
     let historical = repository
         .list_historical_items(1, Some(&fixture.folder), None, 1)
         .await
@@ -207,7 +223,13 @@ async fn complete_mixed_repository_reads_offline_and_keeps_exact_history_and_bod
     assert!(cache.exists());
     assert_eq!(fs::read(&canonical).unwrap(), canonical_bytes);
     let connection = rusqlite::Connection::open(&canonical).unwrap();
-    let count: i64 = connection.query_row("SELECT count(*) FROM sqlite_schema WHERE name LIKE 'vcs_state_%'", [], |row| row.get(0)).unwrap();
+    let count: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM sqlite_schema WHERE name LIKE 'vcs_state_%'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
     assert_eq!(count, 0);
 
     let mut after = None;
@@ -392,7 +414,8 @@ async fn invalid_materialization_missing_body_and_extra_objects_never_publish() 
         "repo_id": repo_id, "history_generation": generation.to_string(), "encrypted": false,
         "exported_at": "2026-01-02T00:00:00Z", "commit_format_version": 6,
         "schema": {"subsystem":"synck_vcs_sqlite", "schema_id":"core-v7"}
-    })).unwrap();
+    }))
+    .unwrap();
     bytes.push(b'\n');
     let mut header_bytes = bytes.as_slice();
     let header = BundleReader::new(&mut header_bytes).read_header().unwrap();
@@ -400,16 +423,25 @@ async fn invalid_materialization_missing_body_and_extra_objects_never_publish() 
         "type": "synck_vcs_bundle_end", "record_count": 1,
         "checkpoint": format!("sha256:{}", hex::encode(header.genesis().unwrap())),
         "digest": format!("sha256:{}", hex::encode(Sha256::digest(&bytes))),
-    })).unwrap();
+    }))
+    .unwrap();
     bytes.extend_from_slice(&end);
     bytes.push(b'\n');
     fs::write(source.join("history.ndjson"), &bytes).unwrap();
     let snapshot = BundleSnapshot {
-        repo_id, terminal_repo_seq: 0,
+        repo_id,
+        terminal_repo_seq: 0,
         history_sha256: format!("sha256:{}", hex::encode(Sha256::digest(&bytes))),
         history_bytes: bytes.len() as u64,
     };
-    materialize_repository(&source.join("history.ndjson"), &source.join("objects"), &snapshot, &fixture.root.join("valid-empty")).await.unwrap();
+    materialize_repository(
+        &source.join("history.ndjson"),
+        &source.join("objects"),
+        &snapshot,
+        &fixture.root.join("valid-empty"),
+    )
+    .await
+    .unwrap();
     let history = source.join("history.ndjson");
     let original = fs::read(&history).unwrap();
     fs::write(&history, &original[..original.len() - 1]).unwrap();
@@ -585,9 +617,14 @@ async fn unsupported_format_is_rejected_without_mutation() {
         config["format_version"] = json!(version);
         let bytes = serde_json::to_vec(&config).unwrap();
         fs::write(&path, &bytes).unwrap();
-        let error = PortableRepository::open(source).err().expect("unsupported format").to_string();
+        let error = PortableRepository::open(source)
+            .err()
+            .expect("unsupported format")
+            .to_string();
         assert!(error.contains("format-7"));
-        if version == 6 { assert!(error.contains("Synck 0.1.x")); }
+        if version == 6 {
+            assert!(error.contains("Synck 0.1.x"));
+        }
         let destination = fixture.root.join("rejected");
         assert!(import_repository(source, &destination).await.is_err());
         assert!(!destination.exists());
@@ -1078,7 +1115,10 @@ async fn complete_checkout_recovery_refuses_changed_source_and_bare_open_stays_r
     let config: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     fs::write(
         metadata.join("checkout.json"),
-        serde_json::to_vec(&json!({"paths":[],"pending":{"previous_paths":["documents/original.txt"]}})).unwrap(),
+        serde_json::to_vec(
+            &json!({"paths":[],"pending":{"previous_paths":["documents/original.txt"]}}),
+        )
+        .unwrap(),
     )
     .unwrap();
     fs::write(metadata.join("checkout-source.json"),serde_json::to_vec(&json!([
@@ -1152,7 +1192,13 @@ async fn local_email_import_preserves_source_and_materializes_one_atomic_email()
     assert!(metadata.get("body").is_none());
     assert_eq!(fs::read(&source).unwrap(), bytes);
     let source_blob = &item.item.projection.content_roles["source"];
-    let stored = fs::read(fixture.source.join(".synck/objects").join(&source_blob.as_str()[7..])).unwrap();
+    let stored = fs::read(
+        fixture
+            .source
+            .join(".synck/objects")
+            .join(&source_blob.as_str()[7..]),
+    )
+    .unwrap();
     assert_eq!(stored, bytes);
     assert!(
         item.item.subitems.len() >= 2,
@@ -1192,7 +1238,10 @@ async fn local_email_import_rejects_bad_sources_without_writing() {
         (&not_mail, None, "EMAIL_IMPORT_INVALID_FORMAT"),
         (&source, Some(" "), "title must not be empty"),
     ] {
-        let error = repository.import_email(None, path, title).await.unwrap_err();
+        let error = repository
+            .import_email(None, path, title)
+            .await
+            .unwrap_err();
         assert!(error.to_string().contains(expected), "{error}");
     }
     let after = repository.verify().await.unwrap();
@@ -1239,15 +1288,23 @@ async fn email_files_stay_files_through_commit_edit_and_rename() {
 
     let portable = PortableRepository::open(&fixture.source).unwrap();
     portable.verify().await.unwrap();
-    assert!(portable.list_records(None, None, 100).await.unwrap().iter()
-        .all(|item| item.item_type != "EMAIL"));
+    assert!(
+        portable
+            .list_records(None, None, 100)
+            .await
+            .unwrap()
+            .iter()
+            .all(|item| item.item_type != "EMAIL")
+    );
     let page = portable
         .list_items(Some(&fixture.folder), None, 100)
         .await
         .unwrap();
-    assert!(page.items.iter().any(|item| {
-        item.item_type == "FILE" && item.name.as_deref() == Some("renamed.msg")
-    }));
+    assert!(
+        page.items.iter().any(|item| {
+            item.item_type == "FILE" && item.name.as_deref() == Some("renamed.msg")
+        })
+    );
 }
 
 #[tokio::test]
@@ -1274,7 +1331,13 @@ async fn import_email_records_an_email_and_leaves_the_working_file_alone() {
     let message = b"From: sender@example.test\r\nSubject: Message\r\n\r\nbody";
     fs::write(root.join("message.eml"), message).unwrap();
     let imported: serde_json::Value = serde_json::from_str(&run(&[
-        "repository", "import-email", "message.eml", "--title", "Saved", "-m", "Import email",
+        "repository",
+        "import-email",
+        "message.eml",
+        "--title",
+        "Saved",
+        "-m",
+        "Import email",
     ]))
     .unwrap();
     assert!(imported["commit_id"].is_string());
@@ -1292,13 +1355,21 @@ async fn import_email_records_an_email_and_leaves_the_working_file_alone() {
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].item_type, "EMAIL");
     assert_eq!(
-        portable.show_item(&records[0].item_id, None).await.unwrap().item.projection.name,
+        portable
+            .show_item(&records[0].item_id, None)
+            .await
+            .unwrap()
+            .item
+            .projection
+            .name,
         "Saved"
     );
     let items = portable.list_items(None, None, 10).await.unwrap().items;
-    assert!(items.iter().any(|item| {
-        item.item_type == "FILE" && item.name.as_deref() == Some("message.eml")
-    }));
+    assert!(
+        items.iter().any(|item| {
+            item.item_type == "FILE" && item.name.as_deref() == Some("message.eml")
+        })
+    );
 }
 
 #[tokio::test]
@@ -1311,7 +1382,12 @@ async fn duplicates_record_their_origin_and_merges_move_the_merge_base() {
         .duplicate_file_with(&fixture.file, None, "copy.txt", &Default::default())
         .await
         .unwrap();
-    let shown = repository.show_item(&copy, None).await.unwrap().item.projection;
+    let shown = repository
+        .show_item(&copy, None)
+        .await
+        .unwrap()
+        .item
+        .projection;
     assert_eq!(shown.derived_from.as_ref().unwrap().item_id, fixture.file);
     assert_eq!(shown.derived_from.as_ref().unwrap().item_seq, origin);
     assert_eq!(shown.content_blob_id, head.item.projection.content_blob_id);
@@ -1319,9 +1395,18 @@ async fn duplicates_record_their_origin_and_merges_move_the_merge_base() {
     let edited = fixture.root.join("edited.txt");
     fs::write(&edited, b"edited in the copy").unwrap();
     repository.save_file(&copy, &edited).await.unwrap();
-    let copy_seq = repository.show_item(&copy, None).await.unwrap().item.projection.latest_item_seq;
+    let copy_seq = repository
+        .show_item(&copy, None)
+        .await
+        .unwrap()
+        .item
+        .projection
+        .latest_item_seq;
     let merge = |item_seq| WriteOptions {
-        merged_from: Some(ItemRevision { item_id: copy.clone(), item_seq }),
+        merged_from: Some(ItemRevision {
+            item_id: copy.clone(),
+            item_seq,
+        }),
         ..Default::default()
     };
     for (item_seq, expected) in [(copy_seq + 1, "does not exist"), (0, "does not exist")] {
@@ -1335,18 +1420,40 @@ async fn duplicates_record_their_origin_and_merges_move_the_merge_base() {
         .save_file_with(&fixture.file, &edited, None, &merge(copy_seq))
         .await
         .unwrap();
-    let merged = repository.show_item(&fixture.file, None).await.unwrap().item.projection;
-    assert_eq!(merged.merged_from, vec![ItemRevision { item_id: copy.clone(), item_seq: copy_seq }]);
+    let merged = repository
+        .show_item(&fixture.file, None)
+        .await
+        .unwrap()
+        .item
+        .projection;
+    assert_eq!(
+        merged.merged_from,
+        vec![ItemRevision {
+            item_id: copy.clone(),
+            item_seq: copy_seq
+        }]
+    );
     repository.verify().await.unwrap();
 
     // A checkout's write path records the same fact.
-    repository.enable_checkout("local-editor", &[]).await.unwrap();
+    repository
+        .enable_checkout("local-editor", &[])
+        .await
+        .unwrap();
     let (second, _) = repository
         .duplicate_file_with(&fixture.file, None, "second.txt", &Default::default())
         .await
         .unwrap();
-    assert_eq!(fs::read(fixture.source.join("second.txt")).unwrap(), b"edited in the copy");
-    let shown = repository.show_item(&second, None).await.unwrap().item.projection;
+    assert_eq!(
+        fs::read(fixture.source.join("second.txt")).unwrap(),
+        b"edited in the copy"
+    );
+    let shown = repository
+        .show_item(&second, None)
+        .await
+        .unwrap()
+        .item
+        .projection;
     assert_eq!(shown.derived_from.unwrap().item_id, fixture.file);
     repository.verify().await.unwrap();
 }
@@ -1447,7 +1554,14 @@ async fn email_import_failed_object_write_can_retry_without_corrupt_publication(
         .import_email(None, &source, Some("Message"))
         .await
         .unwrap();
-    let source_id = repository.show_item(&id, None).await.unwrap().item.projection.content_roles["source"].clone();
+    let source_id = repository
+        .show_item(&id, None)
+        .await
+        .unwrap()
+        .item
+        .projection
+        .content_roles["source"]
+        .clone();
     let object_path = objects.join(hex::encode(source_id.as_bytes()));
     assert_eq!(fs::read(&object_path).unwrap(), bytes);
     let exported = temporary.path().join("original.eml");
@@ -1763,11 +1877,22 @@ async fn a_chat_reads_after_a_message_body_is_erased() {
     let fixture = fixture().await;
     let repository = PortableRepository::open(&fixture.source).unwrap();
     fs::remove_file(
-        fixture.source.join(".synck/objects").join(hex::encode(fixture.body.id().as_bytes())),
+        fixture
+            .source
+            .join(".synck/objects")
+            .join(hex::encode(fixture.body.id().as_bytes())),
     )
     .unwrap();
-    assert!(repository.verify().await.unwrap().missing_objects.contains(&fixture.body.id()));
-    let shown = serde_json::to_string(&repository.show_item(&fixture.chat, None).await.unwrap()).unwrap();
+    assert!(
+        repository
+            .verify()
+            .await
+            .unwrap()
+            .missing_objects
+            .contains(&fixture.body.id())
+    );
+    let shown =
+        serde_json::to_string(&repository.show_item(&fixture.chat, None).await.unwrap()).unwrap();
     assert!(shown.contains("CHAT::MESSAGE"), "{shown}");
     assert!(!shown.contains("original body"), "{shown}");
 }
@@ -1777,19 +1902,39 @@ async fn history_verifies_with_absent_content_and_metadata_but_complete_export_r
     let fixture = fixture().await;
     let repository = PortableRepository::open(&fixture.source).unwrap();
     let before = repository.verify().await.unwrap();
-    fs::remove_file(fixture.source.join(".synck/objects").join(&fixture.primary_blob[7..])).unwrap();
+    fs::remove_file(
+        fixture
+            .source
+            .join(".synck/objects")
+            .join(&fixture.primary_blob[7..]),
+    )
+    .unwrap();
     let storage = SqliteStorage::new(fixture.source.join(".synck/repository.sqlite3"));
-    storage.open_writable().unwrap().execute("DELETE FROM vcs_metadata_objects", []).unwrap();
+    storage
+        .open_writable()
+        .unwrap()
+        .execute("DELETE FROM vcs_metadata_objects", [])
+        .unwrap();
     let after = repository.verify().await.unwrap();
     assert_eq!(before.commits, after.commits);
-    assert_eq!(after.missing_objects, vec![synck_vcs::types::ObjectId::parse(&fixture.primary_blob).unwrap()]);
+    assert_eq!(
+        after.missing_objects,
+        vec![synck_vcs::types::ObjectId::parse(&fixture.primary_blob).unwrap()]
+    );
     assert_eq!(after.missing_metadata.len(), before.metadata);
     assert!(!after.missing_metadata.is_empty());
     // Erased metadata reads as missing, never as corruption.
     repository.show_item(&fixture.chat, None).await.unwrap();
     repository.show_item(&fixture.folder, None).await.unwrap();
     let export = fixture.root.join("incomplete-export");
-    assert!(repository.archive(&export).await.unwrap_err().to_string().contains("complete export requires"));
+    assert!(
+        repository
+            .archive(&export)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("complete export requires")
+    );
 }
 
 #[tokio::test]
@@ -1797,16 +1942,30 @@ async fn repeating_an_email_import_survives_its_folder_leaving() {
     let fixture = fixture().await;
     let folder = ItemId::new();
     let core = Repo::new(
-        Storage::new(Arc::new(SqliteStorage::new(fixture.source.join(".synck/repository.sqlite3")))),
+        Storage::new(Arc::new(SqliteStorage::new(
+            fixture.source.join(".synck/repository.sqlite3"),
+        ))),
         CoreConfig::default(),
     );
-    core.append(fixture.repo_id.clone(), proposal(vec![creation(&folder, "FOLDER", None, "inbox")]))
+    core.append(
+        fixture.repo_id.clone(),
+        proposal(vec![creation(&folder, "FOLDER", None, "inbox")]),
+    )
+    .await
+    .unwrap();
+    core.sequence_repo_activity(fixture.repo_id.clone(), 100)
         .await
         .unwrap();
-    core.sequence_repo_activity(fixture.repo_id.clone(), 100).await.unwrap();
     let email = fixture.root.join("message.eml");
-    fs::write(&email, "From: a@example.com\r\nTo: b@example.com\r\nSubject: Hello\r\n\r\nBody\r\n").unwrap();
-    let options = WriteOptions { operation_id: Some(uuid::Uuid::now_v7()), ..WriteOptions::default() };
+    fs::write(
+        &email,
+        "From: a@example.com\r\nTo: b@example.com\r\nSubject: Hello\r\n\r\nBody\r\n",
+    )
+    .unwrap();
+    let options = WriteOptions {
+        operation_id: Some(uuid::Uuid::now_v7()),
+        ..WriteOptions::default()
+    };
     let mut repository = PortableRepository::open(&fixture.source).unwrap();
     let first = repository
         .import_email_with(Some(folder.clone()), &email, None, &options)
@@ -1816,8 +1975,12 @@ async fn repeating_an_email_import_survives_its_folder_leaving() {
         "item_id": folder, "event_type": "FOLDER::TRASH", "base_seq": 1, "set_in_trash": true,
     }))
     .unwrap();
-    core.append(fixture.repo_id.clone(), proposal(vec![trash])).await.unwrap();
-    core.sequence_repo_activity(fixture.repo_id.clone(), 100).await.unwrap();
+    core.append(fixture.repo_id.clone(), proposal(vec![trash]))
+        .await
+        .unwrap();
+    core.sequence_repo_activity(fixture.repo_id.clone(), 100)
+        .await
+        .unwrap();
     let repeated = repository
         .import_email_with(Some(folder), &email, None, &options)
         .await
@@ -1831,7 +1994,9 @@ async fn listing_a_folder_finds_only_what_is_filed_there() {
     let (filed, other) = (ItemId::new(), ItemId::new());
     let (task, elsewhere) = (ItemId::new(), ItemId::new());
     let core = Repo::new(
-        Storage::new(Arc::new(SqliteStorage::new(fixture.source.join(".synck/repository.sqlite3")))),
+        Storage::new(Arc::new(SqliteStorage::new(
+            fixture.source.join(".synck/repository.sqlite3"),
+        ))),
         CoreConfig::default(),
     );
     let linked = |id: &ItemId, link: &ItemId| -> EventProposal {
@@ -1852,9 +2017,14 @@ async fn listing_a_folder_finds_only_what_is_filed_there() {
     )
     .await
     .unwrap();
-    core.sequence_repo_activity(fixture.repo_id.clone(), 100).await.unwrap();
+    core.sequence_repo_activity(fixture.repo_id.clone(), 100)
+        .await
+        .unwrap();
     let repository = PortableRepository::open(&fixture.source).unwrap();
-    let listed = repository.list_records(Some(&filed), None, 10).await.unwrap();
+    let listed = repository
+        .list_records(Some(&filed), None, 10)
+        .await
+        .unwrap();
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].item_id, task);
     let all = repository.list_records(None, None, 10).await.unwrap();

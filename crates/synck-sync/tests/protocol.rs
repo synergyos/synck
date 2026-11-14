@@ -11,8 +11,12 @@ fn repository() -> RepositoryIdentity {
 }
 fn genesis_value() -> [u8; 32] {
     let repository = repository();
-    synck_vcs::checkpoint::genesis(&repository.repo_id, &repository.generation.to_string(), false)
-        .unwrap()
+    synck_vcs::checkpoint::genesis(
+        &repository.repo_id,
+        &repository.generation.to_string(),
+        false,
+    )
+    .unwrap()
 }
 fn now() -> Timestamp {
     Utc.timestamp_opt(1_793_145_600, 123_456_789).unwrap()
@@ -94,13 +98,7 @@ fn published(request: &SubmitRequest, records: &[ProposalRecord]) -> PublishedCo
         })
         .collect();
     let checkpoint = digest(
-        synck_vcs::checkpoint::digest(
-            &genesis_value(),
-            1,
-            &validated.commit_id,
-            now(),
-        )
-        .unwrap(),
+        synck_vcs::checkpoint::digest(&genesis_value(), 1, &validated.commit_id, now()).unwrap(),
     );
     PublishedCommit {
         commit: CommitRow {
@@ -472,7 +470,11 @@ fn transfer_bounds_and_unknown_fields_are_rejected() {
     // A server from before object packs leaves the field out.
     let mut wire = serde_json::to_value(&caps).unwrap();
     wire.as_object_mut().unwrap().remove("object_packs");
-    assert!(!serde_json::from_value::<Capabilities>(wire).unwrap().object_packs);
+    assert!(
+        !serde_json::from_value::<Capabilities>(wire)
+            .unwrap()
+            .object_packs
+    );
 }
 
 #[test]
@@ -524,7 +526,10 @@ fn maximum_format_event_fits_both_transfers_without_relaxing_page_bounds() {
         history.push(&oversized),
         Err(ProtocolError::Limit("page bytes"))
     ));
-    assert_eq!(history.position().completed, Cursor::genesis(repository(), false).unwrap());
+    assert_eq!(
+        history.position().completed,
+        Cursor::genesis(repository(), false).unwrap()
+    );
     let mut state = verifier(&initial);
     assert!(matches!(
         state.push(
@@ -795,7 +800,12 @@ fn a_commit_with_no_events_is_a_fragment_of_none() {
     let (_, commits) = history_vector("many_small_commits");
     let mut state = HistoryVerifier::new(Cursor::genesis(repository(), false).unwrap()).unwrap();
     let after = state.position().clone();
-    assert!(state.clone().push(&page(&commits[0], after.clone(), Vec::new(), false)).is_err());
+    assert!(
+        state
+            .clone()
+            .push(&page(&commits[0], after.clone(), Vec::new(), false))
+            .is_err()
+    );
 
     let mut empty = commits[0].clone();
     empty.events.clear();
@@ -819,7 +829,10 @@ fn a_commit_with_no_events_is_a_fragment_of_none() {
             .unwrap(),
     );
     verify_published_commit(&empty, &repository()).unwrap();
-    let cursor = state.push(&page(&empty, after, Vec::new(), false)).unwrap().unwrap();
+    let cursor = state
+        .push(&page(&empty, after, Vec::new(), false))
+        .unwrap()
+        .unwrap();
     assert_eq!(cursor.repo_seq, 1);
 }
 
@@ -879,11 +892,19 @@ fn wire_vector_fixes_every_json_shape() {
         serde_json::from_str(include_str!("../../../docs/spec/vectors/sync-wire.json")).unwrap();
     for case in vector["valid"].as_array().unwrap() {
         let kind = case["type"].as_str().unwrap();
-        assert_eq!(wire_value(kind, &case["value"]).unwrap(), case["value"], "{kind}");
+        assert_eq!(
+            wire_value(kind, &case["value"]).unwrap(),
+            case["value"],
+            "{kind}"
+        );
     }
     for case in vector["invalid"].as_array().unwrap() {
         let kind = case["type"].as_str().unwrap();
-        assert!(wire_value(kind, &case["value"]).is_err(), "{kind}: {}", case["reason"]);
+        assert!(
+            wire_value(kind, &case["value"]).is_err(),
+            "{kind}: {}",
+            case["reason"]
+        );
     }
 }
 
@@ -894,7 +915,9 @@ fn guarded_vector_binds_events_guards_and_request() {
     let guarded = &vector["guarded"];
     let request: SubmitRequest = serde_json::from_value(guarded["request"].clone()).unwrap();
     let records: Vec<ProposalRecord> = serde_json::from_value(guarded["records"].clone()).unwrap();
-    let validated = upload(&request, &records, 1).finish(&request, now()).unwrap();
+    let validated = upload(&request, &records, 1)
+        .finish(&request, now())
+        .unwrap();
     assert_eq!(validated.commit_id.as_str(), guarded["commit_id"]);
     assert_eq!(validated.request_digest.as_str(), guarded["request_digest"]);
 }
@@ -984,11 +1007,16 @@ fn repository_head_is_optional_authenticated_and_separate_from_commit_identity()
     let original = validate_submit(&legacy).unwrap();
     let mut guarded = legacy.clone();
     guarded.repository_head = Some(0);
-    let checked = upload(&guarded,&records(),1).finish(&guarded,now()).unwrap();
-    assert_ne!(checked.request_digest,original.request_digest);
-    assert_eq!(checked.commit_id,original.commit_id);
+    let checked = upload(&guarded, &records(), 1)
+        .finish(&guarded, now())
+        .unwrap();
+    assert_ne!(checked.request_digest, original.request_digest);
+    assert_eq!(checked.commit_id, original.commit_id);
     guarded.repository_head = Some(1);
-    assert_ne!(validate_submit(&guarded).unwrap().request_digest,checked.request_digest);
-    guarded.repository_head = Some(i64::MAX as u64+1);
+    assert_ne!(
+        validate_submit(&guarded).unwrap().request_digest,
+        checked.request_digest
+    );
+    guarded.repository_head = Some(i64::MAX as u64 + 1);
     assert!(validate_submit(&guarded).is_err());
 }

@@ -33,7 +33,8 @@ use ureq::tls::{RootCerts, TlsConfig};
 
 use crate::chunk_store::{ChunkStore, OBJECT_STORE_FILE, StorageMode};
 use crate::commands::{
-    Held, PushOutcome, apply, empty_history, proposal_from_rows, read_held, stored_proposal, write_held,
+    Held, PushOutcome, apply, empty_history, proposal_from_rows, read_held, stored_proposal,
+    write_held,
 };
 use crate::error::{IoContext, LocalError, Result};
 use crate::repository::{Config, Repository};
@@ -51,7 +52,9 @@ const PAGE_RECORD_BYTES: usize = MAX_PAGE_BYTES - 64 * 1024;
 const MAX_REPLY_BYTES: u64 = 2 * MAX_PAGE_BYTES as u64;
 
 fn refused(status: &str) -> LocalError {
-    LocalError::Server { status: status.to_string() }
+    LocalError::Server {
+        status: status.to_string(),
+    }
 }
 
 fn unreachable(error: ureq::Error) -> LocalError {
@@ -65,7 +68,11 @@ fn integrity(error: impl std::fmt::Display) -> LocalError {
 /// `https://HOST/v1/repositories/REPO_ID`, or `http://` to a loopback host.
 /// Returns the URL without a trailing slash and the repository ID it names.
 pub(crate) fn parse_url(url: &str) -> Result<(String, RepoId)> {
-    let invalid = |reason: &str| LocalError::Invalid(format!("{url} is not a sync server repository URL: {reason}"));
+    let invalid = |reason: &str| {
+        LocalError::Invalid(format!(
+            "{url} is not a sync server repository URL: {reason}"
+        ))
+    };
     let url = url.trim_end_matches('/');
     let uri: Uri = url.parse().map_err(|_| invalid("it does not parse"))?;
     let host = uri.host().ok_or_else(|| invalid("it has no host"))?;
@@ -75,8 +82,14 @@ pub(crate) fn parse_url(url: &str) -> Result<(String, RepoId)> {
         Some("http") => return Err(invalid("protocol 1 needs https except to this machine")),
         _ => return Err(invalid("it is not https")),
     }
-    if uri.authority().is_some_and(|authority| authority.as_str().contains('@')) || uri.query().is_some() {
-        return Err(invalid("it carries credentials or a query; give the token in SYNCK_TOKEN"));
+    if uri
+        .authority()
+        .is_some_and(|authority| authority.as_str().contains('@'))
+        || uri.query().is_some()
+    {
+        return Err(invalid(
+            "it carries credentials or a query; give the token in SYNCK_TOKEN",
+        ));
     }
     let repo_id = uri
         .path()
@@ -132,7 +145,9 @@ enum Submitted {
 impl Remote {
     pub(crate) fn new(url: &str, token: &str) -> Result<Self> {
         let (url, _) = parse_url(url)?;
-        let tls = TlsConfig::builder().root_certs(RootCerts::PlatformVerifier).build();
+        let tls = TlsConfig::builder()
+            .root_certs(RootCerts::PlatformVerifier)
+            .build();
         let agent = ureq::Agent::config_builder()
             .http_status_as_error(false)
             .tls_config(tls)
@@ -160,7 +175,12 @@ impl Remote {
             .map_err(unreachable)
     }
 
-    fn post(&self, path: &str, body: &impl Serialize, lock_tokens: &[String]) -> Result<Response<ureq::Body>> {
+    fn post(
+        &self,
+        path: &str,
+        body: &impl Serialize,
+        lock_tokens: &[String],
+    ) -> Result<Response<ureq::Body>> {
         let mut request = self
             .agent
             .post(self.url(path))
@@ -169,7 +189,9 @@ impl Remote {
         for token in lock_tokens {
             request = request.header(LOCK_TOKEN, token);
         }
-        request.send(&serde_json::to_vec(body)?[..]).map_err(unreachable)
+        request
+            .send(&serde_json::to_vec(body)?[..])
+            .map_err(unreachable)
     }
 
     fn put(&self, path: &str, body: ureq::SendBody) -> Result<Response<ureq::Body>> {
@@ -258,7 +280,10 @@ impl Remote {
         if status.is_success() {
             return serde_json::from_slice(&body).map(Some).map_err(integrity);
         }
-        match Self::status(&body).and_then(|value| value["status"].as_str().map(str::to_string)).as_deref() {
+        match Self::status(&body)
+            .and_then(|value| value["status"].as_str().map(str::to_string))
+            .as_deref()
+        {
             Some("UPLOAD_EXPIRED") => Ok(None),
             _ => Err(Self::refusal(status, &body)),
         }
@@ -267,7 +292,9 @@ impl Remote {
     fn submit(&self, request: &SubmitRequest, lock_tokens: &[String]) -> Result<Submitted> {
         let (status, body) = Self::read(self.post("proposals", request, lock_tokens)?)?;
         if status.is_success() {
-            return serde_json::from_slice(&body).map(Submitted::Result).map_err(integrity);
+            return serde_json::from_slice(&body)
+                .map(Submitted::Result)
+                .map_err(integrity);
         }
         let value = Self::status(&body);
         match value.as_ref().and_then(|value| value["status"].as_str()) {
@@ -283,7 +310,10 @@ impl Remote {
 
     fn put_object(&self, id: &ObjectId, source: &Path) -> Result<()> {
         let mut file = std::fs::File::open(source).at("open", source)?;
-        let response = self.put(&format!("objects/{}", id.as_str()), ureq::SendBody::from_reader(&mut file))?;
+        let response = self.put(
+            &format!("objects/{}", id.as_str()),
+            ureq::SendBody::from_reader(&mut file),
+        )?;
         let (status, body) = Self::read(response)?;
         if !status.is_success() {
             return Err(Self::refusal(status, &body));
@@ -293,8 +323,12 @@ impl Remote {
 
     /// Upload one object pack of staged files.
     fn put_objects(&self, objects: &[(ObjectId, PathBuf, u64)]) -> Result<()> {
-        let mut reader = PackReader { objects: objects.iter(), current: None };
-        let (status, body) = Self::read(self.put("objects", ureq::SendBody::from_reader(&mut reader))?)?;
+        let mut reader = PackReader {
+            objects: objects.iter(),
+            current: None,
+        };
+        let (status, body) =
+            Self::read(self.put("objects", ureq::SendBody::from_reader(&mut reader))?)?;
         if !status.is_success() {
             return Err(Self::refusal(status, &body));
         }
@@ -304,11 +338,17 @@ impl Remote {
     /// Download `ids` in packs, handing each object's bytes to `each` in
     /// order. A pack may end early, at `PACK_BYTES`; the rest are asked for
     /// again.
-    fn get_objects(&self, ids: &[ObjectId], mut each: impl FnMut(&ObjectId, &mut dyn Read) -> Result<()>) -> Result<()> {
+    fn get_objects(
+        &self,
+        ids: &[ObjectId],
+        mut each: impl FnMut(&ObjectId, &mut dyn Read) -> Result<()>,
+    ) -> Result<()> {
         let cut = |error: std::io::Error| LocalError::Unreachable(format!("object pack: {error}"));
         let mut rest = ids;
         while !rest.is_empty() {
-            let request = ObjectRequest { objects: rest[..rest.len().min(MAX_PACK_OBJECTS)].to_vec() };
+            let request = ObjectRequest {
+                objects: rest[..rest.len().min(MAX_PACK_OBJECTS)].to_vec(),
+            };
             let response = self.post("objects", &request, &[])?;
             if !response.status().is_success() {
                 let (status, body) = Self::read(response)?;
@@ -329,7 +369,8 @@ impl Remote {
                     .get(received)
                     .filter(|expected| expected.as_str().as_bytes() == id)
                     .ok_or_else(|| integrity("an object pack holds an object not asked for"))?;
-                let mut object = (&mut reader).take(u64::from_be_bytes(size.try_into().expect("eight bytes")));
+                let mut object =
+                    (&mut reader).take(u64::from_be_bytes(size.try_into().expect("eight bytes")));
                 each(id, &mut object)?;
                 if object.limit() != 0 {
                     return Err(LocalError::Unreachable("object pack cut short".into()));
@@ -354,7 +395,11 @@ impl Remote {
     }
 
     /// Hand an object's bytes to `each`, which checks them against its ID.
-    fn get_object(&self, id: &ObjectId, each: impl FnOnce(&mut dyn Read) -> Result<()>) -> Result<()> {
+    fn get_object(
+        &self,
+        id: &ObjectId,
+        each: impl FnOnce(&mut dyn Read) -> Result<()>,
+    ) -> Result<()> {
         let response = self.get(&format!("objects/{}", id.as_str()))?;
         if !response.status().is_success() {
             let (status, body) = Self::read(response)?;
@@ -406,12 +451,18 @@ impl Store<'_> {
         if let Some(store) = &self.chunks {
             return store.holds_blob(id);
         }
-        let path = self.metadata().join("objects").join(&id.as_str()["sha256:".len()..]);
+        let path = self
+            .metadata()
+            .join("objects")
+            .join(&id.as_str()["sha256:".len()..]);
         path.try_exists().at("inspect object", &path)
     }
 
     fn temporary(&self, kind: &str) -> Result<(PathBuf, std::fs::File)> {
-        let path = self.metadata().join("tmp").join(format!("{kind}-{}.tmp", uuid::Uuid::new_v4()));
+        let path = self
+            .metadata()
+            .join("tmp")
+            .join(format!("{kind}-{}.tmp", uuid::Uuid::new_v4()));
         let file = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
@@ -427,7 +478,8 @@ impl Store<'_> {
         let store = |id: &ObjectId, bytes: &mut dyn Read| {
             let (path, mut file) = self.temporary("download")?;
             let result = (|| {
-                std::io::copy(bytes, &mut file).map_err(|error| LocalError::Unreachable(error.to_string()))?;
+                std::io::copy(bytes, &mut file)
+                    .map_err(|error| LocalError::Unreachable(error.to_string()))?;
                 file.flush().at("write", &path)?;
                 let size = file.metadata().at("inspect", &path)?.len();
                 let source = std::fs::File::open(&path).at("open", &path)?;
@@ -469,9 +521,16 @@ impl Store<'_> {
                 file.write_all(&bytes).at("write", &path)?;
                 return Ok(bytes.len() as u64);
             }
-            let metadata = cap_std::fs::Dir::open_ambient_dir(self.metadata(), cap_std::ambient_authority())
-                .at("open", self.metadata())?;
-            let size = crate::portable::copy_stored(self.root, &metadata, self.chunks.as_ref(), id, &mut file)?;
+            let metadata =
+                cap_std::fs::Dir::open_ambient_dir(self.metadata(), cap_std::ambient_authority())
+                    .at("open", self.metadata())?;
+            let size = crate::portable::copy_stored(
+                self.root,
+                &metadata,
+                self.chunks.as_ref(),
+                id,
+                &mut file,
+            )?;
             file.flush().at("write", &path)?;
             Ok(size)
         })();
@@ -488,7 +547,10 @@ impl Store<'_> {
     /// `PACK_BYTES`, or one by one to a server without packs.
     fn upload(&self, remote: &Remote, ids: &[ObjectId]) -> Result<()> {
         let packs = remote.packs()?;
-        let metadata = self.storage.metadata_objects(self.repo_id, ids).map_err(integrity)?;
+        let metadata = self
+            .storage
+            .metadata_objects(self.repo_id, ids)
+            .map_err(integrity)?;
         let mut pack: Vec<(ObjectId, PathBuf, u64)> = Vec::new();
         let result = (|| {
             let mut bytes = 0;
@@ -519,7 +581,11 @@ impl Store<'_> {
 
     /// The metadata objects `ids`, downloading those this history lacks and
     /// storing them through Core's metadata storage in one transaction.
-    fn metadata_objects(&self, remote: &Remote, ids: BTreeSet<ObjectId>) -> Result<BTreeMap<ObjectId, Metadata>> {
+    fn metadata_objects(
+        &self,
+        remote: &Remote,
+        ids: BTreeSet<ObjectId>,
+    ) -> Result<BTreeMap<ObjectId, Metadata>> {
         let missing: BTreeSet<ObjectId> = self
             .storage
             .missing_metadata(self.repo_id, ids.iter().cloned())
@@ -529,7 +595,10 @@ impl Store<'_> {
         let mut found = BTreeMap::new();
         let mut downloaded = Vec::new();
         let mut keep = |id: &ObjectId, bytes: Vec<u8>| -> Result<()> {
-            found.insert(id.clone(), Metadata::verify(id, bytes.clone()).map_err(integrity)?);
+            found.insert(
+                id.clone(),
+                Metadata::verify(id, bytes.clone()).map_err(integrity)?,
+            );
             downloaded.push((id.clone(), bytes));
             Ok(())
         };
@@ -557,7 +626,9 @@ impl Store<'_> {
             found.insert(id, metadata);
         }
         if !downloaded.is_empty() {
-            self.storage.put_metadata_objects(self.repo_id, &downloaded).map_err(integrity)?;
+            self.storage
+                .put_metadata_objects(self.repo_id, &downloaded)
+                .map_err(integrity)?;
         }
         Ok(found)
     }
@@ -569,7 +640,12 @@ impl Store<'_> {
         commit: &CommitRow,
         mut events: Vec<CommitEventRow>,
     ) -> Result<std::result::Result<(), Vec<ItemId>>> {
-        if self.core.get_commit(self.repo_id.clone(), commit.commit_id.clone()).await?.is_some() {
+        if self
+            .core
+            .get_commit(self.repo_id.clone(), commit.commit_id.clone())
+            .await?
+            .is_some()
+        {
             return Ok(Ok(()));
         }
         // Rows on the wire carry metadata by ID only.
@@ -588,7 +664,8 @@ impl Store<'_> {
         if downloaded {
             self.download(remote, &missing.into_iter().collect::<Vec<_>>())?;
         }
-        let metadata = self.metadata_objects(remote, references.iter().flatten().cloned().collect())?;
+        let metadata =
+            self.metadata_objects(remote, references.iter().flatten().cloned().collect())?;
         for (row, id) in events.iter_mut().zip(&references) {
             let metadata = id.as_ref().map(|id| metadata[id].clone());
             match row {
@@ -609,16 +686,31 @@ impl Store<'_> {
     /// Take in the server's commits after `held.remote`, in order and with
     /// their IDs, advancing `held` past each one installed. Returns the items
     /// of the first commit this history cannot take.
-    async fn fetch(&self, remote: &Remote, held: &mut Held) -> Result<std::result::Result<(), Vec<ItemId>>> {
-        let start = held.remote.clone().ok_or_else(|| integrity("held.json has no server cursor"))?;
+    async fn fetch(
+        &self,
+        remote: &Remote,
+        held: &mut Held,
+    ) -> Result<std::result::Result<(), Vec<ItemId>>> {
+        let start = held
+            .remote
+            .clone()
+            .ok_or_else(|| integrity("held.json has no server cursor"))?;
         let repository = start.repository.clone();
         // Idle connections keep each database's WAL index from being rebuilt
         // from the whole WAL at every open. Downloads leave their frames in
         // the object store's WAL until `install` checkpoints.
         let _history = self.storage.open_readonly().map_err(integrity)?;
-        let _objects = self.chunks.as_ref().map(ChunkStore::open_readonly).transpose()?;
+        let _objects = self
+            .chunks
+            .as_ref()
+            .map(ChunkStore::open_readonly)
+            .transpose()?;
         let mut verifier = HistoryVerifier::new(start).map_err(integrity)?;
-        let mut partial: Option<(CommitRow, synck_vcs::types::Sha256Digest, Vec<CommitEventRow>)> = None;
+        let mut partial: Option<(
+            CommitRow,
+            synck_vcs::types::Sha256Digest,
+            Vec<CommitEventRow>,
+        )> = None;
         loop {
             let request = HistoryRequest {
                 after: verifier.position().clone(),
@@ -629,7 +721,11 @@ impl Store<'_> {
             let has_more = page.has_more;
             for fragment in page.fragments {
                 let (commit, _, events) = partial.get_or_insert_with(|| {
-                    (fragment.header.commit.clone(), fragment.header.checkpoint.clone(), Vec::new())
+                    (
+                        fragment.header.commit.clone(),
+                        fragment.header.checkpoint.clone(),
+                        Vec::new(),
+                    )
                 });
                 events.extend(fragment.events);
                 if events.len() < commit.event_count as usize {
@@ -639,7 +735,9 @@ impl Store<'_> {
                 if let Err(items) = self.install(remote, &commit, events).await? {
                     return Ok(Err(items));
                 }
-                let repo_seq = commit.repo_seq.ok_or_else(|| integrity("unsequenced commit"))?;
+                let repo_seq = commit
+                    .repo_seq
+                    .ok_or_else(|| integrity("unsequenced commit"))?;
                 held.origin_seq = repo_seq;
                 held.remote = Some(Cursor {
                     repository: repository.clone(),
@@ -655,7 +753,10 @@ impl Store<'_> {
 }
 
 fn core(storage: SqliteStorage) -> Repo {
-    Repo::new(Storage::new(std::sync::Arc::new(storage)), CoreConfig::default())
+    Repo::new(
+        Storage::new(std::sync::Arc::new(storage)),
+        CoreConfig::default(),
+    )
 }
 
 fn write_token(metadata: &Path, token: &str) -> Result<()> {
@@ -691,12 +792,27 @@ pub async fn clone_remote(
         return Err(integrity("the server answered for another repository"));
     }
     if capabilities.encrypted {
-        return Err(LocalError::Invalid("encrypted repositories cannot be cloned over HTTPS yet".into()));
+        return Err(LocalError::Invalid(
+            "encrypted repositories cannot be cloned over HTTPS yet".into(),
+        ));
     }
     crate::clone::create_empty_directory(destination)?;
-    let destination = destination.canonicalize().at("resolve clone destination", destination)?;
+    let destination = destination
+        .canonicalize()
+        .at("resolve clone destination", destination)?;
     let metadata = destination.join(".synck");
-    let result = make_clone(&remote, capabilities, &url, token, &destination, &metadata, author, include, hold).await;
+    let result = make_clone(
+        &remote,
+        capabilities,
+        &url,
+        token,
+        &destination,
+        &metadata,
+        author,
+        include,
+        hold,
+    )
+    .await;
     if result.is_err() {
         let _ = std::fs::remove_dir_all(&metadata);
     }
@@ -753,7 +869,9 @@ async fn make_clone(
     let checkout = crate::checkout::Checkout {
         paths: include,
         hidden_files: Default::default(),
-        pending: Some(crate::checkout::Transition { previous_paths: None }),
+        pending: Some(crate::checkout::Transition {
+            previous_paths: None,
+        }),
         baseline: Some(head),
         committing: None,
     };
@@ -761,11 +879,19 @@ async fn make_clone(
     std::fs::write(&source, b"[]").at("write", &source)?;
     crate::checkout::write_checkout(metadata, &checkout)?;
     // The config goes last: before it, the directory opens as nothing.
-    let config = Config::remote_clone(url.to_string(), repo_id, author.to_string(), checkout, storage_mode, hold);
+    let config = Config::remote_clone(
+        url.to_string(),
+        repo_id,
+        author.to_string(),
+        checkout,
+        storage_mode,
+        hold,
+    );
     let path = metadata.join("tmp").join("config.json");
     std::fs::write(&path, serde_json::to_vec_pretty(&config)?).at("write", &path)?;
     crate::repository::sync_file(&path)?;
-    crate::repository::replace_file(&path, &metadata.join("config.json")).at("publish clone config", metadata)?;
+    crate::repository::replace_file(&path, &metadata.join("config.json"))
+        .at("publish clone config", metadata)?;
     crate::repository::sync_directory(metadata)?;
     Repository::discover(destination).await
 }
@@ -781,7 +907,8 @@ fn proposal_pages(
     // The server sets the real expiry; this one only satisfies the verifier.
     let expires_at = chrono::Utc::now() + chrono::TimeDelta::days(1);
     let mut verifier =
-        ProposalVerifier::new(repository.clone(), operation_id.to_string(), expires_at).map_err(integrity)?;
+        ProposalVerifier::new(repository.clone(), operation_id.to_string(), expires_at)
+            .map_err(integrity)?;
     let mut pages = Vec::new();
     let mut page: Vec<ProposalRecord> = Vec::new();
     let mut bytes = 0;
@@ -792,13 +919,16 @@ fn proposal_pages(
             offset: verifier.next_offset(),
             records: page,
         };
-        verifier.push(&page, chrono::Utc::now()).map_err(integrity)?;
+        verifier
+            .push(&page, chrono::Utc::now())
+            .map_err(integrity)?;
         pages.push(page);
         Ok(())
     };
     for record in records {
         let size = serde_json::to_vec(record)?.len() + 1;
-        if !page.is_empty() && (page.len() == MAX_PAGE_RECORDS || bytes + size > PAGE_RECORD_BYTES) {
+        if !page.is_empty() && (page.len() == MAX_PAGE_RECORDS || bytes + size > PAGE_RECORD_BYTES)
+        {
             finish(std::mem::take(&mut page), &mut verifier)?;
             bytes = 0;
         }
@@ -814,7 +944,9 @@ fn proposal_pages(
 
 impl Repository {
     fn remote_client(&self) -> Result<Remote> {
-        let url = self.remote().ok_or_else(|| LocalError::Invalid("this working tree is not an HTTPS clone".into()))?;
+        let url = self
+            .remote()
+            .ok_or_else(|| LocalError::Invalid("this working tree is not an HTTPS clone".into()))?;
         let path = self.metadata_path().join(TOKEN_FILE);
         let mut token = String::new();
         std::fs::File::open(&path)
@@ -829,8 +961,12 @@ impl Repository {
             storage: self.origin_storage(),
             core: self.core(),
             repo_id: self.repository_id(),
-            chunks: (self.storage_mode == StorageMode::Chunked)
-                .then(|| ChunkStore::new(self.store_path().join(OBJECT_STORE_FILE), self.repository_id())),
+            chunks: (self.storage_mode == StorageMode::Chunked).then(|| {
+                ChunkStore::new(
+                    self.store_path().join(OBJECT_STORE_FILE),
+                    self.repository_id(),
+                )
+            }),
         }
     }
 
@@ -839,13 +975,17 @@ impl Repository {
     pub(crate) async fn take_in_remote(&self) -> Result<()> {
         match self.take_in_remote_items().await? {
             Ok(()) => Ok(()),
-            Err(items) => Err(LocalError::HeldConflict { paths: self.item_paths(&items).await? }),
+            Err(items) => Err(LocalError::HeldConflict {
+                paths: self.item_paths(&items).await?,
+            }),
         }
     }
 
     /// Take in the server's newer commits, or return the items of the first
     /// one this history cannot take.
-    pub(crate) async fn take_in_remote_items(&self) -> Result<std::result::Result<(), Vec<ItemId>>> {
+    pub(crate) async fn take_in_remote_items(
+        &self,
+    ) -> Result<std::result::Result<(), Vec<ItemId>>> {
         let remote = self.remote_client()?;
         let mut held = read_held(self.metadata_path())?;
         let before = held.clone();
@@ -870,7 +1010,10 @@ impl Repository {
     pub(crate) async fn push_remote(&self) -> Result<PushOutcome> {
         let pulled = self.pull().await?;
         if !pulled.unwound.is_empty() {
-            return Err(LocalError::HeldMerged { paths: pulled.unwound, withdrawn: pulled.withdrawn });
+            return Err(LocalError::HeldMerged {
+                paths: pulled.unwound,
+                withdrawn: pulled.withdrawn,
+            });
         }
         let pushed = self.held_commits().await?.unwrap_or_default();
         if pushed.is_empty() {
@@ -879,7 +1022,8 @@ impl Repository {
         let remote = self.remote_client()?;
         let repository = remote.capabilities()?.repository;
         for commit_id in &pushed {
-            let commit_id = CommitId::parse(commit_id).map_err(|error| LocalError::Integrity(error.to_string()))?;
+            let commit_id = CommitId::parse(commit_id)
+                .map_err(|error| LocalError::Integrity(error.to_string()))?;
             self.send_commit(&remote, &repository, commit_id).await?;
         }
         let mut held = read_held(self.metadata_path())?;
@@ -888,7 +1032,12 @@ impl Repository {
         Ok(PushOutcome { pushed })
     }
 
-    async fn send_commit(&self, remote: &Remote, repository: &RepositoryIdentity, commit_id: CommitId) -> Result<()> {
+    async fn send_commit(
+        &self,
+        remote: &Remote,
+        repository: &RepositoryIdentity,
+        commit_id: CommitId,
+    ) -> Result<()> {
         let commit = self
             .core()
             .get_commit(self.repository_id().clone(), commit_id.clone())
@@ -898,11 +1047,14 @@ impl Repository {
         if let Some(receipt) = remote.receipt(&operation_id)? {
             // Accepted before its receipt reached this clone.
             if receipt.commit_id != commit_id {
-                return Err(integrity(format!("operation {operation_id} was accepted as another commit")));
+                return Err(integrity(format!(
+                    "operation {operation_id} was accepted as another commit"
+                )));
             }
             return Ok(());
         }
-        let (proposal, ref_events) = stored_proposal(self.core(), self.repository_id(), &commit).await?;
+        let (proposal, ref_events) =
+            stored_proposal(self.core(), self.repository_id(), &commit).await?;
         let records: Vec<ProposalRecord> = proposal
             .events
             .into_iter()
@@ -916,8 +1068,14 @@ impl Repository {
             occurred_at: commit.occurred_at,
         };
         let (pages, request) = proposal_pages(repository, &operation_id, &records, metadata)?;
-        if synck_sync::validate_submit(&request).map_err(integrity)?.commit_id != commit_id {
-            return Err(LocalError::Integrity(format!("held commit {commit_id} does not rebuild its ID")));
+        if synck_sync::validate_submit(&request)
+            .map_err(integrity)?
+            .commit_id
+            != commit_id
+        {
+            return Err(LocalError::Integrity(format!(
+                "held commit {commit_id} does not rebuild its ID"
+            )));
         }
         let store = self.store();
         // Pages expire a day after the first; one expiry starts them over.
@@ -935,15 +1093,22 @@ impl Repository {
                         return Ok(());
                     }
                     Submitted::Result(SubmitResult::Conflict { items }) => {
-                        let items: Vec<ItemId> = items.into_iter().map(|head| head.item_id).collect();
-                        return Err(LocalError::HeldConflict { paths: self.item_paths(&items).await? });
+                        let items: Vec<ItemId> =
+                            items.into_iter().map(|head| head.item_id).collect();
+                        return Err(LocalError::HeldConflict {
+                            paths: self.item_paths(&items).await?,
+                        });
                     }
-                    Submitted::Result(SubmitResult::PolicyLimit { .. }) => return Err(refused("POLICY_LIMIT")),
+                    Submitted::Result(SubmitResult::PolicyLimit { .. }) => {
+                        return Err(refused("POLICY_LIMIT"));
+                    }
                     Submitted::Missing(objects) if !uploaded => {
                         store.upload(remote, &objects)?;
                         uploaded = true;
                     }
-                    Submitted::Missing(_) => return Err(integrity("objects stay missing after upload")),
+                    Submitted::Missing(_) => {
+                        return Err(integrity("objects stay missing after upload"));
+                    }
                     Submitted::Expired => continue 'upload,
                 }
             }
@@ -952,10 +1117,21 @@ impl Repository {
     }
 
     pub(crate) fn remote_locks(&self) -> Result<Vec<AgentLock>> {
-        Ok(self.remote_client()?.leases()?.locks.into_iter().map(agent_lock).collect())
+        Ok(self
+            .remote_client()?
+            .leases()?
+            .locks
+            .into_iter()
+            .map(agent_lock)
+            .collect())
     }
 
-    pub(crate) fn remote_reserve(&self, paths: Vec<String>, owner: &str, ttl: u64) -> Result<AgentLease> {
+    pub(crate) fn remote_reserve(
+        &self,
+        paths: Vec<String>,
+        owner: &str,
+        ttl: u64,
+    ) -> Result<AgentLease> {
         let lease = self.remote_client()?.reserve(&LeaseRequest {
             paths,
             owner: owner.to_string(),
@@ -968,15 +1144,26 @@ impl Repository {
     }
 
     pub(crate) fn remote_renew(&self, token: &str, ttl: u64) -> Result<()> {
-        self.remote_client()?.renew(&LeaseRenewal { token: token.to_string(), ttl })
+        self.remote_client()?.renew(&LeaseRenewal {
+            token: token.to_string(),
+            ttl,
+        })
     }
 
     pub(crate) fn remote_release(&self, token: &str) -> Result<usize> {
-        Ok(self.remote_client()?.release(&LeaseToken { token: token.to_string() })?.released as usize)
+        Ok(self
+            .remote_client()?
+            .release(&LeaseToken {
+                token: token.to_string(),
+            })?
+            .released as usize)
     }
 
     pub(crate) fn remote_break(&self, paths: Vec<String>) -> Result<usize> {
-        Ok(self.remote_client()?.break_paths(&LeasePaths { paths })?.released as usize)
+        Ok(self
+            .remote_client()?
+            .break_paths(&LeasePaths { paths })?
+            .released as usize)
     }
 }
 

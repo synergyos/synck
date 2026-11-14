@@ -6,8 +6,8 @@ use std::cell::Cell;
 use serde_json::json;
 use synck_vcs::naming::compute_name_key;
 use synck_vcs::types::{
-    CreateItem, EventContent, EventProposal, ItemId, RepoId,
-    Sha256Digest, SubtreeClosureGuard, canonical_event_proposal_bytes,
+    CreateItem, EventContent, EventProposal, ItemId, RepoId, Sha256Digest, SubtreeClosureGuard,
+    canonical_event_proposal_bytes,
 };
 
 use crate::error::{SemanticError, SemanticErrorCode};
@@ -1026,7 +1026,11 @@ fn set_name_event(
     proposal
 }
 
-fn content_event(item_id: &ItemId, base_seq: i64, content: &BlobRef) -> Result<EventProposal, SemanticError> {
+fn content_event(
+    item_id: &ItemId,
+    base_seq: i64,
+    content: &BlobRef,
+) -> Result<EventProposal, SemanticError> {
     let mut proposal = base_event(item_id, FileFolderKind::File, "SET_CONTENT", Some(base_seq));
     set_file_content(&mut proposal, content)?;
     Ok(proposal)
@@ -1034,7 +1038,10 @@ fn content_event(item_id: &ItemId, base_seq: i64, content: &BlobRef) -> Result<E
 
 fn set_file_content(proposal: &mut EventProposal, content: &BlobRef) -> Result<(), SemanticError> {
     proposal.set_content = Some(EventContent::bytes(content.blob_id.clone()));
-    proposal.set_metadata = Some(synck_vcs::metadata::MetadataRef::new(json!({"content": {"size": content.size}})).map_err(|e| error(SemanticErrorCode::InvalidContent, e.to_string()))?);
+    proposal.set_metadata = Some(
+        synck_vcs::metadata::MetadataRef::new(json!({"content": {"size": content.size}}))
+            .map_err(|e| error(SemanticErrorCode::InvalidContent, e.to_string()))?,
+    );
     Ok(())
 }
 
@@ -1068,7 +1075,8 @@ fn base_event(
         create_item: None,
         set_parent: None,
         set_name: None,
-        set_link: None, merged_from: None,
+        set_link: None,
+        merged_from: None,
         set_tombstoned: None,
         set_in_trash: None,
         set_is_federated: None,

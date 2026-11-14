@@ -168,11 +168,12 @@ impl Repository {
     fn require_checkout_destination(&self, path: &str) -> Result<()> {
         self.guard_agent_paths(&[path])?;
         if let Some(paths) = self.checkout_paths()
-            && !crate::checkout::selected(paths, path) {
-                return Err(LocalError::Invalid(
-                    "destination is outside checkout selection".into(),
-                ));
-            }
+            && !crate::checkout::selected(paths, path)
+        {
+            return Err(LocalError::Invalid(
+                "destination is outside checkout selection".into(),
+            ));
+        }
         Ok(())
     }
 
@@ -180,19 +181,19 @@ impl Repository {
         self.guard_agent_paths(&[&entry.path])?;
         if let Some(paths) = self.checkout_paths()
             && entry.kind == WorkingTreeEntryKind::Folder
-                && !paths.is_empty()
-                && !paths.iter().any(|root| {
-                    entry.path == *root
-                        || entry
-                            .path
-                            .strip_prefix(root)
-                            .is_some_and(|p| p.starts_with('/'))
-                })
-            {
-                return Err(LocalError::Invalid(
-                    "cannot move or delete a partial checkout ancestor".into(),
-                ));
-            }
+            && !paths.is_empty()
+            && !paths.iter().any(|root| {
+                entry.path == *root
+                    || entry
+                        .path
+                        .strip_prefix(root)
+                        .is_some_and(|p| p.starts_with('/'))
+            })
+        {
+            return Err(LocalError::Invalid(
+                "cannot move or delete a partial checkout ancestor".into(),
+            ));
+        }
         Ok(())
     }
 
@@ -355,7 +356,9 @@ impl Repository {
                     LocalError::WorkingTree(WorkingTreeEditError::InvalidImportSource)
                 })?;
             let name_key = compute_name_key(name).map_err(|error| {
-                LocalError::Invalid(format!("import source name {name:?} is not portable: {error}"))
+                LocalError::Invalid(format!(
+                    "import source name {name:?} is not portable: {error}"
+                ))
             })?;
             if !name_keys.insert(name_key) {
                 return Err(WorkingTreeEditError::DuplicateImportNames.into());
@@ -1023,11 +1026,7 @@ impl Repository {
         authority_path: &str,
     ) -> Result<(Dir, Option<WorkingTreeEntry>)> {
         let parent = open_intent_parent(self, parent_path(path), parent_identity)?;
-        let entry = observed_entry(
-            &parent,
-            leaf_name(path),
-            authority_path,
-        )?;
+        let entry = observed_entry(&parent, leaf_name(path), authority_path)?;
         Ok((parent, entry))
     }
 
@@ -1402,11 +1401,7 @@ fn open_intent_parent(
     Ok(directory)
 }
 
-fn observed_entry(
-    parent: &Dir,
-    name: &str,
-    display: &str,
-) -> Result<Option<WorkingTreeEntry>> {
+fn observed_entry(parent: &Dir, name: &str, display: &str) -> Result<Option<WorkingTreeEntry>> {
     let nodes = scan_entry_without_ignore(parent, name)?;
     if nodes.is_empty() {
         return Ok(None);

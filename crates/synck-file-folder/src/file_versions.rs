@@ -48,7 +48,10 @@ pub fn automatic_initial_ref_event(
     Ok(RefEventProposal {
         owner_item_id: file_item_id.clone(),
         event_type: "FILE_VERSION::CREATE".to_string(),
-        set_metadata: Some(synck_vcs::metadata::MetadataRef::new(serde_json::Value::Object(metadata)).map_err(|e| e.to_string())?),
+        set_metadata: Some(
+            synck_vcs::metadata::MetadataRef::new(serde_json::Value::Object(metadata))
+                .map_err(|e| e.to_string())?,
+        ),
         set_content: None,
         base_ref_seq,
     })
@@ -211,14 +214,24 @@ impl Ledger {
         let version_id = uuid(metadata, "version_id")?;
         match event_type {
             VERSION_CREATE_EVENT => {
-                if Uuid::parse_str(&version_id).map_err(|e| e.to_string())?.get_version_num() != 7 {
+                if Uuid::parse_str(&version_id)
+                    .map_err(|e| e.to_string())?
+                    .get_version_num()
+                    != 7
+                {
                     return Err("new named-version ID is not UUIDv7".into());
                 }
                 if self.labels.contains_key(&version_id) {
-                    return Err(format!("named version {version_id} is created more than once"));
+                    return Err(format!(
+                        "named version {version_id} is created more than once"
+                    ));
                 }
                 let operation_id = string(metadata, "operation_id")?;
-                if self.labels.values().any(|label| label.operation_id == operation_id) {
+                if self
+                    .labels
+                    .values()
+                    .any(|label| label.operation_id == operation_id)
+                {
                     return Err(format!("named-version operation {operation_id} is reused"));
                 }
                 let source_item_seq = self.source(&version_id, metadata, &mut source)?;
@@ -280,10 +293,17 @@ impl Ledger {
 
     /// Live labels in display order with their computed `major.minor` names.
     pub fn numbered(&self) -> Result<Vec<(&Label, String)>, String> {
-        let mut live = self.labels.values().filter(|label| label.live).collect::<Vec<_>>();
+        let mut live = self
+            .labels
+            .values()
+            .filter(|label| label.live)
+            .collect::<Vec<_>>();
         live.sort_by(|left, right| {
-            (left.order_key, left.created_ref_seq, &left.version_id)
-                .cmp(&(right.order_key, right.created_ref_seq, &right.version_id))
+            (left.order_key, left.created_ref_seq, &left.version_id).cmp(&(
+                right.order_key,
+                right.created_ref_seq,
+                &right.version_id,
+            ))
         });
         let (mut major, mut minor) = (0, 0);
         live.into_iter()
@@ -335,7 +355,12 @@ impl Ledger {
                 other.version_id
             ));
         }
-        check(&Source { version_id, item_seq, commit_id, commit_event_idx })?;
+        check(&Source {
+            version_id,
+            item_seq,
+            commit_id,
+            commit_event_idx,
+        })?;
         Ok(item_seq)
     }
 }
@@ -378,9 +403,9 @@ fn label_source(metadata: &Map<String, Value>) -> Result<String, String> {
 fn description(metadata: &Map<String, Value>) -> Result<Option<String>, String> {
     match metadata.get("description") {
         Some(Value::Null) => Ok(None),
-        Some(Value::String(value)) => {
-            Ok(Some(value.trim()).filter(|value| !value.is_empty()).map(str::to_string))
-        }
+        Some(Value::String(value)) => Ok(Some(value.trim())
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)),
         Some(_) => Err("version description must be a string or null".into()),
         None => Err("version description mutation has no description".into()),
     }
@@ -392,18 +417,31 @@ mod tests {
     #[test]
     fn revision_pointer_matches_language_neutral_vector() {
         use synck_vcs::{metadata::Metadata, types::canonical_ref_event_proposal_bytes};
-        let vector: serde_json::Value = serde_json::from_str(include_str!("../../../docs/spec/vectors/file-version.json")).unwrap();
+        let vector: serde_json::Value =
+            serde_json::from_str(include_str!("../../../docs/spec/vectors/file-version.json"))
+                .unwrap();
         for vector in [&vector, &vector["with_source_commit"]] {
-        let event: RefEventProposal = serde_json::from_value(vector["event"].clone()).unwrap();
-        assert!(event.set_content.is_none());
-        let id = event.set_metadata.as_ref().unwrap().id();
-        let encoded_payload = vector["metadata_payload_hex"].as_str().unwrap();
-        let payload = (0..encoded_payload.len()).step_by(2).map(|i| u8::from_str_radix(&encoded_payload[i..i + 2], 16).unwrap()).collect();
-        let metadata = Metadata::verify(&id, payload).unwrap();
-        assert_eq!(metadata.value(), &vector["metadata"]);
-        let encoded = canonical_ref_event_proposal_bytes(&event).unwrap();
-        assert_eq!(encoded, vector["canonical_event"].as_str().unwrap().as_bytes());
-        assert_eq!(synck_vcs::types::sha256_prefixed_hex_from_digest_bytes(synck_vcs::types::compute_sha256_digest_bytes(&encoded)), vector["event_digest"].as_str().unwrap());
+            let event: RefEventProposal = serde_json::from_value(vector["event"].clone()).unwrap();
+            assert!(event.set_content.is_none());
+            let id = event.set_metadata.as_ref().unwrap().id();
+            let encoded_payload = vector["metadata_payload_hex"].as_str().unwrap();
+            let payload = (0..encoded_payload.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(&encoded_payload[i..i + 2], 16).unwrap())
+                .collect();
+            let metadata = Metadata::verify(&id, payload).unwrap();
+            assert_eq!(metadata.value(), &vector["metadata"]);
+            let encoded = canonical_ref_event_proposal_bytes(&event).unwrap();
+            assert_eq!(
+                encoded,
+                vector["canonical_event"].as_str().unwrap().as_bytes()
+            );
+            assert_eq!(
+                synck_vcs::types::sha256_prefixed_hex_from_digest_bytes(
+                    synck_vcs::types::compute_sha256_digest_bytes(&encoded)
+                ),
+                vector["event_digest"].as_str().unwrap()
+            );
         }
     }
 
@@ -412,34 +450,110 @@ mod tests {
         let file = ItemId::parse("01890c6c-1111-7777-8888-aaaaaaaaaaaa").unwrap();
         let (a, b) = (Uuid::now_v7().to_string(), Uuid::now_v7().to_string());
         let meta = |value: serde_json::Value| value.as_object().unwrap().clone();
-        let create = |id: &str, seq: i64, op: &str| meta(serde_json::json!({
+        let create = |id: &str, seq: i64, op: &str| {
+            meta(serde_json::json!({
             "file_item_id": file.to_string(), "version_id": id, "operation_id": op,
-            "source_item_seq": seq, "kind": "MINOR", "label_source": "INTERNAL", "order_key": 1024}));
+            "source_item_seq": seq, "kind": "MINOR", "label_source": "INTERNAL", "order_key": 1024}))
+        };
         let ok = |_: &Source<'_>| Ok(());
         let mut ledger = Ledger::default();
-        ledger.apply(&file, VERSION_CREATE_EVENT, &create(&a, 1, "one"), ok).unwrap();
+        ledger
+            .apply(&file, VERSION_CREATE_EVENT, &create(&a, 1, "one"), ok)
+            .unwrap();
         // One live label per revision, and one create per operation.
-        assert!(ledger.clone().apply(&file, VERSION_CREATE_EVENT, &create(&b, 1, "two"), ok).is_err());
-        assert!(ledger.clone().apply(&file, VERSION_CREATE_EVENT, &create(&b, 2, "one"), ok).is_err());
+        assert!(
+            ledger
+                .clone()
+                .apply(&file, VERSION_CREATE_EVENT, &create(&b, 1, "two"), ok)
+                .is_err()
+        );
+        assert!(
+            ledger
+                .clone()
+                .apply(&file, VERSION_CREATE_EVENT, &create(&b, 2, "one"), ok)
+                .is_err()
+        );
         // The caller decides whether a source revision exists.
-        assert!(ledger.clone().apply(&file, VERSION_CREATE_EVENT, &create(&b, 2, "two"), |_| Err("missing".into())).is_err());
-        ledger.apply(&file, VERSION_CREATE_EVENT, &create(&b, 2, "two"), ok).unwrap();
+        assert!(
+            ledger
+                .clone()
+                .apply(&file, VERSION_CREATE_EVENT, &create(&b, 2, "two"), |_| Err(
+                    "missing".into()
+                ))
+                .is_err()
+        );
+        ledger
+            .apply(&file, VERSION_CREATE_EVENT, &create(&b, 2, "two"), ok)
+            .unwrap();
         let set = |id: &str, fields: serde_json::Value| {
             let mut value = meta(fields);
             value.insert("file_item_id".into(), file.to_string().into());
             value.insert("version_id".into(), id.into());
             value
         };
-        ledger.apply(&file, VERSION_SET_KIND_EVENT, &set(&b, serde_json::json!({"kind": "MAJOR"})), ok).unwrap();
-        ledger.apply(&file, VERSION_SET_DESCRIPTION_EVENT, &set(&a, serde_json::json!({"description": " first "})), ok).unwrap();
-        let names = ledger.numbered().unwrap().into_iter().map(|(label, name)| (label.version_id.clone(), name)).collect::<Vec<_>>();
-        assert_eq!(names, [(a.clone(), "0.01".into()), (b.clone(), "1.00".into())]);
+        ledger
+            .apply(
+                &file,
+                VERSION_SET_KIND_EVENT,
+                &set(&b, serde_json::json!({"kind": "MAJOR"})),
+                ok,
+            )
+            .unwrap();
+        ledger
+            .apply(
+                &file,
+                VERSION_SET_DESCRIPTION_EVENT,
+                &set(&a, serde_json::json!({"description": " first "})),
+                ok,
+            )
+            .unwrap();
+        let names = ledger
+            .numbered()
+            .unwrap()
+            .into_iter()
+            .map(|(label, name)| (label.version_id.clone(), name))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            [(a.clone(), "0.01".into()), (b.clone(), "1.00".into())]
+        );
         assert_eq!(ledger.labels[&a].description.as_deref(), Some("first"));
-        ledger.apply(&file, VERSION_TOMBSTONE_EVENT, &set(&a, serde_json::json!({})), ok).unwrap();
-        assert!(ledger.clone().apply(&file, VERSION_SET_ORDER_EVENT, &set(&a, serde_json::json!({"order_key": 1})), ok).is_err());
+        ledger
+            .apply(
+                &file,
+                VERSION_TOMBSTONE_EVENT,
+                &set(&a, serde_json::json!({})),
+                ok,
+            )
+            .unwrap();
+        assert!(
+            ledger
+                .clone()
+                .apply(
+                    &file,
+                    VERSION_SET_ORDER_EVENT,
+                    &set(&a, serde_json::json!({"order_key": 1})),
+                    ok
+                )
+                .is_err()
+        );
         // A tombstoned label frees its revision.
-        ledger.apply(&file, VERSION_SET_REVISION_EVENT, &set(&b, serde_json::json!({"source_item_seq": 1})), ok).unwrap();
-        assert_eq!((ledger.head_seq, ledger.labels[&b].source_item_seq, ledger.labels[&b].current_ref_seq), (6, 1, 6));
+        ledger
+            .apply(
+                &file,
+                VERSION_SET_REVISION_EVENT,
+                &set(&b, serde_json::json!({"source_item_seq": 1})),
+                ok,
+            )
+            .unwrap();
+        assert_eq!(
+            (
+                ledger.head_seq,
+                ledger.labels[&b].source_item_seq,
+                ledger.labels[&b].current_ref_seq
+            ),
+            (6, 1, 6)
+        );
     }
 
     #[test]
