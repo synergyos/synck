@@ -129,11 +129,9 @@ pub fn apply_replica_item_event(
             item.lifecycle_state = LifecycleState::Live;
         }
     }
-    let item_level_metadata = proposal.event_type.matches("::").count() == 1
-        && matches!(
-            proposal.event_type.split_once("::").map(|(_, verb)| verb),
-            Some("CREATE" | "SET_METADATA")
-        );
+    // Every two-segment event carries item metadata, a complete map in an
+    // encrypted repository; a longer one carries its subitem's.
+    let item_level_metadata = proposal.event_type.matches("::").count() == 1;
     if item_level_metadata && let Some(reference) = &proposal.set_metadata {
         // A key's value is the latest payload holding it, and an erased payload
         // stops that walk, so nothing older shows through.
@@ -478,6 +476,102 @@ mod tests {
         let erased =
             apply_replica_item_event(Some(merged), item_id, 3, &later, now, "actor").unwrap();
         assert_eq!(erased.metadata_json, serde_json::json!({}));
+    }
+
+    #[test]
+    fn every_two_segment_event_folds_item_metadata() {
+        let item_id = ItemId::new();
+        let now = Utc::now();
+        let event = |value: serde_json::Value| EventProposal::from_fields(value).unwrap();
+        let created = apply_replica_item_event(
+            None,
+            item_id.clone(),
+            1,
+            &event(serde_json::json!({
+                "item_id": item_id, "event_type": "EMAIL::CREATE",
+                "create_item": {"item_type": "EMAIL"},
+                "set_metadata": {"mailcal": {"format": "eml"}, "note": 1}
+            })),
+            now,
+            "actor",
+        )
+        .unwrap();
+        // A subitem's metadata is not the item's.
+        let attachment = apply_replica_item_event(
+            Some(created),
+            item_id.clone(),
+            2,
+            &event(serde_json::json!({
+                "item_id": item_id, "event_type": "EMAIL::ATTACHMENT::SET_METADATA",
+                "base_seq": 1, "set_metadata": {"note": 2, "filename": "a.pdf"}
+            })),
+            now,
+            "actor",
+        )
+        .unwrap();
+        assert_eq!(attachment.metadata_json["note"], 1);
+        assert_eq!(attachment.metadata_json.get("filename"), None);
+        // A complete map beside a structural change folds as any patch.
+        let moved = apply_replica_item_event(
+            Some(attachment),
+            item_id.clone(),
+            3,
+            &event(serde_json::json!({
+                "item_id": item_id, "event_type": "EMAIL::SET_PARENT", "base_seq": 2,
+                "set_parent": null,
+                "set_metadata": {"mailcal": {"format": "eml"}, "note": 3}
+            })),
+            now,
+            "actor",
+        )
+        .unwrap();
+        assert_eq!(moved.metadata_json["note"], 3);
+        assert_eq!(moved.metadata_json["mailcal"]["format"], "eml");
+
+        let file = ItemId::new();
+        let created = apply_replica_item_event(
+            None,
+            file.clone(),
+            1,
+            &event(serde_json::json!({
+                "item_id": file, "event_type": "FILE::CREATE",
+                "create_item": {"item_type": "FILE", "name": "a.md"},
+                "set_content": {"bytes": ObjectId::from_digest([2; 32])},
+                "set_metadata": {"color": "RED", "content": {"size": 1}}
+            })),
+            now,
+            "actor",
+        )
+        .unwrap();
+        let renamed = apply_replica_item_event(
+            Some(created),
+            file.clone(),
+            2,
+            &event(serde_json::json!({
+                "item_id": file, "event_type": "FILE::SET_NAME", "base_seq": 1,
+                "set_name": "b.md",
+                "set_metadata": {"color": "BLUE", "content": {"size": 1}}
+            })),
+            now,
+            "actor",
+        )
+        .unwrap();
+        assert_eq!(renamed.metadata_json["color"], "BLUE");
+        let written = apply_replica_item_event(
+            Some(renamed),
+            file.clone(),
+            3,
+            &event(serde_json::json!({
+                "item_id": file, "event_type": "FILE::SET_CONTENT", "base_seq": 2,
+                "set_content": {"bytes": ObjectId::from_digest([3; 32])},
+                "set_metadata": {"color": "GREEN", "content": {"size": 2}}
+            })),
+            now,
+            "actor",
+        )
+        .unwrap();
+        assert_eq!(written.metadata_json["color"], "GREEN");
+        assert_eq!(written.size, Some(2));
     }
 
     #[test]
