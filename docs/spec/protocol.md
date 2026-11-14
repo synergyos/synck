@@ -64,6 +64,8 @@ All routes are under `/v1/repositories/{repo_id}/sync`:
 | `POST /proposals` | `SubmitRequest` / `SubmitResult` |
 | `GET /receipts/{operation_id}` | exact accepted `Receipt`, or not found |
 | `POST /history` | `HistoryRequest` / `HistoryPage` |
+| `POST /state` | `StateRequest` / `StatePage` (see State read) |
+| `POST /items/history` | `ItemHistoryRequest` / `ItemHistoryPage` (see State read) |
 | `PUT /objects/{object_id}` | exact stored bytes, immutable installation |
 | `GET /objects/{object_id}` | exact stored bytes, or explicit missing |
 | `PUT /objects` | an object pack, immutable installation of each object |
@@ -102,8 +104,9 @@ bound limits an object's size. A client of a server without `object_packs` uses
 the per-object routes.
 
 `Capabilities` contains `protocol_version: 1`, `repository`, `encrypted` (a client
-needs it to compute the genesis value), `latest` complete cursor, `policy` and
-`object_packs`. Fixed transfer bounds are **512 records per page** and
+needs it to compute the genesis value), `latest` complete cursor, `policy`,
+`object_packs` and `state_read`. A server without `state_read: true` has neither
+`/state` nor `/items/history`. Fixed transfer bounds are **512 records per page** and
 **8 MiB of serialized JSON per page**. These are not commit limits. The byte
 bound fits any format-valid individual event, with `payload_json` escaped.
 Producers stop a page before either bound, and paginate again. They
@@ -220,7 +223,13 @@ JSON integers.
 | --- | --- |
 | `RepositoryIdentity` | `repo_id`, `generation` |
 | `Cursor` | `repository`, `repo_seq`, `checkpoint` |
-| `Capabilities` | `protocol_version`, `repository`, `encrypted`, `latest` (`Cursor`), `policy`, `object_packs` (absent means false) |
+| `Capabilities` | `protocol_version`, `repository`, `encrypted`, `latest` (`Cursor`), `policy`, `object_packs` (absent means false), `state_read` (absent means false) |
+| `StateRequest` | `after` (`StatePosition`), `limit` |
+| `StatePosition` | `repository`, `changed_seq`, `item_id?` |
+| `StatePage` | `after`, `entries` (list of `StateEntry`), `through` (`Cursor`), `has_more` |
+| `StateEntry` | `item_id`, `item_type`, `changed_seq`, `head_seq`, `ref_head_seq`, `parent_folder_id?`, `name?`, `record_key?`, `link_folder_id?`, `lifecycle_state`, `sequencing_mode`, `federation_stream_id?`, `content` (role map of object IDs), `metadata_id?`, `name_metadata_id?`, `created_at`, `created_by` |
+| `ItemHistoryRequest` | `repository`, `item_id`, `after_seq`, `limit` |
+| `ItemHistoryPage` | `item_id`, `events` (item events, tagged as in fragments), `has_more` |
 | `ObjectRequest` | `objects` (object IDs) |
 | `ServerPolicy` | `max_events_per_commit?`, `max_object_bytes?`, `quota_bytes?` |
 | `ItemHead` | `item_id`, `head_seq` |
@@ -353,6 +362,56 @@ projections, accepted history and the new complete cursor install atomically.
 Never expose a partial commit, promote a pending offset to an accepted cursor,
 or trust an unverified persisted hash accumulator. Failure leaves previously
 accepted state and unsent local work intact.
+
+## State read
+
+Not implemented yet. A client that does not keep the full history follows the
+repository's current structural state instead of replaying it, as IMAP clients
+follow a mailbox. History stays authoritative and complete on the authority; the
+state read is a view of it.
+
+`POST /state` is a changes feed over items. Each `StateEntry` is one item's
+structural state after its last **published** event: the fields of
+`vcs_items`, the role map of its current content, the ID of its latest metadata
+object (`metadata_id`), and the ID of the metadata object of the event that last
+set its name (`name_metadata_id`, null for a record). `changed_seq` is the
+`repo_seq` of the commit holding that event. Accepted but unpublished events are
+never served; the entry still shows the published state.
+
+Entries are ordered by `(changed_seq, item_id)`. A request returns the entries
+strictly after its position: `changed_seq` greater than the position's, or equal
+with a larger `item_id`. Bootstrap starts at `changed_seq` 0 and a null
+`item_id`. A page holds at most 512 entries and 8 MiB of serialized JSON. The
+client resumes from its last entry. An item that changes while a client pages
+moves to a later `changed_seq` and is returned again, so no item is skipped.
+
+`through` is the published cursor the page was read at. When a page has
+`has_more=false`, the client holds every item's state at `through`: its state map
+equals the structural state that replaying history to `through` would give.
+Tombstoned and trashed items are entries like any other, so deletions arrive in
+the feed. An item never leaves the feed. This version serves credentials that
+read the whole repository; credentials limited to subtrees are not defined yet.
+
+A client keeps, per item, the highest `head_seq` it has accepted and treats an
+entry with a lower one as an integrity failure, not a retryable error.
+The authority cannot forge objects: their frames bind repository, item, role and
+epoch. It can withhold, as with history (see Trust model). A client that also
+replays history can compare the state digest of its state map at `through` with
+the digest of replayed history; a mismatch is an integrity failure.
+
+In an encrypted repository `name` is the name's tag; the display name is in the
+object `name_metadata_id` names. A client that needs every name offline fetches
+those metadata objects through the object routes as entries arrive. A family
+whose presentation needs older metadata reads the item's history.
+
+`POST /items/history` returns one item's events with `item_seq` greater than
+`after_seq`, ascending, at most `limit` (1 to 512) events and 8 MiB per page,
+in the same event shape as history fragments. It serves version views and
+families that walk back metadata. It does not replace `/history` for a client
+that keeps the full copy.
+
+A client writes as before, with `base_seq` from its state map; a stale base is
+`conflict` and the client rereads that item.
 
 ## Objects, encryption and bulk import
 
