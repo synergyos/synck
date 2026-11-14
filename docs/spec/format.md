@@ -444,13 +444,13 @@ Each event holds only the fields the core table gives it, with these additions:
   does `SET_NAME` in an unencrypted repository. A move and a rename are two
   events, which may share a commit.
 - In an encrypted repository, `SET_NAME` and both `CREATE` events carry metadata
-  holding `name`, the display name its [tag](#tagged-names) was made from; a
-  `SET_NAME` holds nothing else.
+  holding `name`, the display name its [tag](#tagged-names) was made from, and,
+  as a [complete map](#metadata-payloads), the item's other keys.
 - `FILE::CREATE` and `FILE::SET_CONTENT` carry `set_content` with exactly `bytes`, and
   metadata with `content` holding exactly `size`.
 - `FILE::SET_CONTENT` metadata may also hold `upload_intent_id` (nonempty string),
-  `revision_origin` (`LOCAL` or `FEDERATED`) and `provenance`. Any other key is
-  rejected.
+  `revision_origin` (`LOCAL` or `FEDERATED`) and `provenance`, and, like
+  `SET_METADATA`, any other item key; a complete map repeats them all.
 - `provenance` holds `source` and `committed_by` (nonempty strings),
   `human_editor_ids` (array of distinct nonempty strings) and optional
   `primary_human_editor_id` (null, or a member of that array). Any other key is
@@ -840,6 +840,21 @@ encrypted payload without its key. A writer uses a fresh salt even for identical
 A key's current value is found by walking back from the item's latest payload, among
 the events a family names for it: the first payload holding the key wins. An erased
 payload stops the walk and the key is unavailable, never an older value.
+
+An event with exactly two segments carries item metadata; a longer event type,
+such as `EMAIL::ATTACHMENT::SET_METADATA`, carries its subitem's, as with
+[content](#content). Item metadata is a key patch: a key holding null is removed.
+
+**Complete maps.** A writer to a repository whose readers take the
+[state read](protocol.md#state-read) as their source of truth, which is every
+encrypted repository, writes the item's complete current metadata on every
+two-segment event that carries metadata: every key the item holds after the
+event, and null for each key the event removes. A key removed by an earlier
+event is absent. Folding such payloads as patches gives the latest one, so a
+reader of the latest item payload alone holds every key. A writer whose
+authority folds metadata itself, as an unencrypted authority can, may write
+patches; readers fold both alike. Events that carry no metadata, such as
+`SET_PARENT` or `TRASH`, leave the latest payload current.
 A subitem edit whose metadata is erased no longer names its target, so a reader cannot
 hide the value it replaced.
 

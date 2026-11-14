@@ -376,8 +376,9 @@ service does.
 structural state after its last **published** event, item or ref: the fields of
 `vcs_items` except `name_key`, which a client derives from `name`, the role map
 of its current content (`{}` when none, under the format's content rules), the
-ID of the metadata object of its latest item event that has one
-(`metadata_id`), and the ID of the metadata object of the event that last set
+ID of the metadata object of its latest two-segment item event that has one
+(`metadata_id`; a subitem event's metadata is not the item's, format.md,
+Metadata payloads), and the ID of the metadata object of the event that last set
 its name (`name_metadata_id`, null for a record or a naming event without
 metadata). `changed_seq` is the `repo_seq` of the commit holding that event;
 `changed_at` is that commit's `occurred_at`, or its `created_at` when it has
@@ -419,8 +420,11 @@ the digest of replayed history; a mismatch is an integrity failure.
 
 In an encrypted repository `name` is the name's tag; the display name is in the
 object `name_metadata_id` names. A client that needs every name offline fetches
-those metadata objects through the object routes as entries arrive. A family
-whose presentation needs older metadata reads the item's history.
+those metadata objects through the object routes as entries arrive. In an
+encrypted repository every metadata-bearing item event holds the item's complete
+metadata (format.md, Complete maps), so `metadata_id` alone is the item's current
+metadata. A family whose presentation needs subitems or older metadata reads the
+item's history.
 
 `POST /items/history` returns one item's published events with `item_seq`
 greater than `after_seq`, ascending, in the same event shape as history

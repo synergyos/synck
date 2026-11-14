@@ -670,7 +670,7 @@ fn require_create_shape(
         )
     })?;
     match kind {
-        FileFolderKind::File => validate_file_bytes(proposal, false),
+        FileFolderKind::File => validate_file_bytes(proposal),
         FileFolderKind::Folder => {
             require_shape(proposal.set_content.is_none(), "malformed CREATE event")
         }
@@ -703,11 +703,13 @@ fn validate_content_event(proposal: &EventProposal) -> Result<(), SemanticError>
         && proposal.set_is_federated.is_none()
         && proposal.set_federation_stream_id.is_none();
     require_shape(valid_base, "malformed FILE::SET_CONTENT event")?;
-    validate_file_bytes(proposal, true)
+    validate_file_bytes(proposal)
 }
 
-/// `FILE::SET_CONTENT` metadata has a closed key set. `FILE::CREATE` does not.
-fn validate_file_bytes(proposal: &EventProposal, closed_keys: bool) -> Result<(), SemanticError> {
+/// Content event metadata may hold any item key, since a complete map
+/// (format.md, Metadata payloads) repeats them all; the keys this family
+/// names are checked.
+fn validate_file_bytes(proposal: &EventProposal) -> Result<(), SemanticError> {
     let has_bytes = proposal
         .set_content
         .as_ref()
@@ -734,19 +736,6 @@ fn validate_file_bytes(proposal: &EventProposal, closed_keys: bool) -> Result<()
                 "FILE content metadata is missing",
             )
         })?;
-    if closed_keys
-        && metadata.keys().any(|key| {
-            !matches!(
-                key.as_str(),
-                "content" | "upload_intent_id" | "revision_origin" | "provenance"
-            )
-        })
-    {
-        return Err(error(
-            SemanticErrorCode::MalformedProfileEvent,
-            "FILE::SET_CONTENT has an unknown metadata decoration",
-        ));
-    }
     metadata
         .get("content")
         .and_then(Value::as_object)

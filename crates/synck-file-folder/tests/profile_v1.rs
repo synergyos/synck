@@ -1221,7 +1221,7 @@ fn existing_item_can_move_into_a_folder_created_by_the_same_proposal() {
 }
 
 #[test]
-fn projector_preserves_metadata_identity_and_rejects_unknown_keys() {
+fn projector_preserves_metadata_identity_and_checks_named_keys() {
     let file_id = item(1);
     let mut content = event(file_id.clone(), "FILE::SET_CONTENT", Some(4));
     content.set_content = Some(EventContent::bytes(
@@ -1265,7 +1265,13 @@ fn projector_preserves_metadata_identity_and_rejects_unknown_keys() {
         .value()
         .unwrap()
         .clone();
-    metadata["unknown"] = Value::Bool(true);
+    // A complete map repeats the item's other keys; the family's own keys
+    // are still checked.
+    metadata["mime_type"] = Value::String("text/plain".into());
+    metadata["removed"] = Value::Null;
+    content.set_metadata = Some(synck_vcs::metadata::MetadataRef::new(metadata.clone()).unwrap());
+    validate_projected_proposal(None, &[content.clone()], &kinds).unwrap();
+    metadata["revision_origin"] = Value::String("ELSEWHERE".into());
     content.set_metadata = Some(synck_vcs::metadata::MetadataRef::new(metadata).unwrap());
     assert_eq!(
         validate_projected_proposal(None, &[content], &kinds)
