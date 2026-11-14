@@ -8,7 +8,8 @@ use synck_vcs::types::{
 };
 
 use crate::metadata::{
-    ITEM_SUBTYPE_STANDARD, ITEM_TREE_HIDDEN_METADATA_KEY, item_color_metadata_from_json,
+    ITEM_SUBTYPE_STANDARD, ITEM_TREE_HIDDEN_METADATA_KEY, MetadataMaps,
+    item_color_metadata_from_json,
 };
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -55,6 +56,7 @@ pub fn apply_replica_item_event(
     proposal: &EventProposal,
     updated_at: DateTime<Utc>,
     updated_by: &str,
+    maps: MetadataMaps,
 ) -> Result<ReplicaItemProjection, ReplicaProjectionError> {
     if item_seq < 1 {
         return Err(ReplicaProjectionError::Invalid(
@@ -129,9 +131,14 @@ pub fn apply_replica_item_event(
             item.lifecycle_state = LifecycleState::Live;
         }
     }
-    // Every two-segment event carries item metadata, a complete map in an
-    // encrypted repository; a longer one carries its subitem's.
-    let item_level_metadata = proposal.event_type.matches("::").count() == 1;
+    // A longer event type carries its subitem's metadata. Complete maps ride
+    // on every two-segment event; patches only on CREATE and SET_METADATA.
+    let item_level_metadata = proposal.event_type.matches("::").count() == 1
+        && (maps == MetadataMaps::Complete
+            || matches!(
+                proposal.event_type.split_once("::").map(|(_, verb)| verb),
+                Some("CREATE" | "SET_METADATA")
+            ));
     if item_level_metadata && let Some(reference) = &proposal.set_metadata {
         // A key's value is the latest payload holding it, and an erased payload
         // stops that walk, so nothing older shows through.
@@ -354,8 +361,16 @@ mod tests {
             set_federation_stream_id: None,
             base_seq: None,
         };
-        let created = apply_replica_item_event(None, item_id.clone(), 1, &create, now, "actor")
-            .expect("project create");
+        let created = apply_replica_item_event(
+            None,
+            item_id.clone(),
+            1,
+            &create,
+            now,
+            "actor",
+            MetadataMaps::Patch,
+        )
+        .expect("project create");
         assert_eq!(created.color_metadata.as_deref(), Some("blue"));
 
         let mut content = create.clone();
@@ -367,8 +382,16 @@ mod tests {
         );
         content.set_content = Some(EventContent::bytes(ObjectId::from_digest([0xab; 32])));
         content.base_seq = Some(1);
-        let projected = apply_replica_item_event(Some(created), item_id, 2, &content, now, "actor")
-            .expect("project content");
+        let projected = apply_replica_item_event(
+            Some(created),
+            item_id,
+            2,
+            &content,
+            now,
+            "actor",
+            MetadataMaps::Patch,
+        )
+        .expect("project content");
         assert_eq!(projected.size, Some(42));
         assert_eq!(projected.metadata_json["content"]["size"], 42);
         assert_eq!(projected.content_item_seq, Some(2));
@@ -393,6 +416,7 @@ mod tests {
             })),
             now,
             "actor",
+            MetadataMaps::Patch,
         )
         .unwrap();
         let mut revision = event(serde_json::json!({
@@ -401,9 +425,16 @@ mod tests {
             "set_metadata": {"content": {"size": 8}}
         }));
         revision.set_metadata = Some(MetadataRef::Absent(ObjectId::from_digest([1; 32])));
-        let erased =
-            apply_replica_item_event(Some(created), file.clone(), 2, &revision, now, "actor")
-                .unwrap();
+        let erased = apply_replica_item_event(
+            Some(created),
+            file.clone(),
+            2,
+            &revision,
+            now,
+            "actor",
+            MetadataMaps::Patch,
+        )
+        .unwrap();
         assert_eq!(erased.content_blob_id, Some(blob('b')));
         assert_eq!(erased.size, None);
         assert_eq!(erased.metadata_json.get("content"), None);
@@ -413,7 +444,16 @@ mod tests {
             "item_id": file, "event_type": "FILE::SET_METADATA", "base_seq": 2,
             "set_content": {"bytes": blob('c')}
         }));
-        let moved = apply_replica_item_event(Some(erased), file, 3, &later, now, "actor").unwrap();
+        let moved = apply_replica_item_event(
+            Some(erased),
+            file,
+            3,
+            &later,
+            now,
+            "actor",
+            MetadataMaps::Patch,
+        )
+        .unwrap();
         assert_eq!(moved.content_blob_id, Some(blob('c')));
         assert_eq!(moved.content_item_seq, Some(3));
 
@@ -429,18 +469,35 @@ mod tests {
             })),
             now,
             "actor",
+            MetadataMaps::Patch,
         )
         .unwrap();
         let mut title = event(serde_json::json!({
             "item_id": task, "event_type": "EMAIL::SET_TITLE", "base_seq": 1,
             "set_metadata": {"title": "second"}
         }));
-        let renamed =
-            apply_replica_item_event(Some(created), task.clone(), 2, &title, now, "actor").unwrap();
+        let renamed = apply_replica_item_event(
+            Some(created),
+            task.clone(),
+            2,
+            &title,
+            now,
+            "actor",
+            MetadataMaps::Patch,
+        )
+        .unwrap();
         assert_eq!(renamed.metadata_json["title"], "second");
         title.set_metadata = Some(MetadataRef::Absent(ObjectId::from_digest([1; 32])));
-        let erased =
-            apply_replica_item_event(Some(renamed), task, 3, &title, now, "actor").unwrap();
+        let erased = apply_replica_item_event(
+            Some(renamed),
+            task,
+            3,
+            &title,
+            now,
+            "actor",
+            MetadataMaps::Patch,
+        )
+        .unwrap();
         assert_eq!(erased.metadata_json.get("title"), None);
     }
 
@@ -460,26 +517,42 @@ mod tests {
             })),
             now,
             "actor",
+            MetadataMaps::Patch,
         )
         .unwrap();
         let mut later = event(serde_json::json!({
             "item_id": item_id, "event_type": "EMAIL::SET_METADATA", "base_seq": 1,
             "set_metadata": {"note": 1}
         }));
-        let merged =
-            apply_replica_item_event(Some(created), item_id.clone(), 2, &later, now, "actor")
-                .unwrap();
+        let merged = apply_replica_item_event(
+            Some(created),
+            item_id.clone(),
+            2,
+            &later,
+            now,
+            "actor",
+            MetadataMaps::Patch,
+        )
+        .unwrap();
         assert_eq!(merged.metadata_json["mailcal"]["format"], "eml");
         assert_eq!(merged.metadata_json["note"], 1);
 
         later.set_metadata = Some(MetadataRef::Absent(ObjectId::from_digest([1; 32])));
-        let erased =
-            apply_replica_item_event(Some(merged), item_id, 3, &later, now, "actor").unwrap();
+        let erased = apply_replica_item_event(
+            Some(merged),
+            item_id,
+            3,
+            &later,
+            now,
+            "actor",
+            MetadataMaps::Patch,
+        )
+        .unwrap();
         assert_eq!(erased.metadata_json, serde_json::json!({}));
     }
 
     #[test]
-    fn every_two_segment_event_folds_item_metadata() {
+    fn complete_maps_fold_from_every_two_segment_event() {
         let item_id = ItemId::new();
         let now = Utc::now();
         let event = |value: serde_json::Value| EventProposal::from_fields(value).unwrap();
@@ -494,6 +567,7 @@ mod tests {
             })),
             now,
             "actor",
+            MetadataMaps::Complete,
         )
         .unwrap();
         // A subitem's metadata is not the item's.
@@ -507,6 +581,7 @@ mod tests {
             })),
             now,
             "actor",
+            MetadataMaps::Complete,
         )
         .unwrap();
         assert_eq!(attachment.metadata_json["note"], 1);
@@ -523,6 +598,7 @@ mod tests {
             })),
             now,
             "actor",
+            MetadataMaps::Complete,
         )
         .unwrap();
         assert_eq!(moved.metadata_json["note"], 3);
@@ -541,6 +617,7 @@ mod tests {
             })),
             now,
             "actor",
+            MetadataMaps::Complete,
         )
         .unwrap();
         let renamed = apply_replica_item_event(
@@ -554,6 +631,7 @@ mod tests {
             })),
             now,
             "actor",
+            MetadataMaps::Complete,
         )
         .unwrap();
         assert_eq!(renamed.metadata_json["color"], "BLUE");
@@ -568,10 +646,112 @@ mod tests {
             })),
             now,
             "actor",
+            MetadataMaps::Complete,
         )
         .unwrap();
         assert_eq!(written.metadata_json["color"], "GREEN");
         assert_eq!(written.size, Some(2));
+    }
+
+    /// Business writers' plaintext patches project as before complete maps:
+    /// SET_CONTENT's decorations, SET_NAME, and a chat profile leave the item's
+    /// metadata alone, and an erased SET_CONTENT payload hides only `content`.
+    #[test]
+    fn plaintext_patches_fold_only_create_and_set_metadata() {
+        let file = ItemId::new();
+        let now = Utc::now();
+        let event = |value: serde_json::Value| EventProposal::from_fields(value).unwrap();
+        let apply = |current, seq, proposal: &EventProposal| {
+            apply_replica_item_event(
+                current,
+                file.clone(),
+                seq,
+                proposal,
+                now,
+                "actor",
+                MetadataMaps::Patch,
+            )
+            .unwrap()
+        };
+        let created = apply(
+            None,
+            1,
+            &event(serde_json::json!({
+                "item_id": file, "event_type": "FILE::CREATE",
+                "create_item": {"item_type": "FILE", "name": "a.md"},
+                "set_content": {"bytes": ObjectId::from_digest([2; 32])},
+                "set_metadata": {"color_metadata": "red", "content": {"size": 1}}
+            })),
+        );
+        let written = apply(
+            Some(created),
+            2,
+            &event(serde_json::json!({
+                "item_id": file, "event_type": "FILE::SET_CONTENT", "base_seq": 1,
+                "set_content": {"bytes": ObjectId::from_digest([3; 32])},
+                "set_metadata": {"content": {"size": 2}, "upload_intent_id": "intent",
+                                 "revision_origin": "upload"}
+            })),
+        );
+        assert_eq!(
+            written.metadata_json,
+            serde_json::json!({"color_metadata": "red", "content": {"size": 2}})
+        );
+        assert_eq!(written.size, Some(2));
+        let renamed = apply(
+            Some(written),
+            3,
+            &event(serde_json::json!({
+                "item_id": file, "event_type": "FILE::SET_NAME", "base_seq": 2,
+                "set_name": "b.md"
+            })),
+        );
+        let mut erased = event(serde_json::json!({
+            "item_id": file, "event_type": "FILE::SET_CONTENT", "base_seq": 3,
+            "set_content": {"bytes": ObjectId::from_digest([4; 32])},
+            "set_metadata": {"content": {"size": 3}}
+        }));
+        erased.set_metadata = Some(MetadataRef::Absent(ObjectId::from_digest([1; 32])));
+        let erased = apply(Some(renamed), 4, &erased);
+        assert_eq!(
+            erased.metadata_json,
+            serde_json::json!({"color_metadata": "red"})
+        );
+        assert_eq!(erased.color_metadata.as_deref(), Some("red"));
+        assert_eq!(erased.name, "b.md");
+
+        let chat = ItemId::new();
+        let created = apply_replica_item_event(
+            None,
+            chat.clone(),
+            1,
+            &event(serde_json::json!({
+                "item_id": chat, "event_type": "CHAT::CREATE",
+                "create_item": {"item_type": "CHAT", "name": "room"},
+                "set_metadata": {"chat_kind": "GROUP"}
+            })),
+            now,
+            "actor",
+            MetadataMaps::Patch,
+        )
+        .unwrap();
+        let profiled = apply_replica_item_event(
+            Some(created),
+            chat.clone(),
+            2,
+            &event(serde_json::json!({
+                "item_id": chat, "event_type": "CHAT::SET_PROFILE", "base_seq": 1,
+                "set_metadata": {"chat_kind": "GROUP", "topic": "plans"}
+            })),
+            now,
+            "actor",
+            MetadataMaps::Patch,
+        )
+        .unwrap();
+        assert_eq!(
+            profiled.metadata_json,
+            serde_json::json!({"chat_kind": "GROUP"})
+        );
     }
 
     #[test]
@@ -583,8 +763,16 @@ mod tests {
             "create_item": {"item_type": "EMAIL"}, "set_metadata": {"title": "first"}
         }))
         .unwrap();
-        let created =
-            apply_replica_item_event(None, item_id.clone(), 1, &create, now, "actor").unwrap();
+        let created = apply_replica_item_event(
+            None,
+            item_id.clone(),
+            1,
+            &create,
+            now,
+            "actor",
+            MetadataMaps::Patch,
+        )
+        .unwrap();
         assert_eq!(created.name, "first");
         let mut erased: EventProposal = EventProposal::from_fields(serde_json::json!({
             "item_id": item_id, "event_type": "EMAIL::SET_TITLE", "base_seq": 1,
@@ -592,8 +780,16 @@ mod tests {
         }))
         .unwrap();
         erased.set_metadata = Some(MetadataRef::Absent(ObjectId::from_digest([1; 32])));
-        let projected =
-            apply_replica_item_event(Some(created), item_id, 2, &erased, now, "actor").unwrap();
+        let projected = apply_replica_item_event(
+            Some(created),
+            item_id,
+            2,
+            &erased,
+            now,
+            "actor",
+            MetadataMaps::Patch,
+        )
+        .unwrap();
         assert_eq!(projected.name, UNAVAILABLE_TITLE);
     }
 
@@ -624,8 +820,16 @@ mod tests {
             set_federation_stream_id: None,
             base_seq: None,
         };
-        let created = apply_replica_item_event(None, item_id.clone(), 1, &create, now, "actor")
-            .expect("project CHAT create");
+        let created = apply_replica_item_event(
+            None,
+            item_id.clone(),
+            1,
+            &create,
+            now,
+            "actor",
+            MetadataMaps::Patch,
+        )
+        .expect("project CHAT create");
         assert_eq!(created.metadata_json, serde_json::json!({}));
 
         let profile = EventProposal {
@@ -647,8 +851,16 @@ mod tests {
             set_federation_stream_id: None,
             base_seq: None,
         };
-        let projected = apply_replica_item_event(Some(created), item_id, 2, &profile, now, "actor")
-            .expect("project DIRECT profile");
+        let projected = apply_replica_item_event(
+            Some(created),
+            item_id,
+            2,
+            &profile,
+            now,
+            "actor",
+            MetadataMaps::Patch,
+        )
+        .expect("project DIRECT profile");
         assert_eq!(
             projected.metadata_json[ITEM_TREE_HIDDEN_METADATA_KEY],
             serde_json::Value::Bool(true)

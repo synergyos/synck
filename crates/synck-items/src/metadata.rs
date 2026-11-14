@@ -1,6 +1,19 @@
 //! Item metadata interpreted by the shared event projection.
 
 pub const ITEM_SUBTYPE_STANDARD: &str = "STANDARD";
+
+/// How a history's item metadata payloads relate to the item's metadata
+/// (`docs/spec/format.md`, Metadata payloads).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum MetadataMaps {
+    /// Patches, as an unencrypted authority's writers may emit: only CREATE
+    /// and SET_METADATA change the item's metadata.
+    #[default]
+    Patch,
+    /// Complete maps, as every encrypted repository's writers emit: every
+    /// two-segment event with metadata carries the item's.
+    Complete,
+}
 /// Item metadata flag excluding a VCS-backed item from generic tree/navigation surfaces.
 ///
 /// The item remains addressable through its typed API. Human direct chats use this because their

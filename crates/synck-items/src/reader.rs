@@ -153,6 +153,7 @@ pub struct ItemReader {
     projection: Option<replica_projection::ReplicaItemProjection>,
     chat: Option<ChatDetails>,
     subitems: BTreeMap<(String, SubitemIdentity), ReadableSubitem>,
+    maps: crate::metadata::MetadataMaps,
 }
 
 fn invalid(error: impl std::fmt::Display) -> ReadError {
@@ -187,7 +188,15 @@ impl ItemReader {
             projection: None,
             chat: None,
             subitems: BTreeMap::new(),
+            maps: crate::metadata::MetadataMaps::Patch,
         }
+    }
+
+    /// Reads metadata payloads as `maps`; an encrypted repository's history
+    /// holds complete maps. A new or restored reader reads patches.
+    pub fn with_maps(mut self, maps: crate::metadata::MetadataMaps) -> Self {
+        self.maps = maps;
+        self
     }
 
     pub fn for_repository(_repo_id: RepoId, item_id: ItemId) -> Self {
@@ -444,6 +453,7 @@ impl ItemReader {
             event,
             context.occurred_at.unwrap_or(context.created_at),
             context.author,
+            self.maps,
         )
         .map_err(invalid)?;
         match kind.as_str() {
