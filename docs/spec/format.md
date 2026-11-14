@@ -856,8 +856,17 @@ event is absent. Folding such payloads as patches gives the latest one, except
 that a key removed earlier stays null rather than absent; either way it is
 unset, so a reader of the latest item payload alone holds every set key. A
 writer whose authority folds metadata itself, as an unencrypted authority can,
-may write patches; readers fold both alike. Events that carry no metadata, such as
-`SET_PARENT` or `TRASH`, leave the latest payload current.
+may write patches.
+
+Which form a history holds is a property of its repository: an encrypted
+repository holds complete maps, an unencrypted one patches. Readers fold them
+differently. In a complete-map history every two-segment event folds into the
+item's metadata, and an erased payload clears every key. In a patch history only
+`CREATE` and `SET_METADATA` fold, and an erased one of those clears every key;
+any other event's payload, erased or not, leaves the other keys alone, and
+`FILE::SET_CONTENT` sets only `content`, or removes it when erased. Events that
+carry no metadata, such as `SET_PARENT` or `TRASH`, leave the latest payload
+current.
 A subitem edit whose metadata is erased no longer names its target, so a reader cannot
 hide the value it replaced.
 
