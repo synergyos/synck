@@ -858,6 +858,11 @@ unset, so a reader of the latest item payload alone holds every set key. A
 writer whose authority folds metadata itself, as an unencrypted authority can,
 may write patches.
 
+A rename changes no key but the name; metadata changes go through
+`SET_METADATA`. In a complete-map history `SET_NAME`'s map therefore equals the
+item's metadata after the event, and a reader may fold it or skip it with the
+same result.
+
 Which form a history holds is a property of its repository: an encrypted
 repository holds complete maps, an unencrypted one patches. Readers fold them
 differently. In a complete-map history every two-segment event folds into the
