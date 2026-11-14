@@ -1,0 +1,5 @@
+# Formatting-only commits, skipped by git blame.
+# Enable locally: git config blame.ignoreRevsFile .git-blame-ignore-revs
+
+# Apply cargo fmt across the repository (2026-11-14)
+a442b1b660e454ceae9514855290539d1144f873
