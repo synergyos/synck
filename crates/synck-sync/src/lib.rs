@@ -367,6 +367,10 @@ pub struct StateEntry {
     pub name_metadata_id: Option<ObjectId>,
     pub created_at: Timestamp,
     pub created_by: String,
+    /// When and by whom the commit at `changed_seq` was made: its
+    /// `occurred_at`, or its `created_at` when it has none, and `author_id`.
+    pub changed_at: Timestamp,
+    pub changed_by: String,
 }
 /// With `has_more` false the entries read so far are every item's state at
 /// `through`.
@@ -414,7 +418,7 @@ impl ItemHistoryRequest {
 }
 /// One item's published events in `item_seq` order, each tagged `item`, and
 /// the published ref events it owns in `ref_seq` order, each tagged `ref`.
-/// `authors` maps the commit of every row in the page to its `author_id`.
+/// `commits` describes the commit of every row in the page.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ItemHistoryPage {
@@ -423,8 +427,16 @@ pub struct ItemHistoryPage {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub refs: Vec<CommitEventRow>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub authors: BTreeMap<CommitId, AuthorId>,
+    pub commits: BTreeMap<CommitId, ItemHistoryCommit>,
     pub has_more: bool,
+}
+/// A commit's `author_id`, and its `occurred_at`, or its `created_at` when it
+/// has none.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ItemHistoryCommit {
+    pub author_id: AuthorId,
+    pub occurred_at: Timestamp,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

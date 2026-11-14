@@ -227,9 +227,10 @@ JSON integers.
 | `StateRequest` | `after` (`StatePosition`), `limit` |
 | `StatePosition` | `repository`, `changed_seq`, `item_id?` |
 | `StatePage` | `after`, `entries` (list of `StateEntry`), `through` (`Cursor`), `has_more` |
-| `StateEntry` | `item_id`, `item_type`, `changed_seq`, `head_seq`, `ref_head_seq`, `parent_folder_id?`, `name?`, `record_key?`, `link_folder_id?`, `lifecycle_state`, `sequencing_mode`, `federation_stream_id?`, `content` (role map of object IDs), `metadata_id?`, `name_metadata_id?`, `created_at`, `created_by` |
-| `ItemHistoryRequest` | `repository`, `item_id`, `after_seq`, `limit` |
-| `ItemHistoryPage` | `item_id`, `events` (item events, tagged as in fragments), `has_more` |
+| `StateEntry` | `item_id`, `item_type`, `changed_seq`, `head_seq`, `ref_head_seq`, `parent_folder_id?`, `name?`, `record_key?`, `link_folder_id?`, `lifecycle_state`, `sequencing_mode`, `federation_stream_id?`, `content` (role map of object IDs), `metadata_id?`, `name_metadata_id?`, `created_at`, `created_by`, `changed_at`, `changed_by` |
+| `ItemHistoryRequest` | `repository`, `item_id`, `after_seq`, `after_ref_seq?`, `limit` |
+| `ItemHistoryPage` | `item_id`, `events` (item events, tagged as in fragments), `refs?` (ref events), `commits?` (commit ID to `ItemHistoryCommit`), `has_more` |
+| `ItemHistoryCommit` | `author_id`, `occurred_at` |
 | `ObjectRequest` | `objects` (object IDs) |
 | `ServerPolicy` | `max_events_per_commit?`, `max_object_bytes?`, `quota_bytes?` |
 | `ItemHead` | `item_id`, `head_seq` |
@@ -378,7 +379,9 @@ of its current content (`{}` when none, under the format's content rules), the
 ID of the metadata object of its latest item event that has one
 (`metadata_id`), and the ID of the metadata object of the event that last set
 its name (`name_metadata_id`, null for a record or a naming event without
-metadata). `changed_seq` is the `repo_seq` of the commit holding that event.
+metadata). `changed_seq` is the `repo_seq` of the commit holding that event;
+`changed_at` is that commit's `occurred_at`, or its `created_at` when it has
+none, and `changed_by` its `author_id`.
 Accepted but unpublished events are never served; the entry still shows the
 published state.
 
@@ -422,8 +425,9 @@ whose presentation needs older metadata reads the item's history.
 `POST /items/history` returns one item's published events with `item_seq`
 greater than `after_seq`, ascending, in the same event shape as history
 fragments. `refs` holds the published ref events the item owns with `ref_seq`
-greater than `after_ref_seq` (default 0), ascending, tagged `ref`. `authors`
-maps the commit of every row in the page to its `author_id`. A page holds at
+greater than `after_ref_seq` (default 0), ascending, tagged `ref`. `commits`
+maps the commit of every row in the page to `{author_id, occurred_at}`, where
+`occurred_at` is the commit's `created_at` when it has none. A page holds at
 most `limit` (1 to 512) rows of both lists together and 8 MiB; `has_more` is
 true while either list has more, and the client resumes from the last
 `item_seq` and `ref_seq` it received. It serves version views and families that
