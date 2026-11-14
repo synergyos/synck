@@ -12,9 +12,10 @@ pub use policy::{PolicyLimit, PolicyLimitName, PublicationViolation, ServerPolic
 pub use proposal::{ProposalVerifier, ValidatedProposal, validate_submit};
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use synck_vcs::types::{
-    CommitEventRow, CommitId, CommitRow, EventProposal, ItemId, RefEventProposal, RepoId,
-    Sha256Digest, Timestamp,
+    CommitEventRow, CommitId, CommitRow, EventProposal, ItemId, LifecycleState, ObjectId,
+    RefEventProposal, RepoId, SequencingMode, Sha256Digest, Timestamp,
 };
 use uuid::Uuid;
 
@@ -116,6 +117,10 @@ pub struct Capabilities {
     /// /objects`). Absent from servers that predate them.
     #[serde(default)]
     pub object_packs: bool,
+    /// The server serves `POST /state` and `POST /items/history`. Left out
+    /// when false, so readers that predate it still parse this.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub state_read: bool,
 }
 impl Capabilities {
     pub fn validate(&self) -> Result<(), ProtocolError> {
@@ -310,6 +315,98 @@ pub struct HistoryFragment {
     pub header: PublishedHeader,
     pub events: Vec<CommitEventRow>,
 }
+/// A position in the state feed, which is ordered by `(changed_seq, item_id)`.
+/// A null `item_id` sorts before every item: bootstrap is `changed_seq` 0 and
+/// no item.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StatePosition {
+    pub repository: RepositoryIdentity,
+    pub changed_seq: u64,
+    pub item_id: Option<ItemId>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StateRequest {
+    pub after: StatePosition,
+    pub limit: usize,
+}
+impl StateRequest {
+    pub fn validate(&self) -> Result<(), ProtocolError> {
+        self.after.repository.validate()?;
+        if self.after.changed_seq > i64::MAX as u64 {
+            return Err(invalid("repository sequence overflow"));
+        }
+        if self.limit == 0 || self.limit > MAX_PAGE_RECORDS {
+            return Err(ProtocolError::Limit("state page entries"));
+        }
+        Ok(())
+    }
+}
+/// One item's structural state after its last published event, which the
+/// commit at `changed_seq` holds. In an encrypted repository `name` is a tag
+/// and the display name is in the object `name_metadata_id` names.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StateEntry {
+    pub item_id: ItemId,
+    pub item_type: String,
+    pub changed_seq: u64,
+    pub head_seq: i64,
+    pub ref_head_seq: i64,
+    pub parent_folder_id: Option<ItemId>,
+    pub name: Option<String>,
+    pub record_key: Option<String>,
+    pub link_folder_id: Option<ItemId>,
+    pub lifecycle_state: LifecycleState,
+    pub sequencing_mode: SequencingMode,
+    pub federation_stream_id: Option<String>,
+    /// The current role map, empty when the item has no content.
+    pub content: BTreeMap<String, ObjectId>,
+    pub metadata_id: Option<ObjectId>,
+    pub name_metadata_id: Option<ObjectId>,
+    pub created_at: Timestamp,
+    pub created_by: String,
+}
+/// With `has_more` false the entries read so far are every item's state at
+/// `through`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StatePage {
+    pub after: StatePosition,
+    pub entries: Vec<StateEntry>,
+    pub through: Cursor,
+    pub has_more: bool,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ItemHistoryRequest {
+    pub repository: RepositoryIdentity,
+    pub item_id: ItemId,
+    pub after_seq: u64,
+    pub limit: usize,
+}
+impl ItemHistoryRequest {
+    pub fn validate(&self) -> Result<(), ProtocolError> {
+        self.repository.validate()?;
+        if self.after_seq > i64::MAX as u64 {
+            return Err(invalid("item sequence overflow"));
+        }
+        if self.limit == 0 || self.limit > MAX_PAGE_RECORDS {
+            return Err(ProtocolError::Limit("item history page events"));
+        }
+        Ok(())
+    }
+}
+/// One item's published events in `item_seq` order, each tagged `item`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ItemHistoryPage {
+    pub item_id: ItemId,
+    pub events: Vec<CommitEventRow>,
+    pub has_more: bool,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PublishedCommit {

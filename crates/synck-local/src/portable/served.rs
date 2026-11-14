@@ -146,6 +146,7 @@ impl ServedRepository {
             latest,
             policy: synck_sync::ServerPolicy::default(),
             object_packs: true,
+            state_read: false,
         })
     }
 

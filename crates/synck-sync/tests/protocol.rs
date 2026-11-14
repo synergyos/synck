@@ -465,8 +465,16 @@ fn transfer_bounds_and_unknown_fields_are_rejected() {
         latest: Cursor::genesis(repository(), false).unwrap(),
         policy: ServerPolicy::default(),
         object_packs: true,
+        state_read: false,
     };
     caps.validate().unwrap();
+    // A server without the state read leaves the field out.
+    assert!(
+        serde_json::to_value(&caps)
+            .unwrap()
+            .get("state_read")
+            .is_none()
+    );
     // A server from before object packs leaves the field out.
     let mut wire = serde_json::to_value(&caps).unwrap();
     wire.as_object_mut().unwrap().remove("object_packs");

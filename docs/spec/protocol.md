@@ -365,18 +365,22 @@ accepted state and unsent local work intact.
 
 ## State read
 
-Not implemented yet. A client that does not keep the full history follows the
-repository's current structural state instead of replaying it, as IMAP clients
-follow a mailbox. History stays authoritative and complete on the authority; the
-state read is a view of it.
+A client that does not keep the full history follows the repository's current
+structural state instead of replaying it, as IMAP clients follow a mailbox.
+History stays authoritative and complete on the authority; the state read is a
+view of it. The reference `synck serve` does not offer it; the SynckHub Personal
+service does.
 
 `POST /state` is a changes feed over items. Each `StateEntry` is one item's
-structural state after its last **published** event: the fields of
-`vcs_items`, the role map of its current content, the ID of its latest metadata
-object (`metadata_id`), and the ID of the metadata object of the event that last
-set its name (`name_metadata_id`, null for a record). `changed_seq` is the
-`repo_seq` of the commit holding that event. Accepted but unpublished events are
-never served; the entry still shows the published state.
+structural state after its last **published** event, item or ref: the fields of
+`vcs_items` except `name_key`, which a client derives from `name`, the role map
+of its current content (`{}` when none, under the format's content rules), the
+ID of the metadata object of its latest item event that has one
+(`metadata_id`), and the ID of the metadata object of the event that last set
+its name (`name_metadata_id`, null for a record or a naming event without
+metadata). `changed_seq` is the `repo_seq` of the commit holding that event.
+Accepted but unpublished events are never served; the entry still shows the
+published state.
 
 Entries are ordered by `(changed_seq, item_id)`. A request returns the entries
 strictly after its position: `changed_seq` greater than the position's, or equal
@@ -404,8 +408,8 @@ object `name_metadata_id` names. A client that needs every name offline fetches
 those metadata objects through the object routes as entries arrive. A family
 whose presentation needs older metadata reads the item's history.
 
-`POST /items/history` returns one item's events with `item_seq` greater than
-`after_seq`, ascending, at most `limit` (1 to 512) events and 8 MiB per page,
+`POST /items/history` returns one item's published events with `item_seq`
+greater than `after_seq`, ascending, at most `limit` (1 to 512) events and 8 MiB per page,
 in the same event shape as history fragments. It serves version views and
 families that walk back metadata. It does not replace `/history` for a client
 that keeps the full copy.
