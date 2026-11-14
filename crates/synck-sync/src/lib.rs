@@ -375,8 +375,20 @@ pub struct StateEntry {
 pub struct StatePage {
     pub after: StatePosition,
     pub entries: Vec<StateEntry>,
+    /// Items that left a subtree-limited credential's subtrees, in the
+    /// entries' order. Absent for a credential that reads everything.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub departed: Vec<StateDeparture>,
     pub through: Cursor,
     pub has_more: bool,
+}
+/// An item, and with it its descendants, that left the credential's subtrees
+/// in the commit at `changed_seq`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StateDeparture {
+    pub item_id: ItemId,
+    pub changed_seq: u64,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

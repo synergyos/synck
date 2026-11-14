@@ -394,7 +394,18 @@ moves to a later `changed_seq` and is returned again, so no item is skipped.
 equals the structural state that replaying history to `through` would give.
 Tombstoned and trashed items are entries like any other, so deletions arrive in
 the feed. An item never leaves the feed. This version serves credentials that
-read the whole repository; credentials limited to subtrees are not defined yet.
+read the whole repository or, as below, limited subtrees.
+
+An authority may limit a credential to subtrees: it then serves only the
+entries of items inside them, and a `departed` list of `StateDeparture
+{item_id, changed_seq}`, each an item that left them in the commit at
+`changed_seq`. The item's descendants left with it. Departures share the
+entries' order and position: a page holds every entry and departure in its
+range, and the client resumes from the later of its last entry and its last
+departure. A client drops a departed item and its descendants, unless a later
+entry brings the item back. A departure of an item the client never held is
+ignored. `departed` is absent when empty, and a credential that reads the whole
+repository never receives it.
 
 A client keeps, per item, the highest `head_seq` it has accepted and treats an
 entry with a lower one as an integrity failure, not a retryable error.
