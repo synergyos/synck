@@ -843,17 +843,20 @@ payload stops the walk and the key is unavailable, never an older value.
 
 An event with exactly two segments carries item metadata; a longer event type,
 such as `EMAIL::ATTACHMENT::SET_METADATA`, carries its subitem's, as with
-[content](#content). Item metadata is a key patch: a key holding null is removed.
+[content](#content). Item metadata is a key patch. A key written as null is
+stored as null and folding keeps it, so a reader asking whether a key is set
+treats null as unset.
 
 **Complete maps.** A writer to a repository whose readers take the
 [state read](protocol.md#state-read) as their source of truth, which is every
 encrypted repository, writes the item's complete current metadata on every
 two-segment event that carries metadata: every key the item holds after the
 event, and null for each key the event removes. A key removed by an earlier
-event is absent. Folding such payloads as patches gives the latest one, so a
-reader of the latest item payload alone holds every key. A writer whose
-authority folds metadata itself, as an unencrypted authority can, may write
-patches; readers fold both alike. Events that carry no metadata, such as
+event is absent. Folding such payloads as patches gives the latest one, except
+that a key removed earlier stays null rather than absent; either way it is
+unset, so a reader of the latest item payload alone holds every set key. A
+writer whose authority folds metadata itself, as an unencrypted authority can,
+may write patches; readers fold both alike. Events that carry no metadata, such as
 `SET_PARENT` or `TRASH`, leave the latest payload current.
 A subitem edit whose metadata is erased no longer names its target, so a reader cannot
 hide the value it replaced.
