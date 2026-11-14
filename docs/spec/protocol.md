@@ -420,10 +420,15 @@ those metadata objects through the object routes as entries arrive. A family
 whose presentation needs older metadata reads the item's history.
 
 `POST /items/history` returns one item's published events with `item_seq`
-greater than `after_seq`, ascending, at most `limit` (1 to 512) events and 8 MiB per page,
-in the same event shape as history fragments. It serves version views and
-families that walk back metadata. It does not replace `/history` for a client
-that keeps the full copy.
+greater than `after_seq`, ascending, in the same event shape as history
+fragments. `refs` holds the published ref events the item owns with `ref_seq`
+greater than `after_ref_seq` (default 0), ascending, tagged `ref`. `authors`
+maps the commit of every row in the page to its `author_id`. A page holds at
+most `limit` (1 to 512) rows of both lists together and 8 MiB; `has_more` is
+true while either list has more, and the client resumes from the last
+`item_seq` and `ref_seq` it received. It serves version views and families that
+walk back metadata, without the commit log. It does not replace `/history` for
+a client that keeps the full copy.
 
 A client writes as before, with `base_seq` from its state map; a stale base is
 `conflict` and the client rereads that item.

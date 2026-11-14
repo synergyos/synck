@@ -14,7 +14,7 @@ pub use proposal::{ProposalVerifier, ValidatedProposal, validate_submit};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use synck_vcs::types::{
-    CommitEventRow, CommitId, CommitRow, EventProposal, ItemId, LifecycleState, ObjectId,
+    AuthorId, CommitEventRow, CommitId, CommitRow, EventProposal, ItemId, LifecycleState, ObjectId,
     RefEventProposal, RepoId, SequencingMode, Sha256Digest, Timestamp,
 };
 use uuid::Uuid;
@@ -396,12 +396,14 @@ pub struct ItemHistoryRequest {
     pub repository: RepositoryIdentity,
     pub item_id: ItemId,
     pub after_seq: u64,
+    #[serde(default)]
+    pub after_ref_seq: u64,
     pub limit: usize,
 }
 impl ItemHistoryRequest {
     pub fn validate(&self) -> Result<(), ProtocolError> {
         self.repository.validate()?;
-        if self.after_seq > i64::MAX as u64 {
+        if self.after_seq > i64::MAX as u64 || self.after_ref_seq > i64::MAX as u64 {
             return Err(invalid("item sequence overflow"));
         }
         if self.limit == 0 || self.limit > MAX_PAGE_RECORDS {
@@ -410,12 +412,18 @@ impl ItemHistoryRequest {
         Ok(())
     }
 }
-/// One item's published events in `item_seq` order, each tagged `item`.
+/// One item's published events in `item_seq` order, each tagged `item`, and
+/// the published ref events it owns in `ref_seq` order, each tagged `ref`.
+/// `authors` maps the commit of every row in the page to its `author_id`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ItemHistoryPage {
     pub item_id: ItemId,
     pub events: Vec<CommitEventRow>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub refs: Vec<CommitEventRow>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub authors: BTreeMap<CommitId, AuthorId>,
     pub has_more: bool,
 }
 
