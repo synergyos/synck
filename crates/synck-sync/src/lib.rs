@@ -121,6 +121,12 @@ pub struct Capabilities {
     /// when false, so readers that predate it still parse this.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub state_read: bool,
+    /// The server serves `POST /items/histories`. Left out when false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub item_histories: bool,
+    /// The server serves `POST /commits`. Left out when false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub commit_log: bool,
 }
 impl Capabilities {
     pub fn validate(&self) -> Result<(), ProtocolError> {
@@ -136,6 +142,9 @@ impl Capabilities {
             && self.latest != Cursor::genesis(self.repository.clone(), self.encrypted)?
         {
             return Err(ProtocolError::Checkpoint);
+        }
+        if (self.item_histories || self.commit_log) && !self.state_read {
+            return Err(invalid("state reads advertised without state_read"));
         }
         Ok(())
     }
@@ -437,6 +446,107 @@ pub struct ItemHistoryPage {
 pub struct ItemHistoryCommit {
     pub author_id: AuthorId,
     pub occurred_at: Timestamp,
+}
+
+/// One item of an `ItemHistoriesRequest`, read as `ItemHistoryRequest` reads
+/// it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ItemHistoryPosition {
+    pub item_id: ItemId,
+    pub after_seq: u64,
+    #[serde(default)]
+    pub after_ref_seq: u64,
+}
+/// `POST /items/histories`: several items' histories, `limit` rows in all.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ItemHistoriesRequest {
+    pub repository: RepositoryIdentity,
+    pub items: Vec<ItemHistoryPosition>,
+    pub limit: usize,
+}
+impl ItemHistoriesRequest {
+    pub fn validate(&self) -> Result<(), ProtocolError> {
+        self.repository.validate()?;
+        if self.items.is_empty() || self.items.len() > MAX_PAGE_RECORDS {
+            return Err(ProtocolError::Limit("item histories items"));
+        }
+        if self.limit == 0 || self.limit > MAX_PAGE_RECORDS {
+            return Err(ProtocolError::Limit("item histories page rows"));
+        }
+        let mut items = std::collections::BTreeSet::new();
+        for item in &self.items {
+            if item.after_seq > i64::MAX as u64 || item.after_ref_seq > i64::MAX as u64 {
+                return Err(invalid("item sequence overflow"));
+            }
+            if !items.insert(&item.item_id) {
+                return Err(invalid("duplicate item in item histories"));
+            }
+        }
+        Ok(())
+    }
+}
+/// The pages of a prefix of the request's items, in their order. Every page
+/// but the last is complete.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ItemHistoriesPage {
+    pub pages: Vec<ItemHistoryPage>,
+}
+
+/// Item events a `CommitSummary` lists at most.
+pub const COMMIT_SUMMARY_EVENTS: usize = 32;
+/// `POST /commits`: published commits before `before_seq`, newest first;
+/// null reads from the newest.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CommitLogRequest {
+    pub repository: RepositoryIdentity,
+    pub before_seq: Option<u64>,
+    pub limit: usize,
+}
+impl CommitLogRequest {
+    pub fn validate(&self) -> Result<(), ProtocolError> {
+        self.repository.validate()?;
+        if self
+            .before_seq
+            .is_some_and(|seq| seq == 0 || seq > i64::MAX as u64)
+        {
+            return Err(invalid("commit log position out of range"));
+        }
+        if self.limit == 0 || self.limit > MAX_PAGE_RECORDS {
+            return Err(ProtocolError::Limit("commit log page commits"));
+        }
+        Ok(())
+    }
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CommitLogPage {
+    pub commits: Vec<CommitSummary>,
+    pub has_more: bool,
+}
+/// A published commit: its author, its `occurred_at` or else `created_at`,
+/// its count of item and ref events, and its first `COMMIT_SUMMARY_EVENTS`
+/// item events in commit order.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CommitSummary {
+    pub repo_seq: u64,
+    pub commit_id: CommitId,
+    pub author_id: AuthorId,
+    pub occurred_at: Timestamp,
+    pub event_count: u32,
+    pub events: Vec<CommitSummaryEvent>,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CommitSummaryEvent {
+    pub item_id: ItemId,
+    pub item_seq: i64,
+    pub commit_event_idx: i32,
+    pub event_type: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

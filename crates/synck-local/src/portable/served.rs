@@ -147,6 +147,8 @@ impl ServedRepository {
             policy: synck_sync::ServerPolicy::default(),
             object_packs: true,
             state_read: false,
+            item_histories: false,
+            commit_log: false,
         })
     }
 

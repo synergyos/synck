@@ -66,6 +66,8 @@ All routes are under `/v1/repositories/{repo_id}/sync`:
 | `POST /history` | `HistoryRequest` / `HistoryPage` |
 | `POST /state` | `StateRequest` / `StatePage` (see State read) |
 | `POST /items/history` | `ItemHistoryRequest` / `ItemHistoryPage` (see State read) |
+| `POST /items/histories` | `ItemHistoriesRequest` / `ItemHistoriesPage` (see State read) |
+| `POST /commits` | `CommitLogRequest` / `CommitLogPage` (see State read) |
 | `PUT /objects/{object_id}` | exact stored bytes, immutable installation |
 | `GET /objects/{object_id}` | exact stored bytes, or explicit missing |
 | `PUT /objects` | an object pack, immutable installation of each object |
@@ -105,8 +107,11 @@ the per-object routes.
 
 `Capabilities` contains `protocol_version: 1`, `repository`, `encrypted` (a client
 needs it to compute the genesis value), `latest` complete cursor, `policy`,
-`object_packs` and `state_read`. A server without `state_read: true` has neither
-`/state` nor `/items/history`. Fixed transfer bounds are **512 records per page** and
+`object_packs`, `state_read`, `item_histories` and `commit_log`. A server without
+`state_read: true` has neither `/state` nor `/items/history`. A server without
+`item_histories: true` has no `/items/histories`; its clients read each item
+through `/items/history`. A server without `commit_log: true` has no `/commits`.
+Both are true only with `state_read`. Fixed transfer bounds are **512 records per page** and
 **8 MiB of serialized JSON per page**. These are not commit limits. The byte
 bound fits any format-valid individual event, with `payload_json` escaped.
 Producers stop a page before either bound, and paginate again. They
@@ -437,6 +442,30 @@ true while either list has more, and the client resumes from the last
 `item_seq` and `ref_seq` it received. It serves version views and families that
 walk back metadata, without the commit log. It does not replace `/history` for
 a client that keeps the full copy.
+
+`POST /items/histories` reads several items' histories in one request.
+`ItemHistoriesRequest` has `repository`, `items`, 1 to 512 `{item_id, after_seq,
+after_ref_seq}` with distinct item IDs, and `limit` (1 to 512).
+`ItemHistoriesPage.pages` answers a prefix of `items`, in their order, with the
+`ItemHistoryPage` that `/items/history` gives for each; every page but the last
+has `has_more=false`. The rows of all pages together are at most `limit`, an
+item with no rows counting as one, and the whole page at most 8 MiB. The client
+asks again for the items not answered and, when the last page has `has_more`,
+for that item after its last rows. An item the credential cannot read refuses
+the whole request, as it refuses `/items/history`.
+
+`POST /commits` lists published commits newest first, for a client without the
+full copy, such as an Activity view. `CommitLogRequest` has `repository`,
+`before_seq`, null for the newest, and `limit` (1 to 512). A `CommitSummary` has
+the commit's `repo_seq`, `commit_id`, `author_id`, `occurred_at` (its
+`created_at` when it has none) and `event_count`, its item and ref events, and
+`events`, its first 32 item events in commit order, each `{item_id, item_seq,
+commit_event_idx, event_type}`. `CommitLogPage.commits` holds commits with
+`repo_seq` below `before_seq`, descending, at most `limit` and 8 MiB; `has_more`
+is true while older commits remain, and the client resumes before the last
+`repo_seq`. Payloads, ref events and messages are not served; `/items/history`
+has an item's events. A credential limited to subtrees is refused (403): the
+commit log is the whole repository.
 
 A client writes as before, with `base_seq` from its state map; a stale base is
 `conflict` and the client rereads that item.
