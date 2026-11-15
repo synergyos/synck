@@ -466,15 +466,22 @@ fn transfer_bounds_and_unknown_fields_are_rejected() {
         policy: ServerPolicy::default(),
         object_packs: true,
         state_read: false,
+        item_histories: false,
+        commit_log: false,
     };
     caps.validate().unwrap();
-    // A server without the state read leaves the field out.
-    assert!(
-        serde_json::to_value(&caps)
-            .unwrap()
-            .get("state_read")
-            .is_none()
-    );
+    // A server without the state reads leaves their fields out.
+    let wire = serde_json::to_value(&caps).unwrap();
+    for field in ["state_read", "item_histories", "commit_log"] {
+        assert!(wire.get(field).is_none());
+    }
+    // The batched reads come only with the state read.
+    let mut batched = caps.clone();
+    batched.item_histories = true;
+    assert!(batched.validate().is_err());
+    batched.state_read = true;
+    batched.commit_log = true;
+    batched.validate().unwrap();
     // A server from before object packs leaves the field out.
     let mut wire = serde_json::to_value(&caps).unwrap();
     wire.as_object_mut().unwrap().remove("object_packs");
@@ -1027,4 +1034,40 @@ fn repository_head_is_optional_authenticated_and_separate_from_commit_identity()
     );
     guarded.repository_head = Some(i64::MAX as u64 + 1);
     assert!(validate_submit(&guarded).is_err());
+}
+
+#[test]
+fn batched_state_reads_bound_their_requests() {
+    let item = |id: &str| ItemHistoryPosition {
+        item_id: ItemId::parse(id).unwrap(),
+        after_seq: 0,
+        after_ref_seq: 0,
+    };
+    let a = "019a2900-0000-7000-8000-00000000000a";
+    let b = "019a2900-0000-7000-8000-00000000000b";
+    let histories = |items, limit| ItemHistoriesRequest {
+        repository: repository(),
+        items,
+        limit,
+    };
+    histories(vec![item(a), item(b)], 512).validate().unwrap();
+    for refused in [
+        histories(vec![], 512),
+        histories(vec![item(a), item(a)], 512),
+        histories(vec![item(a)], 0),
+        histories(vec![item(a)], 513),
+        histories(vec![item(a); 513], 512),
+    ] {
+        assert!(refused.validate().is_err());
+    }
+    let log = |before_seq, limit| CommitLogRequest {
+        repository: repository(),
+        before_seq,
+        limit,
+    };
+    log(None, 512).validate().unwrap();
+    log(Some(1), 1).validate().unwrap();
+    for refused in [log(Some(0), 1), log(Some(1 << 63), 1), log(None, 0)] {
+        assert!(refused.validate().is_err());
+    }
 }
