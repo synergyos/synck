@@ -54,4 +54,8 @@ callers must bind trusted storage to repository/item identity and a separately
 verified history checkpoint, bound input size, and discard/replay unsupported or
 invalid cache versions. Export and restore cost O(item state size); use periodic
 snapshots with a verified replay tail rather than exporting the whole chat for
-every message. No Core, event, hash or wire format changes.
+every message. `ItemReader::export_cache_without(families)` writes the same
+cache without those sequence-subitem families, their rows and erased creations;
+a reader restored from it fails on a later event naming a dropped row unless the
+caller applies that event with absent metadata, which is a no-op. No Core, event,
+hash or wire format changes.

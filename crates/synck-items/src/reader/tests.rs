@@ -756,6 +756,109 @@ fn reader_cache_restores_private_maps_and_continues_both_ledgers() {
     );
 }
 #[test]
+fn a_cache_without_families_keeps_the_rest_and_ignores_absent_events_on_them() {
+    const MESSAGES: [&str; 2] = ["CHAT::MESSAGE", "CHAT::MESSAGE.REACTION"];
+    let absent = || synck_vcs::metadata::MetadataRef::Absent(ObjectId::from_digest([1; 32]));
+    let (mut chat, id) = create("CHAT");
+    let file = Uuid::now_v7();
+    let mut erased = event(&id, "CHAT::MESSAGE::CREATE", json!({}), None);
+    erased.set_metadata = Some(absent());
+    for (event, author) in [
+        (
+            event(&id, "CHAT::MESSAGE::CREATE", json!({}), json_body("old")),
+            "alice",
+        ),
+        (
+            event(
+                &id,
+                "CHAT::MESSAGE.REACTION::CREATE",
+                json!({"parent_item_seq":2,"content":{"emoji":"+1"}}),
+                None,
+            ),
+            "bob",
+        ),
+        (erased, "alice"),
+        (
+            event(
+                &id,
+                "CHAT::FILE::CREATE",
+                json!({"meta":{"file_id":file,"name":"a.txt"}}),
+                None,
+            ),
+            "alice",
+        ),
+    ] {
+        apply(&mut chat, &event, author);
+    }
+    let base = chat.export_cache_without(&MESSAGES).unwrap();
+    let mut restored = ItemReader::from_cache(id.clone(), &base).unwrap();
+    assert_eq!(restored.latest_item_seq(), 5);
+    assert_eq!(
+        restored
+            .subitems_in_family("CHAT::MESSAGE")
+            .unwrap()
+            .count(),
+        0
+    );
+    assert_eq!(
+        restored.subitems_in_family("CHAT::FILE").unwrap().count(),
+        1
+    );
+
+    let title = event(&id, "CHAT::SET_TITLE", json!({"title":"Renamed"}), None);
+    let rename = event(
+        &id,
+        "CHAT::FILE::SET_METADATA",
+        json!({"item_seq":5,"meta":{"file_id":file,"name":"b.txt"}}),
+        None,
+    );
+    let edit = event(
+        &id,
+        "CHAT::MESSAGE::SET_CONTENT",
+        json!({"item_seq":2}),
+        json_body("new"),
+    );
+    let mut absent_edit = edit.clone();
+    absent_edit.set_metadata = Some(absent());
+    absent_edit.set_content = None;
+    let fresh = event(&id, "CHAT::MESSAGE::CREATE", json!({}), json_body("fresh"));
+    for event in [&title, &rename, &edit, &fresh] {
+        apply(&mut chat, event, "alice");
+    }
+    for event in [&title, &rename, &absent_edit, &fresh] {
+        apply(&mut restored, event, "alice");
+    }
+    assert_eq!(
+        serde_json::to_value(chat.chat_details().unwrap()).unwrap(),
+        serde_json::to_value(restored.chat_details().unwrap()).unwrap()
+    );
+    assert_eq!(
+        serde_json::to_value(chat.subitem("CHAT::FILE", 5).unwrap()).unwrap(),
+        serde_json::to_value(restored.subitem("CHAT::FILE", 5).unwrap()).unwrap()
+    );
+    assert_eq!(
+        serde_json::to_value(chat.subitem("CHAT::MESSAGE", 9).unwrap()).unwrap(),
+        serde_json::to_value(restored.subitem("CHAT::MESSAGE", 9).unwrap()).unwrap()
+    );
+    assert!(restored.subitem("CHAT::MESSAGE", 2).unwrap().is_none());
+    // Only an absent event may name a dropped row.
+    assert!(
+        restored
+            .apply(
+                &edit,
+                ReadContext {
+                    item_seq: 10,
+                    created_at: now(),
+                    occurred_at: None,
+                    author: "alice",
+                    committer: "alice",
+                },
+            )
+            .is_err()
+    );
+}
+
+#[test]
 fn reader_cache_rejects_damage_wrong_identity_version_and_poison() {
     let (mut reader, id) = create("CHAT");
     let cache = reader.export_cache().unwrap();

@@ -39,6 +39,14 @@ impl ItemReader {
     /// Use periodic snapshots with a verified replay tail, not full export on
     /// every message. A poisoned reader cannot export a usable checkpoint.
     pub fn export_cache(&self) -> Result<Vec<u8>, ReadError> {
+        self.export_cache_without(&[])
+    }
+    /// Export the cache without the sequence-subitem `families`: their rows and
+    /// their erased creations. A reader restored from it knows nothing of those
+    /// rows, so the caller must apply any later event that names one with
+    /// `MetadataRef::Absent`, or fold the full history instead.
+    pub fn export_cache_without(&self, families: &[&str]) -> Result<Vec<u8>, ReadError> {
+        let kept = |family: &str| !families.contains(&family);
         if self.poisoned {
             return Err(invalid("reader must be discarded after an error"));
         }
@@ -54,8 +62,18 @@ impl ItemReader {
             ancillary_events: self.ancillary_events.clone(),
             projection: self.projection.clone(),
             chat: self.chat.clone(),
-            subitems: self.subitems.values().cloned().collect(),
-            erased_subitem_creations: self.erased_subitem_creations.iter().cloned().collect(),
+            subitems: self
+                .subitems
+                .values()
+                .filter(|row| kept(&row.family))
+                .cloned()
+                .collect(),
+            erased_subitem_creations: self
+                .erased_subitem_creations
+                .iter()
+                .filter(|(family, _)| kept(family))
+                .cloned()
+                .collect(),
             erased_version_creation: self.erased_version_creation,
         };
         let digest = digest(&state)?;
