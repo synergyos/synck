@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 /// Recover the original HTML encapsulated in an Outlook RTF body.
 ///
 /// MS-OXRTFEX writes HTML fragments in numbered `htmltagN` destinations and
@@ -6,8 +8,12 @@
 /// `htmltag N` spelling, so real Outlook bodies leak one destination marker
 /// (`*`) per fragment into the resulting HTML.
 ///
-/// Text bytes, literal or `\'hh`, are in the `\ansicpg` codepage (Windows-1252
-/// when absent), so `\'80` is the euro sign rather than U+0080. `\uN` writes a
+/// Text bytes, literal or `\'hh`, are in the codepage of the current font: the
+/// font table's `\fcharsetN`, or the `\ansicpg` codepage (Windows-1252 when
+/// absent) for ANSI and unlisted charsets. So `\'80` is the euro sign rather
+/// than U+0080, and a run in a Japanese font is Shift-JIS. The font is a group
+/// property set by `\fN`, reset to `\deffN` by `\plain`, and tracked through
+/// RTF-only regions too, where Outlook writes its font changes. `\uN` writes a
 /// UTF-16 unit and is followed by `\ucN` fallback characters that are dropped.
 pub(super) fn extract_encapsulated_html(rtf: &[u8]) -> Option<String> {
     let rtf = std::str::from_utf8(rtf).ok()?;
@@ -16,7 +22,7 @@ pub(super) fn extract_encapsulated_html(rtf: &[u8]) -> Option<String> {
     }
 
     let bytes = rtf.as_bytes();
-    let mut html = HtmlText::new(ansi_codepage(bytes));
+    let mut html = HtmlText::new(bytes);
     let mut index = 0;
     let mut in_rtf_only_region = false;
 
@@ -46,13 +52,22 @@ pub(super) fn extract_encapsulated_html(rtf: &[u8]) -> Option<String> {
             continue;
         }
 
-        if in_rtf_only_region {
-            index += 1;
-            continue;
-        }
-
         match bytes[index] {
-            b'{' | b'}' | b'\r' | b'\n' => index += 1,
+            b'{' => {
+                html.open_group();
+                index += 1;
+            }
+            b'}' => {
+                html.close_group();
+                index += 1;
+            }
+            b'\\' if in_rtf_only_region => {
+                if let Control::Word(word, number) = read_control(bytes, &mut index) {
+                    html.font_control(word, number);
+                }
+            }
+            _ if in_rtf_only_region => index += 1,
+            b'\r' | b'\n' => index += 1,
             b'\\' => collect_escape_or_skip_control(bytes, &mut index, &mut html),
             byte => {
                 html.push_byte(byte);
@@ -65,7 +80,8 @@ pub(super) fn extract_encapsulated_html(rtf: &[u8]) -> Option<String> {
 }
 
 /// Decoded HTML plus the codepage bytes not yet decoded, so multi-byte
-/// codepages see whole characters.
+/// codepages see whole characters, and the font state that selects the
+/// codepage.
 struct HtmlText {
     text: String,
     pending: Vec<u8>,
@@ -73,17 +89,66 @@ struct HtmlText {
     fallback_chars: u32,
     skip: u32,
     high_surrogate: Option<u16>,
+    ansi_codepage: u32,
+    default_codepage: u32,
+    /// Fonts whose charset is not the ANSI codepage.
+    font_codepages: HashMap<i32, u32>,
+    /// Codepage to restore when each open group closes.
+    groups: Vec<u32>,
 }
 
 impl HtmlText {
-    fn new(codepage: u32) -> Self {
+    fn new(rtf: &[u8]) -> Self {
+        let ansi_codepage = header_number(rtf, b"\\ansicpg")
+            .and_then(|value| u32::try_from(value).ok())
+            .unwrap_or(1252);
+        let font_codepages = font_codepages(rtf);
+        let default_codepage = header_number(rtf, b"\\deff")
+            .and_then(|font| font_codepages.get(&font).copied())
+            .unwrap_or(ansi_codepage);
         Self {
             text: String::new(),
             pending: Vec::new(),
-            codepage,
+            codepage: default_codepage,
             fallback_chars: 1,
             skip: 0,
             high_surrogate: None,
+            ansi_codepage,
+            default_codepage,
+            font_codepages,
+            groups: Vec::new(),
+        }
+    }
+
+    fn set_codepage(&mut self, codepage: u32) {
+        if codepage != self.codepage {
+            self.flush();
+            self.codepage = codepage;
+        }
+    }
+
+    fn open_group(&mut self) {
+        self.groups.push(self.codepage);
+    }
+
+    fn close_group(&mut self) {
+        if let Some(codepage) = self.groups.pop() {
+            self.set_codepage(codepage);
+        }
+    }
+
+    fn font_control(&mut self, word: &[u8], number: Option<i32>) {
+        match (word, number) {
+            (b"f", Some(font)) => {
+                let codepage = self
+                    .font_codepages
+                    .get(&font)
+                    .copied()
+                    .unwrap_or(self.ansi_codepage);
+                self.set_codepage(codepage);
+            }
+            (b"plain", None) => self.set_codepage(self.default_codepage),
+            _ => {}
         }
     }
 
@@ -128,22 +193,78 @@ impl HtmlText {
     }
 }
 
-fn ansi_codepage(bytes: &[u8]) -> u32 {
+/// The number of the first `control` word followed by digits.
+fn header_number(bytes: &[u8], control: &[u8]) -> Option<i32> {
+    bytes
+        .windows(control.len())
+        .enumerate()
+        .filter(|(_, window)| *window == control)
+        .find_map(|(start, _)| {
+            let digits = &bytes[start + control.len()..];
+            let end = digits
+                .iter()
+                .position(|byte| !byte.is_ascii_digit())
+                .unwrap_or(digits.len());
+            std::str::from_utf8(&digits[..end]).ok()?.parse().ok()
+        })
+}
+
+/// Codepages of the font table's fonts whose `\fcharsetN` names one.
+fn font_codepages(bytes: &[u8]) -> HashMap<i32, u32> {
+    let mut fonts = HashMap::new();
     let Some(start) = bytes
-        .windows(b"\\ansicpg".len())
-        .position(|window| window == b"\\ansicpg")
+        .windows(b"{\\fonttbl".len())
+        .position(|window| window == b"{\\fonttbl")
     else {
-        return 1252;
+        return fonts;
     };
-    let digits = &bytes[start + b"\\ansicpg".len()..];
-    let end = digits
-        .iter()
-        .position(|byte| !byte.is_ascii_digit())
-        .unwrap_or(digits.len());
-    std::str::from_utf8(&digits[..end])
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(1252)
+    let mut index = start + 1;
+    let mut depth = 1usize;
+    let mut font = None;
+    while index < bytes.len() && depth > 0 {
+        match bytes[index] {
+            b'{' => {
+                depth += 1;
+                index += 1;
+            }
+            b'}' => {
+                depth -= 1;
+                index += 1;
+            }
+            b'\\' => match read_control(bytes, &mut index) {
+                Control::Word(b"f", Some(number)) => font = Some(number),
+                Control::Word(b"fcharset", Some(charset)) => {
+                    if let (Some(font), Some(codepage)) = (font, charset_codepage(charset)) {
+                        fonts.insert(font, codepage);
+                    }
+                }
+                _ => {}
+            },
+            _ => index += 1,
+        }
+    }
+    fonts
+}
+
+/// Windows codepage of an RTF `\fcharsetN`. ANSI (0), default (1), symbol (2)
+/// and other charsets use the document's ANSI codepage.
+fn charset_codepage(charset: i32) -> Option<u32> {
+    Some(match charset {
+        128 => 932,
+        129 => 949,
+        134 => 936,
+        136 => 950,
+        161 => 1253,
+        162 => 1254,
+        163 => 1258,
+        177 => 1255,
+        178 => 1256,
+        186 => 1257,
+        204 => 1251,
+        222 => 874,
+        238 => 1250,
+        _ => return None,
+    })
 }
 
 fn is_non_html_destination_group(bytes: &[u8], index: usize) -> bool {
@@ -227,14 +348,17 @@ fn skip_group(bytes: &[u8], index: &mut usize) {
 
 fn collect_htmltag_group(bytes: &[u8], index: &mut usize, html: &mut HtmlText) {
     let mut depth = 1usize;
+    html.open_group();
     while *index < bytes.len() && depth > 0 {
         match bytes[*index] {
             b'{' => {
                 depth += 1;
+                html.open_group();
                 *index += 1;
             }
             b'}' => {
                 depth -= 1;
+                html.close_group();
                 *index += 1;
             }
             b'\r' | b'\n' => *index += 1,
@@ -247,25 +371,35 @@ fn collect_htmltag_group(bytes: &[u8], index: &mut usize, html: &mut HtmlText) {
     }
 }
 
-fn collect_escape_or_skip_control(bytes: &[u8], index: &mut usize, html: &mut HtmlText) {
+/// One control sequence starting at a backslash.
+enum Control<'a> {
+    /// `\\`, `\{`, `\}` or `\'hh`: a text byte.
+    Byte(u8),
+    Word(&'a [u8], Option<i32>),
+    Other,
+}
+
+fn read_control<'a>(bytes: &'a [u8], index: &mut usize) -> Control<'a> {
     *index += 1;
     let Some(&next) = bytes.get(*index) else {
-        return;
+        return Control::Other;
     };
     match next {
         b'\\' | b'{' | b'}' => {
-            html.push_byte(next);
             *index += 1;
+            Control::Byte(next)
         }
         b'\'' if *index + 2 < bytes.len() => {
-            if let Ok(hex) = std::str::from_utf8(&bytes[*index + 1..*index + 3])
-                && let Ok(byte) = u8::from_str_radix(hex, 16)
-            {
-                html.push_byte(byte);
-            }
+            let byte = std::str::from_utf8(&bytes[*index + 1..*index + 3])
+                .ok()
+                .and_then(|hex| u8::from_str_radix(hex, 16).ok());
             *index += 3;
+            byte.map_or(Control::Other, Control::Byte)
         }
-        b'\r' | b'\n' | b'*' => *index += 1,
+        b'\r' | b'\n' | b'*' => {
+            *index += 1;
+            Control::Other
+        }
         _ => {
             let word_start = *index;
             while bytes.get(*index).is_some_and(u8::is_ascii_alphabetic) {
@@ -278,13 +412,19 @@ fn collect_escape_or_skip_control(bytes: &[u8], index: &mut usize, html: &mut Ht
                 .ok()
                 .and_then(|value| value.parse::<i32>().ok());
             skip_control_delimiter(bytes, index);
-            match (word, number) {
-                // RTF writes units above 32767 as negative numbers.
-                (b"u", Some(value)) => html.push_utf16(value as u16),
-                (b"uc", Some(value)) => html.fallback_chars = value.max(0) as u32,
-                _ => {}
-            }
+            Control::Word(word, number)
         }
+    }
+}
+
+fn collect_escape_or_skip_control(bytes: &[u8], index: &mut usize, html: &mut HtmlText) {
+    match read_control(bytes, index) {
+        Control::Byte(byte) => html.push_byte(byte),
+        // RTF writes units above 32767 as negative numbers.
+        Control::Word(b"u", Some(value)) => html.push_utf16(value as u16),
+        Control::Word(b"uc", Some(value)) => html.fallback_chars = value.max(0) as u32,
+        Control::Word(word, number) => html.font_control(word, number),
+        Control::Other => {}
     }
 }
 
@@ -378,6 +518,21 @@ mod tests {
         assert_eq!(
             extract_encapsulated_html(cyrillic).as_deref(),
             Some("<p>При</p>")
+        );
+    }
+
+    #[test]
+    fn decodes_text_bytes_with_the_current_font_charset() {
+        // Outlook switches to a Japanese font inside RTF-only regions. The
+        // run is Shift-JIS; text outside it, and after `\plain`, is ANSI.
+        let rtf = br#"{\rtf1\ansi\ansicpg1252\fromhtml1\deff0{\fonttbl
+{\f0\fswiss\fcharset0 Arial;}{\f1\fmodern\fcharset128 MS Mincho;}}
+{\*\htmltag64 <p>}\htmlrtf {\f1 \htmlrtf0 \'91\'e5\'90\'ac\htmlrtf }\htmlrtf0 \'80
+\htmlrtf \f1 \htmlrtf0 \'95\'8d\'8c\'8f\htmlrtf \plain \htmlrtf0 \'93{\*\htmltag64 </p>}
+}"#;
+        assert_eq!(
+            extract_encapsulated_html(rtf).as_deref(),
+            Some("<p>大成€附件“</p>")
         );
     }
 
