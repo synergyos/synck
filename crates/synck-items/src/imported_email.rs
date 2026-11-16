@@ -9,7 +9,7 @@ use std::path::Path;
 
 mod msg_rtf;
 
-pub const IMPORTED_EMAIL_PARSER_VERSION: u32 = 15;
+pub const IMPORTED_EMAIL_PARSER_VERSION: u32 = 16;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct ImportedEmailLimits {
@@ -962,11 +962,22 @@ fn normalize_msg_strings(source: Vec<u8>) -> Result<Vec<u8>, ImportedEmailParseE
                     path.display()
                 ))
             })?;
-        let normalized = if path
+        let name = path
             .file_name()
             .and_then(|name| name.to_str())
-            .is_some_and(|name| name.ends_with("001E"))
+            .unwrap_or_default();
+        let html_end = bytes
+            .iter()
+            .rposition(|byte| *byte != 0)
+            .map_or(0, |index| index + 1);
+        let normalized = if name.ends_with("1013001E")
+            && !bytes[..html_end].contains(&0)
+            && std::str::from_utf8(&bytes[..html_end]).is_ok()
         {
+            // Outlook reads an HTML body by its own charset, not the message
+            // codepage, so a String8 HTML body that is valid UTF-8 is UTF-8.
+            bytes[..html_end].to_vec()
+        } else if name.ends_with("001E") {
             let codepage = msg_codepage_for_path(&mut compound, path.as_path())?;
             decode_msg_string8_property(bytes.as_slice(), codepage)
                 .ok_or_else(|| {
@@ -2191,6 +2202,11 @@ mod tests {
             .write_all(b"Caf\xe9\0")
             .expect("write MSG String8 subject");
         compound
+            .create_stream("/__substg1.0_1013001E")
+            .expect("create MSG String8 HTML")
+            .write_all("<p>Gràcia ”</p>\0".as_bytes())
+            .expect("write MSG String8 HTML");
+        compound
             .create_stream("/__substg1.0_1000001F")
             .expect("create MSG Unicode body")
             .write_all(b"B\0o\0d\0y\0\0\0")
@@ -2207,6 +2223,17 @@ mod tests {
             .read_to_end(&mut subject)
             .expect("read normalized subject");
         assert_eq!(subject, "Café".as_bytes());
+        let mut html = Vec::new();
+        normalized_compound
+            .open_stream("/__substg1.0_1013001E")
+            .expect("open normalized HTML")
+            .read_to_end(&mut html)
+            .expect("read normalized HTML");
+        assert_eq!(
+            html,
+            "<p>Gràcia ”</p>".as_bytes(),
+            "UTF-8 HTML is not re-decoded"
+        );
         let mut body = Vec::new();
         normalized_compound
             .open_stream("/__substg1.0_1000001F")
