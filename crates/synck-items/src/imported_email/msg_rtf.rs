@@ -15,6 +15,12 @@ use std::collections::HashMap;
 /// property set by `\fN`, reset to `\deffN` by `\plain`, and tracked through
 /// RTF-only regions too, where Outlook writes its font changes. `\uN` writes a
 /// UTF-16 unit and is followed by `\ucN` fallback characters that are dropped.
+///
+/// When the original HTML was UTF-8, Outlook keeps its bytes under a
+/// Windows-1252 font and Outlook reads them back as UTF-8; the HTML's charset
+/// declaration does not say which happened. A Windows-1252 run that is valid
+/// UTF-8 is therefore UTF-8: real Windows-1252 text would have to contain
+/// sequences such as `Ã³`.
 pub(super) fn extract_encapsulated_html(rtf: &[u8]) -> Option<String> {
     let rtf = std::str::from_utf8(rtf).ok()?;
     if !rtf.contains("\\fromhtml1") {
@@ -177,6 +183,13 @@ impl HtmlText {
 
     fn flush(&mut self) {
         if self.pending.is_empty() {
+            return;
+        }
+        if self.codepage == 1252
+            && let Ok(utf8) = std::str::from_utf8(&self.pending)
+        {
+            self.text.push_str(utf8);
+            self.pending.clear();
             return;
         }
         let decoded =
@@ -533,6 +546,26 @@ mod tests {
         assert_eq!(
             extract_encapsulated_html(rtf).as_deref(),
             Some("<p>大成€附件“</p>")
+        );
+    }
+
+    #[test]
+    fn decodes_windows_1252_runs_that_are_utf8_as_utf8() {
+        // A UTF-8 original keeps its bytes; Windows-1252 bytes that are not
+        // valid UTF-8 stay Windows-1252.
+        let utf8 = br#"{\rtf1\ansi\ansicpg1252\fromhtml1
+{\*\htmltag64 <p>}notificaci\'c3\'b3n \'e2\'82\'ac{\*\htmltag64 </p>}
+}"#;
+        let windows_1252 = br#"{\rtf1\ansi\ansicpg1252\fromhtml1
+{\*\htmltag64 <p>}canci\'f3n \'80{\*\htmltag64 </p>}
+}"#;
+        assert_eq!(
+            extract_encapsulated_html(utf8).as_deref(),
+            Some("<p>notificación €</p>")
+        );
+        assert_eq!(
+            extract_encapsulated_html(windows_1252).as_deref(),
+            Some("<p>canción €</p>")
         );
     }
 
