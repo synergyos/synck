@@ -46,6 +46,17 @@ impl ItemReader {
     /// rows, so the caller must apply any later event that names one with
     /// `MetadataRef::Absent`, or fold the full history instead.
     pub fn export_cache_without(&self, families: &[&str]) -> Result<Vec<u8>, ReadError> {
+        self.export_cache_map_subitems(families, |_| {})
+    }
+    /// Export a trusted checkpoint after removing families and transforming the
+    /// remaining subitem copies. Applications use this to omit source details
+    /// below a member's history floor without changing their own reader.
+    /// The caller owns the meaning of the redaction and its authorization.
+    pub fn export_cache_map_subitems(
+        &self,
+        families: &[&str],
+        mut transform: impl FnMut(&mut ReadableSubitem),
+    ) -> Result<Vec<u8>, ReadError> {
         let kept = |family: &str| !families.contains(&family);
         if self.poisoned {
             return Err(invalid("reader must be discarded after an error"));
@@ -67,6 +78,10 @@ impl ItemReader {
                 .values()
                 .filter(|row| kept(&row.family))
                 .cloned()
+                .map(|mut row| {
+                    transform(&mut row);
+                    row
+                })
                 .collect(),
             erased_subitem_creations: self
                 .erased_subitem_creations

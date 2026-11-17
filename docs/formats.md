@@ -59,3 +59,8 @@ cache without those sequence-subitem families, their rows and erased creations;
 a reader restored from it fails on a later event naming a dropped row unless the
 caller applies that event with absent metadata, which is a no-op. No Core, event,
 hash or wire format changes.
+
+Applications preparing a history-limited checkpoint can use
+`ItemReader::export_cache_map_subitems` to redact retained subitem copies before
+the checkpoint checksum is computed. The source reader is preserved. The
+application remains responsible for access rules and later replay semantics.

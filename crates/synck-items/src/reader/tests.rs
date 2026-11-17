@@ -1095,3 +1095,47 @@ fn chat_file_restore_applies_destination_metadata() {
         assert_eq!(row.parent_folder_id, Some(parent));
     }
 }
+
+#[test]
+fn exported_subitem_redaction_keeps_the_source_reader_unchanged() {
+    let (mut chat, id) = create("CHAT");
+    let file = Uuid::now_v7();
+    apply(
+        &mut chat,
+        &event(
+            &id,
+            "CHAT::FILE::CREATE",
+            json!({"meta":{"file_id":file,"name":"photo.jpg"},"content":{"blob_id":"sha256:1111111111111111111111111111111111111111111111111111111111111111","size":1,"photo":{"latitude_e7":12},"preview_content_id":"opaque"}}),
+            None,
+        ),
+        "alice",
+    );
+    let bytes = chat
+        .export_cache_map_subitems(&[], |row| {
+            if row.family == "CHAT::FILE" {
+                if let Some(content) = row.content.as_object_mut() {
+                    content.remove("photo");
+                    content.remove("preview_content_id");
+                }
+            }
+        })
+        .unwrap();
+    let restored = ItemReader::from_cache(id, &bytes).unwrap();
+    let source = chat
+        .subitems_in_family("CHAT::FILE")
+        .unwrap()
+        .next()
+        .unwrap();
+    let redacted = restored
+        .subitems_in_family("CHAT::FILE")
+        .unwrap()
+        .next()
+        .unwrap();
+    assert_eq!(source.content["photo"]["latitude_e7"], 12);
+    assert!(redacted.content.get("photo").is_none());
+    assert!(redacted.content.get("preview_content_id").is_none());
+    assert_eq!(
+        redacted.content_position.as_ref().map(|v| v.seq),
+        source.content_position.as_ref().map(|v| v.seq)
+    );
+}
