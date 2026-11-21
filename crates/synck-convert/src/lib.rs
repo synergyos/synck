@@ -225,6 +225,8 @@ impl Converter {
             overlay(&mut map, patch);
             if item.item_type == "EMAIL" && verb == "CREATE" {
                 email_originals(&item_id, &mut event, &mut map)?;
+            } else if item.item_type == "POST" {
+                post_body(&item_id, &mut event, patch, &mut map)?;
             } else if item.item_type == "EMAIL" {
                 map.remove("mailcal");
                 if patch.contains_key("mailcal") {
@@ -294,7 +296,8 @@ impl Item {
 /// imported file in `source.blob_id`, or else a provider message's raw MIME in
 /// `raw_rfc822_blob_id`, and the provider's JSON in `provider_raw_json_blob_id`.
 /// They move to the `source` and `provider` roles of `EMAIL::CREATE`, and the
-/// renderings go. An email with no original is refused: nothing could rebuild
+/// renderings go, as do the Hub's job IDs; a provider message's `archived_at`
+/// is its `imported_at`. An email with no original is refused: nothing could rebuild
 /// its text.
 fn email_originals(
     item_id: &ItemId,
@@ -327,6 +330,16 @@ fn email_originals(
         for key in EMAIL_RENDERINGS {
             mailcal.remove(key);
         }
+        // Hub job and upload IDs say how an email arrived, not what it is.
+        mailcal.remove("archive_command_id");
+        if let Some(Value::Object(origin)) = mailcal.get_mut("origin") {
+            origin.remove("upload_intent_id");
+        }
+        if let Some(at) = mailcal.remove("archived_at")
+            && !mailcal.contains_key("imported_at")
+        {
+            mailcal.insert("imported_at".into(), at);
+        }
     }
     match &event.set_content {
         Some(content) if roles.is_empty() || content.roles() == &roles => {}
@@ -339,6 +352,37 @@ fn email_originals(
             event.set_content = Some(EventContent::new(roles).map_err(fail)?);
         }
         None => return Err(fail(format!("EMAIL {item_id} names no original"))),
+    }
+    Ok(())
+}
+
+/// Early Hub POSTs named their body in metadata as `body_markdown_blob_id`;
+/// the event's own key becomes its `body` role, and no map keeps it.
+fn post_body(
+    item_id: &ItemId,
+    event: &mut EventProposal,
+    patch: &Map<String, Value>,
+    map: &mut Map<String, Value>,
+) -> Result<(), ConvertError> {
+    map.remove("body_markdown_blob_id");
+    let body = match patch.get("body_markdown_blob_id") {
+        None | Some(Value::Null) => return Ok(()),
+        Some(Value::String(id)) => ObjectId::parse(id)
+            .map_err(|error| fail(format!("POST {item_id} body_markdown_blob_id: {error}")))?,
+        Some(_) => {
+            return Err(fail(format!(
+                "POST {item_id} body_markdown_blob_id is not a string"
+            )));
+        }
+    };
+    match &event.set_content {
+        None => event.set_content = Some(EventContent::body(body)),
+        Some(content) if content.get("body") == Some(&body) => {}
+        Some(_) => {
+            return Err(fail(format!(
+                "POST {item_id} content and metadata name different bodies"
+            )));
+        }
     }
     Ok(())
 }
@@ -598,6 +642,7 @@ mod tests {
             "body_html_blob_id": rendering, "raw_rfc822_blob_id": raw,
             "provider_raw_json_blob_id": json,
             "inline_images": [{"blob_id": rendering}],
+            "archived_at": "2026-03-29T12:00:00Z", "archive_command_id": "c",
         }}));
         let commit = converter()
             .convert(source(
@@ -614,7 +659,7 @@ mod tests {
         assert_eq!(content.get("provider"), Some(&json));
         assert_eq!(
             maps(&commit, &[])[0],
-            json!({"mailcal": {"v": 1, "subject": "s"}})
+            json!({"mailcal": {"v": 1, "subject": "s", "imported_at": "2026-03-29T12:00:00Z"}})
         );
 
         // A generated RFC 822 is a rendering, never the original.
@@ -629,6 +674,35 @@ mod tests {
             .err()
             .unwrap();
         assert!(error.0.contains("names no original"), "{error}");
+    }
+
+    #[test]
+    fn a_post_body_in_metadata_becomes_its_body_role() {
+        let post = "019a2900-0000-7000-8000-000000000a03";
+        let body = ObjectId::from_digest([7; 32]);
+        let create = metadata(json!({"title": "P", "body_markdown_blob_id": body}));
+        let edit = metadata(json!({"summary": "s"}));
+        let commit = converter()
+            .convert(source(
+                1,
+                vec![
+                    (event(post, "POST::CREATE", None, &create), Some(&create)),
+                    (
+                        event(post, "POST::SET_METADATA", Some(1), &edit),
+                        Some(&edit),
+                    ),
+                ],
+            ))
+            .unwrap();
+        let created = decode_event_proposal(&commit.payloads[0]).unwrap();
+        assert_eq!(created.set_content.unwrap().get("body"), Some(&body));
+        // The folded key is not repeated, and the later event changes no body.
+        let edited = decode_event_proposal(&commit.payloads[1]).unwrap();
+        assert!(edited.set_content.is_none());
+        assert_eq!(
+            maps(&commit, &[]),
+            [json!({"title": "P"}), json!({"title": "P", "summary": "s"})]
+        );
     }
 
     #[test]

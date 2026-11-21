@@ -39,10 +39,14 @@ it cannot read, so it refuses the first encrypted object.
   `body_html_blob_id`, a generated RFC 822, `snippet`, `inline_images` and
   `text_repair` are dropped: a reader rebuilds them from `source` with the
   current parser, so the Hub's repaired text comes from the repaired parser. An
-  email with no original is refused. `mailcal` stays only on `EMAIL::CREATE`; a
+  email with no original is refused. The Hub's `archive_command_id` and
+  `origin.upload_intent_id` are dropped, and `archived_at` becomes
+  `imported_at`. `mailcal` stays only on `EMAIL::CREATE`; a
   later payload's `mailcal`, as a repair job wrote, is not carried over, and the
   converter counts these in `dropped_mailcal`. The repair events themselves stay
   where they are.
+- A POST's `body_markdown_blob_id`, which early Hub POSTs kept in metadata,
+  becomes the event's `body` role and leaves every map.
 - `FILE_VERSION::*` label metadata drops `file_item_id`, `operation_id`,
   `source_commit_id` and `source_commit_event_idx` (the owner, the commit and
   the revision already hold them).

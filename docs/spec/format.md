@@ -958,10 +958,12 @@ every email through `render_email`, with no new event.
 | `v` | 2 |
 | `parser_version` | Integer |
 | `parser_limits` | Object of integers: `source_bytes`, `header_bytes`, `header_count`, `mime_nesting`, `part_count`, `attachment_count`, `decoded_attachment_bytes`, `normalized_body_bytes`, `generated_rfc822_bytes`, `parser_concurrency` |
-| `origin` | `{"kind": "local_import"}` for a local import |
+| `origin` | `{"kind": "local_import"}` for a local import, `{"kind": "upload"}` for an upload to a Hub, `{"kind": "file_conversion", "source_file_item_id", "source_content_item_seq"}` for a FILE converted in place; absent for a provider message |
 | `source` | `format` (`eml` or `msg`), `filename`, `mime_type`, `size_bytes` |
 | `provider`, `account_id`, `provider_message_id`, `provider_thread_id` | String, or null for a local file |
-| `internet_message_id`, `subject` | String or null |
+| `internet_message_id`, `subject`, `in_reply_to` | String or null |
+| `references` | Array of message IDs, empty when missing |
+| `importance` | `low`, `normal` or `high`; absent when the source has none |
 | `from`, `sender` | An address or null |
 | `to`, `cc`, `bcc`, `reply_to` | Array of addresses, empty when missing |
 | `sent_at`, `received_at` | RFC 3339 string or null |

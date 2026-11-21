@@ -5,7 +5,7 @@ use std::path::Path;
 use serde_json::json;
 use synck_items::imported_email::{
     IMPORTED_EMAIL_PARSER_VERSION, ImportedEmailFormat, ImportedEmailLimits,
-    parse_imported_email_owned,
+    parse_imported_email_owned, rfc822_thread_headers,
 };
 use synck_vcs::types::{EventProposal, ItemId};
 
@@ -53,6 +53,7 @@ pub(crate) fn prepare(
     limits.generated_rfc822_bytes = 2 * SOURCE_BYTES;
     let parsed = parse_imported_email_owned(format, bytes.clone(), &limits)
         .map_err(|error| LocalError::Invalid(error.to_string()))?;
+    let (_, in_reply_to, references) = rfc822_thread_headers(&parsed.raw_rfc822);
     let mut objects = Vec::new();
     let mut store = |bytes: Vec<u8>| -> Result<String> {
         let id = synck_vcs::object::plain_id(&bytes).to_string();
@@ -83,6 +84,7 @@ pub(crate) fn prepare(
             "size_bytes":source_size},
         "provider":null,"account_id":null,"provider_message_id":null,"provider_thread_id":null,
         "internet_message_id":parsed.internet_message_id,"subject":parsed.subject,
+        "in_reply_to":in_reply_to,"references":references,
         "from":parsed.from,"sender":parsed.sender,"to":parsed.to,"cc":parsed.cc,"bcc":parsed.bcc,
         "reply_to":parsed.reply_to,"sent_at":parsed.sent_at,"received_at":parsed.received_at,
         "has_attachments":!attachments.is_empty(),"attachment_count":attachments.len(),
