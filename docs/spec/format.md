@@ -89,57 +89,11 @@ Unknown fields are rejected. `encrypted` is fixed when the repository is created
 copies keep it. `author` is the default author ID for new commits, at most 256 bytes;
 it is not history.
 
-`.synck/checkout.json` holds mutable checkout state, apart from the file that
-identifies the repository. It is an object with `paths` (array of selected
-relative paths; empty means all), `hidden_files` (`ignore`, default, or `track`),
-optional `pending`, which holds `previous_paths` (null or an array) while
-transitioning its materialized paths, and optional `baseline`: the `repo_seq` of
-the commit the working files are based on, which is HEAD unless another working
-tree has committed since. A missing `baseline` means HEAD. Optional
-`committing` is the `operation_id` of a commit this working tree is making at
-HEAD; at open, if that commit is in history past `baseline`, it becomes the
-baseline, and the field is cleared whenever the baseline is written. A missing file means
-the repository has no working tree, and a `FOLLOWER` has none whatever the file
-says. It is not canonical history and copies do not carry it.
-
-`.synck/conflicts.json`, present only after a pull merged files, is an array of
-`{path, item_id, head_seq, digest, theirs, conflicted}`: the file merged, the
-repository head it took in, the SHA-256 of the merged file, where the
-repository's version was written when the file is not text, and whether a
-decision is still needed. It is working-tree state, not history.
-
-A clone is another working tree of a repository on the same machine. Its
-`config.json` names the absolute path of the origin's root in `origin`, and its
-`.synck/` holds `config.json`, `checkout.json`, `lock` and `tmp/` but no history
-or objects: it reads the origin's `repository.sqlite3`, `objects/` and
-`object-store.sqlite3` in place, holding the origin's `lock` while it does.
-A clone is not a repository a reader can open on its own, and it cannot be
-copied or cloned; archive it to get a repository.
-
-A held clone (`"hold": true`) also has its own `repository.sqlite3`: a copy of
-the origin's history made when it was cloned, with its unpushed commits after
-it. Its sequence numbers and checkpoints are its own; commit IDs are the
-origin's. `held.json` holds `origin_seq`, through which every origin commit is
-in the copy, and `pushed_seq`, through which every commit of the copy is in the
-origin. Its content objects are written to the origin's store, and the origin's
-`pins/<SHA-256 of the clone's root path>.json` names them, as `{"clone": path,
-"objects": [object IDs]}`, until they are pushed; optional `withdrawn` is an
-array of `{"until": RFC 3339 time, "objects": [object IDs]}` for withdrawn
-saves. `gc` keeps every object a pin names, a withdrawn entry's until its
-`until`, and removes the pins of clones that are gone. Neither file is history.
-
-A held or HTTPS clone's `withdrawn.json`, present once a pull withdrew a held
-commit, is `{"next": n, "saves": [...]}`: `next` is the number the next
-withdrawn save is labelled with (`w<n>`), and each save is `{label, commit_id,
-metadata, saved_at, withdrawn_at, records, metadata_objects, changes, files}`.
-`metadata` is an object of the commit's `author_id`, `committer_id`, `message`
-and `occurred_at`, and `records` its item and ref envelopes, each in lowercase
-hexadecimal, so the events and header hash to `commit_id` as any commit's do.
-`metadata_objects` maps each metadata ID the events name to its stored bytes in
-lowercase hexadecimal. `changes` and `files` are what `show` listed and the
-paths, object IDs and sizes of the file contents the commit saved. A save is
-kept until 90 days after `withdrawn_at`. An HTTPS clone's `gc` keeps the
-objects of the saves it has not expired. It is not history.
+Working-tree files (`checkout.json`, `conflicts.json`, a clone's `.synck/`,
+`held.json`, `withdrawn.json` and `pins/`) are local CLI state, not history: no
+hash covers them and copies do not carry them. `gc` keeps every object a pin
+names. The [local repository guide](../local-repository.md#working-tree-files)
+defines them.
 
 Authority is local operational configuration, not a cryptographic credential.
 `FOLLOWER` is an imported copy, and it refuses writes. `INDEPENDENT_LOCAL` accepts
@@ -784,6 +738,10 @@ object prevents its ID alone from confirming a content guess; this says nothing
 about copies in chunks, caches or archives. Language-neutral vectors for PLAIN and
 SALTED are in `vectors/objects.json`.
 
+A conversion that rewrites an object's application bytes keeps its salt, so a
+rerun gives the same IDs. The source object leaves the converted history, so no
+kept object shares the salt.
+
 ### ENCRYPTED
 
 An encrypted repository stores no plaintext metadata or content. An encrypted
@@ -1332,7 +1290,9 @@ digests imply object presence.
 
 Normal writes append. A history generation names one unbroken history: replacing
 history under the same repository ID allocates a new generation, and every event,
-commit and checkpoint it changes has a new hash. Verification never makes corrupt
+commit and checkpoint it changes has a new hash. A format conversion is not a
+replacement: it re-encodes the same facts at the same positions and keeps the
+generation; its genesis differs because the genesis hashes the format. Verification never makes corrupt
 data acceptable by recalculating its hashes. Old cursors fail continuity checks.
 A checkpoint chain authenticates continuity only relative to a trusted checkpoint;
 it neither imposes immutability nor proves who accepted a record.

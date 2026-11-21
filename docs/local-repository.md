@@ -390,6 +390,63 @@ to finish interrupted operations. Do not delete intents as if they were caches.
 Export commands refuse existing destinations and publish validated output only.
 `deleted` lists trash, and `recover` restores retained items through new history.
 
+## Working-tree files
+
+These files are outside the repository format: no hash covers them, and
+copies do not carry them.
+
+`.synck/checkout.json` holds mutable checkout state, apart from the file that
+identifies the repository. It is an object with `paths` (array of selected
+relative paths; empty means all), `hidden_files` (`ignore`, default, or `track`),
+optional `pending`, which holds `previous_paths` (null or an array) while
+transitioning its materialized paths, and optional `baseline`: the `repo_seq` of
+the commit the working files are based on, which is HEAD unless another working
+tree has committed since. A missing `baseline` means HEAD. Optional
+`committing` is the `operation_id` of a commit this working tree is making at
+HEAD; at open, if that commit is in history past `baseline`, it becomes the
+baseline, and the field is cleared whenever the baseline is written. A missing file means
+the repository has no working tree, and a `FOLLOWER` has none whatever the file
+says. It is not canonical history and copies do not carry it.
+
+`.synck/conflicts.json`, present only after a pull merged files, is an array of
+`{path, item_id, head_seq, digest, theirs, conflicted}`: the file merged, the
+repository head it took in, the SHA-256 of the merged file, where the
+repository's version was written when the file is not text, and whether a
+decision is still needed. It is working-tree state, not history.
+
+A clone is another working tree of a repository on the same machine. Its
+`config.json` names the absolute path of the origin's root in `origin`, and its
+`.synck/` holds `config.json`, `checkout.json`, `lock` and `tmp/` but no history
+or objects: it reads the origin's `repository.sqlite3`, `objects/` and
+`object-store.sqlite3` in place, holding the origin's `lock` while it does.
+A clone is not a repository a reader can open on its own, and it cannot be
+copied or cloned; archive it to get a repository.
+
+A held clone (`"hold": true`) also has its own `repository.sqlite3`: a copy of
+the origin's history made when it was cloned, with its unpushed commits after
+it. Its sequence numbers and checkpoints are its own; commit IDs are the
+origin's. `held.json` holds `origin_seq`, through which every origin commit is
+in the copy, and `pushed_seq`, through which every commit of the copy is in the
+origin. Its content objects are written to the origin's store, and the origin's
+`pins/<SHA-256 of the clone's root path>.json` names them, as `{"clone": path,
+"objects": [object IDs]}`, until they are pushed; optional `withdrawn` is an
+array of `{"until": RFC 3339 time, "objects": [object IDs]}` for withdrawn
+saves. `gc` keeps every object a pin names, a withdrawn entry's until its
+`until`, and removes the pins of clones that are gone. Neither file is history.
+
+A held or HTTPS clone's `withdrawn.json`, present once a pull withdrew a held
+commit, is `{"next": n, "saves": [...]}`: `next` is the number the next
+withdrawn save is labelled with (`w<n>`), and each save is `{label, commit_id,
+metadata, saved_at, withdrawn_at, records, metadata_objects, changes, files}`.
+`metadata` is an object of the commit's `author_id`, `committer_id`, `message`
+and `occurred_at`, and `records` its item and ref envelopes, each in lowercase
+hexadecimal, so the events and header hash to `commit_id` as any commit's do.
+`metadata_objects` maps each metadata ID the events name to its stored bytes in
+lowercase hexadecimal. `changes` and `files` are what `show` listed and the
+paths, object IDs and sizes of the file contents the commit saved. A save is
+kept until 90 days after `withdrawn_at`. An HTTPS clone's `gc` keeps the
+objects of the saves it has not expired. It is not history.
+
 ## Verification, caches and copies
 
 `fsck` checks canonical history/checkpoints and objects. It reports missing
