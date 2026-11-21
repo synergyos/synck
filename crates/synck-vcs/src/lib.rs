@@ -18,7 +18,6 @@
 #![forbid(unsafe_code)]
 
 mod assigned;
-pub mod bundle;
 mod case_folding;
 pub mod checkpoint;
 pub mod codec;

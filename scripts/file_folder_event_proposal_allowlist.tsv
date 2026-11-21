@@ -20,9 +20,7 @@ SITE	FILE_VERSION_READ_WRITE	7	crates/synck-local/src/versions.rs
 SITE	TEST	3	crates/synck-local/tests/portable_repository.rs
 SITE	TEST	2	crates/synck-local/tests/portable_workspace_history.rs
 SITE	TEST	3	crates/synck-vcs-sqlite/src/storage.rs
-SITE	TEST	3	crates/synck-vcs-sqlite/tests/bundle_import.rs
 SITE	TEST	17	crates/synck-vcs-sqlite/tests/sqlite_backend.rs
-SITE	TEST	3	crates/synck-vcs/src/bundle.rs
 SITE	TEST	2	crates/synck-vcs/src/envelope.rs
 SITE	CORE_WRITE	1	crates/synck-vcs/src/repo.rs
 SITE	TEST	1	crates/synck-vcs/src/state/projector.rs

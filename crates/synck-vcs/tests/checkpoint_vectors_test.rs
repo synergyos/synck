@@ -50,8 +50,13 @@ fn checkpoint_chain_matches_independent_vectors() {
     let mut previous_sequence = None;
     for vector in vectors.steps {
         assert_eq!(hex::encode(previous), vector.previous);
-        let sequence =
-            synck_vcs::bundle::validate_import_repo_seq(previous_sequence, vector.repo_seq as i64);
+        // Positions start at 1 and are consecutive.
+        let repo_seq = vector.repo_seq as i64;
+        let sequence = if repo_seq == previous_sequence.unwrap_or(0) + 1 {
+            Ok(repo_seq)
+        } else {
+            Err(())
+        };
         if !vector.valid {
             assert!(sequence.is_err());
             continue;

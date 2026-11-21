@@ -61,6 +61,18 @@ impl SqliteStorage {
         self.path().with_extension("state.sqlite3")
     }
 
+    /// Bring the historical index up to the history head. Canonical rows are
+    /// not changed. The caller holds the exclusive repository lock.
+    pub async fn catch_up_state_index(&self, repo_id: &RepoId) -> Result<(), StateError> {
+        let mut state = self.state_index_store(repo_id.clone())?;
+        let core = synck_vcs::repo::Repo::new(
+            synck_vcs::storage::Storage::new(std::sync::Arc::new(self.clone())),
+            synck_vcs::config::CoreConfig::default(),
+        );
+        synck_vcs::state::catch_up_state_index(&core, repo_id, &mut state, None).await?;
+        Ok(())
+    }
+
     /// Open the cache under the caller's repository lock, creating it if absent.
     pub fn state_index_store(&self, repo_id: RepoId) -> Result<SqliteStateStore, StateError> {
         remove_stale_sidecars(&self.state_index_path())?;

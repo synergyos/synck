@@ -117,7 +117,7 @@ pub(crate) async fn empty_history(path: PathBuf, repo_id: &RepoId) -> Result<Sql
         .sequence_repo_activity(repo_id.clone(), 1)
         .await?;
     storage
-        .project_imported_history(repo_id)
+        .catch_up_state_index(repo_id)
         .await
         .map_err(|error| LocalError::Integrity(error.to_string()))?;
     Ok(storage)

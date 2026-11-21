@@ -1,6 +1,5 @@
 //! SQLite storage backend for Synck VCS.
 
-pub mod bundle;
 mod connection;
 mod history;
 mod metadata;

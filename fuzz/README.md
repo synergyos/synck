@@ -5,7 +5,7 @@ mutated spec vectors in every `cargo test -p synck-fuzz`.
 
 ```bash
 cargo install cargo-fuzz
-cargo +nightly fuzz run bundle -- -max_total_time=600
+cargo +nightly fuzz run event -- -max_total_time=600
 ```
 
 Without nightly, the targets build on stable. They then run without sanitizers,

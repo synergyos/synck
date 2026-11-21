@@ -5,11 +5,7 @@ use std::sync::Arc;
 
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use synck_local::portable::{
-    Authority, BundleSnapshot, PortableRepository, WriteOptions, import_repository,
-    materialize_repository,
-};
-use synck_vcs::bundle::BundleReader;
+use synck_local::portable::{Authority, PortableRepository, WriteOptions, import_repository};
 use synck_vcs::config::CoreConfig;
 use synck_vcs::object::{Object, plain_id};
 use synck_vcs::repo::Repo;
@@ -128,7 +124,7 @@ async fn fixture_with_domain(domain: bool) -> Fixture {
     if domain {
         storage.open_writable().unwrap().execute("INSERT INTO vcs_federation_domains VALUES (?1,'preserved-domain',9,'2026-01-01T00:00:00.000000000Z','2026-01-01T00:00:00.000000000Z')",[repo_id.as_str()]).unwrap();
     }
-    storage.project_imported_history(&repo_id).await.unwrap();
+    storage.catch_up_state_index(&repo_id).await.unwrap();
     let transfer = root.join("transfer");
     PortableRepository::open(&source)
         .unwrap()
@@ -386,7 +382,7 @@ async fn follower_activation_continuation_and_explicit_finalize_preserve_old_byt
 }
 
 #[tokio::test]
-async fn invalid_materialization_missing_body_and_extra_objects_never_publish() {
+async fn an_import_missing_a_body_never_publishes() {
     let fixture = fixture().await;
     let body_path = fixture
         .transfer
@@ -402,67 +398,6 @@ async fn invalid_materialization_missing_body_and_extra_objects_never_publish() 
     );
     assert!(!destination.exists());
     fs::write(body_path, body).unwrap();
-
-    let source = fixture.root.join("empty-bundle");
-    fs::create_dir_all(source.join("objects")).unwrap();
-    let repo_id = RepoId::new();
-    let generation = uuid::Uuid::now_v7();
-    let mut bytes = serde_json::to_vec(&json!({
-        "type": "synck_vcs_bundle_header", "bundle_format_version": 7,
-        "repo_id": repo_id, "history_generation": generation.to_string(), "encrypted": false,
-        "exported_at": "2026-01-02T00:00:00Z",
-        "schema": {"subsystem":"synck_vcs_sqlite", "schema_id":"core-v8"}
-    }))
-    .unwrap();
-    bytes.push(b'\n');
-    let mut header_bytes = bytes.as_slice();
-    let header = BundleReader::new(&mut header_bytes).read_header().unwrap();
-    let end = serde_json::to_vec(&json!({
-        "type": "synck_vcs_bundle_end", "record_count": 1,
-        "checkpoint": format!("sha256:{}", hex::encode(header.genesis().unwrap())),
-        "digest": format!("sha256:{}", hex::encode(Sha256::digest(&bytes))),
-    }))
-    .unwrap();
-    bytes.extend_from_slice(&end);
-    bytes.push(b'\n');
-    fs::write(source.join("history.ndjson"), &bytes).unwrap();
-    let snapshot = BundleSnapshot {
-        repo_id,
-        terminal_repo_seq: 0,
-        history_sha256: format!("sha256:{}", hex::encode(Sha256::digest(&bytes))),
-        history_bytes: bytes.len() as u64,
-    };
-    materialize_repository(
-        &source.join("history.ndjson"),
-        &source.join("objects"),
-        &snapshot,
-        &fixture.root.join("valid-empty"),
-    )
-    .await
-    .unwrap();
-    let history = source.join("history.ndjson");
-    let original = fs::read(&history).unwrap();
-    fs::write(&history, &original[..original.len() - 1]).unwrap();
-    let destination = fixture.root.join("truncated");
-    assert!(
-        materialize_repository(&history, &source.join("objects"), &snapshot, &destination)
-            .await
-            .is_err()
-    );
-    assert!(!destination.exists());
-    fs::write(&history, original).unwrap();
-    fs::write(
-        source.join("objects").join("0".repeat(64)),
-        b"unrelated private bytes",
-    )
-    .unwrap();
-    let destination = fixture.root.join("extra");
-    assert!(
-        materialize_repository(&history, &source.join("objects"), &snapshot, &destination)
-            .await
-            .is_err()
-    );
-    assert!(!destination.exists());
     assert!(!fs::read_dir(&fixture.root).unwrap().any(|entry| {
         entry
             .unwrap()
@@ -701,7 +636,7 @@ async fn repository_copy_includes_committed_wal_without_checkpointing_source() {
         .await
         .unwrap();
     storage
-        .project_imported_history(&fixture.repo_id)
+        .catch_up_state_index(&fixture.repo_id)
         .await
         .unwrap();
     assert!(
@@ -999,7 +934,7 @@ async fn checkout_folder_deletion_leaves_linked_records_in_place() {
         .await
         .unwrap();
     storage
-        .project_imported_history(&fixture.repo_id)
+        .catch_up_state_index(&fixture.repo_id)
         .await
         .unwrap();
     let destination = fixture.root.join("with-hidden");

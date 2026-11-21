@@ -17,7 +17,6 @@ synthetic, and an example ID never means the object exists.
 | `commits.json` | Commit identity | List: `header`, `events` (`event`, `envelope_hex`, `digest`), `header_hex`, `commit_id` |
 | `checkpoints.json` | The genesis value and checkpoint chain | `genesis` and `steps`, including an invalid sequence gap |
 | `records.json` | Replay | List of commit sequences; see below |
-| `bundle.json` | The end record and record shapes | `genesis`, and `cases` with `bundle` and `valid` |
 | `file-version.json` | FILE revision labels | `metadata`, `metadata_payload_hex`, `event`, `envelope_hex`, `event_digest`; `with_description` repeats them for a later revision with a description |
 | `sync.json`, `sync-history.json`, `sync-large.json` | The sync protocol | Requests, records, their bytes and digests |
 | `sync-wire.json` | The protocol's binary shapes and guards | `valid`: `type`, `value`, `bytes_hex`; `invalid`: `type`, `bytes_hex`, `reason`; and `guarded` |
@@ -61,8 +60,8 @@ python3 -I scripts/generate_vectors.py --check
 ```
 
 It needs the Python `cryptography` package. It also carries a small replay of the tree,
-record, key, link and event type rules, and a check of the bundle end record, which
-must agree with every case in `records.json` and `bundle.json`.
+record, key, link and event type rules, which must agree with every case in
+`records.json`.
 
 ## file-folder/
 

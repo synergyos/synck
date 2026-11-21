@@ -5,7 +5,7 @@
 //! acknowledgment; it is not a distributed fencing or federation handoff protocol.
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufReader, Read, Write};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -20,7 +20,6 @@ use synck_file_folder::{
     BlobRef, CurrentItem, Intent, IntentProposal, Location, ProfileLifecycleState,
 };
 use synck_items::reader::{ItemReader, ReadContext, ReadableItem, RefReadContext};
-use synck_vcs::bundle::BundleReader;
 use synck_vcs::config::CoreConfig;
 use synck_vcs::limits::{MAX_ACTOR_ID_BYTES, MAX_MESSAGE_BYTES};
 use synck_vcs::object::{
@@ -100,15 +99,6 @@ struct Config {
     /// Stored apart, in `checkout.json`.
     #[serde(skip)]
     checkout: Option<crate::checkout::Checkout>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct BundleSnapshot {
-    pub repo_id: RepoId,
-    pub terminal_repo_seq: i64,
-    pub history_sha256: String,
-    pub history_bytes: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -2117,7 +2107,7 @@ impl PortableRepository {
             != 0
         {}
         self.storage
-            .project_imported_history(self.repo_id())
+            .catch_up_state_index(self.repo_id())
             .await
             .map_err(corrupt)?;
         if self.config.checkout.is_some() {
@@ -3188,110 +3178,6 @@ pub async fn import_repository_with_mode(
         .await
 }
 
-/// Materialize an internal canonical bundle and its exact unified object closure
-/// as a normal local repository. Bundle provenance is not a target migration.
-/// The snapshot covers final item/domain records as well as canonical commits.
-pub async fn materialize_repository(
-    history_path: &Path,
-    objects: &Path,
-    snapshot: &BundleSnapshot,
-    destination: &Path,
-) -> Result<VerificationReport> {
-    if snapshot.terminal_repo_seq < 0 {
-        return Err(invalid("invalid bundle checkpoint"));
-    }
-    let source_objects = directory(objects)?;
-    let history = open_regular_file_nofollow(history_path)?;
-    let (parent, parent_path, name, staging) = staging(destination)?;
-    let result = async {
-        let metadata = staging.join(".synck");
-        private_directory(&metadata)?;
-        private_directory(&metadata.join("objects"))?;
-        write_new(&metadata.join("lock"), &[])?;
-        let private_history = metadata.join("history.ndjson");
-        let (digest, size) = copy_new(history, &private_history)?;
-        if size != snapshot.history_bytes || format!("sha256:{digest}") != snapshot.history_sha256 {
-            return Err(corrupt(
-                "history size or SHA-256 differs from complete bundle snapshot",
-            ));
-        }
-        let mut header = BufReader::new(open_regular_file_nofollow(&private_history)?);
-        let encrypted = BundleReader::new(&mut header)
-            .read_header()
-            .map_err(corrupt)?
-            .encrypted();
-        let history = open_regular_file_nofollow(&private_history)?;
-        let storage =
-            SqliteStorage::new(metadata.join("repository.sqlite3")).with_encrypted(encrypted);
-        let report = storage
-            .import_bundle(&mut BufReader::new(history))
-            .await
-            .map_err(corrupt)?;
-        fs::remove_file(&private_history).at("remove private history staging", &private_history)?;
-        if report.repo_id != snapshot.repo_id
-            || report.terminal_repo_seq != snapshot.terminal_repo_seq
-        {
-            return Err(corrupt(
-                "imported repository/checkpoint differs from bundle snapshot",
-            ));
-        }
-        write_new(
-            &metadata.join("config.json"),
-            &serde_json::to_vec(&Config {
-                format_version: FORMAT_VERSION,
-                storage_mode: StorageMode::WholeFile,
-                repo_id: report.repo_id,
-                author: None,
-                authority: Authority::Follower,
-                encrypted,
-                checkout: None,
-            })?,
-        )?;
-        let repository = PortableRepository::open(&staging)?;
-        let (required, _) = repository.references().await?;
-        if entries(&source_objects)? != required {
-            return Err(corrupt(
-                "objects inventory is not the exact retained-history closure",
-            ));
-        }
-        for name in required {
-            digest_name(&name)?;
-            copy_named(
-                regular(&source_objects, &name, &objects.join(&name))?,
-                &metadata.join("objects").join(&name),
-                &name,
-            )?;
-        }
-        sync_directory(&metadata.join("objects"))?;
-        let verification = repository.verify().await?;
-        drop(repository);
-        let connection = storage.open_writable().map_err(corrupt)?;
-        connection.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")?;
-        drop(connection);
-        sync_file(&metadata.join("repository.sqlite3"))?;
-        sync_directory(&metadata)?;
-        sync_directory(&staging)?;
-        Ok(verification)
-    }
-    .await;
-    let verification = match result {
-        Ok(report) => report,
-        Err(error) => {
-            let _ = remove_tree_nofollow(&staging);
-            return Err(error);
-        }
-    };
-    publish(
-        &parent,
-        &parent_path,
-        &name,
-        &staging,
-        destination,
-        "portable repository materialization",
-    )?;
-    Ok(verification)
-}
-
 /// Create an independent complete repository and checkout. Existing ordinary
 /// files remain uncommitted; existing metadata and nested repositories are refused.
 pub async fn init_repository(destination: &Path, author: &str) -> Result<RepoId> {
@@ -3391,7 +3277,7 @@ pub async fn init_repository_with_name_repair(
         );
         core.sequence_repo_activity(repo_id.clone(), 1).await?;
         storage
-            .project_imported_history(&repo_id)
+            .catch_up_state_index(&repo_id)
             .await
             .map_err(corrupt)?;
         crate::repository::initialize_checkout_schema(

@@ -11,7 +11,6 @@ use std::io::Write;
 use synck_items::imported_email::{
     ImportedEmailFormat, ImportedEmailLimits, parse_imported_email_owned,
 };
-use synck_vcs::bundle::BundleReader;
 use synck_vcs::metadata::Metadata;
 use synck_vcs::naming::{compute_name_key, portable_name, validate_display_name};
 use synck_vcs::object::{EncryptedFrame, Header, Object, verify_encrypted_frame};
@@ -33,15 +32,6 @@ pub fn json(data: &[u8]) {
         serde_json::from_slice(&canonical).expect("canonical JSON parses");
     let again = canonical_json_bytes(&reparsed).expect("canonical JSON stays valid");
     assert_eq!(again, canonical);
-}
-
-/// A bundle is read one record at a time and stops at its first error.
-pub fn bundle(data: &[u8]) {
-    let mut input = data;
-    let mut reader = BundleReader::new(&mut input);
-    if reader.read_header().is_ok() {
-        while let Ok(Some(_)) = reader.read_record() {}
-    }
 }
 
 /// Frames parse without panicking, and a sealed object verifies under its own ID.

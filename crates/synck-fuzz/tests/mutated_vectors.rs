@@ -107,15 +107,6 @@ fn json_survives_mutation() {
 }
 
 #[test]
-fn bundles_survive_mutation() {
-    exercise(
-        "bundle",
-        synck_fuzz::bundle,
-        &field_bytes(&vectors("bundle.json")["cases"], "bundle"),
-    );
-}
-
-#[test]
 fn objects_survive_mutation() {
     let objects = hex_bytes(&vectors("objects.json"), "bytes_hex");
     exercise("object", synck_fuzz::object, &objects);

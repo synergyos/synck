@@ -1,12 +1,12 @@
 # Synck repository format 8
 
 This is the authoritative format-8 specification. A reader accepts only this
-repository format and history bundle format 6. Schema versions are independent
+repository format. Schema versions are independent
 of release numbers. There are no older-format readers or migrations. The
 normative SQL and JSON vectors linked here are part of this specification; no
 Rust source is needed to interpret a repository.
 
-Only bytes are specified: what a repository, an event, an object and a bundle
+Only bytes are specified: what a repository, an event and an object
 contain, and what makes them valid. Commands, caches, checkouts and recovery belong
 to the [guides](../README.md). Every rule here binds a writer, a reader and a
 verifier unless it names one of them; examples and rationale do not add rules. A
@@ -104,8 +104,8 @@ synchronization or distributed fencing protocol.
 Repository IDs, item IDs, physical `commit_pk` IDs, history generations and FILE
 version IDs are UUIDv7. Commit IDs, object IDs, event digests and checkpoints are
 SHA-256 digests; they are distinct domains despite sharing a type. Encoded history
-holds raw bytes: 16 for a UUID, 32 for a digest. Text, such as JSON files,
-bundles and SQLite TEXT columns, spells a UUID in lowercase hyphenated form and a
+holds raw bytes: 16 for a UUID, 32 for a digest. Text, such as JSON files
+and SQLite TEXT columns, spells a UUID in lowercase hyphenated form and a
 digest as `sha256:` plus 64 lowercase hexadecimal digits; SQLite BLOB columns hold
 the raw 32 bytes. Authors and committers are application identity strings, not
 UUIDs. A federation domain ID is a nonempty string, opaque to the format.
@@ -846,12 +846,6 @@ an event depend on object presence. Missing payloads return “not present”; p
 payloads with invalid framing, codec, JSON or digest are corrupt. Verification
 does not repair them. Re-inserting the same ID is idempotent only for exact bytes.
 
-Bundle format 7 permits `metadata` records immediately after its header and
-before history. Each has exactly `type` (`metadata`), `object_id` (canonical
-`sha256:` spelling), and `payload_hex` (lowercase hexadecimal of the whole stored
-object). Duplicate IDs and metadata records after history are rejected. Import
-validates the payload and installs it in the same transaction as history; an
-invalid record rolls back both. Complete SQLite copies preserve these rows.
 Item and ref envelopes name metadata only by `metadata_id`. Acceptance installs supplied metadata bytes in the same transaction as the
 event. Readers may resolve the ID to verified bytes without changing the
 envelope or its digest. Missing bytes leave the ID intact and are explicitly
@@ -1052,21 +1046,6 @@ needed, goes in the message or in event metadata, never in the header. The indep
 calculated vectors in `vectors/commits.json` include item-only, reference-only,
 and mixed commits, distinct committer identity and nanosecond timestamps.
 
-## History bundle boundary
-
-The NDJSON history bundle accepts version 7 only. Its header
-carries `history_generation`, a canonical UUIDv7, alongside `repo_id`, `encrypted`,
-export time and source-schema provenance. Each commit record carries its `checkpoint` as a
-`sha256:` digest; it has no parent-commit field. `operation_id` is a required key
-whose value may be null. A non-null operation ID must be nonblank. The importer preserves the generation and reconstructs and verifies
-every checkpoint from the accepted commit IDs, positions and acceptance times.
-
-Import is atomic into an empty repository. Invalid history, a checkpoint mismatch
-or a missing or wrong end record rolls back both canonical history and generation. Imported copies keep
-the same generation; an empty imported history still installs the generation.
-A history bundle by itself is not a complete archival export: object bytes and
-all data required for reconstruction must accompany it for that purpose.
-
 ## SQLite schema version policy
 
 Core SQLite is UTF-8, with `PRAGMA application_id = 0x53594E4B` (1398361675),
@@ -1196,63 +1175,13 @@ Chunk boundaries have no semantic meaning, and a reader never reproduces a write
 chunking. Copying or changing storage modes must preserve the exact stored
 bytes and hence object IDs. Re-encoding chunks is allowed; replacing salts is not.
 
-## Bundle record details
+## Complete repositories
 
-A bundle is UTF-8 newline-delimited JSON. Records need not use JCS. A
-`payload_hex` is the lowercase hexadecimal of an envelope's exact bytes, and a
-commit's `commit_id` must equal the hash of the header its fields and events
-encode. A nonempty
-header comes first, followed by zero or more metadata records, then
-commit/event groups, then federation-domain records, then
-exactly one end record. That section order is fixed. Within the metadata and
-domain sections a writer sorts by ID, so a history has one bundle; a reader does not
-depend on that order. Every record ends in a line feed. A blank body line is an empty
-line and is ignored, and nothing follows the end record, not even a blank line.
-Unknown fields and record types are rejected. No event may appear outside its commit
-group.
-
-All records contain `type`. Other fields are:
-
-| Type | Fields |
-| --- | --- |
-| `synck_vcs_bundle_header` | `bundle_format_version: 7`, `repo_id`, `history_generation`, `encrypted`, `exported_at`, `schema: {subsystem, schema_id}` |
-| `metadata` | `object_id`, `payload_hex` |
-| `commit` | `commit_id`, `checkpoint`, `repo_seq`, `operation_id`, `author_id`, `committer_id`, `message`, `occurred_at`, `created_at`, `event_count` |
-| `event` | `commit_event_idx`, `item_seq`, `payload_hex` |
-| `ref_event` | `commit_event_idx`, `ref_seq`, `payload_hex` |
-| `federation_domain` | `domain_id`, `last_domain_seq`, `created_at`, `updated_at` |
-| `synck_vcs_bundle_end` | `record_count`, `checkpoint`, `digest` |
-
-An event belongs to the commit record it follows and takes that commit's ID, position and
-acceptance time. Its item or owner and its event type are those of its envelope. A record
-is at most 8 MiB, line feed included. Digest IDs are lowercase.
-
-Optional commit message, author time and operation IDs are JSON null when absent.
-Digest fields use prefixed hexadecimal spelling, except `payload_hex`, which
-is unprefixed lower hex of an envelope or of a complete metadata frame. Times
-are text. `schema` is source
-provenance, not a schema instruction: a reader records it and does not act on it.
-The vectors name `subsystem: "synck_vcs_sqlite", schema_id: "core-v8"`.
-
-The end record is how a reader knows it has the whole bundle, as a Git packfile
-has a count and a trailer. `record_count` is the number of records before it,
-including the header and not counting blank lines. `checkpoint` is the last commit's
-checkpoint, or the genesis value for an empty history. `digest` is the `sha256:`
-hash of every byte before the end record, blank lines included. A reader checks all
-three before it accepts anything, and treats a bundle without an end record as
-truncated. `vectors/bundle.json` fixes a bundle and lists rejected variants.
-
-Commits are ordered by consecutive `repo_seq`, starting at 1; gaps are invalid.
-Exactly `event_count` event/ref records immediately follow each commit, with contiguous
-indexes from zero, `event` records first and `ref_event` records after. The domain section
-must not duplicate identities. A bundle carries no item heads: the importer builds
-them from structural replay, taking each item's creation time and author from its
-first commit.
-
-A repository, archive or export is complete when it holds every object its history
-references, together with the container and configuration needed to interpret it. An
-NDJSON bundle alone is not. A repository after erasure is valid but not complete, and
-its bundle is still a valid bundle.
+A repository, archive or copy is complete when it holds every object its history
+references, together with the container and configuration needed to interpret it.
+A repository after erasure is valid but not complete. Moving history between
+implementations is protocol 2's job (`protocol.md`); there is no separate history
+export format.
 
 ## Independent verification procedure
 
@@ -1280,7 +1209,7 @@ its bundle is still a valid bundle.
 
 The language-neutral vectors under `vectors/` cover names, hashed JSON, object
 forms, encryption, metadata, envelopes, tree and record rules, state digests,
-commits, checkpoints, bundles and FILE labels. [vectors/README.md](vectors/README.md)
+commits, checkpoints and FILE labels. [vectors/README.md](vectors/README.md)
 describes each file. `vectors/file-folder/` is outside the format: it holds one
 writer's intent and error vocabulary, and an application view of events. The top-level `events.json` fixes accepted bytes and hashes. These
 canonicalization cases follow the event type grammar but need not satisfy family

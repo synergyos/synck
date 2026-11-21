@@ -96,41 +96,6 @@ fn format_name_limit_applies_to_readable_canonical_events() {
 }
 
 #[test]
-fn bundle_reader_enforces_metadata_and_operation_limits() {
-    let mut record = serde_json::json!({"type":"commit", "commit_id":format!("sha256:{}", "00".repeat(32)),
-        "checkpoint":format!("sha256:{}", "00".repeat(32)), "repo_seq":1,
-        "operation_id":"x".repeat(MAX_OPERATION_ID_BYTES),
-        "author_id":"a", "committer_id":"c",
-        "message":"x".repeat(MAX_MESSAGE_BYTES), "occurred_at":null,
-        "created_at":"2026-10-28T00:00:00Z", "event_count":1});
-    let read = |record: &serde_json::Value| {
-        let header = serde_json::json!({"type":"synck_vcs_bundle_header",
-            "bundle_format_version":synck_vcs::bundle::BUNDLE_FORMAT_VERSION,
-            "repo_id":"019a2900-0000-7000-8000-000000000001",
-            "history_generation":"019a2900-0000-7000-8000-000000000002", "encrypted":false,
-            "exported_at":"2026-10-30T12:00:00.000000000Z",
-            "schema":{"subsystem":"synck_vcs_sqlite","schema_id":"core-v8"}});
-        let bundle = format!("{header}\n{record}\n");
-        let mut bytes = bundle.as_bytes();
-        let mut reader = synck_vcs::bundle::BundleReader::new(&mut bytes);
-        reader.read_header().unwrap();
-        reader.read_record()
-    };
-    read(&record).unwrap();
-    for (field, maximum) in [
-        ("operation_id", MAX_OPERATION_ID_BYTES),
-        ("message", MAX_MESSAGE_BYTES),
-        ("author_id", MAX_ACTOR_ID_BYTES),
-        ("committer_id", MAX_ACTOR_ID_BYTES),
-    ] {
-        let saved = record[field].clone();
-        record[field] = serde_json::json!("x".repeat(maximum + 1));
-        assert!(read(&record).is_err(), "{field}");
-        record[field] = saved;
-    }
-}
-
-#[test]
 fn lossless_json_rules_remain_enforced() {
     assert!(
         synck_vcs::metadata::MetadataRef::new(
