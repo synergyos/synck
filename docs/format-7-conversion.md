@@ -45,8 +45,11 @@ it cannot read, so it refuses the first encrypted object.
   later payload's `mailcal`, as a repair job wrote, is not carried over, and the
   converter counts these in `dropped_mailcal`. The repair events themselves stay
   where they are.
-- A POST's `body_markdown_blob_id`, which early Hub POSTs kept in metadata,
-  becomes the event's `body` role and leaves every map.
+- A Hub POST's body is an uploaded Markdown blob. The Hub named it with the
+  `body` role, which elsewhere holds salted text; format 8 gives each role one
+  form, so it becomes `bytes`. Early POSTs kept it in metadata as
+  `body_markdown_blob_id`; the event's own key becomes its `bytes` role and
+  leaves every map. Comments, which are salted text, keep `body`.
 - `FILE_VERSION::*` label metadata drops `file_item_id`, `operation_id`,
   `source_commit_id` and `source_commit_event_idx` (the owner, the commit and
   the revision already hold them).

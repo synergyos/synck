@@ -18,7 +18,7 @@ use synck_vcs::object::ENCRYPTED_PREFIX;
 use synck_vcs::types::{
     CommitId, EventProposal, EventsDigest, ItemId, ObjectId, RefEventProposal, RepoId, Timestamp,
     canonical_commit_bytes_for_hash, canonical_event_proposal_bytes, canonical_json_bytes,
-    canonical_ref_event_proposal_bytes, compute_commit_id, is_record_type, parse_hashed_time,
+    canonical_ref_event_proposal_bytes, compute_commit_id, parse_hashed_time,
     sha256_prefixed_hex_from_digest_bytes,
 };
 
@@ -105,6 +105,8 @@ pub struct Commit {
 
 struct Item {
     item_type: String,
+    /// Created in record form; format 7 checked the form against its type.
+    record: bool,
     /// The item's metadata as format 7 folded it.
     metadata: Map<String, Value>,
 }
@@ -195,6 +197,7 @@ impl Converter {
         if let Some(create) = &event.create_item {
             let item = Item {
                 item_type: create.item_type.clone(),
+                record: create.name.is_none(),
                 metadata: Map::new(),
             };
             if self.items.insert(item_id.clone(), item).is_some() {
@@ -207,19 +210,23 @@ impl Converter {
             .ok_or_else(|| fail(format!("item {item_id} has an event before its CREATE")))?;
         // A longer event type carries a subitem's metadata, a whole replacement
         // already; it stays as it is.
-        let Some((_, verb)) = event
+        let Some(verb) = event
             .event_type
             .split_once("::")
-            .filter(|(_, verb)| !verb.contains("::"))
+            .map(|(_, verb)| verb.to_string())
+            .filter(|verb| !verb.contains("::"))
         else {
             return Ok(canonical_event_proposal_bytes(&event)?);
         };
+        if item.item_type == "POST" {
+            post_blob_body(&mut event)?;
+        }
         let Some(reference) = &event.set_metadata else {
             return Ok(canonical_event_proposal_bytes(&event)?);
         };
         let source_metadata = readable(&reference.id(), source.metadata.as_deref())?;
         let patch = source_metadata.as_ref().map(object).transpose()?;
-        item.fold(&event, verb, patch)?;
+        item.fold(&event, &verb, patch)?;
         if let (Some(source_metadata), Some(patch)) = (&source_metadata, patch) {
             let mut map = item.metadata.clone();
             overlay(&mut map, patch);
@@ -256,7 +263,7 @@ impl Item {
             }
         }
         if verb == "SET_TITLE"
-            && is_record_type(&self.item_type)
+            && self.record
             && event.event_type == format!("{}::SET_TITLE", self.item_type)
         {
             match patch {
@@ -356,8 +363,25 @@ fn email_originals(
     Ok(())
 }
 
+/// A Hub POST's body is an uploaded Markdown blob, which the Hub named with the
+/// `body` role that elsewhere holds salted text. Format 8 gives a role one form,
+/// so the blob becomes `bytes`.
+fn post_blob_body(event: &mut EventProposal) -> Result<(), ConvertError> {
+    let Some(content) = &event.set_content else {
+        return Ok(());
+    };
+    let mut roles = content.roles().clone();
+    if let Some(body) = roles.remove("body") {
+        if roles.insert("bytes".to_string(), body).is_some() {
+            return Err(fail("POST content has both body and bytes"));
+        }
+        event.set_content = Some(EventContent::new(roles).map_err(fail)?);
+    }
+    Ok(())
+}
+
 /// Early Hub POSTs named their body in metadata as `body_markdown_blob_id`;
-/// the event's own key becomes its `body` role, and no map keeps it.
+/// the event's own key becomes its `bytes` role, and no map keeps it.
 fn post_body(
     item_id: &ItemId,
     event: &mut EventProposal,
@@ -376,8 +400,8 @@ fn post_body(
         }
     };
     match &event.set_content {
-        None => event.set_content = Some(EventContent::body(body)),
-        Some(content) if content.get("body") == Some(&body) => {}
+        None => event.set_content = Some(EventContent::bytes(body)),
+        Some(content) if content.get("bytes") == Some(&body) => {}
         Some(_) => {
             return Err(fail(format!(
                 "POST {item_id} content and metadata name different bodies"
@@ -677,11 +701,15 @@ mod tests {
     }
 
     #[test]
-    fn a_post_body_in_metadata_becomes_its_body_role() {
+    fn a_post_body_becomes_its_bytes_role() {
         let post = "019a2900-0000-7000-8000-000000000a03";
         let body = ObjectId::from_digest([7; 32]);
+        let next = ObjectId::from_digest([8; 32]);
         let create = metadata(json!({"title": "P", "body_markdown_blob_id": body}));
         let edit = metadata(json!({"summary": "s"}));
+        let upload = metadata(json!({"summary": "t"}));
+        let mut uploaded = event(post, "POST::SET_CONTENT", Some(2), &upload);
+        uploaded["set_content"] = json!({"body": next});
         let commit = converter()
             .convert(source(
                 1,
@@ -691,17 +719,30 @@ mod tests {
                         event(post, "POST::SET_METADATA", Some(1), &edit),
                         Some(&edit),
                     ),
+                    (uploaded, Some(&upload)),
                 ],
             ))
             .unwrap();
-        let created = decode_event_proposal(&commit.payloads[0]).unwrap();
-        assert_eq!(created.set_content.unwrap().get("body"), Some(&body));
+        let content = |index: usize| {
+            decode_event_proposal(&commit.payloads[index])
+                .unwrap()
+                .set_content
+        };
+        assert_eq!(content(0).unwrap().get("bytes"), Some(&body));
         // The folded key is not repeated, and the later event changes no body.
-        let edited = decode_event_proposal(&commit.payloads[1]).unwrap();
-        assert!(edited.set_content.is_none());
+        assert!(content(1).is_none());
+        // A blob in the `body` role becomes `bytes`.
+        assert_eq!(
+            content(2).unwrap().roles().keys().collect::<Vec<_>>(),
+            ["bytes"]
+        );
         assert_eq!(
             maps(&commit, &[]),
-            [json!({"title": "P"}), json!({"title": "P", "summary": "s"})]
+            [
+                json!({"title": "P"}),
+                json!({"title": "P", "summary": "s"}),
+                json!({"title": "P", "summary": "t"})
+            ]
         );
     }
 

@@ -831,31 +831,6 @@ pub struct CreateItem {
 }
 
 const TREE_ITEM_TYPES: &[&str] = &["FILE", "FOLDER", "FEDERATED_MOUNT"];
-/// Whether a known item type is a record, not a tree item.
-pub fn is_record_type(item_type: &str) -> bool {
-    RECORD_ITEM_TYPES.contains(&item_type)
-}
-
-const RECORD_ITEM_TYPES: &[&str] = &[
-    "EMAIL",
-    "TASK_LIST",
-    "TASK",
-    "CHAT",
-    "LOCAL_COMPANION",
-    "CALENDAR",
-    "CALENDAR_EVENT",
-    "CALL",
-    "POST",
-    "DATABASE",
-    "TABLE",
-    "TIME_SETTINGS",
-    "TIME_BOOK",
-    "TIME_ENTRY",
-    "PROFILE",
-    "CONTACT",
-    "USER_STATE",
-    "FEDERATION_SCOPE",
-];
 
 impl CreateItem {
     pub fn tree(
@@ -884,16 +859,13 @@ impl CreateItem {
         }
     }
 
-    /// Reject a form its item type does not use. An unknown type may use either.
+    /// Reject a form a core tree type does not use. Any other type may use either.
     pub fn validate(&self) -> Result<(), CoreError> {
         crate::limits::validate_item_type(&self.item_type)?;
         let invalid = |detail: &str| Err(CoreError::InvalidProposal(detail.to_string()));
         if self.name.is_some() {
             if self.key.is_some() || self.link.is_some() {
                 return invalid("a tree item has no key or link");
-            }
-            if RECORD_ITEM_TYPES.contains(&self.item_type.as_str()) {
-                return invalid("a record type requires the record form");
             }
         } else {
             if self.parent_folder_id.is_some() {

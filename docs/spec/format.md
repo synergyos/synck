@@ -333,16 +333,11 @@ locally.
 
 ### Tree items and records
 
-Every item type belongs to exactly one class. A type in the table below has that
-class, and the other form is invalid for it. A type outside the table has the class
-of its `create_item` form, so a reader needs no type registry and replays unknown
-future types. A later family that adopts such a type must accept both forms if
-history holds both, or it needs a new repository format.
-
-| Class | Item types |
-| --- | --- |
-| Tree item | FILE, FOLDER, FEDERATED_MOUNT |
-| Record | EMAIL, TASK_LIST, TASK, CHAT, LOCAL_COMPANION, CALENDAR, CALENDAR_EVENT, CALL, POST, DATABASE, TABLE, TIME_SETTINGS, TIME_BOOK, TIME_ENTRY, PROFILE, CONTACT, USER_STATE, FEDERATION_SCOPE |
+An item's class is the form of its `create_item`, so a reader needs no type
+registry and replays unknown future types. FILE, FOLDER and FEDERATED_MOUNT, which
+the core defines, are tree items; the record form is invalid for them. Every
+other type takes its class from history; a family that defines a type rejects
+the form it does not use, and must accept both if history holds both.
 
 A tree item is what a file system holds. It has a parent folder or the root, and
 a required portable name, unique among live siblings. Its name is exactly its
@@ -660,22 +655,20 @@ There are three forms:
 
 | Form | Used for | Stored bytes |
 | --- | --- | --- |
-| PLAIN | File bytes, email sources and attachments, in unencrypted repositories | The exact bytes, unframed |
+| PLAIN | Received bytes: files, email sources, attachments, provider originals, in unencrypted repositories | The exact bytes, unframed |
 | SALTED | Metadata and UTF-8 bodies, in unencrypted repositories | The salted frame |
 | ENCRYPTED | Every metadata and content object, in encrypted repositories | The encrypted frame |
 
 The repository's `encrypted` setting and the role select the form, never the
 bytes: a PLAIN file can begin with any byte sequence, including a frame's magic.
-In an unencrypted repository, metadata is SALTED and a `set_content` role has the
-first form that applies:
+In an unencrypted repository, metadata is SALTED and a `set_content` role's name
+alone gives its form, whatever the item type:
 
-| Item type | Role | Form |
-| --- | --- | --- |
-| Any | `sealed_key` | Opaque |
-| FILE | `bytes` | PLAIN |
-| EMAIL, CHAT | `source`, including on attachments | PLAIN |
-| FILE, FOLDER, EMAIL, CHAT, TASK_LIST, TASK, POST, CALENDAR, CALENDAR_EVENT, CALL | Any other | SALTED |
-| Any other | Any | Opaque |
+| Role | Form |
+| --- | --- |
+| `bytes`, `source`, `provider` (received bytes) | PLAIN |
+| `body`, `data` (inline text and records) | SALTED |
+| `sealed_key`, and any other role | Opaque |
 
 In an encrypted repository every role except `sealed_key` is ENCRYPTED. An opaque
 object is verified by its ID alone, and so is an object nothing references. An

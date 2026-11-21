@@ -3,9 +3,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use synck_vcs::metadata::MetadataRef;
-use synck_vcs::types::{
-    EventProposal, ItemId, ItemRevision, LifecycleState, ObjectId, is_record_type,
-};
+use synck_vcs::types::{EventProposal, ItemId, ItemRevision, LifecycleState, ObjectId};
 
 use crate::metadata::{
     ITEM_SUBTYPE_STANDARD, ITEM_TREE_HIDDEN_METADATA_KEY, item_color_metadata_from_json,
@@ -15,6 +13,8 @@ use crate::metadata::{
 pub struct ReplicaItemProjection {
     pub item_id: ItemId,
     pub item_type: String,
+    /// Created in record form, not as a tree item.
+    pub record: bool,
     pub item_subtype: String,
     pub name: String,
     pub parent_folder_id: Option<ItemId>,
@@ -74,6 +74,7 @@ pub fn apply_replica_item_event(
         (None, Some(create)) => ReplicaItemProjection {
             item_id: item_id.clone(),
             item_type: create.item_type.clone(),
+            record: create.name.is_none(),
             item_subtype: ITEM_SUBTYPE_STANDARD.to_string(),
             name: create.name.clone().unwrap_or_default(),
             // Records are filed through their link; this is the display
@@ -262,7 +263,7 @@ fn set_record_title(
     item: &mut ReplicaItemProjection,
     proposal: &EventProposal,
 ) -> Result<(), ReplicaProjectionError> {
-    if !is_record_type(&item.item_type) {
+    if !item.record {
         return Ok(());
     }
     let set_title = proposal.event_type == format!("{}::SET_TITLE", item.item_type);

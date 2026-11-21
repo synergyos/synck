@@ -504,11 +504,11 @@ impl ServedRepository {
             let (Some(content), Some(item_id)) = (&event.set_content, &event.item_id) else {
                 continue;
             };
-            let item_type = item_types
-                .get(item_id)
-                .ok_or_else(|| invalid(format!("content for unknown item {item_id}")))?;
+            if !item_types.contains_key(item_id) {
+                return Err(invalid(format!("content for unknown item {item_id}")));
+            }
             for (role, id) in content.roles() {
-                forms.insert(id.clone(), content_form(self.encrypted, item_type, role));
+                forms.insert(id.clone(), content_form(self.encrypted, role));
             }
         }
         for event in &proposal.ref_events {

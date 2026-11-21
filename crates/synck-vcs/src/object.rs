@@ -34,31 +34,19 @@ pub enum Form {
     Opaque,
 }
 
-const SALTED_ITEM_TYPES: &[&str] = &[
-    "FILE",
-    "FOLDER",
-    "EMAIL",
-    "CHAT",
-    "TASK_LIST",
-    "TASK",
-    "POST",
-    "CALENDAR",
-    "CALENDAR_EVENT",
-    "CALL",
-];
-
 /// The form of a content role. Metadata has no role here: it is SALTED, or
-/// ENCRYPTED in an encrypted repository.
-pub fn content_form(encrypted: bool, item_type: &str, role: &str) -> Form {
+/// ENCRYPTED in an encrypted repository. The role alone decides: received
+/// bytes are PLAIN, inline text is SALTED, and an unknown role is opaque.
+pub fn content_form(encrypted: bool, role: &str) -> Form {
     if role == SEALED_KEY_ROLE {
         return Form::Opaque;
     }
     if encrypted {
         return Form::Encrypted;
     }
-    match (item_type, role) {
-        ("FILE", "bytes") | ("EMAIL" | "CHAT", "source") => Form::Plain,
-        _ if SALTED_ITEM_TYPES.contains(&item_type) => Form::Salted,
+    match role {
+        "bytes" | "source" | "provider" => Form::Plain,
+        "body" | "data" => Form::Salted,
         _ => Form::Opaque,
     }
 }

@@ -863,8 +863,8 @@ fn reader_cache_rejects_damage_wrong_identity_version_and_poison() {
     parsed["state"]["ref_seq"] = 1.into();
     assert!(ItemReader::from_cache(id.clone(), &serde_json::to_vec(&parsed).unwrap()).is_err());
     let mut parsed: Value = serde_json::from_slice(&cache).unwrap();
-    assert_eq!(parsed["version"], 4);
-    parsed["version"] = 3.into();
+    assert_eq!(parsed["version"], 5);
+    parsed["version"] = 4.into();
     assert!(ItemReader::from_cache(id.clone(), &serde_json::to_vec(&parsed).unwrap()).is_err());
     assert!(ItemReader::from_cache(id.clone(), &cache[..cache.len() / 2]).is_err());
     let bad = event(

@@ -138,13 +138,15 @@ fn salts_are_bound_to_exact_bytes() {
 
 #[test]
 fn the_role_selects_the_form() {
-    assert_eq!(content_form(false, "FILE", "bytes"), Form::Plain);
-    assert_eq!(content_form(false, "EMAIL", "source"), Form::Plain);
-    assert_eq!(content_form(false, "CHAT", "source"), Form::Plain);
-    assert_eq!(content_form(false, "CHAT", "body"), Form::Salted);
-    assert_eq!(content_form(true, "FILE", "bytes"), Form::Encrypted);
-    assert_eq!(content_form(true, "FILE", "sealed_key"), Form::Opaque);
-    assert_eq!(content_form(false, "FILE", "sealed_key"), Form::Opaque);
+    assert_eq!(content_form(false, "bytes"), Form::Plain);
+    assert_eq!(content_form(false, "source"), Form::Plain);
+    assert_eq!(content_form(false, "provider"), Form::Plain);
+    assert_eq!(content_form(false, "body"), Form::Salted);
+    assert_eq!(content_form(false, "data"), Form::Salted);
+    assert_eq!(content_form(false, "preview"), Form::Opaque);
+    assert_eq!(content_form(true, "bytes"), Form::Encrypted);
+    assert_eq!(content_form(true, "sealed_key"), Form::Opaque);
+    assert_eq!(content_form(false, "sealed_key"), Form::Opaque);
 }
 
 #[test]

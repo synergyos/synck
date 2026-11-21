@@ -1904,7 +1904,6 @@ impl PortableRepository {
         }
         let mut expected_heads = HashMap::new();
         let mut verifier = SemanticVerifier::new(self.config.encrypted);
-        let mut item_types = HashMap::new();
         let mut forms = BTreeMap::new();
         let mut from = 1;
         let mut count = 0;
@@ -1949,16 +1948,11 @@ impl PortableRepository {
                         continue;
                     };
                     let proposal: EventProposal = event.proposal()?;
-                    if let Some(create) = &proposal.create_item {
-                        item_types.insert(event.item_id.clone(), create.item_type.clone());
-                    }
-                    let (Some(content), Some(item_type)) =
-                        (&proposal.set_content, item_types.get(&event.item_id))
-                    else {
+                    let Some(content) = &proposal.set_content else {
                         continue;
                     };
                     for (role, id) in content.roles() {
-                        let form = content_form(self.config.encrypted, item_type, role);
+                        let form = content_form(self.config.encrypted, role);
                         forms
                             .entry(id.as_str()[7..].to_string())
                             .or_insert_with(BTreeSet::new)
