@@ -92,6 +92,22 @@ impl Metadata {
         })
     }
 
+    /// The same salt over a new value: a deterministic rewrite, as format
+    /// conversion does, so rerunning it gives the same object ID.
+    pub fn rewrite(&self, value: serde_json::Value) -> Result<Self, MetadataError> {
+        if !value.is_object() {
+            return Err(MetadataError::Invalid);
+        }
+        let bytes = canonical_json_bytes(&value)?;
+        if bytes.len() > MAX_METADATA_BYTES {
+            return Err(MetadataError::Invalid);
+        }
+        Ok(Self {
+            object: Object::with_header(&self.object.header(), &bytes)?,
+            value,
+        })
+    }
+
     pub fn verify(id: &ObjectId, payload: Vec<u8>) -> Result<Self, MetadataError> {
         if payload.len() > crate::object::HEADER_BYTES + MAX_METADATA_BYTES {
             return Err(MetadataError::Invalid);

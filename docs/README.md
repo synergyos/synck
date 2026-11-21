@@ -13,6 +13,8 @@
   `save-file`, including base checks, attribution, replay and error kinds.
 - [Format and compatibility scope](formats.md) explains the source contracts and
   the compatibility boundaries of the crate APIs and persisted formats.
+- [Converting format 7 history](format-7-conversion.md): what `synck-convert`
+  keeps and rewrites.
 - [Local library example](../crates/synck-local/examples/local_repository.rs)
   creates, versions, reads and verifies a file using only this workspace.
 - `synck instructions` documents the current CLI workflows.

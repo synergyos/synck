@@ -345,8 +345,13 @@ pub struct Object {
 impl Object {
     /// Salt UTF-8 application bytes.
     pub fn new(bytes: &[u8]) -> Result<Self, ObjectError> {
+        Self::with_header(&Header::new()?, bytes)
+    }
+
+    /// Salt UTF-8 application bytes with a given header. Only a deterministic
+    /// rewrite of an existing object uses this; writers take a fresh salt.
+    pub fn with_header(header: &Header, bytes: &[u8]) -> Result<Self, ObjectError> {
         std::str::from_utf8(bytes).map_err(|_| ObjectError::Utf8)?;
-        let header = Header::new()?;
         let mut payload = Vec::with_capacity(HEADER_BYTES + bytes.len());
         payload.extend_from_slice(header.as_bytes());
         payload.extend_from_slice(bytes);
@@ -381,6 +386,9 @@ impl Object {
     }
     pub fn utf8(&self) -> &str {
         std::str::from_utf8(self.bytes()).expect("verified UTF-8")
+    }
+    pub fn header(&self) -> Header {
+        Header::parse(&self.payload[..HEADER_BYTES]).expect("verified header")
     }
 }
 

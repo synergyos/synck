@@ -7,6 +7,7 @@ members = [
   "crates/synck-items",
   "crates/synck-sync",
   "crates/synck-fuzz",
+  "crates/synck-convert",
 ]
 exclude = ["fuzz"]
 resolver = "2"

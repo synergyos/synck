@@ -15,6 +15,9 @@ repositories and 0.2.0 repositories; 0.2.0 refuses an object store created by
 by untagged development builds are disposable. Rust APIs are also pre-1.0 and
 consumers must pin a revision.
 No compatibility reader, automatic converter or silent reinterpretation exists.
+The `synck-convert` library converts an unencrypted format 7 history into
+format 8 for a storage driver ([rules](format-7-conversion.md)); the CLI has no
+conversion command.
 
 For a manual 0.1-to-0.2 transfer, use the 0.1 executable to run
 `export-tree HEAD` into a new directory. Then use 0.2 to initialize and commit
