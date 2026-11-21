@@ -950,8 +950,8 @@ metadata payload holds a `mailcal` object, which only `EMAIL::CREATE` holds and 
 later event repeats, and optionally `title`. The email's other metadata, today
 only `title`, is a complete map in each later `SET_TITLE` or `SET_METADATA`, as for
 any item; a reader takes `mailcal` from `CREATE` and the rest from the latest
-payload. A derived object, such as a repaired rendering, is a content role, never
-a copy of the facts.
+payload. Renderings, repaired or not, are never history: a parser fix reaches
+every email through `render_email`, with no new event.
 
 | `mailcal` key | Value |
 | --- | --- |

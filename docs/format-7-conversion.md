@@ -31,9 +31,18 @@ it cannot read, so it refuses the first encrypted object.
   is the item's folded metadata after the event plus the event's own keys, so a
   key that did not fold, such as a revision's origin, stays on its event. Null
   values, which meant unset, are dropped.
-- An EMAIL's `mailcal` stays only on `EMAIL::CREATE`. A later payload's
-  `mailcal`, as a repair job wrote, is not carried over; the converter counts
-  these in `dropped_mailcal`.
+- An EMAIL keeps its originals and loses its renderings. The Hub referenced
+  both from `mailcal`: the original in `source.blob_id`, or for a provider
+  message the raw MIME in `raw_rfc822_blob_id` (unless its provenance is
+  `generated`), and the provider's JSON in `provider_raw_json_blob_id`. These
+  become the `source` and `provider` roles of `EMAIL::CREATE`. `body`,
+  `body_html_blob_id`, a generated RFC 822, `snippet`, `inline_images` and
+  `text_repair` are dropped: a reader rebuilds them from `source` with the
+  current parser, so the Hub's repaired text comes from the repaired parser. An
+  email with no original is refused. `mailcal` stays only on `EMAIL::CREATE`; a
+  later payload's `mailcal`, as a repair job wrote, is not carried over, and the
+  converter counts these in `dropped_mailcal`. The repair events themselves stay
+  where they are.
 - `FILE_VERSION::*` label metadata drops `file_item_id`, `operation_id`,
   `source_commit_id` and `source_commit_event_idx` (the owner, the commit and
   the revision already hold them).

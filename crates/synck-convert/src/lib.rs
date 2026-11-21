@@ -6,11 +6,12 @@
 //! operation ID and row field stays; envelopes, commit IDs, checkpoints and the
 //! item metadata a complete map changes are new. The rules are in
 //! `docs/format-7-conversion.md`.
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use synck_vcs::checkpoint;
+use synck_vcs::content::EventContent;
 use synck_vcs::errors::CoreError;
 use synck_vcs::metadata::{Metadata, MetadataError, MetadataRef};
 use synck_vcs::object::ENCRYPTED_PREFIX;
@@ -27,6 +28,20 @@ const LABEL_FACTS: [&str; 4] = [
     "operation_id",
     "source_commit_id",
     "source_commit_event_idx",
+];
+
+/// `mailcal` keys the Hub wrote for its renderings of an email and the object
+/// references to them. Format 8 keeps only the originals; a reader rebuilds the
+/// rest from `source` with the current parser.
+const EMAIL_RENDERINGS: [&str; 8] = [
+    "body",
+    "body_html_blob_id",
+    "raw_rfc822_blob_id",
+    "raw_rfc822_provenance",
+    "provider_raw_json_blob_id",
+    "snippet",
+    "inline_images",
+    "text_repair",
 ];
 
 #[derive(Debug, thiserror::Error)]
@@ -208,7 +223,9 @@ impl Converter {
         if let (Some(source_metadata), Some(patch)) = (&source_metadata, patch) {
             let mut map = item.metadata.clone();
             overlay(&mut map, patch);
-            if item.item_type == "EMAIL" && verb != "CREATE" {
+            if item.item_type == "EMAIL" && verb == "CREATE" {
+                email_originals(&item_id, &mut event, &mut map)?;
+            } else if item.item_type == "EMAIL" {
                 map.remove("mailcal");
                 if patch.contains_key("mailcal") {
                     self.dropped_mailcal += 1;
@@ -271,6 +288,59 @@ impl Item {
         }
         Ok(())
     }
+}
+
+/// The Hub kept an email's originals only as references inside `mailcal`: the
+/// imported file in `source.blob_id`, or else a provider message's raw MIME in
+/// `raw_rfc822_blob_id`, and the provider's JSON in `provider_raw_json_blob_id`.
+/// They move to the `source` and `provider` roles of `EMAIL::CREATE`, and the
+/// renderings go. An email with no original is refused: nothing could rebuild
+/// its text.
+fn email_originals(
+    item_id: &ItemId,
+    event: &mut EventProposal,
+    map: &mut Map<String, Value>,
+) -> Result<(), ConvertError> {
+    let blob = |value: Option<&Value>| match value {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(id)) => ObjectId::parse(id)
+            .map(Some)
+            .map_err(|error| fail(format!("EMAIL {item_id} mailcal: {error}"))),
+        Some(_) => Err(fail(format!(
+            "EMAIL {item_id} mailcal blob ID is not a string"
+        ))),
+    };
+    let mut roles = BTreeMap::new();
+    if let Some(Value::Object(mailcal)) = map.get_mut("mailcal") {
+        let source = match mailcal.get_mut("source") {
+            Some(Value::Object(source)) => blob(source.remove("blob_id").as_ref())?,
+            _ => None,
+        };
+        let generated = mailcal.get("raw_rfc822_provenance") == Some(&"generated".into());
+        let raw = blob(mailcal.get("raw_rfc822_blob_id"))?.filter(|_| !generated);
+        if let Some(source) = source.or(raw) {
+            roles.insert("source".to_string(), source);
+        }
+        if let Some(provider) = blob(mailcal.get("provider_raw_json_blob_id"))? {
+            roles.insert("provider".to_string(), provider);
+        }
+        for key in EMAIL_RENDERINGS {
+            mailcal.remove(key);
+        }
+    }
+    match &event.set_content {
+        Some(content) if roles.is_empty() || content.roles() == &roles => {}
+        Some(_) => {
+            return Err(fail(format!(
+                "EMAIL {item_id} content and mailcal name different originals"
+            )));
+        }
+        None if roles.contains_key("source") => {
+            event.set_content = Some(EventContent::new(roles).map_err(fail)?);
+        }
+        None => return Err(fail(format!("EMAIL {item_id} names no original"))),
+    }
+    Ok(())
 }
 
 fn ref_event(source: &SourceEvent, written: &mut Vec<Metadata>) -> Result<Vec<u8>, ConvertError> {
@@ -483,8 +553,10 @@ mod tests {
     #[test]
     fn an_email_keeps_mailcal_on_create_only() {
         let email = "019a2900-0000-7000-8000-000000000a02";
-        let create = metadata(json!({"mailcal": {"subject": "a"}}));
-        let repair = metadata(json!({"mailcal": {"subject": "b"}}));
+        let original = ObjectId::from_digest([3; 32]);
+        let create =
+            metadata(json!({"mailcal": {"subject": "a", "source": {"blob_id": original}}}));
+        let repair = metadata(json!({"mailcal": {"subject": "b", "body_html_blob_id": original}}));
         let title = metadata(json!({"title": "T"}));
         let mut converter = converter();
         let commit = converter
@@ -506,12 +578,57 @@ mod tests {
         assert_eq!(
             maps(&commit, &[&create, &repair, &title]),
             [
-                json!({"mailcal": {"subject": "a"}}),
+                json!({"mailcal": {"subject": "a", "source": {}}}),
                 json!({}),
                 json!({"title": "T"})
             ]
         );
         assert_eq!(converter.dropped_mailcal, 1);
+    }
+
+    #[test]
+    fn a_hub_email_moves_its_originals_to_roles_and_drops_renderings() {
+        let email = "019a2900-0000-7000-8000-000000000a02";
+        let raw = ObjectId::from_digest([4; 32]);
+        let json = ObjectId::from_digest([5; 32]);
+        let rendering = ObjectId::from_digest([6; 32]);
+        let provider = metadata(json!({"mailcal": {
+            "v": 1, "subject": "s", "snippet": "x",
+            "body": {"kind": "MARKDOWN", "blob_id": rendering},
+            "body_html_blob_id": rendering, "raw_rfc822_blob_id": raw,
+            "provider_raw_json_blob_id": json,
+            "inline_images": [{"blob_id": rendering}],
+        }}));
+        let commit = converter()
+            .convert(source(
+                1,
+                vec![(
+                    event(email, "EMAIL::CREATE", None, &provider),
+                    Some(&provider),
+                )],
+            ))
+            .unwrap();
+        let converted = decode_event_proposal(&commit.payloads[0]).unwrap();
+        let content = converted.set_content.unwrap();
+        assert_eq!(content.get("source"), Some(&raw));
+        assert_eq!(content.get("provider"), Some(&json));
+        assert_eq!(
+            maps(&commit, &[])[0],
+            json!({"mailcal": {"v": 1, "subject": "s"}})
+        );
+
+        // A generated RFC 822 is a rendering, never the original.
+        let msg = metadata(json!({"mailcal": {
+            "v": 2, "raw_rfc822_blob_id": raw, "raw_rfc822_provenance": "generated",
+        }}));
+        let error = converter()
+            .convert(source(
+                1,
+                vec![(event(email, "EMAIL::CREATE", None, &msg), Some(&msg))],
+            ))
+            .err()
+            .unwrap();
+        assert!(error.0.contains("names no original"), "{error}");
     }
 
     #[test]
