@@ -959,7 +959,7 @@ every email through `render_email`, with no new event.
 | `parser_version` | Integer |
 | `parser_limits` | Object of integers: `source_bytes`, `header_bytes`, `header_count`, `mime_nesting`, `part_count`, `attachment_count`, `decoded_attachment_bytes`, `normalized_body_bytes`, `generated_rfc822_bytes`, `parser_concurrency` |
 | `origin` | `{"kind": "local_import"}` for a local import, `{"kind": "upload"}` for an upload to a Hub, `{"kind": "file_conversion", "source_file_item_id", "source_content_item_seq"}` for a FILE converted in place; absent for a provider message |
-| `source` | `format` (`eml` or `msg`), `filename`, `mime_type`, `size_bytes` |
+| `source` | `format` (`eml` or `msg`), `filename`, `mime_type`, `size_bytes`; absent for a provider message, whose `source` is raw RFC 822 |
 | `provider`, `account_id`, `provider_message_id`, `provider_thread_id` | String, or null for a local file |
 | `internet_message_id`, `subject`, `in_reply_to` | String or null |
 | `references` | Array of message IDs, empty when missing |

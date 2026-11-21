@@ -1593,7 +1593,12 @@ impl PortableRepository {
             .content_roles
             .get("source")
             .ok_or_else(|| corrupt("EMAIL has no source role"))?;
-        let format = match item.metadata_json["mailcal"]["source"]["format"].as_str() {
+        let mailcal = &item.metadata_json["mailcal"];
+        // A provider message has no source descriptor; its source is raw MIME.
+        let format = match mailcal["source"]["format"]
+            .as_str()
+            .or_else(|| mailcal["provider"].is_string().then_some("eml"))
+        {
             Some("eml") => synck_items::imported_email::ImportedEmailFormat::Eml,
             Some("msg") => synck_items::imported_email::ImportedEmailFormat::Msg,
             _ => return Err(invalid("unsupported EMAIL source format")),
@@ -1632,18 +1637,25 @@ impl PortableRepository {
                 item.size,
             ),
             "EMAIL" => {
-                let source = &item.metadata_json["mailcal"]["source"];
+                let mailcal = &item.metadata_json["mailcal"];
                 let blob = item
                     .content_roles
                     .get("source")
                     .map(|id| id.as_str())
                     .ok_or_else(|| invalid("EMAIL has no exact imported source"))?
                     .to_string();
-                let size = source["size_bytes"]
-                    .as_i64()
-                    .filter(|size| *size >= 0)
-                    .ok_or_else(|| corrupt("EMAIL source descriptor has no valid size"))?;
-                (blob, Some(size))
+                // A provider message's raw MIME has no descriptor to check.
+                let size = if mailcal["source"].is_null() && mailcal["provider"].is_string() {
+                    None
+                } else {
+                    Some(
+                        mailcal["source"]["size_bytes"]
+                            .as_i64()
+                            .filter(|size| *size >= 0)
+                            .ok_or_else(|| corrupt("EMAIL source descriptor has no valid size"))?,
+                    )
+                };
+                (blob, size)
             }
             _ => return Err(invalid("item export requires a FILE or imported EMAIL")),
         };
