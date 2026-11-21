@@ -185,6 +185,28 @@ fn cli_commits_moves_out_of_a_folder_deleted_in_the_same_commit() {
         .collect::<Vec<_>>();
     paths.sort_unstable();
     assert_eq!(paths, ["old", "old/drop.txt"]);
+    // Each move names the folder it left, derived from the previous event.
+    let old = deleted["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["path"] == "old")
+        .unwrap()["item_id"]
+        .clone();
+    let log = json_stdout(root, &["log", "--limit", "1", "--events", "--json"]);
+    let moves = log["commits"][0]["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|event| {
+            event["event_type"]
+                .as_str()
+                .unwrap()
+                .ends_with("::SET_PARENT")
+        })
+        .map(|event| event["parent_folder_id_before"].clone())
+        .collect::<Vec<_>>();
+    assert_eq!(moves, [old.clone(), old]);
     let history = json_stdout(root, &["--json", "history", "keep.txt"]);
     assert_eq!(history["commits"].as_array().unwrap().len(), 2);
     assert!(synck(root, &["fsck"]).status.success());
