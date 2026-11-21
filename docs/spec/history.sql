@@ -49,7 +49,9 @@ CREATE TABLE vcs_commits (
     CHECK (operation_id IS NULL OR trim(operation_id) <> ''),
     CHECK (commit_id IS NULL OR length(commit_id) = 32),
     CHECK ((commit_id IS NULL) = (event_count IS NULL) AND (event_count IS NULL OR event_count >= 0)),
-    CHECK (checkpoint IS NULL OR (repo_seq IS NOT NULL AND length(checkpoint) = 32))
+    CHECK (checkpoint IS NULL OR length(checkpoint) = 32),
+    -- Exactly the sealed, sequenced commits are published.
+    CHECK ((checkpoint IS NULL) = (commit_id IS NULL OR repo_seq IS NULL))
 ) STRICT;
 
 CREATE TABLE vcs_repo_activity_heads (

@@ -1656,14 +1656,28 @@ impl StorageTxn for SqliteTxn {
                     detail: "repository sequence overflow".to_string(),
                 })?;
             ensure_bases_published(self.conn()?, repo_id, commit_pk)?;
-            self.conn()?
-                .execute(
-                    "UPDATE vcs_commits SET repo_seq = ?3 WHERE repo_id = ?1 AND commit_pk = ?2 AND repo_seq IS NULL",
-                    params![repo_id.as_str(), commit_pk, repo_seq],
+            let (commit, created): (Vec<u8>, String) = self
+                .conn()?
+                .query_row(
+                    "SELECT commit_id,created_at FROM vcs_commits WHERE repo_id=?1 AND commit_pk=?2",
+                    params![repo_id.as_str(), commit_pk],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
                 )
                 .map_err(map_sqlite_error)?;
-            let encrypted = self.encrypted;
-            publish_checkpoint(self.conn()?, repo_id, commit_pk, encrypted)?;
+            let digest = checkpoint_at(
+                self.conn()?,
+                repo_id,
+                repo_seq,
+                &commit,
+                &created,
+                self.encrypted,
+            )?;
+            self.conn()?
+                .execute(
+                    "UPDATE vcs_commits SET repo_seq = ?3, checkpoint = ?4 WHERE repo_id = ?1 AND commit_pk = ?2 AND repo_seq IS NULL",
+                    params![repo_id.as_str(), commit_pk, repo_seq, digest.as_slice()],
+                )
+                .map_err(map_sqlite_error)?;
         }
         if !commit_pks.is_empty() {
             let count = i64::try_from(commit_pks.len()).map_err(|_| StorageError::Other {
@@ -1766,25 +1780,44 @@ impl StorageTxn for SqliteTxn {
         commit_id: &CommitId,
         event_count: i32,
     ) -> Result<(), StorageError> {
-        let changed = self
+        let (position, created): (Option<i64>, String) = self
             .conn()?
+            .query_row(
+                "SELECT repo_seq,created_at FROM vcs_commits WHERE repo_id=?1 AND commit_pk=?2",
+                params![repo_id.as_str(), commit_pk.as_str()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(map_sqlite_error)?
+            .ok_or_else(|| StorageError::Io {
+                detail: format!("missing commit during seal: {commit_pk}"),
+            })?;
+        let commit = commit_id_to_digest_bytes(commit_id).to_vec();
+        // A commit sequenced at start is published by its seal.
+        let digest = position
+            .map(|position| {
+                checkpoint_at(
+                    self.conn()?,
+                    repo_id,
+                    position,
+                    &commit,
+                    &created,
+                    self.encrypted,
+                )
+            })
+            .transpose()?;
+        self.conn()?
             .execute(
-                "UPDATE vcs_commits SET commit_id = ?3, event_count = ?4 WHERE repo_id = ?1 AND commit_pk = ?2",
+                "UPDATE vcs_commits SET commit_id = ?3, event_count = ?4, checkpoint = ?5 WHERE repo_id = ?1 AND commit_pk = ?2",
                 params![
                     repo_id.as_str(),
                     commit_pk.as_str(),
-                    commit_id_to_digest_bytes(commit_id).to_vec(),
+                    commit,
                     event_count,
+                    digest.as_ref().map(|digest| digest.as_slice()),
                 ],
             )
             .map_err(map_sqlite_error)?;
-        if changed != 1 {
-            return Err(StorageError::Io {
-                detail: format!("missing commit during seal: {commit_pk}"),
-            });
-        }
-        let encrypted = self.encrypted;
-        publish_checkpoint(self.conn()?, repo_id, commit_pk.as_str(), encrypted)?;
         Ok(())
     }
 
@@ -1905,20 +1938,16 @@ fn ensure_bases_published(
     Ok(())
 }
 
-fn publish_checkpoint(
+/// The checkpoint of the commit published at `position`, chained to the
+/// previous published one.
+fn checkpoint_at(
     conn: &Connection,
     repo_id: &RepoId,
-    commit_pk: &str,
+    position: i64,
+    commit: &[u8],
+    created: &str,
     encrypted: bool,
-) -> Result<(), StorageError> {
-    let (position, commit, created): (Option<i64>, Vec<u8>, String) = conn.query_row(
-        "SELECT repo_seq,commit_id,created_at FROM vcs_commits WHERE repo_id=?1 AND commit_pk=?2",
-        params![repo_id.as_str(), commit_pk],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-    ).map_err(map_sqlite_error)?;
-    let Some(position) = position else {
-        return Ok(());
-    };
+) -> Result<[u8; 32], StorageError> {
     ensure_history_generation(conn, repo_id)?;
     let previous: Option<(i64, Vec<u8>)> = conn.query_row(
         "SELECT repo_seq,checkpoint FROM vcs_commits WHERE repo_id=?1 AND checkpoint IS NOT NULL ORDER BY repo_seq DESC LIMIT 1",
@@ -1937,20 +1966,15 @@ fn publish_checkpoint(
             });
         }
     };
-    let commit_id = commit_id_from_digest_bytes(&commit).map_err(|error| StorageError::Other {
+    let commit_id = commit_id_from_digest_bytes(commit).map_err(|error| StorageError::Other {
         detail: error.to_string(),
     })?;
-    let timestamp = parse_timestamp(&created)?;
-    let digest = synck_vcs::checkpoint::digest(&previous, position as u64, &commit_id, timestamp)
-        .map_err(|error| StorageError::Other {
-        detail: error.to_string(),
-    })?;
-    conn.execute(
-        "UPDATE vcs_commits SET checkpoint=?3 WHERE repo_id=?1 AND commit_pk=?2",
-        params![repo_id.as_str(), commit_pk, digest.as_slice()],
+    let timestamp = parse_timestamp(created)?;
+    synck_vcs::checkpoint::digest(&previous, position as u64, &commit_id, timestamp).map_err(
+        |error| StorageError::Other {
+            detail: error.to_string(),
+        },
     )
-    .map_err(map_sqlite_error)?;
-    Ok(())
 }
 
 impl SqliteStorage {
