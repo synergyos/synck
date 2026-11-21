@@ -536,6 +536,11 @@ impl ServedRepository {
         let store = self.object_store();
         let mut missing = Vec::new();
         for (id, form) in forms {
+            if sizes[&id].len() > 1 {
+                return Err(invalid(format!(
+                    "object {id} has more than one declared size"
+                )));
+            }
             let Some(size) = self.stored_size(&store, &id)? else {
                 missing.push(id);
                 continue;
