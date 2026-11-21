@@ -5,7 +5,9 @@ use std::collections::BTreeMap;
 use rusqlite::Connection;
 use synck_convert::{Converter, Kind, SourceCommit, SourceEvent};
 use synck_vcs::codec::envelope_metadata_id;
-use synck_vcs::types::{CommitId, RepoId, commit_id_from_digest_bytes, parse_hashed_time};
+use synck_vcs::types::{
+    CommitId, ObjectId, RepoId, commit_id_from_digest_bytes, parse_hashed_time,
+};
 
 const REPO: &str = "019a2900-0000-7000-8000-000000000001";
 
@@ -47,6 +49,24 @@ fn events(connection: &Connection) -> BTreeMap<(i64, i64), (Kind, Vec<u8>)> {
     found
 }
 
+/// The stored size of every content object, read from the format 8 vector's
+/// object directory: the same bytes and IDs as format 7's.
+fn sizes() -> BTreeMap<ObjectId, u64> {
+    let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../docs/spec/vectors/repository/objects");
+    std::fs::read_dir(directory)
+        .unwrap()
+        .map(|entry| {
+            let entry = entry.unwrap();
+            let name = entry.file_name().into_string().unwrap();
+            (
+                ObjectId::parse(format!("sha256:{name}")).unwrap(),
+                entry.metadata().unwrap().len(),
+            )
+        })
+        .collect()
+}
+
 fn commits(connection: &Connection) -> Vec<(i64, CommitId, Vec<u8>)> {
     let mut statement = connection
         .prepare("SELECT repo_seq, commit_id, checkpoint FROM vcs_commits ORDER BY repo_seq")
@@ -76,6 +96,7 @@ fn the_format_7_vector_converts_to_the_format_8_vector() {
         include_str!("../../../docs/spec/vectors/repository/rows.sql"),
     );
     let source_objects = objects(&source);
+    let sizes = sizes();
     let source_events = events(&source);
     let generation: String = source
         .query_row(
@@ -129,6 +150,7 @@ fn the_format_7_vector_converts_to_the_format_8_vector() {
                 kind: *kind,
                 payload: payload.clone(),
                 metadata,
+                sizes: sizes.clone(),
             });
         }
         let commit = converter.convert(source_commit).unwrap();

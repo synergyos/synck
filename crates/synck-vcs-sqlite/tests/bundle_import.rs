@@ -43,6 +43,7 @@ fn create(kind: &str) -> EventProposal {
     if kind == "FILE" {
         event.set_content = Some(EventContent::bytes(
             synck_vcs::types::ObjectId::from_digest([7; 32]),
+            7,
         ));
     }
     event
@@ -93,7 +94,7 @@ async fn fixture() -> (tempfile::TempDir, SqliteStorage, RepoId, Vec<Value>) {
     let file = items.iter().find(|item| item.item_type == "FILE").unwrap();
     let change: EventProposal = EventProposal::from_fields(json!({
         "item_id":chat.item_id,"event_type":"CHAT::MESSAGE::CREATE","base_seq":1,
-        "set_content":EventContent::body(synck_vcs::types::ObjectId::from_digest([42;32])),
+        "set_content":EventContent::body(synck_vcs::types::ObjectId::from_digest([42;32]), 7),
     }))
     .unwrap();
     core.append_with_refs(

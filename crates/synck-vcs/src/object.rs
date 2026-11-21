@@ -59,6 +59,8 @@ pub enum ObjectError {
     Codec,
     #[error("object digest mismatch")]
     Digest,
+    #[error("object size differs from its declared size")]
+    Size,
     #[error("object is not valid UTF-8")]
     Utf8,
     #[error("operating-system random source failed")]

@@ -429,7 +429,7 @@ impl<'de> Deserialize<'de> for ObjectId {
     }
 }
 
-pub use crate::content::EventContent;
+pub use crate::content::{ContentRef, EventContent};
 
 /// Logical representation of an `events` table row.
 #[derive(Clone, Debug)]
@@ -1407,9 +1407,10 @@ mod tests {
     #[test]
     fn content_reference_is_a_strict_union_and_canonical_roundtrip() {
         let id = ObjectId::from_digest([0xab; 32]);
-        let content = serde_json::json!({"body": id});
+        let content = serde_json::json!({"body": {"id": id, "size": 49}});
         let decoded: EventContent = serde_json::from_value(content.clone()).unwrap();
         assert_eq!(decoded.only("body"), Some(&id));
+        assert_eq!(decoded.size("body"), Some(49));
         assert_eq!(serde_json::to_value(decoded).unwrap(), content);
         for extra in ["text", "json", "blob_id", "extra"] {
             let mut ambiguous = content.clone();

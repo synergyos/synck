@@ -46,7 +46,7 @@ fn create(kind: &str) -> (ItemReader, ItemId) {
 }
 fn json_body(body: &str) -> Option<EventContent> {
     let object = synck_vcs::object::Object::new(body.as_bytes()).unwrap();
-    let mut roles = EventContent::body(object.id());
+    let mut roles = EventContent::body(object.id(), object.payload().len() as u64);
     roles.resolve(object).unwrap();
     Some(roles)
 }
@@ -152,9 +152,10 @@ fn reactions_keep_reactor_and_attachment_kind_survives_nonobject_metadata_replac
         &event(
             &id,
             "CHAT::MESSAGE.ATTACHMENT::CREATE",
-            json!({"parent_item_seq":2,"meta":{"kind":"EMBEDDED","snapshot_name":"photo.png"},"content":{"size":12}}),
+            json!({"parent_item_seq":2,"meta":{"kind":"EMBEDDED","snapshot_name":"photo.png"}}),
             Some(EventContent::bytes(
                 synck_vcs::types::ObjectId::parse(A).unwrap(),
+                12,
             )),
         ),
         "alice",
@@ -177,6 +178,7 @@ fn reactions_keep_reactor_and_attachment_kind_survives_nonobject_metadata_replac
             json!({"item_seq":5}),
             Some(EventContent::bytes(
                 synck_vcs::types::ObjectId::parse(B).unwrap(),
+                14,
             )),
         ),
         "editor",
@@ -189,7 +191,8 @@ fn reactions_keep_reactor_and_attachment_kind_survives_nonobject_metadata_replac
     assert_eq!(attachment.attachment_kind.as_deref(), Some("EMBEDDED"));
     assert_eq!(attachment.metadata, json!(["retained"]));
     assert_eq!(attachment.blob_id.as_deref(), Some(B));
-    assert_eq!(attachment.size, Some(12));
+    // The size follows the content entry that replaced the bytes.
+    assert_eq!(attachment.size, Some(14));
 }
 
 #[test]
@@ -225,6 +228,7 @@ fn folder_removal_detaches_attachments_and_rehomes_native_file_names() {
             json!({"parent_item_seq":10,"meta":{"kind":"EMBEDDED","chat_file_folder_id":folder}}),
             Some(EventContent::bytes(
                 synck_vcs::types::ObjectId::parse(A).unwrap(),
+                20,
             )),
         ),
         "alice",
@@ -258,6 +262,7 @@ fn email_readers_expose_attachments_and_metadata_replacement() {
             json!({"meta":{"filename":"document.pdf"}}),
             Some(EventContent::bytes(
                 synck_vcs::types::ObjectId::parse(A).unwrap(),
+                20,
             )),
         ),
         "alice",
@@ -435,7 +440,7 @@ fn an_erased_edit_hides_the_body_it_replaced() {
         &id,
         "CHAT::MESSAGE::SET_CONTENT",
         json!({"item_seq": message}),
-        Some(EventContent::body(ObjectId::from_digest([2; 32]))),
+        Some(EventContent::body(ObjectId::from_digest([2; 32]), 60)),
     );
     reader
         .apply_with_erased_body(
@@ -540,6 +545,7 @@ fn supplemental_links_do_not_hide_primary_content() {
             Value::Null,
             Some(EventContent::bytes(
                 synck_vcs::types::ObjectId::parse(A).unwrap(),
+                5,
             )),
         ),
         "alice",
@@ -584,9 +590,10 @@ fn owner_refs_keep_uuid_identity_and_independent_positions() {
         &event(
             &owner,
             "FILE::SET_CONTENT",
-            json!({"content":{"size":7}}),
+            Value::Null,
             Some(EventContent::bytes(
                 synck_vcs::types::ObjectId::parse(A).unwrap(),
+                7,
             )),
         ),
         "alice",
@@ -633,9 +640,10 @@ fn owner_refs_keep_uuid_identity_and_independent_positions() {
         &event(
             &owner,
             "FILE::SET_CONTENT",
-            json!({"content":{"size":9}}),
+            Value::Null,
             Some(EventContent::bytes(
                 synck_vcs::types::ObjectId::parse(B).unwrap(),
+                9,
             )),
         ),
         "alice",
@@ -709,8 +717,8 @@ fn reader_cache_restores_private_maps_and_continues_both_ledgers() {
         &event(
             &id,
             "FILE::SET_CONTENT",
-            json!({"content":{"size":7}}),
-            Some(EventContent::bytes(ObjectId::parse(A).unwrap())),
+            Value::Null,
+            Some(EventContent::bytes(ObjectId::parse(A).unwrap(), 7)),
         ),
         "alice",
     );
@@ -863,8 +871,8 @@ fn reader_cache_rejects_damage_wrong_identity_version_and_poison() {
     parsed["state"]["ref_seq"] = 1.into();
     assert!(ItemReader::from_cache(id.clone(), &serde_json::to_vec(&parsed).unwrap()).is_err());
     let mut parsed: Value = serde_json::from_slice(&cache).unwrap();
-    assert_eq!(parsed["version"], 5);
-    parsed["version"] = 4.into();
+    assert_eq!(parsed["version"], 6);
+    parsed["version"] = 5.into();
     assert!(ItemReader::from_cache(id.clone(), &serde_json::to_vec(&parsed).unwrap()).is_err());
     assert!(ItemReader::from_cache(id.clone(), &cache[..cache.len() / 2]).is_err());
     let bad = event(
@@ -970,8 +978,8 @@ fn chat_file_content_head_survives_rename_lifecycle_and_cache() {
         &event(
             &id,
             "CHAT::FILE::SET_CONTENT",
-            json!({"item_seq":2,"meta":{"file_id":file},"content":{"size":12}}),
-            Some(EventContent::bytes(ObjectId::parse(A).unwrap())),
+            json!({"item_seq":2,"meta":{"file_id":file}}),
+            Some(EventContent::bytes(ObjectId::parse(A).unwrap(), 12)),
         ),
         "alice",
     );

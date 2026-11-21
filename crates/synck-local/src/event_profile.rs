@@ -265,26 +265,13 @@ fn classify_projected_event(event: &EventProposal) -> std::result::Result<LocalE
 }
 
 pub(crate) fn parse_content(event: &EventProposal) -> std::result::Result<(ObjectId, i64), String> {
-    let blob_id = match event
-        .set_content
-        .as_ref()
-        .and_then(|content| content.only("bytes"))
-    {
-        Some(blob_id) => ObjectId::parse(blob_id.as_str()).map_err(|error| error.to_string())?,
-        _ => return Err("file content event has no blob".to_string()),
+    let content = event.set_content.as_ref();
+    let (Some(blob_id), Some(size)) = (
+        content.and_then(|content| content.only("bytes")),
+        content.and_then(|content| content.size("bytes")),
+    ) else {
+        return Err("file content event has no blob".to_string());
     };
-    let content = event
-        .set_metadata
-        .as_ref()
-        .and_then(synck_vcs::metadata::MetadataRef::value)
-        .and_then(|value| value.as_object())
-        .and_then(|object| object.get("content"))
-        .and_then(|value| value.as_object())
-        .filter(|object| object.len() == 1);
-    let size = content
-        .and_then(|object| object.get("size"))
-        .and_then(serde_json::Value::as_i64)
-        .filter(|size| *size >= 0)
-        .ok_or_else(|| "file content event has invalid size metadata".to_string())?;
-    Ok((blob_id, size))
+    let size = i64::try_from(size).map_err(|error| error.to_string())?;
+    Ok((blob_id.clone(), size))
 }

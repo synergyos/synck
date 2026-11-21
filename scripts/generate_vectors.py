@@ -150,8 +150,13 @@ def enc_source(value):
 
 
 def enc_content(roles):
+    """Each role's entry is {"id": object ID, "size": stored byte length}."""
     ordered = sorted(roles, key=lambda role: role.encode("utf-8"))
-    return u8(len(ordered)) + b"".join(enc_str(r) + digest_bytes(roles[r]) for r in ordered)
+    for role in ordered:
+        assert set(roles[role]) == {"id", "size"}, roles[role]
+        assert 0 <= roles[role]["size"] <= MAX_SEQ, roles[role]
+    return u8(len(ordered)) + b"".join(
+        enc_str(r) + digest_bytes(roles[r]["id"]) + u64(roles[r]["size"]) for r in ordered)
 
 
 def blob(data):
@@ -280,7 +285,7 @@ class Reader:
             if last is not None and role.encode("utf-8") <= last:
                 raise Malformed("roles not in strictly increasing order")
             last = role.encode("utf-8")
-            roles[role] = self.digest()
+            roles[role] = {"id": self.digest(), "size": self.u64()}
         return roles
 
     def blob(self):
@@ -996,6 +1001,11 @@ def new_events():
             payload = bytes.fromhex(meta["payload_hex"])
             assert payload[49:] == jcs_bytes(meta["value"]), vector["name"]
             assert sha_id(payload) == meta["id"] == vector["event"]["metadata_id"]
+        for stored in vector.get("objects", []):
+            payload = bytes.fromhex(stored["payload_hex"])
+            assert sha_id(payload) == stored["id"], vector["name"]
+            assert vector["event"]["set_content"][stored["role"]] == {
+                "id": stored["id"], "size": len(payload)}, vector["name"]
         finish(vector)
 
     template = {"commit": {
@@ -1017,8 +1027,8 @@ def new_events():
     add("canonical_vector_tree_item_in_a_folder", {
         "item_id": record, "event_type": "FILE::CREATE",
         "create_item": {"item_type": "FILE", "name": "a.txt", "parent_folder_id": folder},
-        "set_content": {"bytes": body},
-    }, {"content": {"size": 1}})
+        "set_content": {"bytes": {"id": body, "size": 1}},
+    })
     add("canonical_vector_record", {
         "item_id": record, "event_type": "TASK::CREATE",
         "create_item": {"item_type": "TASK"},
@@ -1030,7 +1040,7 @@ def new_events():
     add("canonical_vector_record_with_link", {
         "item_id": record, "event_type": "EMAIL::CREATE",
         "create_item": {"item_type": "EMAIL", "link": folder},
-        "set_content": {"source": body},
+        "set_content": {"source": {"id": body, "size": 2048}},
     })
     add("canonical_vector_set_link", {
         "item_id": record, "base_seq": 3, "event_type": "EMAIL::SET_LINK", "set_link": folder,
@@ -1058,7 +1068,8 @@ def new_events():
     })
     add("canonical_vector_ref_with_content", {
         "owner_item_id": record, "event_type": "NOTE::PUT", "base_ref_seq": 5,
-        "set_content": {"body": body, "attachment": "sha256:" + "3b" * 32},
+        "set_content": {"body": {"id": body, "size": 61},
+                        "attachment": {"id": "sha256:" + "3b" * 32, "size": 2**63 - 1}},
     }, {"title": "Note"})
     assert all(decode_envelope(bytes.fromhex(v["envelope_hex"])) == v["event"] for v in vectors)
 
@@ -1072,8 +1083,8 @@ def new_events():
     def ref(flags, fields, base=u64(0)):
         return u8(2) + enc_str("FILE_VERSION::CREATE") + item + base + u8(flags) + fields
 
-    def roles(*names):
-        return u8(len(names)) + b"".join(enc_str(name) + digest for name in names)
+    def roles(*names, size=u64(1)):
+        return u8(len(names)) + b"".join(enc_str(name) + digest + size for name in names)
 
     trash = raw("EMAIL::TRASH", 0x102, u64(6) + u8(1))
     assert decode_envelope(trash) == vectors[-3]["event"]
@@ -1105,6 +1116,10 @@ def new_events():
         ("content role repeated", raw("TASK::SET_CONTENT", 0x0A, u64(1) + roles("body", "body"))),
         ("33 content roles", raw(
             "TASK::SET_CONTENT", 0x0A, u64(1) + roles(*(f"r{i:02}" for i in range(33))))),
+        ("content size 2^63", raw(
+            "TASK::SET_CONTENT", 0x0A, u64(1) + roles("body", size=u64(2**63)))),
+        ("content entry without its size", raw(
+            "TASK::SET_CONTENT", 0x0A, u64(1) + roles("body", size=b""))),
         ("target tag 2", raw("FILE::SET_PARENT", 0x12, u64(1) + u8(2) + uuid_bytes(folder))),
         ("string holds U+0000", raw("FILE::SET_NAME", 0x22, u64(1) + u16(3) + b"a\0b")),
         ("string holds invalid UTF-8", raw("FILE::SET_NAME", 0x22, u64(1) + u16(2) + b"\xc3\x28")),
@@ -1646,7 +1661,8 @@ def new_sync_wire():
         "item_id": second, "item_type": "FILE", "changed_seq": 1, "head_seq": 7,
         "ref_head_seq": 3, "parent_folder_id": first, "name": "a.txt", "record_key": None,
         "link_folder_id": None, "lifecycle_state": "LIVE", "sequencing_mode": "LOCAL",
-        "federation_stream_id": None, "content": {"bytes": "sha256:" + "ab" * 32},
+        "federation_stream_id": None,
+        "content": {"bytes": {"id": "sha256:" + "ab" * 32, "size": 7}},
         "metadata_id": "sha256:" + "5e" * 32, "name_metadata_id": None,
         "created_at": accepted, "created_by": "owner", "changed_at": occurred,
         "changed_by": "owner",
@@ -1655,7 +1671,8 @@ def new_sync_wire():
         file_entry, item_id=chat, item_type="CHAT", head_seq=2, ref_head_seq=0,
         parent_folder_id=None, name=None, record_key="direct:" + "ab" * 32,
         lifecycle_state="TRASH", sequencing_mode="FEDERATED", federation_stream_id="stream-1",
-        content={"body": "sha256:" + "6f" * 32, "attachment": "sha256:" + "70" * 32},
+        content={"body": {"id": "sha256:" + "6f" * 32, "size": 52},
+                 "attachment": {"id": "sha256:" + "70" * 32, "size": 4096}},
         name_metadata_id="sha256:" + "71" * 32,
     )
     state_start = {"repository": identity, "changed_seq": 0, "item_id": None}
@@ -1807,7 +1824,8 @@ def new_sync_wire():
         ("Event", blob(item_bytes) + u64(4) + enc_target(parent), "item event without its before"),
         ("StateEntry", entry_bytes.replace(
             u8(1) + enc_str("bytes"), u8(2) + enc_str("bytes") + digest_bytes(
-                "sha256:" + "ab" * 32) + enc_str("attachment")), "content roles out of order"),
+                "sha256:" + "ab" * 32) + u64(7) + enc_str("attachment")),
+         "content roles out of order"),
         ("StateEntry", entry_bytes[:lifecycle_at] + u8(4) + entry_bytes[lifecycle_at + 1:],
          "lifecycle state 4"),
         ("StateEntry", entry_bytes[:lifecycle_at] + u8(0) + entry_bytes[lifecycle_at + 1:],
@@ -1862,17 +1880,17 @@ def new_repository():
     blobs = {name: name.encode("utf-8") for name in ("one\n", "two\n", "scratch\n")}
     ids = {name: sha_id(data) for name, data in blobs.items()}
     stored = {}
-    salt = iter(range(1, 256))
 
-    def metadata(value):
-        payload = salted_utf8(bytes([next(salt)]) * 32, jcs_bytes(value))
+    # The salts are those of the format 7 vector's labels, which conversion keeps.
+    def metadata(value, salt):
+        payload = salted_utf8(bytes([salt]) * 32, jcs_bytes(value))
         stored[sha_id(payload)] = payload
         return sha_id(payload)
 
-    def file_metadata(name):
-        return metadata({"content": {"size": len(blobs[name])}})
+    def contents(name):
+        return {"bytes": {"id": ids[name], "size": len(blobs[name])}}
 
-    def label(version, item_seq, kind, order):
+    def label(version, item_seq, kind, order, salt):
         value = {
             "version_id": f"019a2900-0000-7000-8000-00000000b00{version}",
             "source_item_seq": item_seq, "kind": kind, "label_source": "INTERNAL",
@@ -1880,7 +1898,7 @@ def new_repository():
         }
         return {
             "owner_item_id": notes, "event_type": "FILE_VERSION::CREATE",
-            "base_ref_seq": version - 1, "metadata_id": metadata(value),
+            "base_ref_seq": version - 1, "metadata_id": metadata(value, salt),
         }
 
     commits = [("Add the notes", [
@@ -1888,17 +1906,17 @@ def new_repository():
          "create_item": {"item_type": "FOLDER", "name": "docs"}},
         {"item_id": notes, "event_type": "FILE::CREATE",
          "create_item": {"item_type": "FILE", "name": "notes.txt", "parent_folder_id": docs},
-         "metadata_id": file_metadata("one\n"), "set_content": {"bytes": ids["one\n"]}},
-    ], [label(1, 1, "MINOR", 1024)]), ("Change the notes", [
+         "set_content": contents("one\n")},
+    ], [label(1, 1, "MINOR", 1024, 2)]), ("Change the notes", [
         {"item_id": notes, "base_seq": 1, "event_type": "FILE::SET_CONTENT",
-         "metadata_id": file_metadata("two\n"), "set_content": {"bytes": ids["two\n"]}},
+         "set_content": contents("two\n")},
     ], []), ("Name the second revision", [], [
-        label(2, 2, "MAJOR", 2048),
+        label(2, 2, "MAJOR", 2048, 4),
     ]), ("Nothing remains of this commit", [], []), ("Move the notes and file a task", [
         {"item_id": notes, "base_seq": 2, "event_type": "FILE::SET_PARENT", "set_parent": None},
         {"item_id": scratch, "event_type": "FILE::CREATE",
          "create_item": {"item_type": "FILE", "name": "scratch.txt"},
-         "metadata_id": file_metadata("scratch\n"), "set_content": {"bytes": ids["scratch\n"]}},
+         "set_content": contents("scratch\n")},
         {"item_id": task, "event_type": "TASK::CREATE",
          "create_item": {"item_type": "TASK", "link": docs}},
     ], []), ("Trash the scratch file", [
@@ -1967,8 +1985,6 @@ def new_repository():
     ]
     text = "\n".join([
         f"INSERT INTO vcs_history_generations VALUES({quote(repo)},{quote(generation)});",
-        f"INSERT INTO vcs_repo_activity_heads VALUES({quote(repo)},{len(commits) + 1},"
-        f"{quote(stamp(len(commits)))});",
         *(
             f"INSERT INTO vcs_metadata_objects VALUES({quote(repo)},"
             f"{hexblob(digest_bytes(object_id))},{hexblob(payload)});"
@@ -1997,12 +2013,8 @@ def new_repository():
 
 # --- Structural rules: a small reference replay ----------------------------
 
+# The core's tree types; every other type takes its class from its create form.
 TREE_TYPES = {"FILE", "FOLDER", "FEDERATED_MOUNT"}
-RECORD_TYPES = {
-    "EMAIL", "TASK_LIST", "TASK", "CHAT", "LOCAL_COMPANION", "CALENDAR", "CALENDAR_EVENT",
-    "CALL", "POST", "DATABASE", "TABLE", "TIME_SETTINGS", "TIME_BOOK", "TIME_ENTRY",
-    "PROFILE", "CONTACT", "USER_STATE", "FEDERATION_SCOPE",
-}
 
 
 CORE_EVENTS = {
@@ -2088,8 +2100,6 @@ def replay_commit(items, commit):
             kind = create["item_type"]
             check_item_type(kind)
             tree = "name" in create
-            if tree and kind in RECORD_TYPES:
-                raise Invalid("record type in tree form")
             if not tree and kind in TREE_TYPES:
                 raise Invalid("tree type in record form")
             if kind == "FILE" and "bytes" not in event.get("set_content", {}):
@@ -2219,7 +2229,7 @@ def replay_commit(items, commit):
 def new_records():
     ids = {name: f"019a2900-0000-7000-8000-{n:012x}" for n, name in enumerate(
         ["f1", "f2", "r1", "r2", "r3", "c1"], 0x200)}
-    content = "sha256:" + "ab" * 32
+    content = {"id": "sha256:" + "ab" * 32, "size": 5}
 
     def folder(name, item="f1", parent=None):
         create = {"item_type": "FOLDER", "name": name}
@@ -2267,14 +2277,14 @@ def new_records():
         }
 
     f1, f2 = ids["f1"], ids["f2"]
-    other = "sha256:" + "cd" * 32
+    other = {"id": "sha256:" + "cd" * 32, "size": 9}
     file_item = {**tree("r1", "FILE", "a"), "set_content": {"bytes": content}}
     cases = [
         ("record without key or link", [([record("r1", "TASK")], True)]),
-        ("record with name", [([{
+        ("another type takes the tree form from its creation", [([{
             "item_id": ids["r1"], "event_type": "TASK::CREATE",
             "create_item": {"item_type": "TASK", "name": "a"},
-        }], False)]),
+        }], True)]),
         ("tree item without name", [([record("r1", "FOLDER")], False)]),
         ("empty key", [([record("r1", "CHAT", key="")], False)]),
         ("file created with bytes", [([{
@@ -2781,8 +2791,8 @@ def new_bundle():
     file_id = "019a2900-0000-7000-8000-000000000011"
     domain = "019a2900-0000-7000-8000-000000000020"
     at = "2026-10-30T12:00:00.000000000Z"
-    content = "sha256:" + "ab" * 32
-    meta = salted_utf8(bytes([9]) * 32, jcs_bytes({"content": {"size": 1}}))
+    content = {"id": "sha256:" + "ab" * 32, "size": 1}
+    meta = salted_utf8(bytes([9]) * 32, jcs_bytes({"color": "red"}))
     head = bundle_line({
         "type": "synck_vcs_bundle_header", "bundle_format_version": 6, "repo_id": repo,
         "history_generation": generation, "encrypted": False, "exported_at": at,

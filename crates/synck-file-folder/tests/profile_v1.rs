@@ -1034,12 +1034,13 @@ fn projector_preserves_visible_changes_and_profile_heads_only() {
         parent_folder_id: None,
         name: Some("file.txt".to_string()),
     });
-    create.set_content = Some(EventContent::bytes(ObjectId::parse(digest('2')).unwrap()));
+    create.set_content = Some(EventContent::bytes(
+        ObjectId::parse(digest('2')).unwrap(),
+        3,
+    ));
     create.set_metadata = Some(
-        synck_vcs::metadata::MetadataRef::new(
-            json!({"content": {"size": 1}, "product": "kept with the first bytes"}),
-        )
-        .unwrap(),
+        synck_vcs::metadata::MetadataRef::new(json!({"product": "kept with the first bytes"}))
+            .unwrap(),
     );
     let mut omitted = event(file_id.clone(), "ITEM::DATA_LINK::PUT", None);
     omitted.set_metadata =
@@ -1223,10 +1224,10 @@ fn projector_preserves_metadata_identity_and_checks_named_keys() {
     let mut content = event(file_id.clone(), "FILE::SET_CONTENT", Some(4));
     content.set_content = Some(EventContent::bytes(
         synck_vcs::types::ObjectId::parse(digest('a')).unwrap(),
+        7,
     ));
     content.set_metadata = Some(
         synck_vcs::metadata::MetadataRef::new(json!({
-            "content": {"size": 7},
             "upload_intent_id": "intent",
             "revision_origin": "LOCAL",
             "provenance": {

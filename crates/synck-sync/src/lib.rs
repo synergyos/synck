@@ -358,7 +358,7 @@ pub struct StateEntry {
     pub sequencing_mode: SequencingMode,
     pub federation_stream_id: Option<String>,
     /// The current role map, empty when the item has no content.
-    pub content: BTreeMap<String, ObjectId>,
+    pub content: BTreeMap<String, synck_vcs::types::ContentRef>,
     pub metadata_id: Option<ObjectId>,
     pub name_metadata_id: Option<ObjectId>,
     pub created_at: Timestamp,

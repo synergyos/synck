@@ -74,7 +74,7 @@ pub(crate) fn prepare(
         }
         attachments.push(synck_vcs::types::EventProposal::from_fields(
             json!({"item_id":id,"event_type":"EMAIL::ATTACHMENT::CREATE",
-            "set_metadata":{"meta":meta},"set_content":{"source":blob}}),
+            "set_metadata":{"meta":meta},"set_content":{"source":{"id":blob,"size":size}}}),
         )?);
     }
     let mut metadata = json!({"mailcal": {
@@ -96,7 +96,7 @@ pub(crate) fn prepare(
     }
     let mut events = vec![synck_vcs::types::EventProposal::from_fields(
         json!({"item_id":id,"event_type":"EMAIL::CREATE",
-        "create_item":{"item_type":"EMAIL","link":link},"set_metadata":metadata,"set_content":{"source":source_blob}}),
+        "create_item":{"item_type":"EMAIL","link":link},"set_metadata":metadata,"set_content":{"source":{"id":source_blob,"size":source_size}}}),
     )?];
     events.extend(attachments);
     Ok(PreparedEmail { events, objects })

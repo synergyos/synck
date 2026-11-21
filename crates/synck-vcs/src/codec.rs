@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 
 use uuid::Uuid;
 
-use crate::content::{EventContent, MAX_CONTENT_ROLES};
+use crate::content::{ContentRef, EventContent, MAX_CONTENT_ROLES, MAX_CONTENT_SIZE};
 use crate::errors::CoreError;
 use crate::limits;
 use crate::metadata::MetadataRef;
@@ -119,11 +119,18 @@ pub fn put_source(out: &mut Vec<u8>, source: &ItemRevision) -> Result<(), CoreEr
 }
 
 /// Roles are a `BTreeMap`, so they are already in strictly increasing order.
-pub fn put_content(out: &mut Vec<u8>, roles: &BTreeMap<String, ObjectId>) -> Result<(), CoreError> {
+pub fn put_content(
+    out: &mut Vec<u8>,
+    roles: &BTreeMap<String, ContentRef>,
+) -> Result<(), CoreError> {
     put_u8(out, roles.len() as u8);
-    for (role, id) in roles {
+    for (role, entry) in roles {
         put_str(out, role)?;
-        put_digest(out, &id.as_bytes());
+        put_digest(out, &entry.id.as_bytes());
+        if entry.size > MAX_CONTENT_SIZE {
+            return Err(invalid("content size exceeds 2^63 - 1"));
+        }
+        put_u64(out, entry.size);
     }
     Ok(())
 }
@@ -269,7 +276,9 @@ impl<'a> Decoder<'a> {
                 return Err(bad("content roles are not strictly increasing"));
             }
             previous = Some(role);
-            roles.insert(role.to_string(), self.object_id()?);
+            let id = self.object_id()?;
+            let size = self.count()? as u64;
+            roles.insert(role.to_string(), ContentRef { id, size });
         }
         EventContent::new(roles).map_err(bad)
     }

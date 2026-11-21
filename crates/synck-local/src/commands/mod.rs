@@ -567,29 +567,7 @@ fn validate_historical_item_event(event: &EventRow, item_id: &ItemId) -> Result<
 }
 
 fn content_from_event(event: &EventProposal) -> Result<(ObjectId, i64)> {
-    let blob_id = match event
-        .set_content
-        .as_ref()
-        .and_then(|content| content.only("bytes"))
-    {
-        Some(blob_id) => ObjectId::parse(blob_id.as_str()).map_err(|error| {
-            LocalError::Integrity(format!("invalid blob identifier in event: {error}"))
-        })?,
-        _ => {
-            return Err(LocalError::Integrity(
-                "file content event has no blob".to_string(),
-            ));
-        }
-    };
-    let size = event
-        .set_metadata
-        .as_ref()
-        .and_then(synck_vcs::metadata::MetadataRef::value)
-        .and_then(|value| value.pointer("/content/size"))
-        .and_then(serde_json::Value::as_i64)
-        .filter(|size| *size >= 0)
-        .ok_or_else(|| LocalError::Integrity("file content event has invalid size".to_string()))?;
-    Ok((blob_id, size))
+    crate::event_profile::parse_content(event).map_err(LocalError::Integrity)
 }
 
 pub(crate) fn normalize_input_path(root: &Path, caller: &Path, input: &Path) -> Result<String> {

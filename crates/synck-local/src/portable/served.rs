@@ -156,9 +156,13 @@ impl ServedRepository {
         )
     }
 
-    fn holds_object(&self, store: &ChunkStore, id: &ObjectId) -> Result<bool> {
+    /// A stored object's length, or `None` when it is not stored.
+    fn stored_size(&self, store: &ChunkStore, id: &ObjectId) -> Result<Option<u64>> {
         if self.storage_mode == StorageMode::Chunked {
-            return store.holds_blob(id);
+            if !store.holds_blob(id)? {
+                return Ok(None);
+            }
+            return store.blob_size(id).map(Some);
         }
         let name = id
             .as_str()
@@ -169,8 +173,8 @@ impl ServedRepository {
             .open_dir_nofollow("objects")
             .map_err(corrupt)?;
         match objects.symlink_metadata(name) {
-            Ok(_) => Ok(true),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Ok(entry) => Ok(Some(entry.len())),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(error) => Err(error).at(
                 "inspect object",
                 self.root.join(".synck/objects").join(name),
@@ -500,6 +504,7 @@ impl ServedRepository {
             item_types.insert(row.item_id, row.item_type);
         }
         let mut forms: BTreeMap<ObjectId, Form> = BTreeMap::new();
+        let mut sizes: BTreeMap<ObjectId, BTreeSet<u64>> = BTreeMap::new();
         for event in &proposal.events {
             let (Some(content), Some(item_id)) = (&event.set_content, &event.item_id) else {
                 continue;
@@ -507,25 +512,38 @@ impl ServedRepository {
             if !item_types.contains_key(item_id) {
                 return Err(invalid(format!("content for unknown item {item_id}")));
             }
-            for (role, id) in content.roles() {
-                forms.insert(id.clone(), content_form(self.encrypted, role));
+            for (role, entry) in content.roles() {
+                forms.insert(entry.id.clone(), content_form(self.encrypted, role));
+                sizes
+                    .entry(entry.id.clone())
+                    .or_default()
+                    .insert(entry.size);
             }
         }
         for event in &proposal.ref_events {
-            for id in event
+            for entry in event
                 .set_content
                 .iter()
-                .flat_map(|content| content.values())
+                .flat_map(|content| content.roles().values())
             {
-                forms.entry(id.clone()).or_insert(Form::Opaque);
+                forms.entry(entry.id.clone()).or_insert(Form::Opaque);
+                sizes
+                    .entry(entry.id.clone())
+                    .or_default()
+                    .insert(entry.size);
             }
         }
         let store = self.object_store();
         let mut missing = Vec::new();
         for (id, form) in forms {
-            if !self.holds_object(&store, &id)? {
+            let Some(size) = self.stored_size(&store, &id)? else {
                 missing.push(id);
                 continue;
+            };
+            if sizes[&id].iter().any(|declared| *declared != size) {
+                return Err(invalid(format!(
+                    "object {id} is {size} bytes, not its declared size"
+                )));
             }
             match form {
                 Form::Plain | Form::Opaque => {}
@@ -572,7 +590,7 @@ impl ServedRepository {
             .missing_metadata(&self.repo_id, ids)
             .map_err(corrupt)?
         {
-            if !self.holds_object(&store, &id)? {
+            if self.stored_size(&store, &id)?.is_none() {
                 missing.push(id);
                 continue;
             }

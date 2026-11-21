@@ -185,11 +185,11 @@ mod tests {
             Intent::Create {
                 link: None,
                 metadata: json!({"title":"Original","mailcal":{"subject":"Subject"}}),
-                content: Some(EventContent::source(source.clone())),
+                content: Some(EventContent::source(source.clone(), 3)),
             },
             Intent::CreateAttachment {
                 metadata: json!({"filename":"one.txt","size_bytes":3}),
-                content: EventContent::source(source),
+                content: EventContent::source(source, 3),
             },
             Intent::SetAttachmentMetadata {
                 item_seq: 2,

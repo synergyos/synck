@@ -3,7 +3,6 @@ use std::collections::{BTreeMap, BTreeSet};
 #[cfg(test)]
 use std::cell::Cell;
 
-use serde_json::json;
 use synck_vcs::naming::compute_name_key;
 use synck_vcs::types::{
     CreateItem, EventContent, EventProposal, ItemId, RepoId, Sha256Digest, SubtreeClosureGuard,
@@ -136,7 +135,7 @@ pub fn validate_and_materialize_with_content_revisions(
                 insert_created_final(&mut final_items, item_id, FileFolderKind::File, location)?;
                 exposed_items.insert(item_id.clone());
                 let mut event = create_event(item_id, FileFolderKind::File, location);
-                set_file_content(&mut event, content)?;
+                set_file_content(&mut event, content);
                 events.push(event);
             }
             Intent::UpdateFolder {
@@ -188,7 +187,7 @@ pub fn validate_and_materialize_with_content_revisions(
                     record_blob(&mut blobs_by_id, content)?;
                     if item.content.as_ref() != Some(content) || content_revisions.contains(item_id)
                     {
-                        events.push(content_event(item_id, *base_seq, content)?);
+                        events.push(content_event(item_id, *base_seq, content));
                         changed = true;
                     }
                 }
@@ -1026,23 +1025,14 @@ fn set_name_event(
     proposal
 }
 
-fn content_event(
-    item_id: &ItemId,
-    base_seq: i64,
-    content: &BlobRef,
-) -> Result<EventProposal, SemanticError> {
+fn content_event(item_id: &ItemId, base_seq: i64, content: &BlobRef) -> EventProposal {
     let mut proposal = base_event(item_id, FileFolderKind::File, "SET_CONTENT", Some(base_seq));
-    set_file_content(&mut proposal, content)?;
-    Ok(proposal)
+    set_file_content(&mut proposal, content);
+    proposal
 }
 
-fn set_file_content(proposal: &mut EventProposal, content: &BlobRef) -> Result<(), SemanticError> {
-    proposal.set_content = Some(EventContent::bytes(content.blob_id.clone()));
-    proposal.set_metadata = Some(
-        synck_vcs::metadata::MetadataRef::new(json!({"content": {"size": content.size}}))
-            .map_err(|e| error(SemanticErrorCode::InvalidContent, e.to_string()))?,
-    );
-    Ok(())
+fn set_file_content(proposal: &mut EventProposal, content: &BlobRef) {
+    proposal.set_content = Some(EventContent::bytes(content.blob_id.clone(), content.size));
 }
 
 fn lifecycle_event(

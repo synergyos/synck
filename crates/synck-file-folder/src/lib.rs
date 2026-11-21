@@ -33,43 +33,32 @@ pub const PROFILE_ID: &str = "synck-file-folder-v1";
 pub use synck_vcs::limits::{MAX_EVENT_PAYLOAD_BYTES, MAX_MESSAGE_BYTES};
 pub const MAX_SAFE_JSON_INTEGER: u64 = 9_007_199_254_740_991;
 
-/// Parse the durable bytes referenced by one canonical FILE content event.
-///
-/// Non-content profile events return `Ok(None)`. A malformed content event is
-/// rejected; callers must never guess a size from the blob store.
 /// Whether this FILE event states the file's bytes. A file is created with them.
 pub fn is_file_content_event(event_type: &str) -> bool {
     matches!(event_type, "FILE::CREATE" | "FILE::SET_CONTENT")
 }
 
+/// Parse the durable bytes referenced by one canonical FILE content event:
+/// its `bytes` entry's object and stored size.
+///
+/// Non-content profile events return `Ok(None)`. A malformed content event is
+/// rejected; callers must never guess a size from the blob store.
 pub fn file_blob_reference(
     event: &synck_vcs::types::EventProposal,
 ) -> Result<Option<BlobRef>, SemanticError> {
     if !is_file_content_event(&event.event_type) {
         return Ok(None);
     }
-    let blob_id = event
-        .set_content
-        .as_ref()
-        .and_then(|content| content.only("bytes"))
-        .ok_or_else(|| {
-            SemanticError::new(
-                SemanticErrorCode::MalformedProfileEvent,
-                "FILE content event lacks a blob",
-            )
-        })?;
-    let size = event
-        .set_metadata
-        .as_ref()
-        .and_then(|metadata| metadata.get("content"))
-        .and_then(|content| content.get("size"))
-        .and_then(serde_json::Value::as_u64)
-        .ok_or_else(|| {
-            SemanticError::new(
-                SemanticErrorCode::MalformedProfileEvent,
-                "FILE content event lacks an exact size",
-            )
-        })?;
+    let content = event.set_content.as_ref();
+    let (Some(blob_id), Some(size)) = (
+        content.and_then(|content| content.only("bytes")),
+        content.and_then(|content| content.size("bytes")),
+    ) else {
+        return Err(SemanticError::new(
+            SemanticErrorCode::MalformedProfileEvent,
+            "FILE content event lacks a blob",
+        ));
+    };
     if size > MAX_SAFE_JSON_INTEGER {
         return Err(SemanticError::new(
             SemanticErrorCode::InvalidContent,
@@ -77,12 +66,7 @@ pub fn file_blob_reference(
         ));
     }
     Ok(Some(BlobRef {
-        blob_id: synck_vcs::types::ObjectId::parse(blob_id.as_str()).map_err(|_| {
-            SemanticError::new(
-                SemanticErrorCode::MalformedProfileEvent,
-                "FILE content event has an invalid blob ID",
-            )
-        })?,
+        blob_id: blob_id.clone(),
         size,
     }))
 }
@@ -159,8 +143,7 @@ mod tests {
         let event: EventProposal = EventProposal::from_fields(serde_json::json!({
             "item_id": "01900000-0000-7000-8000-000000000001",
             "event_type": "FILE::SET_CONTENT",
-            "set_metadata": {"content": {"size": 7}},
-            "set_content": {"bytes": format!("sha256:{}", "a".repeat(64))},
+            "set_content": {"bytes": {"id": format!("sha256:{}", "a".repeat(64)), "size": 7}},
             "base_seq": 1
         }))
         .unwrap();
@@ -171,12 +154,12 @@ mod tests {
             format!("sha256:{}", "a".repeat(64))
         );
 
-        let mut malformed = event.clone();
-        malformed.set_metadata = Some(
-            synck_vcs::metadata::MetadataRef::new(serde_json::json!({"content": {"size": -1}}))
-                .unwrap(),
-        );
-        assert!(file_blob_reference(&malformed).is_err());
+        let mut inexact = event.clone();
+        inexact.set_content = Some(synck_vcs::types::EventContent::bytes(
+            reference.blob_id.clone(),
+            crate::MAX_SAFE_JSON_INTEGER + 1,
+        ));
+        assert!(file_blob_reference(&inexact).is_err());
 
         let mut unrelated = event;
         unrelated.event_type = "FILE::SET_NAME".to_string();

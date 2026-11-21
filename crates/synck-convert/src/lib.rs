@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, HashMap};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use synck_vcs::checkpoint;
-use synck_vcs::content::EventContent;
+use synck_vcs::content::{ContentRef, EventContent};
 use synck_vcs::errors::CoreError;
 use synck_vcs::metadata::{Metadata, MetadataError, MetadataRef};
 use synck_vcs::object::ENCRYPTED_PREFIX;
@@ -70,13 +70,18 @@ pub enum Kind {
     Ref,
 }
 
-/// One stored format 7 event: its exact canonical JSON payload and the stored
+/// One stored format 7 event: its exact canonical JSON payload, the stored
 /// bytes of the metadata object it names, or `None` when it names none or the
-/// object is erased.
+/// object is erased, and the stored size of every object its converted content
+/// names: those of its `set_content`, and the originals an `EMAIL::CREATE` or a
+/// `POST` names in metadata. Format 7 content held no sizes, so the driver
+/// reads them from its object store; an erased object's size comes from the
+/// event's format 7 metadata where it holds one.
 pub struct SourceEvent {
     pub kind: Kind,
     pub payload: Vec<u8>,
     pub metadata: Option<Vec<u8>>,
+    pub sizes: BTreeMap<ObjectId, u64>,
 }
 
 /// One published format 7 commit as stored. Events are in commit-event-index
@@ -107,8 +112,10 @@ struct Item {
     item_type: String,
     /// Created in record form; format 7 checked the form against its type.
     record: bool,
-    /// The item's metadata as format 7 folded it.
+    /// The item's metadata as format 7 folded it, without a FILE's `content`.
     metadata: Map<String, Value>,
+    /// The item's format 8 metadata is the empty map, or it has none yet.
+    written_empty: bool,
 }
 
 pub struct Converter {
@@ -188,7 +195,7 @@ impl Converter {
         source: &SourceEvent,
         written: &mut Vec<Metadata>,
     ) -> Result<Vec<u8>, ConvertError> {
-        let mut event: EventProposal = serde_json::from_slice(&source.payload)
+        let mut event: EventProposal = serde_json::from_value(sized(&source.payload, source)?)
             .map_err(|error| fail(format!("format 7 item event: {error}")))?;
         let item_id = event
             .item_id
@@ -199,6 +206,7 @@ impl Converter {
                 item_type: create.item_type.clone(),
                 record: create.name.is_none(),
                 metadata: Map::new(),
+                written_empty: true,
             };
             if self.items.insert(item_id.clone(), item).is_some() {
                 return Err(fail(format!("item {item_id} is created twice")));
@@ -225,21 +233,35 @@ impl Converter {
             return Ok(canonical_event_proposal_bytes(&event)?);
         };
         let source_metadata = readable(&reference.id(), source.metadata.as_deref())?;
-        let patch = source_metadata.as_ref().map(object).transpose()?;
-        item.fold(&event, &verb, patch)?;
-        if let (Some(source_metadata), Some(patch)) = (&source_metadata, patch) {
-            let mut map = item.metadata.clone();
-            overlay(&mut map, patch);
-            if item.item_type == "EMAIL" && verb == "CREATE" {
-                email_originals(&item_id, &mut event, &mut map)?;
-            } else if item.item_type == "POST" {
-                post_body(&item_id, &mut event, patch, &mut map)?;
-            } else if item.item_type == "EMAIL" {
-                map.remove("mailcal");
-                if patch.contains_key("mailcal") {
-                    self.dropped_mailcal += 1;
-                }
+        let mut patch = source_metadata.as_ref().map(object).transpose()?.cloned();
+        if item.item_type == "FILE"
+            && let Some(patch) = &mut patch
+        {
+            file_size(&item_id, &event, patch)?;
+        }
+        item.fold(&event, &verb, patch.as_ref())?;
+        let (Some(source_metadata), Some(patch)) = (&source_metadata, patch) else {
+            item.written_empty = false;
+            return Ok(canonical_event_proposal_bytes(&event)?);
+        };
+        let mut map = item.metadata.clone();
+        overlay(&mut map, &patch);
+        if item.item_type == "EMAIL" && verb == "CREATE" {
+            email_originals(&item_id, &mut event, &mut map, &source.sizes)?;
+        } else if item.item_type == "POST" {
+            post_body(&item_id, &mut event, &patch, &mut map, &source.sizes)?;
+        } else if item.item_type == "EMAIL" {
+            map.remove("mailcal");
+            if patch.contains_key("mailcal") {
+                self.dropped_mailcal += 1;
             }
+        }
+        // A FILE whose only key was its size now has no metadata to say, and
+        // omitting it leaves the current map, which is empty too.
+        if item.item_type == "FILE" && map.is_empty() && item.written_empty {
+            event.set_metadata = None;
+        } else {
+            item.written_empty = map.is_empty();
             event.set_metadata = Some(rewrite(source_metadata, map, written)?);
         }
         Ok(canonical_event_proposal_bytes(&event)?)
@@ -248,8 +270,9 @@ impl Converter {
 
 impl Item {
     /// Format 7's patch rule: CREATE and SET_METADATA fold, and an erased one
-    /// clears every key; a record's SET_TITLE sets `title`; a FILE's new bytes
-    /// set `content`. An erased payload of the last two removes only that key.
+    /// clears every key; a record's SET_TITLE sets `title`, and an erased one
+    /// removes it. A FILE's new bytes set `content`, the size its bytes entry
+    /// now holds, so that key is gone before this fold.
     fn fold(
         &mut self,
         event: &EventProposal,
@@ -278,25 +301,56 @@ impl Item {
                 }
             }
         }
-        if self.item_type == "FILE"
-            && event
-                .set_content
-                .as_ref()
-                .is_some_and(|content| content.only("bytes").is_some())
-        {
-            match patch {
-                Some(patch) => {
-                    if let Some(content) = patch.get("content").filter(|value| !value.is_null()) {
-                        self.metadata.insert("content".into(), content.clone());
-                    }
-                }
-                None => {
-                    self.metadata.remove("content");
-                }
-            }
-        }
         Ok(())
     }
+}
+
+/// Format 7 content maps named objects alone; format 8 entries add each one's
+/// stored size, which the driver supplies.
+fn sized(payload: &[u8], source: &SourceEvent) -> Result<Value, ConvertError> {
+    let mut event: Value = serde_json::from_slice(payload)
+        .map_err(|error| fail(format!("format 7 event: {error}")))?;
+    if let Some(Value::Object(roles)) = event.get_mut("set_content") {
+        for entry in roles.values_mut() {
+            let id: ObjectId = serde_json::from_value(entry.clone())
+                .map_err(|error| fail(format!("format 7 content: {error}")))?;
+            *entry = serde_json::to_value(content_ref(id, &source.sizes)?)
+                .expect("content entry is JSON");
+        }
+    }
+    Ok(event)
+}
+
+fn content_ref(id: ObjectId, sizes: &BTreeMap<ObjectId, u64>) -> Result<ContentRef, ConvertError> {
+    let size = *sizes
+        .get(&id)
+        .ok_or_else(|| fail(format!("object {id} has no stored size")))?;
+    Ok(ContentRef { id, size })
+}
+
+/// A FILE's format 7 metadata held its size as `content.size`, which its
+/// bytes entry now holds. A content event's must equal the supplied size; the
+/// key leaves every map.
+fn file_size(
+    item_id: &ItemId,
+    event: &EventProposal,
+    patch: &mut Map<String, Value>,
+) -> Result<(), ConvertError> {
+    let content = patch.remove("content");
+    let Some(size) = event
+        .set_content
+        .as_ref()
+        .filter(|content| content.only("bytes").is_some())
+        .and_then(|content| content.size("bytes"))
+    else {
+        return Ok(());
+    };
+    if content != Some(serde_json::json!({"size": size})) {
+        return Err(fail(format!(
+            "FILE {item_id} metadata does not hold its stored size {size}"
+        )));
+    }
+    Ok(())
 }
 
 /// The Hub kept an email's originals only as references inside `mailcal`: the
@@ -310,6 +364,7 @@ fn email_originals(
     item_id: &ItemId,
     event: &mut EventProposal,
     map: &mut Map<String, Value>,
+    sizes: &BTreeMap<ObjectId, u64>,
 ) -> Result<(), ConvertError> {
     let blob = |value: Option<&Value>| match value {
         None | Some(Value::Null) => Ok(None),
@@ -329,10 +384,10 @@ fn email_originals(
         let generated = mailcal.get("raw_rfc822_provenance") == Some(&"generated".into());
         let raw = blob(mailcal.get("raw_rfc822_blob_id"))?.filter(|_| !generated);
         if let Some(source) = source.or(raw) {
-            roles.insert("source".to_string(), source);
+            roles.insert("source".to_string(), content_ref(source, sizes)?);
         }
         if let Some(provider) = blob(mailcal.get("provider_raw_json_blob_id"))? {
-            roles.insert("provider".to_string(), provider);
+            roles.insert("provider".to_string(), content_ref(provider, sizes)?);
         }
         for key in EMAIL_RENDERINGS {
             mailcal.remove(key);
@@ -387,6 +442,7 @@ fn post_body(
     event: &mut EventProposal,
     patch: &Map<String, Value>,
     map: &mut Map<String, Value>,
+    sizes: &BTreeMap<ObjectId, u64>,
 ) -> Result<(), ConvertError> {
     map.remove("body_markdown_blob_id");
     let body = match patch.get("body_markdown_blob_id") {
@@ -400,7 +456,10 @@ fn post_body(
         }
     };
     match &event.set_content {
-        None => event.set_content = Some(EventContent::bytes(body)),
+        None => {
+            let body = content_ref(body, sizes)?;
+            event.set_content = Some(EventContent::bytes(body.id, body.size));
+        }
         Some(content) if content.get("bytes") == Some(&body) => {}
         Some(_) => {
             return Err(fail(format!(
@@ -412,7 +471,7 @@ fn post_body(
 }
 
 fn ref_event(source: &SourceEvent, written: &mut Vec<Metadata>) -> Result<Vec<u8>, ConvertError> {
-    let mut event: RefEventProposal = serde_json::from_slice(&source.payload)
+    let mut event: RefEventProposal = serde_json::from_value(sized(&source.payload, source)?)
         .map_err(|error| fail(format!("format 7 ref event: {error}")))?;
     if event.event_type.starts_with("FILE_VERSION::")
         && let Some(reference) = &event.set_metadata
@@ -515,6 +574,13 @@ mod tests {
         Converter::new(&RepoId::parse(REPO).unwrap(), GENERATION).unwrap()
     }
 
+    /// The stored size of each object these tests name: `[n; 32]` holds n bytes.
+    fn sizes() -> BTreeMap<ObjectId, u64> {
+        (1..=8)
+            .map(|n| (ObjectId::from_digest([n; 32]), u64::from(n)))
+            .collect()
+    }
+
     /// A format 7 commit of item events, each with its metadata object, or
     /// `None` for an erased one.
     fn source(repo_seq: i64, events: Vec<(Value, Option<&Metadata>)>) -> SourceCommit {
@@ -532,6 +598,7 @@ mod tests {
                     kind: Kind::Item,
                     payload: canonical_json_bytes(&event).unwrap(),
                     metadata: metadata.map(|metadata| metadata.payload().to_vec()),
+                    sizes: sizes(),
                 })
                 .collect(),
         };
@@ -607,15 +674,59 @@ mod tests {
         assert_eq!(
             maps(&first, &[&create, &content, &edit]),
             [
-                json!({"color": "red", "content": {"size": 1}}),
-                // The event's own keys stay on its map; only `content` folds.
-                json!({"color": "red", "content": {"size": 2}, "revision_origin": "upload"}),
-                json!({"content": {"size": 2}, "tag": "x"}),
+                // The size moved to the bytes entry.
+                json!({"color": "red"}),
+                // The event's own keys stay on its map.
+                json!({"color": "red", "revision_origin": "upload"}),
+                json!({"tag": "x"}),
             ]
         );
-        // CREATE already held its complete map, so its object is kept.
-        assert_eq!(first.metadata.len(), 2);
+        let sizes = first
+            .payloads
+            .iter()
+            .map(|payload| {
+                decode_event_proposal(payload)
+                    .unwrap()
+                    .set_content
+                    .and_then(|content| content.size("bytes"))
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(sizes, [Some(1), Some(2), None]);
+        assert_eq!(first.metadata.len(), 3);
         assert_eq!(first.commit_id, commit().commit_id);
+    }
+
+    #[test]
+    fn a_file_size_must_match_its_stored_object() {
+        for (value, sizes, refusal) in [
+            (json!({"content": {"size": 2}}), sizes(), "stored size 1"),
+            (json!({"color": "red"}), sizes(), "stored size 1"),
+            (
+                json!({"content": {"size": 1}}),
+                BTreeMap::new(),
+                "no stored size",
+            ),
+        ] {
+            let create = metadata(value);
+            let mut commit = source(
+                1,
+                vec![(event(FILE, "FILE::CREATE", None, &create), Some(&create))],
+            );
+            commit.events[0].sizes = sizes;
+            let error = converter().convert(commit).err().unwrap();
+            assert!(error.0.contains(refusal), "{error}");
+        }
+        // A FILE whose only key was its size carries no metadata.
+        let create = metadata(json!({"content": {"size": 1}}));
+        let commit = converter()
+            .convert(source(
+                1,
+                vec![(event(FILE, "FILE::CREATE", None, &create), Some(&create))],
+            ))
+            .unwrap();
+        let converted = decode_event_proposal(&commit.payloads[0]).unwrap();
+        assert!(converted.set_metadata.is_none());
+        assert!(commit.metadata.is_empty());
     }
 
     #[test]
@@ -769,7 +880,7 @@ mod tests {
 
     #[test]
     fn a_source_that_does_not_hash_to_its_id_is_refused() {
-        let create = metadata(json!({}));
+        let create = metadata(json!({"content": {"size": 1}}));
         let mut commit = source(
             1,
             vec![(event(FILE, "FILE::CREATE", None, &create), Some(&create))],

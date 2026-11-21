@@ -320,19 +320,21 @@ pub fn reconstruct_subitem_content(
     let mut content = match set_content {
         None => serde_json::Value::Null,
         Some(roles) => {
+            let blob = ["bytes", "source"]
+                .into_iter()
+                .find(|role| roles.only(role).is_some());
             if let Some(body) = roles.object("body").map(|object| object.utf8()) {
                 serde_json::json!({"body":body})
-            } else if let Some(id) = roles.only("bytes").or_else(|| roles.only("source")) {
-                serde_json::json!({"blob_id":id})
+            } else if let Some(role) = blob {
+                serde_json::json!({"blob_id":roles.get(role),"size":roles.size(role)})
             } else {
-                serde_json::to_value(roles).expect("content roles are JSON strings")
+                serde_json::to_value(roles).expect("content roles are JSON")
             }
         }
     };
 
-    // For VERSION edits, the platform stores content meta (size/...) in
-    // set_metadata["content"] while the blob id lives in set_content.
-    // Reconstruct the merged view for projection.
+    // Other content descriptors (mime type, ...) live in set_metadata["content"].
+    // Merge them into the view; the content entry's own fields win.
     let Some(extra) = meta_get_json(set_metadata, "content") else {
         return content;
     };
@@ -343,7 +345,7 @@ pub fn reconstruct_subitem_content(
     let base_obj = content.as_object_mut();
     if let Some(base_obj) = base_obj {
         for (k, v) in extra_obj {
-            base_obj.insert(k.clone(), v.clone());
+            base_obj.entry(k.clone()).or_insert_with(|| v.clone());
         }
         return content;
     }

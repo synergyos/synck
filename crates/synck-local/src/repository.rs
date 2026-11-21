@@ -1355,21 +1355,8 @@ impl Repository {
                 continue;
             }
             let proposal: synck_vcs::types::EventProposal = event.proposal()?;
-            let Some(blob_id) = proposal
-                .set_content
-                .as_ref()
-                .and_then(|content| content.only("bytes"))
-            else {
-                continue;
-            };
-            let size = proposal
-                .set_metadata
-                .as_ref()
-                .and_then(synck_vcs::metadata::MetadataRef::value)
-                .and_then(|m| m.get("content"))
-                .and_then(|m| m.get("size"))
-                .and_then(serde_json::Value::as_i64)
-                .ok_or_else(|| LocalError::Integrity("FILE content size is missing".into()))?;
+            let (blob_id, size) =
+                crate::event_profile::parse_content(&proposal).map_err(LocalError::Integrity)?;
             transaction.execute("INSERT INTO local_file_heads(item_id,item_seq,blob_id,size_bytes) VALUES(?1,?2,?3,?4) ON CONFLICT(item_id) DO UPDATE SET item_seq=excluded.item_seq,blob_id=excluded.blob_id,size_bytes=excluded.size_bytes",
                 params![event.item_id.as_str(),event.item_seq,blob_id.as_str(),size])?;
         }

@@ -667,27 +667,8 @@ fn parse_event(event: &EventRow) -> Result<EventProposal> {
 }
 
 fn event_content(event: &EventProposal) -> Result<(ObjectId, i64)> {
-    let blob_id = match event
-        .set_content
-        .as_ref()
-        .and_then(|content| content.only("bytes"))
-    {
-        Some(blob_id) => blob_id.clone(),
-        _ => {
-            return Err(LocalError::Integrity(
-                "version content event has no blob".to_string(),
-            ));
-        }
-    };
-    let size = event
-        .set_metadata
-        .as_ref()
-        .and_then(synck_vcs::metadata::MetadataRef::value)
-        .and_then(|value| value.pointer("/content/size"))
-        .and_then(Value::as_i64)
-        .filter(|value| *value >= 0)
-        .ok_or_else(|| LocalError::Integrity("version content has invalid size".to_string()))?;
-    Ok((blob_id, size))
+    crate::event_profile::parse_content(event)
+        .map_err(|error| LocalError::Integrity(format!("version content: {error}")))
 }
 
 fn normalize_description(value: Option<&str>) -> Option<String> {

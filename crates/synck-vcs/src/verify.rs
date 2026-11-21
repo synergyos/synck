@@ -621,6 +621,7 @@ mod tests {
             set_metadata: None,
             set_content: Some(crate::content::EventContent::bytes(
                 crate::types::ObjectId::from_digest([7; 32]),
+                7,
             )),
             create_item: Some(CreateItem {
                 key: None,

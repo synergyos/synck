@@ -56,7 +56,7 @@ mod tests {
     fn closure_is_structural_even_for_unknown_families_and_absent_metadata() {
         let a = ObjectId::from_digest([1; 32]);
         let b = ObjectId::from_digest([2; 32]);
-        let event = EventProposal::from_fields(serde_json::json!({"event_type":"FUTURE::CREATE", "set_content":{"source":a,"provider":a}, "set_metadata":{"embedded_id":b}})).unwrap();
+        let event = EventProposal::from_fields(serde_json::json!({"event_type":"FUTURE::CREATE", "set_content":{"source":{"id":a,"size":3},"provider":{"id":a,"size":3}}, "set_metadata":{"embedded_id":b}})).unwrap();
         let expected = HistoryReferences {
             objects: vec![a],
             metadata: Some(event.set_metadata.as_ref().unwrap().id()),

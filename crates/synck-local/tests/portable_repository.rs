@@ -11,7 +11,6 @@ use synck_local::portable::{
 };
 use synck_vcs::bundle::BundleReader;
 use synck_vcs::config::CoreConfig;
-use synck_vcs::metadata::MetadataRef;
 use synck_vcs::object::{Object, plain_id};
 use synck_vcs::repo::Repo;
 use synck_vcs::storage::{Storage, StorageBackend};
@@ -83,8 +82,7 @@ async fn fixture_with_domain(domain: bool) -> Fixture {
     )
     .unwrap();
     let mut file_creation = creation(&file, "FILE", Some(folder.clone()), "original.txt");
-    file_creation.set_content = Some(EventContent::bytes(empty));
-    file_creation.set_metadata = Some(MetadataRef::new(json!({"content":{"size":0}})).unwrap());
+    file_creation.set_content = Some(EventContent::bytes(empty, 0));
     let chat_creation: EventProposal = EventProposal::from_fields(json!({
         "item_id":chat,"event_type":"CHAT::CREATE",
         "create_item":CreateItem::record("CHAT", None, None),
@@ -119,8 +117,8 @@ async fn fixture_with_domain(domain: bool) -> Fixture {
         body.payload(),
     )
     .unwrap();
-    let file_event:EventProposal=EventProposal::from_fields(json!({"item_id":file,"event_type":"FILE::SET_CONTENT","base_seq":1,"set_metadata":{"content":{"size":primary.len()}},"set_content":EventContent::bytes(synck_vcs::types::ObjectId::parse(primary_blob.clone()).unwrap())})).unwrap();
-    let message:EventProposal=EventProposal::from_fields(json!({"item_id":chat,"event_type":"CHAT::MESSAGE::CREATE","base_seq":1,"set_content":EventContent::body(body.id())})).unwrap();
+    let file_event:EventProposal=EventProposal::from_fields(json!({"item_id":file,"event_type":"FILE::SET_CONTENT","base_seq":1,"set_content":EventContent::bytes(synck_vcs::types::ObjectId::parse(primary_blob.clone()).unwrap(), primary.len() as u64)})).unwrap();
+    let message:EventProposal=EventProposal::from_fields(json!({"item_id":chat,"event_type":"CHAT::MESSAGE::CREATE","base_seq":1,"set_content":EventContent::body(body.id(), body.payload().len() as u64)})).unwrap();
     core.append(repo_id.clone(), proposal(vec![file_event, message]))
         .await
         .unwrap();
@@ -170,7 +168,7 @@ async fn complete_mixed_repository_reads_offline_and_keeps_exact_history_and_bod
             report.objects,
             report.metadata
         ),
-        (2, 3, 3, 3)
+        (2, 3, 3, 1)
     );
     assert_eq!(
         repository.read_body(fixture.body.id()).unwrap().payload(),
@@ -364,7 +362,7 @@ async fn follower_activation_continuation_and_explicit_finalize_preserve_old_byt
         Storage::new(Arc::new(storage.clone())),
         CoreConfig::default(),
     );
-    core.append(fixture.repo_id.clone(),proposal(vec![EventProposal::from_fields(json!({"item_id":fixture.chat,"event_type":"CHAT::MESSAGE::CREATE","base_seq":3,"set_content":EventContent::body(fixture.body.id())})).unwrap()])).await.unwrap();
+    core.append(fixture.repo_id.clone(),proposal(vec![EventProposal::from_fields(json!({"item_id":fixture.chat,"event_type":"CHAT::MESSAGE::CREATE","base_seq":3,"set_content":EventContent::body(fixture.body.id(), fixture.body.payload().len() as u64)})).unwrap()])).await.unwrap();
     let mut repository = PortableRepository::open(&destination).unwrap();
     assert!(repository.verify().await.is_err());
     repository.finalize().await.unwrap();
@@ -692,7 +690,7 @@ async fn repository_copy_includes_committed_wal_without_checkpointing_source() {
                 "item_id":fixture.chat,
                 "event_type":"CHAT::MESSAGE::CREATE",
                 "base_seq":2,
-                "set_content":EventContent::body(fixture.body.id())
+                "set_content":EventContent::body(fixture.body.id(), fixture.body.payload().len() as u64)
             }))
             .unwrap(),
         ]),
@@ -1199,7 +1197,7 @@ async fn local_email_import_preserves_source_and_materializes_one_atomic_email()
         fixture
             .source
             .join(".synck/objects")
-            .join(&source_blob.as_str()[7..]),
+            .join(&source_blob.id.as_str()[7..]),
     )
     .unwrap();
     assert_eq!(stored, bytes);
@@ -1564,6 +1562,7 @@ async fn email_import_failed_object_write_can_retry_without_corrupt_publication(
         .item
         .projection
         .content_roles["source"]
+        .id
         .clone();
     let object_path = objects.join(hex::encode(source_id.as_bytes()));
     assert_eq!(fs::read(&object_path).unwrap(), bytes);

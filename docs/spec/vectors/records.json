@@ -18,7 +18,7 @@
     ]
   },
   {
-    "name": "record with name",
+    "name": "another type takes the tree form from its creation",
     "commits": [
       {
         "events": [
@@ -31,8 +31,8 @@
             }
           }
         ],
-        "valid": false,
-        "reason": "record type in tree form"
+        "valid": true,
+        "state_digest": "sha256:16bf53cc10b084f1eec80f35aeeeb953d8109e24c57b5bf5c339abad7e7015e5"
       }
     ]
   },
@@ -86,12 +86,15 @@
               "name": "a"
             },
             "set_content": {
-              "bytes": "sha256:abababababababababababababababababababababababababababababababab"
+              "bytes": {
+                "id": "sha256:abababababababababababababababababababababababababababababababab",
+                "size": 5
+              }
             }
           }
         ],
         "valid": true,
-        "state_digest": "sha256:cc90d9f1d64c45443dfe38f25868552af339d38361ed73498fbd2eec602d2041"
+        "state_digest": "sha256:99c4450ff60f74f2f1e90cb3999583c8657ed77f5d59fd094b0deab80e7d409e"
       }
     ]
   },
@@ -2250,12 +2253,15 @@
               "name": "a"
             },
             "set_content": {
-              "bytes": "sha256:abababababababababababababababababababababababababababababababab"
+              "bytes": {
+                "id": "sha256:abababababababababababababababababababababababababababababababab",
+                "size": 5
+              }
             }
           }
         ],
         "valid": true,
-        "state_digest": "sha256:cc90d9f1d64c45443dfe38f25868552af339d38361ed73498fbd2eec602d2041"
+        "state_digest": "sha256:99c4450ff60f74f2f1e90cb3999583c8657ed77f5d59fd094b0deab80e7d409e"
       },
       {
         "events": [],
@@ -2272,7 +2278,7 @@
           }
         ],
         "valid": true,
-        "state_digest": "sha256:f75006cb3e5a739c196128af9e7c7466f39d1943a88a1d6d8fe4816fc70700fd"
+        "state_digest": "sha256:760f3be410121e5c66649c65b9943bdc6b815e0f20a4b5cb37630afb9b69ef12"
       }
     ]
   },
@@ -2289,12 +2295,15 @@
               "name": "a"
             },
             "set_content": {
-              "bytes": "sha256:abababababababababababababababababababababababababababababababab"
+              "bytes": {
+                "id": "sha256:abababababababababababababababababababababababababababababababab",
+                "size": 5
+              }
             }
           }
         ],
         "valid": true,
-        "state_digest": "sha256:cc90d9f1d64c45443dfe38f25868552af339d38361ed73498fbd2eec602d2041"
+        "state_digest": "sha256:99c4450ff60f74f2f1e90cb3999583c8657ed77f5d59fd094b0deab80e7d409e"
       },
       {
         "events": [
@@ -2323,12 +2332,15 @@
               "name": "a"
             },
             "set_content": {
-              "bytes": "sha256:abababababababababababababababababababababababababababababababab"
+              "bytes": {
+                "id": "sha256:abababababababababababababababababababababababababababababababab",
+                "size": 5
+              }
             }
           }
         ],
         "valid": true,
-        "state_digest": "sha256:cc90d9f1d64c45443dfe38f25868552af339d38361ed73498fbd2eec602d2041"
+        "state_digest": "sha256:99c4450ff60f74f2f1e90cb3999583c8657ed77f5d59fd094b0deab80e7d409e"
       },
       {
         "events": [
@@ -2337,7 +2349,10 @@
             "base_seq": 1,
             "event_type": "FILE::SET_CONTENT",
             "set_content": {
-              "body": "sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
+              "body": {
+                "id": "sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+                "size": 9
+              }
             }
           }
         ],
@@ -2370,7 +2385,10 @@
             "base_seq": 1,
             "event_type": "ITEM::NOTE",
             "set_content": {
-              "body": "sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
+              "body": {
+                "id": "sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+                "size": 9
+              }
             }
           }
         ],
@@ -2391,12 +2409,15 @@
               "item_type": "EMAIL"
             },
             "set_content": {
-              "source": "sha256:abababababababababababababababababababababababababababababababab"
+              "source": {
+                "id": "sha256:abababababababababababababababababababababababababababababababab",
+                "size": 5
+              }
             }
           }
         ],
         "valid": true,
-        "state_digest": "sha256:56909965d25c3e9e2a99c1c9dd08feec9996dec3504c9ed7c90e98028ed735c5"
+        "state_digest": "sha256:8272ab9638dc54c8ef2e48de3fa8ebe605ad0b2a7fbc526c158f102748c6fd45"
       },
       {
         "events": [
@@ -2405,12 +2426,15 @@
             "base_seq": 1,
             "event_type": "EMAIL::ATTACHMENT::CREATE",
             "set_content": {
-              "source": "sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
+              "source": {
+                "id": "sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+                "size": 9
+              }
             }
           }
         ],
         "valid": true,
-        "state_digest": "sha256:30bedbc2e133a129252690f8110c8d2bad0ea1699d543a90e315667cac1b22a0"
+        "state_digest": "sha256:6d99f0cdb1568c785973a6779285813379e5fecc07ef294e00738959ec1daffc"
       }
     ]
   },
@@ -2426,12 +2450,15 @@
               "item_type": "TASK"
             },
             "set_content": {
-              "body": "sha256:abababababababababababababababababababababababababababababababab"
+              "body": {
+                "id": "sha256:abababababababababababababababababababababababababababababababab",
+                "size": 5
+              }
             }
           }
         ],
         "valid": true,
-        "state_digest": "sha256:f730df05ad3680449d3236e287bdea58487b08025a71c6f6cc5cf60ef1a95c65"
+        "state_digest": "sha256:6348c047f5335ac0029611d3c457bf3d6e09f1ffb75be6dba0c055a4904d20b7"
       },
       {
         "events": [
@@ -2440,12 +2467,15 @@
             "base_seq": 1,
             "event_type": "TASK::SET_CONTENT",
             "set_content": {
-              "notes": "sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
+              "notes": {
+                "id": "sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+                "size": 9
+              }
             }
           }
         ],
         "valid": true,
-        "state_digest": "sha256:9142d5801455eb89aece76b7fb3456adab397613c783cf9e9eedfbea948367bb"
+        "state_digest": "sha256:4d757f1e0a6424e4ec8b113ebde4f41577bb319b29efc667eb3cb2d839cffad9"
       }
     ]
   },
@@ -2470,12 +2500,15 @@
               "name": "a"
             },
             "set_content": {
-              "bytes": "sha256:abababababababababababababababababababababababababababababababab"
+              "bytes": {
+                "id": "sha256:abababababababababababababababababababababababababababababababab",
+                "size": 5
+              }
             }
           }
         ],
         "valid": true,
-        "state_digest": "sha256:8f92dd2c91dae326ce58c17c0401baa40b4d56ce68606b303fb9eac29150a15c"
+        "state_digest": "sha256:c27829e5d7d3c8601682f0e017183ead3e7ee73e9ed7a4977f07849f64732e79"
       },
       {
         "events": [
@@ -2487,7 +2520,7 @@
           }
         ],
         "valid": true,
-        "state_digest": "sha256:5e60bf8d28b1d4fa06d356f3e48ad4355ab9047b609067ddad183ccd4d9c6a67"
+        "state_digest": "sha256:f70fc93612feb5e8c22dfb26382ddfa9cca00fb5ce07038216c67cf268ff4292"
       },
       {
         "events": [
@@ -2499,7 +2532,7 @@
           }
         ],
         "valid": true,
-        "state_digest": "sha256:e5f550f76a7b99711f0a2a0ba1956e732381830f303020bef02c42dd1a431501"
+        "state_digest": "sha256:223d67151010e004254b9b56a5244aee045d7beb884eb3090358869e4ab64424"
       }
     ]
   },
@@ -2551,12 +2584,15 @@
               "name": "a"
             },
             "set_content": {
-              "bytes": "sha256:abababababababababababababababababababababababababababababababab"
+              "bytes": {
+                "id": "sha256:abababababababababababababababababababababababababababababababab",
+                "size": 5
+              }
             }
           }
         ],
         "valid": true,
-        "state_digest": "sha256:cc90d9f1d64c45443dfe38f25868552af339d38361ed73498fbd2eec602d2041"
+        "state_digest": "sha256:99c4450ff60f74f2f1e90cb3999583c8657ed77f5d59fd094b0deab80e7d409e"
       },
       {
         "events": [
@@ -2568,7 +2604,7 @@
           }
         ],
         "valid": true,
-        "state_digest": "sha256:0608e35ce028c1ad7600e3e24f62114e164787b3e6240295b7276f8b1b8125b2"
+        "state_digest": "sha256:7065e127d9f97ecd759b6c20a633ceabe5a0728a97d9537a0e6485e3a40880de"
       },
       {
         "events": [],

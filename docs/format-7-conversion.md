@@ -2,9 +2,10 @@
 
 The rules `synck-convert` applies to one repository's published format 7
 history. It is storage-free: a driver reads commits in `repo_seq` order, with
-each commit's events in commit-event-index order and the stored bytes of the
-metadata objects they name, and writes what the converter returns. The CLI has
-no conversion command.
+each commit's events in commit-event-index order, the stored bytes of the
+metadata objects they name and the stored size of each content object their
+converted content names, and writes what the converter returns. The CLI has no
+conversion command.
 
 ## What stays
 
@@ -20,15 +21,26 @@ it cannot read, so it refuses the first encrypted object.
 ## What changes
 
 - Each envelope is the format 8 encoding of the same proposal.
+- Every content entry gains its object's stored size, which format 7 did not
+  record: the driver supplies it for each object of an event's `set_content`,
+  and for the originals an `EMAIL::CREATE` or a `POST` names in metadata (see
+  below). It reads a present object's length from its store; for an erased
+  one only what format 7 metadata recorded can give it, such as a FILE's
+  `content.size`. An event naming an object without a size is refused.
+- A FILE's size moves from metadata to its bytes entry. A FILE content event's
+  `content` must be exactly `{"size": n}` with `n` the supplied size, or the
+  event is refused; erased metadata is not checked. `content` leaves every
+  FILE map, and a FILE event whose map is then empty, while the item's previous
+  one was too, carries no metadata.
 - Each commit ID and checkpoint is recomputed. The converter first checks that
   the source commit hashes to its format 7 ID, so it converts only what was
   published. The driver keeps the old-to-new commit ID map until no stored
   reference to an old ID remains.
 - Item metadata becomes complete maps. Format 7 folded patches: `CREATE` and
   `SET_METADATA` fold, and an erased one clears every key; a record's
-  `SET_TITLE` sets `title`; a FILE event with new bytes sets `content`; an
-  erased one of those two removes only its key. A two-segment event's new map
-  is the item's folded metadata after the event plus the event's own keys, so a
+  `SET_TITLE` sets `title`, and an erased one removes it. A FILE's `content`
+  is gone before this fold. A two-segment event's new map is the item's
+  folded metadata after the event plus the event's own keys, so a
   key that did not fold, such as a revision's origin, stays on its event. Null
   values, which meant unset, are dropped.
 - An EMAIL keeps its originals and loses its renderings. The Hub referenced

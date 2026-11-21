@@ -2161,6 +2161,7 @@ mod checked_append_work_tests {
                 "FILE::SET_CONTENT",
                 Some(EventContent::bytes(
                     synck_vcs::types::ObjectId::from_digest([42; 32]),
+                    7,
                 )),
                 None,
                 None,
@@ -2220,9 +2221,10 @@ mod checked_append_work_tests {
             event_type: format!("{item_type}::CREATE"),
             set_metadata: None,
             set_content: (item_type == "FILE").then(|| {
-                synck_vcs::content::EventContent::bytes(synck_vcs::types::ObjectId::from_digest(
-                    [7; 32],
-                ))
+                synck_vcs::content::EventContent::bytes(
+                    synck_vcs::types::ObjectId::from_digest([7; 32]),
+                    7,
+                )
             }),
             create_item: Some(CreateItem {
                 key: None,

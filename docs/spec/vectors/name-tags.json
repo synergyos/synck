@@ -55,13 +55,16 @@
                 "name": "tag:50674f53201cd260728c9179d3b2179460f54e0b78ec08dc6f42fc2106f8becc"
               },
               "set_content": {
-                "bytes": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                "bytes": {
+                  "id": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                  "size": 12
+                }
               },
               "metadata_id": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
             }
           ],
           "valid": true,
-          "state_digest": "sha256:79445b0475626d0ce741bf113caef8664b4c8cefd6ca9b3844dd9f0e96495c4d"
+          "state_digest": "sha256:a3643f5c2ceb64cd7d34797d57e539b2d435766830d03236278ca0bf8e4bc3df"
         },
         {
           "events": [
@@ -74,7 +77,7 @@
             }
           ],
           "valid": true,
-          "state_digest": "sha256:5d577e1d4cbcea08e860afadbb83ae3028bbb556340fb1316e1ef7dd717f8829"
+          "state_digest": "sha256:4bd8b070e33afb39680205e15a4b6beef667f605d5a7af83789f20fd75899ca7"
         },
         {
           "events": [
@@ -87,13 +90,16 @@
                 "name": "tag:50674f53201cd260728c9179d3b2179460f54e0b78ec08dc6f42fc2106f8becc"
               },
               "set_content": {
-                "bytes": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                "bytes": {
+                  "id": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                  "size": 12
+                }
               },
               "metadata_id": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
             }
           ],
           "valid": true,
-          "state_digest": "sha256:35726742076b60e24015920929fe89bb7826d71d79f5eed9e14c539cdb88fde8"
+          "state_digest": "sha256:5beb851309b489008c60517cae3f55e2e36b342df88d57be62a6109ccde8fd76"
         }
       ]
     },
@@ -121,7 +127,10 @@
                 "name": "tag:50674f53201cd260728c9179d3b2179460f54e0b78ec08dc6f42fc2106f8becc"
               },
               "set_content": {
-                "bytes": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                "bytes": {
+                  "id": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                  "size": 12
+                }
               },
               "metadata_id": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
             },
@@ -134,7 +143,10 @@
                 "name": "tag:50674f53201cd260728c9179d3b2179460f54e0b78ec08dc6f42fc2106f8becc"
               },
               "set_content": {
-                "bytes": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                "bytes": {
+                  "id": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                  "size": 12
+                }
               },
               "metadata_id": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
             }
@@ -168,7 +180,10 @@
                 "name": "Notes.txt"
               },
               "set_content": {
-                "bytes": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                "bytes": {
+                  "id": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                  "size": 12
+                }
               },
               "metadata_id": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
             }
@@ -202,7 +217,10 @@
                 "name": "tag:50674f53201cd260728c9179d3b2179460f54e0b78ec08dc6f42fc2106f8becc"
               },
               "set_content": {
-                "bytes": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                "bytes": {
+                  "id": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                  "size": 12
+                }
               }
             }
           ],

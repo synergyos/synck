@@ -209,7 +209,8 @@ calls `ProposalVerifier::finish` against the staged pages, proves referenced
 objects durable and performs normal Core acceptance, all in one transaction.
 Item bases, ref bases, head guards, namespace and subtree constraints remain
 mandatory. A proposal requires every content and metadata object it names:
-missing ones are `OBJECTS_MISSING`, and the authority installs uploaded metadata
+missing ones are `OBJECTS_MISSING`, a content object whose length differs from
+its entry's size makes the proposal invalid, and the authority installs uploaded metadata
 through Core's metadata API before accepting the commit that points to it. No
 event is accepted before the whole commit is.
 

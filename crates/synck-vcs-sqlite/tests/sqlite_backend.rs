@@ -34,6 +34,7 @@ fn create_event(name: &str) -> EventProposal {
         set_metadata: None,
         set_content: Some(synck_vcs::content::EventContent::bytes(
             synck_vcs::types::ObjectId::from_digest([7; 32]),
+            7,
         )),
         create_item: Some(CreateItem {
             key: None,
@@ -521,9 +522,10 @@ fn create_item_event(
         event_type: format!("{item_type}::CREATE"),
         set_metadata: None,
         set_content: (item_type == "FILE").then(|| {
-            synck_vcs::content::EventContent::bytes(synck_vcs::types::ObjectId::from_digest(
-                [7; 32],
-            ))
+            synck_vcs::content::EventContent::bytes(
+                synck_vcs::types::ObjectId::from_digest([7; 32]),
+                7,
+            )
         }),
         create_item: Some(CreateItem {
             key: None,
@@ -1602,6 +1604,7 @@ async fn federated_bootstrap_repeats_its_stream_once_per_proposal() {
         set_metadata: None,
         set_content: Some(synck_vcs::content::EventContent::bytes(
             synck_vcs::types::ObjectId::from_digest([7; 32]),
+            7,
         )),
         create_item: Some(CreateItem {
             key: None,
@@ -2702,11 +2705,11 @@ async fn content_only_federated_commits_follow_the_item_rules() {
     .await
     .unwrap();
     let bytes = || {
-        synck_vcs::content::EventContent::bytes(synck_vcs::types::ObjectId::from_digest([8; 32]))
+        synck_vcs::content::EventContent::bytes(synck_vcs::types::ObjectId::from_digest([8; 32]), 7)
     };
 
     let not_bytes =
-        synck_vcs::content::EventContent::body(synck_vcs::types::ObjectId::from_digest([8; 32]));
+        synck_vcs::content::EventContent::body(synck_vcs::types::ObjectId::from_digest([8; 32]), 7);
     let error = repo
         .ingest_content_only_existing_item(
             repo_id.clone(),

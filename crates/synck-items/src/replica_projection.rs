@@ -3,7 +3,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use synck_vcs::metadata::MetadataRef;
-use synck_vcs::types::{EventProposal, ItemId, ItemRevision, LifecycleState, ObjectId};
+use synck_vcs::types::{ContentRef, EventProposal, ItemId, ItemRevision, LifecycleState};
 
 use crate::metadata::{
     ITEM_SUBTYPE_STANDARD, ITEM_TREE_HIDDEN_METADATA_KEY, item_color_metadata_from_json,
@@ -22,7 +22,7 @@ pub struct ReplicaItemProjection {
     pub metadata_json: serde_json::Value,
     pub color_metadata: Option<String>,
     pub content_blob_id: Option<String>,
-    pub content_roles: std::collections::BTreeMap<String, ObjectId>,
+    pub content_roles: std::collections::BTreeMap<String, ContentRef>,
     pub content_item_seq: Option<i64>,
     pub size: Option<i64>,
     pub latest_item_seq: i64,
@@ -171,36 +171,12 @@ pub fn apply_replica_item_event(
     }
     if item.item_type == "FILE"
         && proposal.replaces_content()
-        && let Some(blob_id) = proposal
-            .set_content
-            .as_ref()
-            .and_then(|content| content.only("bytes"))
+        && let Some(content) = &proposal.set_content
+        && let (Some(blob_id), Some(size)) = (content.only("bytes"), content.size("bytes"))
     {
-        let previous_blob = item.content_blob_id.as_deref();
-        let explicit_size = proposal
-            .set_metadata
-            .as_ref()
-            .and_then(synck_vcs::metadata::MetadataRef::value)
-            .and_then(|metadata| metadata.get("content"))
-            .and_then(|content| content.get("size"))
-            .and_then(serde_json::Value::as_i64)
-            .filter(|size| *size >= 0);
-        if explicit_size.is_none() && previous_blob != Some(blob_id.as_str()) {
-            item.size = None;
-        } else if explicit_size.is_some() {
-            item.size = explicit_size;
-        }
-        if let serde_json::Value::Object(current) = &mut item.metadata_json {
-            let metadata = proposal.set_metadata.as_ref();
-            if let Some(content) = metadata
-                .and_then(MetadataRef::value)
-                .and_then(|metadata| metadata.get("content"))
-            {
-                current.insert("content".to_string(), content.clone());
-            } else if metadata.is_some_and(|metadata| metadata.value().is_none()) {
-                current.remove("content");
-            }
-        }
+        item.size = Some(i64::try_from(size).map_err(|_| {
+            ReplicaProjectionError::Invalid("FILE size exceeds 2^63 - 1".to_string())
+        })?);
         item.content_blob_id = Some(blob_id.to_string());
         item.content_item_seq = Some(item_seq);
     }
@@ -319,7 +295,7 @@ fn set_record_title(
 mod tests {
     use super::*;
     use synck_vcs::types::CreateItem;
-    use synck_vcs::types::EventContent;
+    use synck_vcs::types::{EventContent, ObjectId};
 
     #[test]
     fn create_and_content_project_exact_navigation_fields() {
@@ -360,16 +336,13 @@ mod tests {
         let mut content = create.clone();
         content.create_item = None;
         content.event_type = "FILE::SET_CONTENT".to_string();
-        content.set_metadata = Some(
-            synck_vcs::metadata::MetadataRef::new(serde_json::json!({"content":{"size":42}}))
-                .unwrap(),
-        );
-        content.set_content = Some(EventContent::bytes(ObjectId::from_digest([0xab; 32])));
+        content.set_metadata = None;
+        content.set_content = Some(EventContent::bytes(ObjectId::from_digest([0xab; 32]), 42));
         content.base_seq = Some(1);
         let projected = apply_replica_item_event(Some(created), item_id, 2, &content, now, "actor")
             .expect("project content");
         assert_eq!(projected.size, Some(42));
-        assert_eq!(projected.metadata_json["content"]["size"], 42);
+        assert_eq!(projected.color_metadata.as_deref(), Some("blue"));
         assert_eq!(projected.content_item_seq, Some(2));
     }
 
@@ -387,8 +360,8 @@ mod tests {
             &event(serde_json::json!({
                 "item_id": file, "event_type": "FILE::CREATE",
                 "create_item": {"item_type": "FILE", "name": "a.txt"},
-                "set_content": {"bytes": blob('a')},
-                "set_metadata": {"content": {"size": 7}}
+                "set_content": {"bytes": {"id": blob('a'), "size": 7}},
+                "set_metadata": {"note": "first"}
             })),
             now,
             "actor",
@@ -396,21 +369,22 @@ mod tests {
         .unwrap();
         let mut revision = event(serde_json::json!({
             "item_id": file, "event_type": "FILE::SET_CONTENT", "base_seq": 1,
-            "set_content": {"bytes": blob('b')},
-            "set_metadata": {"content": {"size": 8}}
+            "set_content": {"bytes": {"id": blob('b'), "size": 8}},
+            "set_metadata": {"note": "second"}
         }));
         revision.set_metadata = Some(MetadataRef::Absent(ObjectId::from_digest([1; 32])));
         let erased =
             apply_replica_item_event(Some(created), file.clone(), 2, &revision, now, "actor")
                 .unwrap();
         assert_eq!(erased.content_blob_id, Some(blob('b')));
-        assert_eq!(erased.size, None);
-        assert_eq!(erased.metadata_json.get("content"), None);
+        // The size is the content entry's, which erasing metadata keeps.
+        assert_eq!(erased.size, Some(8));
+        assert_eq!(erased.metadata_json.get("note"), None);
 
         // Replay follows fields, so the head moves with the roles on any verb.
         let later = event(serde_json::json!({
             "item_id": file, "event_type": "FILE::SET_METADATA", "base_seq": 2,
-            "set_content": {"bytes": blob('c')}
+            "set_content": {"bytes": {"id": blob('c'), "size": 9}}
         }));
         let moved = apply_replica_item_event(Some(erased), file, 3, &later, now, "actor").unwrap();
         assert_eq!(moved.content_blob_id, Some(blob('c')));
@@ -540,8 +514,8 @@ mod tests {
             &event(serde_json::json!({
                 "item_id": file, "event_type": "FILE::CREATE",
                 "create_item": {"item_type": "FILE", "name": "a.md"},
-                "set_content": {"bytes": ObjectId::from_digest([2; 32])},
-                "set_metadata": {"color": "RED", "content": {"size": 1}}
+                "set_content": {"bytes": {"id": ObjectId::from_digest([2; 32]), "size": 1}},
+                "set_metadata": {"color": "RED"}
             })),
             now,
             "actor",
@@ -554,7 +528,7 @@ mod tests {
             &event(serde_json::json!({
                 "item_id": file, "event_type": "FILE::SET_NAME", "base_seq": 1,
                 "set_name": "b.md",
-                "set_metadata": {"color": "BLUE", "content": {"size": 1}}
+                "set_metadata": {"color": "BLUE"}
             })),
             now,
             "actor",
@@ -567,8 +541,8 @@ mod tests {
             3,
             &event(serde_json::json!({
                 "item_id": file, "event_type": "FILE::SET_CONTENT", "base_seq": 2,
-                "set_content": {"bytes": ObjectId::from_digest([3; 32])},
-                "set_metadata": {"color": "GREEN", "content": {"size": 2}}
+                "set_content": {"bytes": {"id": ObjectId::from_digest([3; 32]), "size": 2}},
+                "set_metadata": {"color": "GREEN"}
             })),
             now,
             "actor",

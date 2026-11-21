@@ -1589,10 +1589,11 @@ impl PortableRepository {
         if item.item_type != "EMAIL" {
             return Err(invalid("email rendering requires an EMAIL item"));
         }
-        let source = item
+        let source = &item
             .content_roles
             .get("source")
-            .ok_or_else(|| corrupt("EMAIL has no source role"))?;
+            .ok_or_else(|| corrupt("EMAIL has no source role"))?
+            .id;
         let mailcal = &item.metadata_json["mailcal"];
         // A provider message has no source descriptor; its source is raw MIME.
         let format = match mailcal["source"]["format"]
@@ -1637,25 +1638,12 @@ impl PortableRepository {
                 item.size,
             ),
             "EMAIL" => {
-                let mailcal = &item.metadata_json["mailcal"];
-                let blob = item
+                let source = item
                     .content_roles
                     .get("source")
-                    .map(|id| id.as_str())
-                    .ok_or_else(|| invalid("EMAIL has no exact imported source"))?
-                    .to_string();
-                // A provider message's raw MIME has no descriptor to check.
-                let size = if mailcal["source"].is_null() && mailcal["provider"].is_string() {
-                    None
-                } else {
-                    Some(
-                        mailcal["source"]["size_bytes"]
-                            .as_i64()
-                            .filter(|size| *size >= 0)
-                            .ok_or_else(|| corrupt("EMAIL source descriptor has no valid size"))?,
-                    )
-                };
-                (blob, size)
+                    .ok_or_else(|| invalid("EMAIL has no exact imported source"))?;
+                let size = i64::try_from(source.size).map_err(corrupt)?;
+                (source.id.to_string(), Some(size))
             }
             _ => return Err(invalid("item export requires a FILE or imported EMAIL")),
         };
@@ -1904,6 +1892,7 @@ impl PortableRepository {
         let mut expected_heads = HashMap::new();
         let mut verifier = SemanticVerifier::new(self.config.encrypted);
         let mut forms = BTreeMap::new();
+        let mut sizes: BTreeMap<String, BTreeSet<u64>> = BTreeMap::new();
         let mut from = 1;
         let mut count = 0;
         let mut terminal = 0;
@@ -1943,19 +1932,20 @@ impl PortableRepository {
                     }
                 }
                 for row in &rows {
-                    let CommitEventRow::Item(event) = row else {
+                    let content = match row {
+                        CommitEventRow::Item(event) => event.proposal()?.set_content,
+                        CommitEventRow::Ref(event) => event.proposal()?.set_content,
+                    };
+                    let Some(content) = content else {
                         continue;
                     };
-                    let proposal: EventProposal = event.proposal()?;
-                    let Some(content) = &proposal.set_content else {
-                        continue;
-                    };
-                    for (role, id) in content.roles() {
-                        let form = content_form(self.config.encrypted, role);
-                        forms
-                            .entry(id.as_str()[7..].to_string())
-                            .or_insert_with(BTreeSet::new)
-                            .insert(form);
+                    for (role, entry) in content.roles() {
+                        let name = entry.id.as_str()[7..].to_string();
+                        sizes.entry(name.clone()).or_default().insert(entry.size);
+                        if matches!(row, CommitEventRow::Item(_)) {
+                            let form = content_form(self.config.encrypted, role);
+                            forms.entry(name).or_insert_with(BTreeSet::new).insert(form);
+                        }
                     }
                 }
                 let owned = rows.into_iter().map(VerifyOwned::from).collect::<Vec<_>>();
@@ -2048,17 +2038,25 @@ impl PortableRepository {
         let mut missing_objects = Vec::new();
         for name in &objects {
             let id = ObjectId::parse(format!("sha256:{name}")).map_err(corrupt)?;
-            let present = match &inventory {
-                Some(inventory) => inventory.contains_key(name),
+            let stored = match &inventory {
+                Some(inventory) => inventory.get(name).copied(),
                 None => match self.metadata.symlink_metadata(format!("objects/{name}")) {
-                    Ok(_) => true,
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+                    Ok(entry) => Some(entry.len()),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
                     Err(error) => return Err(corrupt(error)),
                 },
             };
-            if !present {
+            let Some(stored) = stored else {
                 missing_objects.push(id);
                 continue;
+            };
+            if sizes
+                .get(name)
+                .is_some_and(|sizes| sizes.iter().any(|size| *size != stored))
+            {
+                return Err(corrupt(format!(
+                    "object {id} is {stored} bytes, not its declared size"
+                )));
             }
             match forms.get(name) {
                 Some(forms) => {
@@ -2849,10 +2847,10 @@ impl PortableRepository {
         let owner = self.local_owner(chat, "CHAT").await?;
         synck_items::body_events::validate_body("CHAT::MESSAGE::CREATE", body).map_err(invalid)?;
         let object = Object::new(body.as_bytes()).map_err(invalid)?;
-        let content_id = object.id();
         self.store_bytes(object.payload())?;
+        let content = EventContent::body(object.id(), object.payload().len() as u64);
         let event: EventProposal = EventProposal::from_fields(
-            json!({"item_id":chat,"event_type":"CHAT::MESSAGE::CREATE","set_content":EventContent::body(content_id)}),
+            json!({"item_id":chat,"event_type":"CHAT::MESSAGE::CREATE","set_content":content}),
         )?;
         synck_items::subitems::extract_chat_message_fields(
             self.config
@@ -2878,7 +2876,7 @@ impl PortableRepository {
             let content = json!({"blob_id":blob.blob_id});
             synck_items::subitems::extract_chat_attachment_fields(&meta, &content)
                 .map_err(invalid)?;
-            events.push(EventProposal::from_fields(json!({"item_id":chat,"event_type":"CHAT::MESSAGE.ATTACHMENT::CREATE","set_metadata":{"parent_item_seq":owner.head_seq + 1,"meta":meta},"set_content":EventContent::source(blob.blob_id)}))?);
+            events.push(EventProposal::from_fields(json!({"item_id":chat,"event_type":"CHAT::MESSAGE.ATTACHMENT::CREATE","set_metadata":{"parent_item_seq":owner.head_seq + 1,"meta":meta},"set_content":EventContent::source(blob.blob_id, blob.size)}))?);
         }
         let commit = self
             .core()

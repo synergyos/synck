@@ -157,7 +157,7 @@ exact bytes, with no extra delimiter.
 | `time` | `i64` seconds and `u32` nanoseconds below 10^9, within years 0000 through 9999 |
 | `target` | `u8` 0 for none (the root, or no link), or 1 followed by a `uuid` |
 | `source` | `uuid` item ID, then `seq` item sequence |
-| `content` | `u8` role count, 0 to 32, then each role as `str` and `digest`, roles in strictly increasing byte order |
+| `content` | `u8` role count, 0 to 32, then each role as `str`, `digest` and `u64` size up to 2^63 - 1, roles in strictly increasing byte order |
 
 Optional fields are named by a flags field, and appear after it in the order of
 its bits, from bit 0 up. A field is present exactly when its bit is set.
@@ -271,8 +271,8 @@ event that changes `set_is_federated` or `set_federation_stream_id`, sets none o
 There are two kinds of rule. A replay rule depends only on structure, so any
 verifier applies it to any history, without metadata or family knowledge. An
 admission rule is what a family lets a writer add, and needs data that may be erased
-or encrypted, so it is checked only where that data is readable. `content.size` and
-the FILE revision labels are admission rules.
+or encrypted, so it is checked only where that data is readable. The FILE revision
+labels are admission rules.
 
 #### Content
 
@@ -429,8 +429,9 @@ Each event holds only the fields the core table gives it, with these additions:
 - In an encrypted repository, `SET_NAME` and both `CREATE` events carry metadata
   holding `name`, the display name its [tag](#tagged-names) was made from, and,
   as a [complete map](#metadata-payloads), the item's other keys.
-- `FILE::CREATE` and `FILE::SET_CONTENT` carry `set_content` with exactly `bytes`, and
-  metadata with `content` holding exactly `size`.
+- `FILE::CREATE` and `FILE::SET_CONTENT` carry `set_content` with exactly `bytes`,
+  whose size is the file's length. Their metadata is optional: a writer includes
+  it only when the item has other keys.
 - `FILE::SET_CONTENT` metadata may also hold `upload_intent_id` (nonempty string),
   `revision_origin` (`LOCAL` or `FEDERATED`) and `provenance`, and, like
   `SET_METADATA`, any other item key; a complete map repeats them all.
@@ -447,18 +448,17 @@ Each event holds only the fields the core table gives it, with these additions:
 
 A FILE is created with its first bytes: `FILE::CREATE` at item sequence one always
 carries `set_content`, and later revisions use `FILE::SET_CONTENT`. Its content
-snapshot has exactly `bytes: object_id`. Available revision metadata has
-`content.size`, the nonnegative application-byte length. Structural moves/renames
-do not create new byte content.
+snapshot has exactly `bytes`, whose entry holds the object ID and its size. In an
+unencrypted repository the object is PLAIN, so its size is the file's length.
+Structural moves/renames do not create new byte content.
 
 To export a tree at a published boundary, replay all complete commits through
 that boundary, retain LIVE items with LIVE ancestry, and derive paths from the
 parent IDs and names. For each FILE, select its latest `set_content` through
-that boundary, retrieve `bytes`, verify the object's ID, and output its plaintext
-(see [Objects](#objects)). Verify `content.size`
-when the corresponding metadata is present. Missing objects are unavailable,
-never zero-length substitutes. Missing size metadata does not make verified
-application bytes undecodable, although typed operations may require metadata.
+that boundary, retrieve `bytes`, verify the object's ID and size, and output its
+plaintext (see [Objects](#objects)). Missing objects are unavailable, never
+zero-length substitutes. Missing metadata does not make verified application
+bytes undecodable, although typed operations may require metadata.
 For a single historical revision, stop the FILE ledger at its requested item
 sequence. Labels resolve that same revision as specified below.
 
@@ -850,11 +850,14 @@ envelope or its digest. Missing bytes leave the ID intact and are explicitly
 reported as absent; typed interpretation requiring those fields cannot proceed.
 ## Content roles and closure
 
-`set_content`, when present, is a complete map from role names to object IDs. It
+`set_content`, when present, is a complete map from role names to entries. An
+entry is an object ID and the object's size: the length of its stored bytes, the
+whole frame for a SALTED or ENCRYPTED object, at most 2^63 - 1. The map
 contains at most 32 distinct roles. Each role matches `[a-z][a-z0-9_]{0,31}`. An
 absent field leaves the previous content snapshot unchanged, and an empty map
 clears it, under the [content rules](#content) of replay. Inline text is not event
-content.
+content. In JSON, as in the state digest, a role's entry is
+`{"id": "sha256:…", "size": n}` with exactly those keys.
 
 FILE content uses exactly `bytes`; CHAT message content uses `body`. EMAIL uses
 `source` and optionally `provider`; EMAIL attachments use `source`. Their metadata contains descriptors, never object references. Unknown
@@ -864,6 +867,11 @@ Closure scans all retained item and attached-ref events, including deleted
 items and superseded revisions. It collects each `metadata_id` and every value
 in `set_content`. Neither current heads nor fields inside metadata establish
 closure. Resolving content into a read view cannot change the serialized event.
+
+A present object, stored or supplied with a proposal, has exactly the size every
+entry naming it declares. A mismatch is corruption, or an invalid proposal, as a
+digest mismatch is. A missing object is valid thin history: its entry still gives
+its size.
 
 Verification checks canonical history independently of the disposable checkout
 cache. It reports `objects`, `metadata`, `missing_objects`, and
@@ -985,8 +993,8 @@ named field. `SET_REVISION` requires a new `source_item_seq` and may include a
 description. `TOMBSTONE` permanently removes the label from the live set.
 Mutations require an existing live version.
 All events in one commit use the ref head before that commit as `base_ref_seq`.
-Content ID and size are read from the referenced FILE event, never stored again
-in the label. Erasing that content therefore affects the revision and its label
+Content ID and size are read from the referenced FILE event's `bytes` entry, never
+stored again in the label. Erasing that content therefore affects the revision and its label
 without changing either ledger. Erasing label metadata makes the label's
 presentation unavailable; structural history remains verifiable.
 
@@ -1080,7 +1088,7 @@ part of any commit or checkpoint, and a reader does not need it.
 For each item created through that position, in ascending order of raw item ID
 bytes, form canonical JSON with exactly these fields, using null where a value is
 absent: `item_id`, `item_type`, `parent_folder_id`, `name`, `name_key`, `record_key`,
-`link_folder_id`, `content` (the current role map, `{}` when there is none),
+`link_folder_id`, `content` (the current role map in its JSON form, `{}` when there is none),
 `head_seq`, `ref_head_seq`, `lifecycle_state`, `sequencing_mode` and
 `federation_stream_id`. The digest is SHA-256 over the 14 ASCII bytes
 `synck-state-v1` and a line feed, followed by each item's JSON and a line feed.

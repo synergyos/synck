@@ -3,8 +3,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde_json::Value;
 use synck_vcs::naming::compute_name_key;
 use synck_vcs::types::{
-    CommitEventRow, CommitRow, EventProposal, EventRow, EventsDigest, ItemId, ObjectId,
-    RefEventProposal, RefEventRow, canonical_commit_bytes_for_hash, canonical_event_proposal_bytes,
+    CommitEventRow, CommitRow, EventProposal, EventRow, EventsDigest, ItemId, RefEventProposal,
+    RefEventRow, canonical_commit_bytes_for_hash, canonical_event_proposal_bytes,
     compute_commit_id,
 };
 
@@ -667,49 +667,29 @@ fn validate_content_event(proposal: &EventProposal) -> Result<(), SemanticError>
     validate_file_bytes(proposal)
 }
 
-/// Content event metadata may hold any item key, since a complete map
-/// (format.md, Metadata payloads) repeats them all; the keys this family
-/// names are checked.
+/// The bytes entry carries the file's size. Content event metadata is
+/// optional and may hold any item key, since a complete map (format.md,
+/// Metadata payloads) repeats them all; the keys this family names are checked.
 fn validate_file_bytes(proposal: &EventProposal) -> Result<(), SemanticError> {
-    let has_bytes = proposal
+    let size = proposal
         .set_content
         .as_ref()
-        .is_some_and(|content| content.only("bytes").is_some());
-    require_shape(has_bytes, "FILE content event lacks exactly its bytes")?;
-    let blob_id = proposal
-        .set_content
-        .as_ref()
-        .and_then(|content| content.only("bytes"))
-        .expect("content shape checked");
-    ObjectId::parse(blob_id.as_str()).map_err(|failure| {
-        error(
-            SemanticErrorCode::MalformedProfileEvent,
-            format!("invalid FILE blob id: {failure}"),
-        )
-    })?;
-    let metadata = proposal
+        .filter(|content| content.only("bytes").is_some())
+        .and_then(|content| content.size("bytes"));
+    require_shape(size.is_some(), "FILE content event lacks exactly its bytes")?;
+    if size.is_some_and(|size| size > crate::MAX_SAFE_JSON_INTEGER) {
+        return Err(error(
+            SemanticErrorCode::InvalidContent,
+            "FILE size exceeds the exact JSON integer range",
+        ));
+    }
+    let Some(metadata) = proposal
         .set_metadata
         .as_ref()
         .and_then(|value| value.as_object())
-        .ok_or_else(|| {
-            error(
-                SemanticErrorCode::MalformedProfileEvent,
-                "FILE content metadata is missing",
-            )
-        })?;
-    metadata
-        .get("content")
-        .and_then(Value::as_object)
-        .filter(|content| content.len() == 1)
-        .and_then(|content| content.get("size"))
-        .and_then(Value::as_u64)
-        .filter(|size| *size <= crate::MAX_SAFE_JSON_INTEGER)
-        .ok_or_else(|| {
-            error(
-                SemanticErrorCode::MalformedProfileEvent,
-                "FILE content event has invalid size metadata",
-            )
-        })?;
+    else {
+        return Ok(());
+    };
     if let Some(upload_intent_id) = metadata.get("upload_intent_id") {
         require_nonempty_string(upload_intent_id, "upload_intent_id")?;
     }
