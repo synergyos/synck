@@ -2547,12 +2547,6 @@ fn set_acceptance_time(dir: &tempfile::TempDir, commit_id: &CommitId, created_at
             params![commit_pk, created_at],
         )
         .unwrap();
-    connection
-        .execute(
-            "UPDATE vcs_events SET created_at = ?2 WHERE commit_pk = ?1",
-            params![commit_pk, created_at],
-        )
-        .unwrap();
 }
 
 async fn published_seq(repo: &Repo, repo_id: &RepoId, commit_id: &CommitId) -> Option<i64> {

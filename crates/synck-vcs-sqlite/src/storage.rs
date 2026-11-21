@@ -172,9 +172,7 @@ impl SqliteStorage {
                             && left.item_seq == right.item_seq
                             && left.event_type == right.event_type
                             && left.payload == right.payload
-                            && left.created_at == right.created_at
                             && left.parent_folder_id == right.parent_folder_id
-                            && left.parent_folder_id_before == right.parent_folder_id_before
                     }),
                     CommitEventRow::Ref(left) => ref_events.iter().any(|right| {
                         left.repo_id == right.repo_id
@@ -183,7 +181,6 @@ impl SqliteStorage {
                             && left.ref_seq == right.ref_seq
                             && left.event_type == right.event_type
                             && left.payload == right.payload
-                            && left.created_at == right.created_at
                     }),
                 });
             if same_header && same_events {
@@ -714,10 +711,6 @@ fn event_from_row(row: &Row<'_>) -> rusqlite::Result<EventRow> {
         .get::<_, Option<String>>(9)?
         .map(|value| parse_item(value, 9))
         .transpose()?;
-    let parent_before = row
-        .get::<_, Option<String>>(10)?
-        .map(|value| parse_item(value, 10))
-        .transpose()?;
     Ok(EventRow {
         repo_id: parse_repo(row.get(0)?, 0)?,
         item_id: parse_item(row.get(1)?, 1)?,
@@ -727,10 +720,9 @@ fn event_from_row(row: &Row<'_>) -> rusqlite::Result<EventRow> {
         commit_event_idx: row.get(5)?,
         repo_seq: row.get(6)?,
         payload: checked_payload(row, 7)?,
-        metadata: metadata_from_row(row, 7, 11)?,
+        metadata: metadata_from_row(row, 7, 10)?,
         created_at: parse_time_row(row.get(8)?, 8)?,
         parent_folder_id: parent,
-        parent_folder_id_before: parent_before,
     })
 }
 
@@ -757,10 +749,6 @@ fn commit_event_from_row(row: &Row<'_>) -> rusqlite::Result<CommitEventRow> {
                 .get::<_, Option<String>>(10)?
                 .map(|value| parse_item(value, 10))
                 .transpose()?;
-            let parent_before = row
-                .get::<_, Option<String>>(11)?
-                .map(|value| parse_item(value, 11))
-                .transpose()?;
             Ok(CommitEventRow::Item(EventRow {
                 repo_id: parse_repo(row.get(1)?, 1)?,
                 item_id: parse_item(row.get(2)?, 2)?,
@@ -770,10 +758,9 @@ fn commit_event_from_row(row: &Row<'_>) -> rusqlite::Result<CommitEventRow> {
                 commit_event_idx: row.get(6)?,
                 repo_seq: row.get(7)?,
                 payload: checked_payload(row, 8)?,
-                metadata: metadata_from_row(row, 8, 12)?,
+                metadata: metadata_from_row(row, 8, 11)?,
                 created_at: parse_time_row(row.get(9)?, 9)?,
                 parent_folder_id: parent,
-                parent_folder_id_before: parent_before,
             }))
         }
         1 => Ok(CommitEventRow::Ref(RefEventRow {
@@ -785,7 +772,7 @@ fn commit_event_from_row(row: &Row<'_>) -> rusqlite::Result<CommitEventRow> {
             commit_event_idx: row.get(6)?,
             repo_seq: row.get(7)?,
             payload: checked_payload(row, 8)?,
-            metadata: metadata_from_row(row, 8, 12)?,
+            metadata: metadata_from_row(row, 8, 11)?,
             created_at: parse_time_row(row.get(9)?, 9)?,
         })),
         other => Err(decode_error(
@@ -797,8 +784,8 @@ fn commit_event_from_row(row: &Row<'_>) -> rusqlite::Result<CommitEventRow> {
 
 const ITEM_COLUMNS: &str = "repo_id, item_id, item_type, parent_folder_id, name, name_key, head_seq, ref_head_seq, lifecycle_state, created_at, created_by, sequencing_mode, federation_stream_id, record_key, link_folder_id";
 const COMMIT_COLUMNS: &str = "repo_id, commit_id, repo_seq, author_id, committer_id, message, occurred_at, created_at, event_count, operation_id";
-const EVENT_COLUMNS: &str = "e.repo_id, e.item_id, e.item_seq, e.event_type, c.commit_id, e.commit_event_idx, c.repo_seq, e.payload, e.created_at, e.parent_folder_id, e.parent_folder_id_before, (SELECT m.payload FROM vcs_metadata_objects m WHERE m.repo_id=e.repo_id AND m.object_id=synck_metadata_id(e.payload))";
-const REF_EVENT_COLUMNS: &str = "r.repo_id, r.owner_item_id, r.ref_seq, r.event_type, c.commit_id, r.commit_event_idx, c.repo_seq, r.payload, r.created_at, (SELECT m.payload FROM vcs_metadata_objects m WHERE m.repo_id=r.repo_id AND m.object_id=synck_metadata_id(r.payload))";
+const EVENT_COLUMNS: &str = "e.repo_id, e.item_id, e.item_seq, e.event_type, c.commit_id, e.commit_event_idx, c.repo_seq, e.payload, c.created_at, e.parent_folder_id, (SELECT m.payload FROM vcs_metadata_objects m WHERE m.repo_id=e.repo_id AND m.object_id=synck_metadata_id(e.payload))";
+const REF_EVENT_COLUMNS: &str = "r.repo_id, r.owner_item_id, r.ref_seq, r.event_type, c.commit_id, r.commit_event_idx, c.repo_seq, r.payload, c.created_at, (SELECT m.payload FROM vcs_metadata_objects m WHERE m.repo_id=r.repo_id AND m.object_id=synck_metadata_id(r.payload))";
 
 fn checked_limit(limit: usize) -> Result<i64, StorageError> {
     i64::try_from(limit).map_err(|_| StorageError::Other {
@@ -995,21 +982,19 @@ impl StorageBackend for SqliteStorage {
         collect_rows(
             &conn,
             "SELECT event_family, repo_id, owner_item_id, event_seq, event_type, commit_id, \
-                    commit_event_idx, repo_seq, payload, created_at, \
-                    parent_folder_id, parent_folder_id_before, \
+                    commit_event_idx, repo_seq, payload, created_at, parent_folder_id, \
                     (SELECT m.payload FROM vcs_metadata_objects m WHERE m.repo_id=events.repo_id AND m.object_id=synck_metadata_id(events.payload)) \
              FROM ( \
                  SELECT 0 AS event_family, e.repo_id, e.item_id AS owner_item_id, \
                         e.item_seq AS event_seq, e.event_type, c.commit_id, e.commit_event_idx, \
-                        c.repo_seq, e.payload, e.created_at, \
-                        e.parent_folder_id, e.parent_folder_id_before \
+                        c.repo_seq, e.payload, c.created_at, e.parent_folder_id \
                  FROM vcs_events e JOIN vcs_commits c \
                    ON c.repo_id = e.repo_id AND c.commit_pk = e.commit_pk \
                  WHERE c.repo_id = ?1 AND c.commit_id = ?2 \
                  UNION ALL \
                  SELECT 1, r.repo_id, r.owner_item_id, r.ref_seq, r.event_type, c.commit_id, \
                         r.commit_event_idx, c.repo_seq, r.payload, \
-                        r.created_at, NULL, NULL \
+                        c.created_at, NULL \
                  FROM vcs_ref_events r JOIN vcs_commits c \
                    ON c.repo_id = r.repo_id AND c.commit_pk = r.commit_pk \
                  WHERE c.repo_id = ?1 AND c.commit_id = ?2 \
@@ -1036,21 +1021,19 @@ impl StorageBackend for SqliteStorage {
         collect_rows(
             &conn,
             "SELECT event_family, repo_id, owner_item_id, event_seq, event_type, commit_id, \
-                    commit_event_idx, repo_seq, payload, created_at, \
-                    parent_folder_id, parent_folder_id_before, \
+                    commit_event_idx, repo_seq, payload, created_at, parent_folder_id, \
                     (SELECT m.payload FROM vcs_metadata_objects m WHERE m.repo_id=events.repo_id AND m.object_id=synck_metadata_id(events.payload)) \
              FROM ( \
                  SELECT 0 AS event_family, e.repo_id, e.item_id AS owner_item_id, \
                         e.item_seq AS event_seq, e.event_type, c.commit_id, e.commit_event_idx, \
-                        c.repo_seq, e.payload, e.created_at, \
-                        e.parent_folder_id, e.parent_folder_id_before \
+                        c.repo_seq, e.payload, c.created_at, e.parent_folder_id \
                  FROM vcs_events e JOIN vcs_commits c \
                    ON c.repo_id = e.repo_id AND c.commit_pk = e.commit_pk \
                  WHERE c.repo_id = ?1 AND c.commit_id IS NOT NULL AND c.repo_seq IS NOT NULL \
                  UNION ALL \
                  SELECT 1, r.repo_id, r.owner_item_id, r.ref_seq, r.event_type, c.commit_id, \
                         r.commit_event_idx, c.repo_seq, r.payload, \
-                        r.created_at, NULL, NULL \
+                        c.created_at, NULL \
                  FROM vcs_ref_events r JOIN vcs_commits c \
                    ON c.repo_id = r.repo_id AND c.commit_pk = r.commit_pk \
                  WHERE c.repo_id = ?1 AND c.commit_id IS NOT NULL AND c.repo_seq IS NOT NULL \
@@ -1712,7 +1695,7 @@ impl StorageTxn for SqliteTxn {
         }
         self.conn()?
             .execute(
-                "INSERT INTO vcs_events (repo_id, commit_pk, commit_event_idx, item_id, item_seq, event_type, payload, created_at, parent_folder_id, parent_folder_id_before) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                "INSERT INTO vcs_events (repo_id, commit_pk, commit_event_idx, item_id, item_seq, event_type, payload, parent_folder_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 params![
                     event.repo_id.as_str(),
                     event.commit_pk.as_str(),
@@ -1721,9 +1704,7 @@ impl StorageTxn for SqliteTxn {
                     event.item_seq,
                     event.event_type,
                     event.payload,
-                    format_timestamp(event.created_at),
                     event.parent_folder_id.as_ref().map(ItemId::as_str),
-                    event.parent_folder_id_before.as_ref().map(ItemId::as_str),
                 ],
             )
             .map_err(map_sqlite_error)?;
@@ -1736,7 +1717,7 @@ impl StorageTxn for SqliteTxn {
         }
         self.conn()?
             .execute(
-                "INSERT INTO vcs_ref_events (repo_id, commit_pk, commit_event_idx, owner_item_id, ref_seq, event_type, payload, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                "INSERT INTO vcs_ref_events (repo_id, commit_pk, commit_event_idx, owner_item_id, ref_seq, event_type, payload) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 params![
                     event.repo_id.as_str(),
                     event.commit_pk.as_str(),
@@ -1745,7 +1726,6 @@ impl StorageTxn for SqliteTxn {
                     event.ref_seq,
                     event.event_type,
                     event.payload,
-                    format_timestamp(event.created_at),
                 ],
             )
             .map_err(map_sqlite_error)?;

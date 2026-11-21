@@ -1481,7 +1481,6 @@ fn accepted_commit(
             payload,
             created_at: accepted_at,
             parent_folder_id: None,
-            parent_folder_id_before: None,
         })
         .collect();
     (

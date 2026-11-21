@@ -20,7 +20,7 @@ use synck_vcs::types::{
     Timestamp, parse_hashed_time, sha256_prefixed_hex_from_digest_bytes,
 };
 use synck_vcs::verify::{
-    SemanticVerifier, VerifyCommit, VerifyCommitEvent, VerifyEvent, VerifyItem, VerifyRefEvent,
+    SemanticVerifier, VerifyCommit, VerifyCommitEvent, VerifyEvent, VerifyRefEvent,
 };
 
 use crate::storage::SqliteTxn;
@@ -37,15 +37,15 @@ pub struct BundleImportReport {
 }
 
 enum PendingEvent {
-    Item(VerifyEvent, Timestamp),
-    Ref(VerifyRefEvent, Timestamp),
+    Item(VerifyEvent),
+    Ref(VerifyRefEvent),
 }
 
 impl PendingEvent {
     fn borrowed(&self) -> VerifyCommitEvent<'_> {
         match self {
-            Self::Item(event, _) => VerifyCommitEvent::Item(event),
-            Self::Ref(event, _) => VerifyCommitEvent::Ref(event),
+            Self::Item(event) => VerifyCommitEvent::Item(event),
+            Self::Ref(event) => VerifyCommitEvent::Ref(event),
         }
     }
 }
@@ -87,20 +87,9 @@ impl PendingCommit {
         })
     }
 
-    fn check_event(
-        &mut self,
-        commit_id: &str,
-        repo_seq: i64,
-        index: i32,
-        created_at: Timestamp,
-        bytes: usize,
-    ) -> Result<(), String> {
-        if self.row.commit_id.as_str() != commit_id
-            || self.row.repo_seq != Some(repo_seq)
-            || self.row.created_at != created_at
-            || usize::try_from(index).ok() != Some(self.events.len())
-        {
-            return Err("bundle event commit identity/index mismatch".into());
+    fn check_event(&mut self, index: i32, bytes: usize) -> Result<(), String> {
+        if usize::try_from(index).ok() != Some(self.events.len()) {
+            return Err("bundle event index mismatch".into());
         }
         self.payload_bytes = bounded_commit_payload_bytes(self.payload_bytes, bytes)?;
         Ok(())
@@ -127,6 +116,7 @@ impl PendingCommit {
         if let Some(finding) = findings.into_iter().next() {
             return Err(finding);
         }
+        let mut parents = verifier.event_parents().iter().cloned();
         txn.insert_commits_sealed(repo_id, std::slice::from_ref(&row))
             .await
             .map_err(detail)?;
@@ -144,7 +134,7 @@ impl PendingCommit {
         }
         for event in self.events {
             match event {
-                PendingEvent::Item(event, created_at) => txn
+                PendingEvent::Item(event) => txn
                     .append_event(&EventInsertRow {
                         repo_id: repo_id.clone(),
                         commit_pk: row.commit_pk.clone(),
@@ -154,13 +144,11 @@ impl PendingCommit {
                         event_type: event.event_type,
                         payload: event.payload,
                         metadata: None,
-                        created_at,
-                        parent_folder_id: event.parent_folder_id,
-                        parent_folder_id_before: event.parent_folder_id_before,
+                        parent_folder_id: parents.next().expect("one parent per item event"),
                     })
                     .await
                     .map_err(detail)?,
-                PendingEvent::Ref(event, created_at) => txn
+                PendingEvent::Ref(event) => txn
                     .append_ref_event(&RefEventInsertRow {
                         repo_id: repo_id.clone(),
                         commit_pk: row.commit_pk.clone(),
@@ -170,7 +158,6 @@ impl PendingCommit {
                         event_type: event.event_type,
                         payload: event.payload,
                         metadata: None,
-                        created_at,
                     })
                     .await
                     .map_err(detail)?,
@@ -182,12 +169,6 @@ impl PendingCommit {
 
 fn detail(error: impl std::fmt::Display) -> String {
     error.to_string()
-}
-fn item_id(value: String) -> Result<ItemId, String> {
-    ItemId::parse(value).map_err(detail)
-}
-fn optional_item_id(value: Option<String>) -> Result<Option<ItemId>, String> {
-    value.map(item_id).transpose()
 }
 
 impl SqliteStorage {
@@ -285,17 +266,16 @@ async fn install(
     let mut tip = sha256_prefixed_hex_from_digest_bytes(header.genesis().map_err(detail)?);
     let mut pending: Option<PendingCommit> = None;
     let mut last_repo_seq = None;
-    let mut items = Vec::new();
     let mut commits = 0;
-    let mut items_started = false;
     let mut domains_started = false;
     let mut metadata_ids = std::collections::HashSet::new();
-    let mut origins = std::collections::HashMap::new();
+    // The acceptance time and author of each item's first commit.
+    let mut origins: std::collections::HashMap<ItemId, (Timestamp, String)> =
+        std::collections::HashMap::new();
     while let Some(record) = reader.read_record()? {
         match record {
             BundleRecord::Metadata(record) => {
-                if last_repo_seq.is_some() || items_started || domains_started || pending.is_some()
-                {
+                if last_repo_seq.is_some() || domains_started || pending.is_some() {
                     return Err("metadata objects must precede history".into());
                 }
                 if !metadata_ids.insert(record.object_id.clone()) {
@@ -323,8 +303,8 @@ async fn install(
                 .map_err(detail)?;
             }
             BundleRecord::Commit(record) => {
-                if items_started || domains_started || pending.is_some() {
-                    return Err("commit after items/domains or incomplete commit".into());
+                if domains_started || pending.is_some() {
+                    return Err("commit after domains or incomplete commit".into());
                 }
                 last_repo_seq = Some(validate_import_repo_seq(last_repo_seq, record.repo_seq)?);
                 tip = record.checkpoint.as_str().to_string();
@@ -332,112 +312,36 @@ async fn install(
             }
             BundleRecord::Event(record) => {
                 let current = pending.as_mut().ok_or("event without preceding commit")?;
-                let created_at = parse_rfc3339_utc(&record.created_at)?;
-                current.check_event(
-                    &record.commit_id,
-                    record.repo_seq,
-                    record.commit_event_idx,
-                    created_at,
-                    record.payload_hex.len() / 2,
-                )?;
+                current.check_event(record.commit_event_idx, record.payload_hex.len() / 2)?;
+                let (payload, item_id, event_type) = bundle_event_payload(&record.payload_hex)?;
                 if record.item_seq == 1 {
                     origins.insert(
-                        record.item_id.clone(),
-                        (created_at, current.row.author_id.clone()),
+                        item_id.clone(),
+                        (current.row.created_at, current.row.author_id.clone()),
                     );
                 }
-                let payload = bundle_event_payload(&record.payload_hex)?;
-                current.events.push(PendingEvent::Item(
-                    VerifyEvent {
-                        commit_event_idx: record.commit_event_idx,
-                        item_id: item_id(record.item_id)?,
-                        item_seq: record.item_seq,
-                        event_type: record.event_type,
-                        payload,
-                        parent_folder_id: optional_item_id(record.parent_folder_id)?,
-                        parent_folder_id_before: optional_item_id(record.parent_folder_id_before)?,
-                    },
-                    created_at,
-                ));
+                current.events.push(PendingEvent::Item(VerifyEvent {
+                    commit_event_idx: record.commit_event_idx,
+                    item_id,
+                    item_seq: record.item_seq,
+                    event_type,
+                    payload,
+                }));
             }
             BundleRecord::RefEvent(record) => {
                 let current = pending
                     .as_mut()
                     .ok_or("ref event without preceding commit")?;
-                let created_at = parse_rfc3339_utc(&record.created_at)?;
-                current.check_event(
-                    &record.commit_id,
-                    record.repo_seq,
-                    record.commit_event_idx,
-                    created_at,
-                    record.payload_hex.len() / 2,
-                )?;
-                let payload = bundle_ref_event_payload(&record.payload_hex)?;
-                current.events.push(PendingEvent::Ref(
-                    VerifyRefEvent {
-                        commit_event_idx: record.commit_event_idx,
-                        owner_item_id: item_id(record.owner_item_id)?,
-                        ref_seq: record.ref_seq,
-                        event_type: record.event_type,
-                        payload,
-                    },
-                    created_at,
-                ));
-            }
-            BundleRecord::Item(record) => {
-                if domains_started || pending.is_some() {
-                    return Err("item after domains or incomplete commit".into());
-                }
-                items_started = true;
-                let (created_at, created_by) = origins
-                    .remove(&record.item_id)
-                    .ok_or("item record has no first event")?;
-                let item = ItemRow {
-                    repo_id: repo_id.clone(),
-                    item_id: item_id(record.item_id)?,
-                    item_type: record.item_type,
-                    parent_folder_id: optional_item_id(record.parent_folder_id)?,
-                    name: record.name,
-                    name_key: record.name_key,
-                    record_key: record.record_key,
-                    link_folder_id: optional_item_id(record.link_folder_id)?,
-                    head_seq: record.head_seq,
-                    ref_head_seq: record.ref_head_seq,
-                    lifecycle_state: serde_json::from_value(serde_json::json!(
-                        record.lifecycle_state
-                    ))
-                    .map_err(detail)?,
-                    sequencing_mode: serde_json::from_value(serde_json::json!(
-                        record.sequencing_mode
-                    ))
-                    .map_err(detail)?,
-                    created_at,
-                    created_by,
-                    federation_stream_id: record.federation_stream_id,
-                };
-                if txn
-                    .get_item(repo_id, &item.item_id)
-                    .await
-                    .map_err(detail)?
-                    .is_some()
-                {
-                    return Err("duplicate item record".into());
-                }
-                txn.put_item(&item).await.map_err(detail)?;
-                items.push(VerifyItem {
-                    item_id: item.item_id,
-                    item_type: item.item_type,
-                    parent_folder_id: item.parent_folder_id,
-                    name: item.name,
-                    name_key: item.name_key,
-                    record_key: item.record_key,
-                    link_folder_id: item.link_folder_id,
-                    head_seq: item.head_seq,
-                    ref_head_seq: item.ref_head_seq,
-                    lifecycle_state: item.lifecycle_state,
-                    sequencing_mode: item.sequencing_mode,
-                    federation_stream_id: item.federation_stream_id,
-                });
+                current.check_event(record.commit_event_idx, record.payload_hex.len() / 2)?;
+                let (payload, owner_item_id, event_type) =
+                    bundle_ref_event_payload(&record.payload_hex)?;
+                current.events.push(PendingEvent::Ref(VerifyRefEvent {
+                    commit_event_idx: record.commit_event_idx,
+                    owner_item_id,
+                    ref_seq: record.ref_seq,
+                    event_type,
+                    payload,
+                }));
             }
             BundleRecord::FederationDomain(record) => {
                 if pending.is_some() {
@@ -470,9 +374,35 @@ async fn install(
     if reader.checkpoint().map(Sha256Digest::as_str) != Some(tip.as_str()) {
         return Err("bundle end checkpoint mismatch".into());
     }
-    let item_count = items.len();
-    if let Some(finding) = verifier.finish(&items).into_iter().next() {
+    // A bundle carries no item heads: replay is their only source.
+    let heads = verifier.replayed_heads();
+    if let Some(finding) = verifier.finish(&heads).into_iter().next() {
         return Err(finding);
+    }
+    let item_count = heads.len();
+    for head in heads {
+        let (created_at, created_by) = origins
+            .remove(&head.item_id)
+            .expect("a replayed item has its first event");
+        txn.put_item(&ItemRow {
+            repo_id: repo_id.clone(),
+            item_id: head.item_id,
+            item_type: head.item_type,
+            parent_folder_id: head.parent_folder_id,
+            name: head.name,
+            name_key: head.name_key,
+            record_key: head.record_key,
+            link_folder_id: head.link_folder_id,
+            head_seq: head.head_seq,
+            ref_head_seq: head.ref_head_seq,
+            lifecycle_state: head.lifecycle_state,
+            created_at,
+            created_by,
+            sequencing_mode: head.sequencing_mode,
+            federation_stream_id: head.federation_stream_id,
+        })
+        .await
+        .map_err(detail)?;
     }
     Ok(BundleImportReport {
         repo_id: repo_id.clone(),

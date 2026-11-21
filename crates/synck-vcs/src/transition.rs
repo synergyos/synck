@@ -116,7 +116,6 @@ pub fn check_source_revision(
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AppliedTransition {
-    pub parent_folder_id_before: Option<ItemId>,
     pub parent_folder_id_after: Option<ItemId>,
 }
 
@@ -124,8 +123,6 @@ pub fn apply_event(
     state: &mut ItemState,
     proposal: &EventProposal,
 ) -> Result<AppliedTransition, TransitionError> {
-    let original_parent = state.parent_folder_id.clone();
-
     let family = proposal.event_type.split("::").next();
     if family != Some("ITEM") && family != Some(state.item_type.as_str()) {
         return Err(TransitionError::Invalid("event of another family"));
@@ -201,11 +198,6 @@ pub fn apply_event(
     }
 
     Ok(AppliedTransition {
-        parent_folder_id_before: proposal
-            .set_parent
-            .is_some()
-            .then_some(original_parent)
-            .flatten(),
         parent_folder_id_after: state.parent_folder_id.clone(),
     })
 }
@@ -255,7 +247,6 @@ mod tests {
             federation_stream_id: None,
         };
         let applied = apply_event(&mut state, &proposal).unwrap();
-        assert_eq!(applied.parent_folder_id_before, None);
         assert_eq!(applied.parent_folder_id_after, Some(parent));
         assert_eq!(state.name_key.as_deref(), Some("report.txt"));
         assert_eq!(state.lifecycle_state, LifecycleState::Trash);

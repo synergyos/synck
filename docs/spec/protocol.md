@@ -117,7 +117,7 @@ every event and refuses the commit unless its hash is that ID.
 | `HistoryPage` | `HistoryPosition` after, `list Fragment`, `bool` has_more |
 | `Fragment` | `PublishedHeader`, `list Event` |
 | `PublishedHeader` | `digest` commit_id, `u64` repo_seq, `time` created_at, `digest` checkpoint, `str` author_id, `str` committer_id, `u8` flags (bit 0 `time` occurred_at, bit 1 `str` message, as in the commit header), `u32` event_count |
-| `Event` | `envelope`, `seq` item_seq or ref_seq; an item event adds `target` parent_folder_id after and `target` before it |
+| `Event` | `envelope`, `seq` item_seq or ref_seq; a receiver takes parents from replay |
 | `StateRequest` | `StatePosition` after, `limit` |
 | `StatePosition` | `RepositoryIdentity`, `u64` changed_seq, `opt uuid` item_id |
 | `StatePage` | `StatePosition` after, `list StateEntry`, `list (uuid item_id, u64 changed_seq)` departed, `Cursor` through, `bool` has_more |

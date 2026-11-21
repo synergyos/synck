@@ -30,8 +30,6 @@ pub struct VerifyEvent {
     pub item_seq: i64,
     pub event_type: String,
     pub payload: Vec<u8>,
-    pub parent_folder_id: Option<ItemId>,
-    pub parent_folder_id_before: Option<ItemId>,
 }
 
 #[derive(Debug)]
@@ -400,8 +398,6 @@ mod tests {
                     item_seq: initial_head + i64::try_from(index).unwrap() + 1,
                     event_type: proposal.event_type,
                     payload,
-                    parent_folder_id: None,
-                    parent_folder_id_before: None,
                 }
             })
             .collect();

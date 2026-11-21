@@ -627,28 +627,16 @@ fn row_payload(row: &CommitEventRow) -> &[u8] {
     }
 }
 
-/// `Event`: the envelope, its sequence, and an item event's parents.
+/// `Event`: the envelope and its sequence.
 fn put_event(out: &mut Vec<u8>, row: &CommitEventRow) -> Result<()> {
     put_blob(out, row_payload(row))?;
     put_seq(out, row_seq(row))?;
-    if let CommitEventRow::Item(row) = row {
-        put_target(out, row.parent_folder_id.as_ref());
-        put_target(out, row.parent_folder_id_before.as_ref());
-    }
     Ok(())
 }
 
 /// The encoded size of one history `Event`, for producers filling a page.
 pub fn event_len(row: &CommitEventRow) -> usize {
-    let target = |id: Option<&ItemId>| if id.is_some() { 17 } else { 1 };
-    4 + row_payload(row).len()
-        + 8
-        + match row {
-            CommitEventRow::Item(row) => {
-                target(row.parent_folder_id.as_ref()) + target(row.parent_folder_id_before.as_ref())
-            }
-            CommitEventRow::Ref(_) => 0,
-        }
+    4 + row_payload(row).len() + 8
 }
 
 /// The encoded size of one `PublishedHeader`, for producers filling a page.
@@ -665,7 +653,6 @@ struct WireEvent<'a> {
     event_type: String,
     id: ItemId,
     seq: i64,
-    parents: (Option<ItemId>, Option<ItemId>),
 }
 
 /// The kind, event type and item ID open both envelope kinds. History
@@ -680,18 +667,12 @@ fn get_event<'a>(decoder: &mut Decoder<'a>) -> Result<WireEvent<'a>> {
     let event_type = get_string(&mut head)?;
     let id = get_item(&mut head)?;
     let seq = decoder.seq()?;
-    let parents = if kind == KIND_ITEM {
-        (decoder.target()?, decoder.target()?)
-    } else {
-        (None, None)
-    };
     Ok(WireEvent {
         kind,
         payload,
         event_type,
         id,
         seq,
-        parents,
     })
 }
 
@@ -716,8 +697,8 @@ impl WireEvent<'_> {
                 payload: self.payload.to_vec(),
                 metadata: None,
                 created_at,
-                parent_folder_id: self.parents.0,
-                parent_folder_id_before: self.parents.1,
+                // The wire carries no parent: a reader replays the envelope.
+                parent_folder_id: None,
             })
         } else {
             CommitEventRow::Ref(RefEventRow {

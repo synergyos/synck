@@ -17,7 +17,7 @@ synthetic, and an example ID never means the object exists.
 | `commits.json` | Commit identity | List: `header`, `events` (`event`, `envelope_hex`, `digest`), `header_hex`, `commit_id` |
 | `checkpoints.json` | The genesis value and checkpoint chain | `genesis` and `steps`, including an invalid sequence gap |
 | `records.json` | Replay | List of commit sequences; see below |
-| `bundle.json` | The end record and acceptance times | `genesis`, and `cases` with `bundle` and `valid` |
+| `bundle.json` | The end record and record shapes | `genesis`, and `cases` with `bundle` and `valid` |
 | `file-version.json` | FILE revision labels | `metadata`, `metadata_payload_hex`, `event`, `envelope_hex`, `event_digest`; `with_description` repeats them for a later revision with a description |
 | `sync.json`, `sync-history.json`, `sync-large.json` | The sync protocol | Requests, records, their bytes and digests |
 | `sync-wire.json` | The protocol's binary shapes and guards | `valid`: `type`, `value`, `bytes_hex`; `invalid`: `type`, `bytes_hex`, `reason`; and `guarded` |

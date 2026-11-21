@@ -200,8 +200,7 @@ fn validate_physical_rows(
     drop(commits);
 
     let mut events = connection.prepare(
-        "SELECT commit_pk, commit_event_idx, item_id, created_at,
-                parent_folder_id, parent_folder_id_before
+        "SELECT commit_pk, commit_event_idx, item_id, parent_folder_id
          FROM vcs_events WHERE repo_id = ?1
          ORDER BY commit_pk, commit_event_idx",
     )?;
@@ -210,35 +209,21 @@ fn validate_physical_rows(
             row.get::<_, String>(0)?,
             row.get::<_, i64>(1)?,
             row.get::<_, String>(2)?,
-            row.get::<_, String>(3)?,
-            row.get::<_, Option<String>>(4)?,
-            row.get::<_, Option<String>>(5)?,
+            row.get::<_, Option<String>>(3)?,
         ))
     })?;
     for row in rows {
-        let (commit_pk, index, item_id, created_at, parent_id, parent_id_before) = row?;
+        let (commit_pk, index, item_id, parent_id) = row?;
         validate_i32(index, &format!("commit {commit_pk} event index"), findings);
         validate_item_id(
             &item_id,
             &format!("commit {commit_pk} event {index} item ID"),
             findings,
         );
-        validate_timestamp(
-            &created_at,
-            &format!("commit {commit_pk} event {index} created_at"),
-            findings,
-        );
         if let Some(parent_id) = parent_id {
             validate_item_id(
                 &parent_id,
                 &format!("commit {commit_pk} event {index} parent ID"),
-                findings,
-            );
-        }
-        if let Some(parent_id) = parent_id_before {
-            validate_item_id(
-                &parent_id,
-                &format!("commit {commit_pk} event {index} previous parent ID"),
                 findings,
             );
         }

@@ -21,6 +21,10 @@ it cannot read, so it refuses the first encrypted object.
 ## What changes
 
 - Each envelope is the format 8 encoding of the same proposal.
+- Format 7 event rows repeat their commit's acceptance time in `created_at`
+  and an item event's previous parent in `parent_folder_id_before`. Format 8
+  stores neither: the time is the commit's and the previous parent is that of
+  the item's previous event.
 - Every content entry gains its object's stored size, which format 7 did not
   record: the driver supplies it for each object of an event's `set_content`,
   and for the originals an `EMAIL::CREATE` or a `POST` names in metadata (see

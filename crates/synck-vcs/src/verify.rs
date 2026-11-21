@@ -43,6 +43,8 @@ pub struct SemanticVerifier {
     last_ref_seq: HashMap<ItemId, i64>,
     tombstoned: HashSet<ItemId>,
     replayed_items: HashMap<ItemId, ReplayedItem>,
+    /// The replayed parent after each item event of the last verified commit.
+    event_parents: Vec<Option<ItemId>>,
     encrypted: bool,
     live_names: HashMap<(Option<ItemId>, String), ItemId>,
     live_keys: HashMap<(String, String), ItemId>,
@@ -58,6 +60,7 @@ impl SemanticVerifier {
             last_ref_seq: HashMap::new(),
             tombstoned: HashSet::new(),
             replayed_items: HashMap::new(),
+            event_parents: Vec::new(),
             encrypted,
             live_names: HashMap::new(),
             live_keys: HashMap::new(),
@@ -87,6 +90,7 @@ impl SemanticVerifier {
         }
         let mut touched: HashMap<ItemId, Option<ItemState>> = HashMap::new();
         let mut set_links = HashSet::new();
+        self.event_parents.clear();
         let mut validator = CommitEnvelopeValidator::begin(commit, &mut self.previous_repo_seq);
         for event in events {
             match event {
@@ -130,6 +134,11 @@ impl SemanticVerifier {
                         }
                         self.replay_event(event, &proposal, &context, &mut replay_findings);
                     }
+                    let parent = self
+                        .replayed_items
+                        .get(&event.item_id)
+                        .and_then(|item| item.state.parent_folder_id.clone());
+                    self.event_parents.push(parent);
                 }
                 VerifyCommitEvent::Ref(event) => {
                     match self.replayed_items.get(&event.owner_item_id) {
@@ -178,6 +187,13 @@ impl SemanticVerifier {
         findings
     }
 
+    /// The parent each item event of the last verified commit leaves its
+    /// item under, in commit order. Meaningful only when that commit had no
+    /// findings.
+    pub fn event_parents(&self) -> &[Option<ItemId>] {
+        &self.event_parents
+    }
+
     pub fn finish(self, items: &[VerifyItem]) -> Vec<String> {
         let mut findings = Vec::new();
         self.finish_with(items, |finding| findings.push(finding));
@@ -191,8 +207,14 @@ impl SemanticVerifier {
     /// the ordinary mutable `vcs_items` projection. It still checks global
     /// live-name uniqueness, parent validity, and folder acyclicity.
     pub fn finish_replayed(self) -> Vec<String> {
-        let items = self
-            .replayed_items
+        let items = self.replayed_heads();
+        self.finish(&items)
+    }
+
+    /// The structural head of every item, as replay of the verified commits
+    /// leaves it.
+    pub fn replayed_heads(&self) -> Vec<VerifyItem> {
+        self.replayed_items
             .iter()
             .map(|(item_id, replayed)| VerifyItem {
                 item_id: item_id.clone(),
@@ -208,8 +230,7 @@ impl SemanticVerifier {
                 sequencing_mode: replayed.state.sequencing_mode,
                 federation_stream_id: replayed.state.federation_stream_id.clone(),
             })
-            .collect::<Vec<_>>();
-        self.finish(&items)
+            .collect()
     }
 
     pub fn finish_with(self, items: &[VerifyItem], mut push: impl FnMut(String)) {
@@ -502,18 +523,9 @@ impl SemanticVerifier {
         {
             findings.push(format!("{context}: this item type is never federated"));
         }
-        let transition = match apply_item_event(&mut item.state, proposal) {
-            Ok(transition) => transition,
-            Err(error) => {
-                findings.push(format!("{context}: {error}"));
-                return;
-            }
-        };
-        if event.parent_folder_id_before != transition.parent_folder_id_before {
-            findings.push(format!("{context}: previous parent mismatch"));
-        }
-        if event.parent_folder_id != transition.parent_folder_id_after {
-            findings.push(format!("{context}: resulting parent mismatch"));
+        if let Err(error) = apply_item_event(&mut item.state, proposal) {
+            findings.push(format!("{context}: {error}"));
+            return;
         }
         item.head_seq = event.item_seq;
         if proposal.replaces_content() {
@@ -647,8 +659,6 @@ mod tests {
             item_seq: 1,
             event_type: "FILE::CREATE".to_string(),
             payload,
-            parent_folder_id: None,
-            parent_folder_id_before: None,
         };
         let item = VerifyItem {
             link_folder_id: None,
@@ -763,8 +773,6 @@ mod tests {
             item_seq: 2,
             event_type: tombstone.event_type,
             payload,
-            parent_folder_id: None,
-            parent_folder_id_before: None,
         };
         let ref_event = verify_ref_event(item_id, 1);
         let commit = ref_commit(2, Some(&item_event), &ref_event);
@@ -825,8 +833,6 @@ mod tests {
             item_seq: 2,
             event_type: item_proposal.event_type,
             payload: item_payload,
-            parent_folder_id: None,
-            parent_folder_id_before: None,
         };
         ref_event.commit_event_idx = 0;
         let commit = commit_over(2, None, &[&ref_event.payload, &item_event.payload]);

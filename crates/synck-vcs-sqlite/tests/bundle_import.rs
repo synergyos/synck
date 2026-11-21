@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use synck_vcs::bundle::{
     BUNDLE_FORMAT_VERSION, BundleCommitRecord, BundleEventRecord, BundleFederationDomainRecord,
-    BundleHeaderRecord, BundleItemRecord, BundleRefEventRecord, BundleSchema, ImportFailure,
+    BundleHeaderRecord, BundleRefEventRecord, BundleSchema, ImportFailure,
     SCHEMA_META_SUBSYSTEM_VCS,
 };
 use synck_vcs::config::CoreConfig;
@@ -199,61 +199,18 @@ async fn export_records(source: &SqliteStorage, repo_id: &RepoId) -> Vec<Value> 
             records.push(match event {
                 CommitEventRow::Item(event) => json!(BundleEventRecord {
                     r#type: "event".into(),
-                    commit_id: event.commit_id.to_string(),
-                    repo_seq: sequence,
                     commit_event_idx: event.commit_event_idx,
-                    item_id: event.item_id.to_string(),
                     item_seq: event.item_seq,
-                    event_type: event.event_type,
                     payload_hex: hex::encode(&event.payload),
-                    created_at: format_timestamp(event.created_at),
-                    parent_folder_id: event.parent_folder_id.map(|id| id.to_string()),
-                    parent_folder_id_before: event.parent_folder_id_before.map(|id| id.to_string()),
                 }),
                 CommitEventRow::Ref(event) => json!(BundleRefEventRecord {
                     r#type: "ref_event".into(),
-                    commit_id: event.commit_id.to_string(),
-                    repo_seq: sequence,
                     commit_event_idx: event.commit_event_idx,
-                    owner_item_id: event.owner_item_id.to_string(),
                     ref_seq: event.ref_seq,
-                    event_type: event.event_type,
                     payload_hex: hex::encode(&event.payload),
-                    created_at: format_timestamp(event.created_at),
                 }),
             });
         }
-    }
-    for item in source
-        .list_items_readonly(repo_id, None, None, 100)
-        .await
-        .unwrap()
-    {
-        records.push(json!(BundleItemRecord {
-            record_key: item.record_key,
-            link_folder_id: item.link_folder_id.map(|id| id.to_string()),
-            r#type: "item".into(),
-            item_id: item.item_id.to_string(),
-            item_type: item.item_type,
-            parent_folder_id: item.parent_folder_id.map(|id| id.to_string()),
-            name: item.name,
-            name_key: item.name_key,
-            head_seq: item.head_seq,
-            ref_head_seq: item.ref_head_seq,
-            lifecycle_state: serde_json::to_value(item.lifecycle_state)
-                .unwrap()
-                .as_str()
-                .unwrap()
-                .into(),
-            sequencing_mode: serde_json::to_value(item.sequencing_mode)
-                .unwrap()
-                .as_str()
-                .unwrap()
-                .into(),
-            created_at: format_timestamp(item.created_at),
-            created_by: item.created_by,
-            federation_stream_id: item.federation_stream_id,
-        }));
     }
     records.push(json!(BundleFederationDomainRecord {
         r#type: "federation_domain".into(),
@@ -362,6 +319,43 @@ async fn mixed_history_import_preserves_ids_ref_heads_and_next_append() {
     let original = export_records(&source, &repo_id).await;
     let imported = export_records(&target, &repo_id).await;
     assert_eq!(original, imported);
+    // Replay rebuilt the item heads and every event's parent exactly.
+    let rows = |storage: &SqliteStorage| {
+        let connection = storage.open_readonly().unwrap();
+        let mut statement = connection
+            .prepare(
+                "SELECT item_id, item_type, parent_folder_id, name, name_key, record_key,
+                        link_folder_id, head_seq, ref_head_seq, lifecycle_state, created_at,
+                        created_by, sequencing_mode, federation_stream_id
+                 FROM vcs_items ORDER BY item_id",
+            )
+            .unwrap();
+        let mut items = statement
+            .query_map([], |row| {
+                (0..14)
+                    .map(|index| row.get::<_, rusqlite::types::Value>(index))
+                    .collect::<rusqlite::Result<Vec<_>>>()
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        let mut statement = connection
+            .prepare("SELECT item_id, item_seq, parent_folder_id FROM vcs_events ORDER BY item_id, item_seq")
+            .unwrap();
+        items.extend(
+            statement
+                .query_map([], |row| {
+                    (0..3)
+                        .map(|index| row.get::<_, rusqlite::types::Value>(index))
+                        .collect::<rusqlite::Result<Vec<_>>>()
+                })
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap(),
+        );
+        items
+    };
+    assert_eq!(rows(&source), rows(&target));
     let connection = target.open_readonly().unwrap();
     let last: i64 = connection
         .query_row(
@@ -499,15 +493,17 @@ async fn invalid_or_incomplete_bundle_rolls_back_and_allows_clean_retry() {
     missing.remove(last_event);
     cases.push(missing);
     cases.push(records[..last_event].to_vec());
-    let mut no_items = records.clone();
-    no_items.retain(|record| record["type"] != "item");
-    cases.push(no_items);
-    let mut bad_ref_head = records.clone();
-    bad_ref_head
+    // Item heads are not a record: replay is their only source.
+    let mut item_record = records.clone();
+    let domain = item_record.len() - 1;
+    item_record.insert(domain, json!({"type": "item"}));
+    cases.push(item_record);
+    let mut stale_field = records.clone();
+    stale_field
         .iter_mut()
-        .find(|record| record["type"] == "item" && record["item_type"] == "FILE")
-        .unwrap()["ref_head_seq"] = json!(0);
-    cases.push(bad_ref_head);
+        .find(|record| record["type"] == "event")
+        .unwrap()["parent_folder_id"] = json!(null);
+    cases.push(stale_field);
     for (index, invalid) in cases.into_iter().enumerate() {
         let target = SqliteStorage::new(directory.path().join(format!("invalid-{index}.sqlite")));
         assert!(matches!(

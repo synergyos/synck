@@ -448,11 +448,10 @@ pub struct EventRow {
     /// The item envelope.
     pub payload: Vec<u8>,
     pub metadata: Option<Metadata>,
+    /// The owning commit's acceptance time.
     pub created_at: Timestamp,
     /// Parent folder after this event is applied.
     pub parent_folder_id: Option<ItemId>,
-    /// Parent folder before this event is applied (only populated for moves).
-    pub parent_folder_id_before: Option<ItemId>,
 }
 
 /// Cursor for streaming events in global repo order.
@@ -490,9 +489,7 @@ pub struct EventInsertRow {
     /// The item envelope.
     pub payload: Vec<u8>,
     pub metadata: Option<Metadata>,
-    pub created_at: Timestamp,
     pub parent_folder_id: Option<ItemId>,
-    pub parent_folder_id_before: Option<ItemId>,
 }
 
 /// A narrow event in an item's attached ref ledger.
@@ -528,6 +525,7 @@ pub struct RefEventRow {
     /// The attached-ref envelope.
     pub payload: Vec<u8>,
     pub metadata: Option<Metadata>,
+    /// The owning commit's acceptance time.
     pub created_at: Timestamp,
 }
 
@@ -542,7 +540,6 @@ pub struct RefEventInsertRow {
     pub event_type: EventType,
     pub payload: Vec<u8>,
     pub metadata: Option<Metadata>,
-    pub created_at: Timestamp,
 }
 
 /// One event in complete commit/repository order.

@@ -5,7 +5,7 @@
 use crate::errors::CoreError;
 use crate::limits::{MAX_BUNDLE_RECORD_BYTES, MAX_EVENT_PAYLOAD_BYTES};
 use crate::types::{
-    RepoId, Sha256Digest, decode_event_proposal, decode_ref_event_proposal,
+    EventType, ItemId, RepoId, Sha256Digest, decode_event_proposal, decode_ref_event_proposal,
     sha256_prefixed_hex_from_digest_bytes,
 };
 use chrono::{DateTime, Utc};
@@ -34,7 +34,7 @@ impl std::fmt::Display for ImportFailure {
 pub const SCHEMA_META_SUBSYSTEM_VCS: &str = "synck_vcs_pg";
 pub const SCHEMA_META_SUBSYSTEM_SQLITE: &str = "synck_vcs_sqlite";
 
-pub const BUNDLE_FORMAT_VERSION: u32 = 6;
+pub const BUNDLE_FORMAT_VERSION: u32 = 7;
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -73,62 +73,28 @@ pub struct BundleCommitRecord {
     pub event_count: i32,
 }
 
+/// An item event of the commit record it follows. Its item ID and event type
+/// are those of its envelope.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BundleEventRecord {
     #[serde(rename = "type")]
     pub r#type: String,
-    pub commit_id: String,
-    pub repo_seq: i64,
     pub commit_event_idx: i32,
-    pub item_id: String,
     pub item_seq: i64,
-    pub event_type: String,
     pub payload_hex: String,
-    pub created_at: String,
-    pub parent_folder_id: Option<String>,
-    pub parent_folder_id_before: Option<String>,
 }
 
+/// A ref event of the commit record it follows. Its owner and event type are
+/// those of its envelope.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BundleRefEventRecord {
     #[serde(rename = "type")]
     pub r#type: String,
-    pub commit_id: String,
-    pub repo_seq: i64,
     pub commit_event_idx: i32,
-    pub owner_item_id: String,
     pub ref_seq: i64,
-    pub event_type: String,
     pub payload_hex: String,
-    pub created_at: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct BundleItemRecord {
-    #[serde(rename = "type")]
-    pub r#type: String,
-    pub item_id: String,
-    pub item_type: String,
-    pub parent_folder_id: Option<String>,
-    pub name: Option<String>,
-    pub name_key: Option<String>,
-    pub record_key: Option<String>,
-    pub link_folder_id: Option<String>,
-    pub head_seq: i64,
-    #[serde(default, skip_serializing_if = "is_zero")]
-    pub ref_head_seq: i64,
-    pub lifecycle_state: String,
-    pub created_at: String,
-    pub created_by: String,
-    pub sequencing_mode: String,
-    pub federation_stream_id: Option<String>,
-}
-
-fn is_zero(value: &i64) -> bool {
-    *value == 0
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -203,7 +169,6 @@ pub enum BundleRecord {
     Commit(BundleCommitRecord),
     Event(BundleEventRecord),
     RefEvent(BundleRefEventRecord),
-    Item(BundleItemRecord),
     FederationDomain(BundleFederationDomainRecord),
 }
 
@@ -319,36 +284,12 @@ fn decode_record(kind: &str, value: serde_json::Value) -> Result<BundleRecord, S
             serde_json::from_value(value).map_err(|error| format!("decode metadata: {error}"))?,
         ),
         "commit" => BundleRecord::Commit(decode_commit_record(value)?),
-        "event" => {
-            require_fields(
-                &value,
-                "event",
-                &["parent_folder_id", "parent_folder_id_before"],
-            )?;
-            BundleRecord::Event(
-                serde_json::from_value(value).map_err(|error| format!("decode event: {error}"))?,
-            )
-        }
+        "event" => BundleRecord::Event(
+            serde_json::from_value(value).map_err(|error| format!("decode event: {error}"))?,
+        ),
         "ref_event" => BundleRecord::RefEvent(
             serde_json::from_value(value).map_err(|error| format!("decode ref_event: {error}"))?,
         ),
-        "item" => {
-            require_fields(
-                &value,
-                "item",
-                &[
-                    "parent_folder_id",
-                    "name",
-                    "name_key",
-                    "record_key",
-                    "link_folder_id",
-                    "federation_stream_id",
-                ],
-            )?;
-            BundleRecord::Item(
-                serde_json::from_value(value).map_err(|error| format!("decode item: {error}"))?,
-            )
-        }
         "federation_domain" => BundleRecord::FederationDomain(
             serde_json::from_value(value)
                 .map_err(|error| format!("decode federation_domain: {error}"))?,
@@ -479,19 +420,23 @@ pub fn bounded_commit_payload_bytes(previous: usize, event: usize) -> Result<usi
         .ok_or_else(|| "commit payload exceeds supported canonical byte limit".into())
 }
 
-/// The exact envelope a `payload_hex` spells: lowercase hexadecimal of bytes
-/// that decode strictly as an item envelope.
-pub fn bundle_event_payload(payload_hex: &str) -> Result<Vec<u8>, String> {
+/// The exact envelope a `payload_hex` spells, lowercase hexadecimal of bytes
+/// that decode strictly as an item envelope naming its item, and its item ID
+/// and event type.
+pub fn bundle_event_payload(payload_hex: &str) -> Result<(Vec<u8>, ItemId, EventType), String> {
     let bytes = lower_hex(payload_hex)?;
-    decode_event_proposal(&bytes).map_err(|error| error.to_string())?;
-    Ok(bytes)
+    let proposal = decode_event_proposal(&bytes).map_err(|error| error.to_string())?;
+    let item_id = proposal
+        .item_id
+        .ok_or("an accepted envelope names its item")?;
+    Ok((bytes, item_id, proposal.event_type))
 }
 
-/// As [`bundle_event_payload`], for an attached-ref envelope.
-pub fn bundle_ref_event_payload(payload_hex: &str) -> Result<Vec<u8>, String> {
+/// As [`bundle_event_payload`], for an attached-ref envelope and its owner.
+pub fn bundle_ref_event_payload(payload_hex: &str) -> Result<(Vec<u8>, ItemId, EventType), String> {
     let bytes = lower_hex(payload_hex)?;
-    decode_ref_event_proposal(&bytes).map_err(|error| error.to_string())?;
-    Ok(bytes)
+    let proposal = decode_ref_event_proposal(&bytes).map_err(|error| error.to_string())?;
+    Ok((bytes, proposal.owner_item_id, proposal.event_type))
 }
 
 fn lower_hex(text: &str) -> Result<Vec<u8>, String> {
@@ -504,7 +449,7 @@ fn lower_hex(text: &str) -> Result<Vec<u8>, String> {
 #[cfg(test)]
 mod bundle_tests {
     use super::*;
-    use crate::types::{EventProposal, ItemId, canonical_event_proposal_bytes};
+    use crate::types::{EventProposal, canonical_event_proposal_bytes};
 
     fn commit_json() -> serde_json::Value {
         serde_json::json!({
@@ -548,18 +493,6 @@ mod bundle_tests {
     }
 
     #[test]
-    fn an_event_record_names_its_parents_even_when_null() {
-        let mut value = serde_json::json!({
-            "commit_id": format!("sha256:{}", "a".repeat(64)),
-            "parent_folder_id": null,
-            "parent_folder_id_before": null,
-        });
-        value.as_object_mut().unwrap().remove("parent_folder_id");
-        let error = decode_record("event", value).err().unwrap();
-        assert!(error.contains("parent_folder_id"), "{error}");
-    }
-
-    #[test]
     fn bundle_commit_requires_explicit_optional_fields() {
         let value = commit_json();
         assert!(decode_commit_record(value.clone()).is_ok());
@@ -580,10 +513,10 @@ mod bundle_tests {
         }))
         .unwrap();
         let payload = canonical_event_proposal_bytes(&event).unwrap();
-        assert_eq!(
-            bundle_event_payload(&hex::encode(&payload)).unwrap(),
-            payload
-        );
+        let (bytes, item_id, event_type) = bundle_event_payload(&hex::encode(&payload)).unwrap();
+        assert_eq!(bytes, payload);
+        assert_eq!(Some(item_id), event.item_id);
+        assert_eq!(event_type, "ITEM::NOTE");
         assert!(bundle_event_payload(&hex::encode_upper(&payload)).is_err());
         assert!(bundle_event_payload(&hex::encode([&payload[..], &[0]].concat())).is_err());
         assert!(bundle_ref_event_payload(&hex::encode(&payload)).is_err());

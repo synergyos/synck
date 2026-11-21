@@ -1948,6 +1948,13 @@ impl PortableRepository {
                         }
                     }
                 }
+                let parents = rows
+                    .iter()
+                    .filter_map(|row| match row {
+                        CommitEventRow::Item(event) => Some(event.parent_folder_id.clone()),
+                        CommitEventRow::Ref(_) => None,
+                    })
+                    .collect::<Vec<_>>();
                 let owned = rows.into_iter().map(VerifyOwned::from).collect::<Vec<_>>();
                 let findings = verifier.verify_commit_events(
                     &VerifyCommit {
@@ -1963,6 +1970,12 @@ impl PortableRepository {
                 );
                 if let Some(finding) = findings.into_iter().next() {
                     return Err(corrupt(finding));
+                }
+                if parents != verifier.event_parents() {
+                    return Err(corrupt(format!(
+                        "commit {} stores a parent replay does not give",
+                        commit.commit_id
+                    )));
                 }
                 terminal = commit
                     .repo_seq
@@ -3034,8 +3047,6 @@ impl From<CommitEventRow> for VerifyOwned {
                 item_seq: e.item_seq,
                 event_type: e.event_type,
                 payload: e.payload,
-                parent_folder_id: e.parent_folder_id,
-                parent_folder_id_before: e.parent_folder_id_before,
             }),
             CommitEventRow::Ref(e) => Self::Ref(VerifyRefEvent {
                 commit_event_idx: e.commit_event_idx,

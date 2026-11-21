@@ -1445,10 +1445,8 @@ def dec_published_header(r):
 def enc_event(value):
     data = envelope(value["envelope"])
     if data[0] == 1:
-        assert set(value) == {"envelope", "item_seq", "parent_folder_id",
-                              "parent_folder_id_before"}, value
-        return (blob(data) + u64(value["item_seq"]) + enc_target(value["parent_folder_id"])
-                + enc_target(value["parent_folder_id_before"]))
+        assert set(value) == {"envelope", "item_seq"}, value
+        return blob(data) + u64(value["item_seq"])
     assert set(value) == {"envelope", "ref_seq"}, value
     return blob(data) + u64(value["ref_seq"])
 
@@ -1458,10 +1456,7 @@ def dec_event(r):
     body = decode_envelope(data)
     if data[0] == 2:
         return {"envelope": body, "ref_seq": r.seq()}
-    return {
-        "envelope": body, "item_seq": r.seq(), "parent_folder_id": r.target(),
-        "parent_folder_id_before": r.target(),
-    }
+    return {"envelope": body, "item_seq": r.seq()}
 
 
 def enc_refusal(value):
@@ -1641,10 +1636,7 @@ def new_sync_wire():
         "author_id": "owner", "committer_id": "device", "occurred_at": occurred,
         "message": "Tidy", "event_count": 2,
     }
-    item_row = {
-        "envelope": item_event, "item_seq": 4, "parent_folder_id": parent,
-        "parent_folder_id_before": None,
-    }
+    item_row = {"envelope": item_event, "item_seq": 4}
     ref_row = {"envelope": ref_event, "ref_seq": 3}
     fragment = {"header": published_header, "events": [item_row, ref_row]}
     done = {"completed": start, "pending": None}
@@ -1819,9 +1811,7 @@ def new_sync_wire():
          "pending event index 0"),
         ("PublishedHeader", enc("PublishedHeader", published_header).replace(
             enc_str("device") + u8(3), enc_str("device") + u8(7)), "flag bit 2"),
-        ("Event", blob(item_bytes) + u64(4) + u8(2) + uuid_bytes(parent) + u8(0),
-         "target tag 2"),
-        ("Event", blob(item_bytes) + u64(4) + enc_target(parent), "item event without its before"),
+        ("Event", blob(item_bytes) + u64(4) + enc_target(parent), "item event followed by a parent"),
         ("StateEntry", entry_bytes.replace(
             u8(1) + enc_str("bytes"), u8(2) + enc_str("bytes") + digest_bytes(
                 "sha256:" + "ab" * 32) + u64(7) + enc_str("attachment")),
@@ -1954,20 +1944,18 @@ def new_repository():
             item_id = event["item_id"]
             created.setdefault(item_id, at)
             seq = items.get(item_id, {"seq": 0})["seq"] + 1
-            before = items.get(item_id, {}).get("parent")
             after = replayed[item_id]["parent"]
             rows["events"].append(
                 f"INSERT INTO vcs_events VALUES({quote(repo)},{quote(pk)},{position},"
                 f"{quote(item_id)},{seq},{quote(event['event_type'])},"
-                f"{hexblob(envelopes[position])},{quote(at)},{quote(after)},"
-                f"{quote(before if 'set_parent' in event else None)});"
+                f"{hexblob(envelopes[position])},{quote(after)});"
             )
         for position, event in enumerate(refs, len(events)):
             owner = event["owner_item_id"]
             rows["refs"].append(
                 f"INSERT INTO vcs_ref_events VALUES({quote(repo)},{quote(pk)},{position},"
                 f"{quote(owner)},{event['base_ref_seq'] + 1},{quote(event['event_type'])},"
-                f"{hexblob(envelopes[position])},{quote(at)});"
+                f"{hexblob(envelopes[position])});"
             )
         items = replayed
         expected.append({
@@ -2743,8 +2731,18 @@ def bundle_end(lines, tip):
     })
 
 
+BUNDLE_FIELDS = {
+    "metadata": {"object_id", "payload_hex"},
+    "commit": {"commit_id", "checkpoint", "repo_seq", "operation_id", "author_id",
+               "committer_id", "message", "occurred_at", "created_at", "event_count"},
+    "event": {"commit_event_idx", "item_seq", "payload_hex"},
+    "ref_event": {"commit_event_idx", "ref_seq", "payload_hex"},
+    "federation_domain": {"domain_id", "last_domain_seq", "created_at", "updated_at"},
+}
+
+
 def bundle_valid(text, genesis_value):
-    """The end-record rules, event times and commit IDs."""
+    """The end-record rules, record shapes and commit IDs."""
     if not text.endswith("\n"):
         return False
     lines = text.split("\n")[:-1]
@@ -2760,17 +2758,17 @@ def bundle_valid(text, genesis_value):
     records = [json.loads(line) for line in lines[:-1] if line]
     if any(record["type"] == "synck_vcs_bundle_end" for record in records):
         return False
-    commits = [record for record in records if record["type"] == "commit"]
-    tip = commits[-1]["checkpoint"] if commits else genesis_value
-    times = {record["commit_id"]: parse_time(record["created_at"]) for record in commits}
-    events = [record for record in records if record["type"] in ("event", "ref_event")]
-    if any(parse_time(record["created_at"]) != times[record["commit_id"]] for record in events):
+    if any(set(record) - {"type"} != BUNDLE_FIELDS.get(record["type"]) for record in records[1:]):
         return False
-    for commit in commits:
-        envelopes = [
-            bytes.fromhex(record["payload_hex"]) for record in events
-            if record["commit_id"] == commit["commit_id"]
-        ]
+    # An event belongs to the commit record it follows.
+    commits = []
+    for record in records[1:]:
+        if record["type"] == "commit":
+            commits.append((record, []))
+        elif record["type"] in ("event", "ref_event"):
+            commits[-1][1].append(bytes.fromhex(record["payload_hex"]))
+    tip = commits[-1][0]["checkpoint"] if commits else genesis_value
+    for commit, envelopes in commits:
         value = header(
             commit["author_id"], commit["committer_id"], commit["occurred_at"],
             commit["message"], envelopes, commit["repo_seq"],
@@ -2794,7 +2792,7 @@ def new_bundle():
     content = {"id": "sha256:" + "ab" * 32, "size": 1}
     meta = salted_utf8(bytes([9]) * 32, jcs_bytes({"color": "red"}))
     head = bundle_line({
-        "type": "synck_vcs_bundle_header", "bundle_format_version": 6, "repo_id": repo,
+        "type": "synck_vcs_bundle_header", "bundle_format_version": 7, "repo_id": repo,
         "history_generation": generation, "encrypted": False, "exported_at": at,
         "schema": {"subsystem": "synck_vcs_sqlite", "schema_id": "core-v8"},
     })
@@ -2813,19 +2811,10 @@ def new_bundle():
     base = genesis(repo, generation)
     tip = "sha256:" + checkpoint(base, 1, commit_id, seconds, nanos).hex()
 
-    def event(index, value, parent):
+    def event(index):
         return bundle_line({
-            "type": "event", "commit_id": commit_id, "repo_seq": 1, "commit_event_idx": index,
-            "item_id": value["item_id"], "item_seq": 1, "event_type": value["event_type"],
-            "payload_hex": envelopes[index].hex(), "created_at": at, "parent_folder_id": parent, "parent_folder_id_before": None,
-        })
-
-    def item(item_id, kind, parent, name):
-        return bundle_line({
-            "type": "item", "item_id": item_id, "item_type": kind, "parent_folder_id": parent,
-            "name": name, "name_key": fold(name), "record_key": None, "link_folder_id": None,
-            "head_seq": 1, "ref_head_seq": 0, "lifecycle_state": "LIVE", "created_at": at,
-            "created_by": "owner", "sequencing_mode": "LOCAL", "federation_stream_id": None,
+            "type": "event", "commit_event_idx": index, "item_seq": 1,
+            "payload_hex": envelopes[index].hex(),
         })
 
     lines = [
@@ -2837,10 +2826,8 @@ def new_bundle():
             "committer_id": "device", "message": "add a file", "occurred_at": None,
             "created_at": at, "event_count": 2,
         }),
-        event(0, first, None),
-        event(1, second, folder_id),
-        item(folder_id, "FOLDER", None, "Docs"),
-        item(file_id, "FILE", folder_id, "a.txt"),
+        event(0),
+        event(1),
         bundle_line({
             "type": "federation_domain", "domain_id": domain, "last_domain_seq": 7,
             "created_at": at, "updated_at": at,
@@ -2857,9 +2844,15 @@ def new_bundle():
 
     edited = lines[-1].replace('"last_domain_seq":7', '"last_domain_seq":6')
 
-    def event_time(value):
-        retimed = lines[:4] + [lines[4].replace(at, value)] + lines[5:]
-        return "".join(retimed) + bundle_end(retimed, tip)
+    def with_record(position, record):
+        body = lines[:position] + [bundle_line(record)] + lines[position:]
+        return "".join(body) + bundle_end(body, tip)
+
+    def with_event_field(field, value):
+        record = json.loads(lines[4])
+        record[field] = value
+        body = lines[:4] + [bundle_line(record)] + lines[5:]
+        return "".join(body) + bundle_end(body, tip)
 
     blank = lines[:3] + ["\n"] + lines[3:]
 
@@ -2882,16 +2875,22 @@ def new_bundle():
         ("a commit with no events", with_empty_commit(2), True),
         ("an empty commit hashes its position", with_empty_commit(1), False),
         ("blank body line", "".join(blank) + bundle_end(blank, tip), True),
-        ("event spells the same instant another way", event_time("2026-10-30T12:00:00Z"), True),
-        ("event time differs from its commit", event_time("2026-10-30T12:00:00.000000001Z"), False),
+        ("an event repeats its commit ID", with_event_field("commit_id", commit_id), False),
+        ("an event repeats its parent", with_event_field("parent_folder_id", folder_id), False),
+        ("an item record", with_record(5, {
+            "type": "item", "item_id": folder_id, "item_type": "FOLDER", "parent_folder_id": None,
+            "name": "Docs", "name_key": "docs", "record_key": None, "link_folder_id": None,
+            "head_seq": 1, "ref_head_seq": 0, "lifecycle_state": "LIVE", "created_at": at,
+            "created_by": "owner", "sequencing_mode": "LOCAL", "federation_stream_id": None,
+        }), False),
         ("no end record", "".join(lines), False),
         ("cut after the commit", "".join(lines[:3]), False),
-        ("cut after the item section", "".join(lines[:7]), False),
+        ("cut after the history", "".join(lines[:5]), False),
         ("cut inside the end record", whole[:-20], False),
         ("no final line feed", whole[:-1], False),
-        ("federation domain lost, end record kept", "".join(lines[:7]) + end, False),
-        ("federation domain edited, end record kept", "".join(lines[:7]) + edited + end, False),
-        ("wrong record count", changed("record_count", 7), False),
+        ("federation domain lost, end record kept", "".join(lines[:5]) + end, False),
+        ("federation domain edited, end record kept", "".join(lines[:5]) + edited + end, False),
+        ("wrong record count", changed("record_count", 5), False),
         ("wrong checkpoint", changed("checkpoint", genesis_value), False),
         ("wrong digest", changed("digest", "sha256:" + "00" * 32), False),
         ("record after the end", whole + lines[-1], False),

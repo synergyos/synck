@@ -1046,7 +1046,7 @@ and mixed commits, distinct committer identity and nanosecond timestamps.
 
 ## History bundle boundary
 
-The NDJSON history bundle accepts version 6 only. Its header
+The NDJSON history bundle accepts version 7 only. Its header
 carries `history_generation`, a canonical UUIDv7, alongside `repo_id`, `encrypted`,
 export time and source-schema provenance. Each commit record carries its `checkpoint` as a
 `sha256:` digest; it has no parent-commit field. `operation_id` is a required key
@@ -1118,12 +1118,10 @@ repository has its `vcs_history_generations` row.
   together.
 - `vcs_events` and `vcs_ref_events` contain envelope bytes in `payload`. No
   digest is stored; a reader computes it. Row identity, event type and accepted
-  sequence must agree with the envelope and its replay. `created_at`
-  equals the owning commit's acceptance time. `parent_folder_id` records the
-  parent after the event. `parent_folder_id_before` records the old parent only
-  when the envelope contains `set_parent`; otherwise it is null. For creation
-  it is null. A move from root also has a null before-parent. This column is a
-  move notification field, not an unconditional snapshot of the prior parent.
+  sequence must agree with the envelope and its replay. An event's acceptance
+  time is its commit's `created_at`. `parent_folder_id` records the parent
+  after the event, as replay gives it; the parent before an event is that of
+  the item's previous event.
 - `vcs_items` is the canonical accepted structural head, including accepted but
   unpublished changes. Replay must reproduce its name, name key, type, parent,
   record key, link, lifecycle, item/ref heads, creation attribution and federation
@@ -1197,33 +1195,31 @@ A bundle is UTF-8 newline-delimited JSON. Records need not use JCS. A
 commit's `commit_id` must equal the hash of the header its fields and events
 encode. A nonempty
 header comes first, followed by zero or more metadata records, then
-commit/event groups, then item-head records, then federation-domain records, then
-exactly one end record. That section order is fixed. Within the metadata, item and
+commit/event groups, then federation-domain records, then
+exactly one end record. That section order is fixed. Within the metadata and
 domain sections a writer sorts by ID, so a history has one bundle; a reader does not
 depend on that order. Every record ends in a line feed. A blank body line is an empty
 line and is ignored, and nothing follows the end record, not even a blank line.
 Unknown fields and record types are rejected. No event may appear outside its commit
-group or after the item section.
+group.
 
 All records contain `type`. Other fields are:
 
 | Type | Fields |
 | --- | --- |
-| `synck_vcs_bundle_header` | `bundle_format_version: 6`, `repo_id`, `history_generation`, `encrypted`, `exported_at`, `schema: {subsystem, schema_id}` |
+| `synck_vcs_bundle_header` | `bundle_format_version: 7`, `repo_id`, `history_generation`, `encrypted`, `exported_at`, `schema: {subsystem, schema_id}` |
 | `metadata` | `object_id`, `payload_hex` |
 | `commit` | `commit_id`, `checkpoint`, `repo_seq`, `operation_id`, `author_id`, `committer_id`, `message`, `occurred_at`, `created_at`, `event_count` |
-| `event` | `commit_id`, `repo_seq`, `commit_event_idx`, `item_id`, `item_seq`, `event_type`, `payload_hex`, `created_at`, `parent_folder_id`, `parent_folder_id_before` |
-| `ref_event` | `commit_id`, `repo_seq`, `commit_event_idx`, `owner_item_id`, `ref_seq`, `event_type`, `payload_hex`, `created_at` |
-| `item` | `item_id`, `item_type`, `parent_folder_id`, `name`, `name_key`, `record_key`, `link_folder_id`, `head_seq`, `ref_head_seq`, `lifecycle_state`, `created_at`, `created_by`, `sequencing_mode`, `federation_stream_id` |
+| `event` | `commit_event_idx`, `item_seq`, `payload_hex` |
+| `ref_event` | `commit_event_idx`, `ref_seq`, `payload_hex` |
 | `federation_domain` | `domain_id`, `last_domain_seq`, `created_at`, `updated_at` |
 | `synck_vcs_bundle_end` | `record_count`, `checkpoint`, `digest` |
 
-An `item` record's `created_at` and `created_by` repeat the acceptance time and author of
-the item's first commit, and a reader takes them from that commit. A record is at most
-8 MiB, line feed included. Digest IDs are lowercase.
+An event belongs to the commit record it follows and takes that commit's ID, position and
+acceptance time. Its item or owner and its event type are those of its envelope. A record
+is at most 8 MiB, line feed included. Digest IDs are lowercase.
 
-Optional commit message, author time, operation IDs, parents, names, keys, links, sources
-and stream IDs are JSON null when absent. `ref_head_seq` may be omitted when zero.
+Optional commit message, author time and operation IDs are JSON null when absent.
 Digest fields use prefixed hexadecimal spelling, except `payload_hex`, which
 is unprefixed lower hex of an envelope or of a complete metadata frame. Times
 are text. `schema` is source
@@ -1240,10 +1236,10 @@ truncated. `vectors/bundle.json` fixes a bundle and lists rejected variants.
 
 Commits are ordered by consecutive `repo_seq`, starting at 1; gaps are invalid.
 Exactly `event_count` event/ref records immediately follow each commit, with contiguous
-indexes from zero, item records first and ref records after. Their repeated
-commit ID, position and acceptance instant must match. Item and domain sections
-must not duplicate identities. Every replayed item has exactly one item record, and
-its fields must match structural replay.
+indexes from zero, `event` records first and `ref_event` records after. The domain section
+must not duplicate identities. A bundle carries no item heads: the importer builds
+them from structural replay, taking each item's creation time and author from its
+first commit.
 
 A repository, archive or export is complete when it holds every object its history
 references, together with the container and configuration needed to interpret it. An
@@ -1262,7 +1258,8 @@ its bundle is still a valid bundle.
    Reject duplicate commit IDs, operation IDs or publication positions.
 4. Replay structure and item/ref bases, including final namespace uniqueness,
    record classes, key uniqueness, link rules, parent acyclicity and terminal
-   tombstones. Compare canonical item heads and report the state digest.
+   tombstones. Compare canonical item heads and each event's stored parent, and
+   report the state digest.
 5. Recompute every checkpoint in order from the genesis value and acceptance
    timestamps. Compare its commit, sequence and digest, the generation and any
    externally trusted checkpoint. A locally self-consistent replacement is not

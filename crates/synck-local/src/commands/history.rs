@@ -1136,6 +1136,12 @@ impl Repository {
                     let presentation =
                         commit_event_presentation(store, &root, previous.as_ref(), &proposal)
                             .await?;
+                    // A move names the parent it left: the one the item's
+                    // previous event left it under.
+                    let parent_folder_id_before = match proposal.set_parent {
+                        Some(_) => self.previous_event_parent(&event).await?,
+                        None => None,
+                    };
                     output.push(CommitEvent {
                         repo_id: event.repo_id.to_string(),
                         commit_id: event.commit_id.to_string(),
@@ -1152,8 +1158,7 @@ impl Repository {
                         created_at: event.created_at,
                         parent_folder_id: event.parent_folder_id.map(|value| value.to_string()),
                         parent_folder_name: presentation.parent_folder_name,
-                        parent_folder_id_before: event
-                            .parent_folder_id_before
+                        parent_folder_id_before: parent_folder_id_before
                             .map(|value| value.to_string()),
                         parent_folder_name_before: presentation.parent_folder_name_before,
                         display_parent_folder_id: presentation
@@ -1218,6 +1223,27 @@ impl Repository {
             }
         }
         Ok(output)
+    }
+
+    /// The parent the event before `event` left its item under.
+    async fn previous_event_parent(&self, event: &EventRow) -> Result<Option<ItemId>> {
+        let item_seq = event.item_seq - 1;
+        let previous = self
+            .core()
+            .list_events(
+                self.config().repo_id().clone(),
+                event.item_id.clone(),
+                item_seq,
+                1,
+            )
+            .await?;
+        match previous.into_iter().next() {
+            Some(previous) if previous.item_seq == item_seq => Ok(previous.parent_folder_id),
+            _ => Err(LocalError::Integrity(format!(
+                "item {} has no event {item_seq} before its move",
+                event.item_id
+            ))),
+        }
     }
 
     /// The exact envelope of event `index` of a commit and its decoded form,

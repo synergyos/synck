@@ -146,12 +146,15 @@ impl Repository {
             LocalError::Invalid(format!("cannot read repository database: {error}"))
         })?;
         let mut statement = connection.prepare(
-            "SELECT i.item_id, e.created_at, h.item_seq
+            "SELECT i.item_id, c.created_at, h.item_seq
              FROM vcs_items i
              JOIN vcs_events e
                ON e.repo_id = i.repo_id
               AND e.item_id = i.item_id
               AND e.item_seq = i.head_seq
+             JOIN vcs_commits c
+               ON c.repo_id = e.repo_id
+              AND c.commit_pk = e.commit_pk
              LEFT JOIN local_file_heads h
                ON h.item_id = i.item_id
              WHERE i.repo_id = ?1 AND i.lifecycle_state = 'LIVE'",

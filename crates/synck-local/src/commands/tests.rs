@@ -97,7 +97,6 @@ fn accepted_rows(
             payload,
             created_at,
             parent_folder_id: None,
-            parent_folder_id_before: None,
         });
         *item_seq += 1;
     }

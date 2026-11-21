@@ -52,6 +52,7 @@ fn replay(vector: &serde_json::Value, encrypted: bool) {
             let mut hasher = EventsDigest::default();
             let mut position = 0;
             let mut events = Vec::new();
+            let mut event_parents = Vec::new();
             for event in commit["events"].as_array().unwrap() {
                 let item_id = ItemId::parse(event["item_id"].as_str().unwrap()).unwrap();
                 let proposal: EventProposal = serde_json::from_value(event.clone()).unwrap();
@@ -64,9 +65,6 @@ fn replay(vector: &serde_json::Value, encrypted: bool) {
                 let seq = item_seq.entry(item_id.clone()).or_default();
                 *seq += 1;
                 let previous = parents.get(&item_id).cloned().flatten();
-                let before = previous
-                    .clone()
-                    .filter(|_| event.get("set_parent").is_some());
                 let after = match (event.get("create_item"), event.get("set_parent")) {
                     (Some(create), _) => create["parent_folder_id"]
                         .as_str()
@@ -75,14 +73,13 @@ fn replay(vector: &serde_json::Value, encrypted: bool) {
                     (None, None) => previous,
                 };
                 parents.insert(item_id.clone(), after.clone());
+                event_parents.push(after);
                 events.push(VerifyEvent {
                     commit_event_idx: position,
                     item_seq: *seq,
                     item_id,
                     event_type: event["event_type"].as_str().unwrap().to_string(),
                     payload,
-                    parent_folder_id: after,
-                    parent_folder_id_before: before,
                 });
                 position += 1;
             }
@@ -141,6 +138,11 @@ fn replay(vector: &serde_json::Value, encrypted: bool) {
             if !valid {
                 break;
             }
+            assert_eq!(
+                verifier.event_parents(),
+                event_parents,
+                "{name} commit {index}"
+            );
             assert_eq!(
                 verifier.state_digest().unwrap(),
                 commit["state_digest"].as_str().unwrap(),

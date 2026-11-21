@@ -2,7 +2,7 @@
 
 Synck 0.2.0, 0.3.0 and 0.4.0 use repository format 7. Development builds after
 0.4.0 use repository format 8, Core SQLite schema 8, object scheme 2, history
-bundle format 6 and sync protocol 2. These numbers name different contracts;
+bundle format 7 and sync protocol 2. These numbers name different contracts;
 they need not match. The [standalone specification](spec/format.md),
 its SQL schemas and language-neutral vectors define the persisted format.
 Where implementation and specification disagree, the implementation is wrong.

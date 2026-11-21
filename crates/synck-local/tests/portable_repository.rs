@@ -408,7 +408,7 @@ async fn invalid_materialization_missing_body_and_extra_objects_never_publish() 
     let repo_id = RepoId::new();
     let generation = uuid::Uuid::now_v7();
     let mut bytes = serde_json::to_vec(&json!({
-        "type": "synck_vcs_bundle_header", "bundle_format_version": 6,
+        "type": "synck_vcs_bundle_header", "bundle_format_version": 7,
         "repo_id": repo_id, "history_generation": generation.to_string(), "encrypted": false,
         "exported_at": "2026-01-02T00:00:00Z",
         "schema": {"subsystem":"synck_vcs_sqlite", "schema_id":"core-v8"}

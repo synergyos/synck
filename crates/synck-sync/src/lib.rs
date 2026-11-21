@@ -309,6 +309,8 @@ pub struct HistoryPage {
 pub struct HistoryFragment {
     /// Repeat the identical header when continuing a commit.
     pub header: PublishedHeader,
+    /// An item event's `parent_folder_id` is not sent: a decoded one is
+    /// `None`, and a reader takes the parent from replay.
     pub events: Vec<CommitEventRow>,
 }
 /// A position in the state feed, which is ordered by `(changed_seq, item_id)`.

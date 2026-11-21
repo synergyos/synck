@@ -86,7 +86,6 @@ fn published(request: &SubmitRequest, records: &[ProposalRecord]) -> Published {
                     metadata: None,
                     created_at: now(),
                     parent_folder_id: None,
-                    parent_folder_id_before: None,
                 }))
             }
             ProposalRecord::Ref(event) => {

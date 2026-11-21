@@ -450,9 +450,7 @@ impl Repo {
                     .and_then(|value| value.payload())
                     .cloned(),
                 payload,
-                created_at: header.created_at,
                 parent_folder_id: transition.parent_folder_id_after.clone(),
-                parent_folder_id_before: transition.parent_folder_id_before.clone(),
             });
         }
         let mut ref_rows = Vec::with_capacity(ref_events.len());
@@ -472,7 +470,6 @@ impl Repo {
                     .and_then(|value| value.payload())
                     .cloned(),
                 payload,
-                created_at: header.created_at,
             });
         }
         // Admission never seals an empty commit, so no repo_seq is needed.

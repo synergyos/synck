@@ -103,9 +103,7 @@ CREATE TABLE "vcs_events" (
     item_seq INTEGER NOT NULL CHECK (item_seq >= 1),
     event_type TEXT NOT NULL,
     payload BLOB NOT NULL,
-    created_at TEXT NOT NULL,
     parent_folder_id TEXT,
-    parent_folder_id_before TEXT,
     PRIMARY KEY (repo_id, item_id, item_seq),
     UNIQUE (repo_id, commit_pk, commit_event_idx),
     FOREIGN KEY (repo_id, commit_pk) REFERENCES vcs_commits (repo_id, commit_pk)
@@ -119,7 +117,6 @@ CREATE TABLE vcs_ref_events (
     ref_seq INTEGER NOT NULL CHECK (ref_seq >= 1),
     event_type TEXT NOT NULL CHECK (trim(event_type) <> ''),
     payload BLOB NOT NULL,
-    created_at TEXT NOT NULL,
     PRIMARY KEY (repo_id, owner_item_id, ref_seq),
     UNIQUE (repo_id, commit_pk, commit_event_idx),
     FOREIGN KEY (repo_id, commit_pk) REFERENCES vcs_commits (repo_id, commit_pk)

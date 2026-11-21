@@ -428,25 +428,20 @@ async fn apply_projected_event<S: StateProjectorStore>(
         item_seq: event.item_seq,
         event_type: event.event_type.clone(),
         payload: event.payload.clone(),
-        parent_folder_id: event.parent_folder_id.clone(),
-        parent_folder_id_before: event.parent_folder_id_before.clone(),
     };
     if let Some(proposal) = validator.validate_event(&verify_event, &mut staged.envelope) {
-        let (mut state, parent_before) = match staged.current.as_ref() {
-            Some(current) => (ItemState::from(current), None),
+        let mut state = match staged.current.as_ref() {
+            Some(current) => ItemState::from(current),
             None => match proposal.create_item.as_ref() {
-                Some(create) => (
-                    ItemState::from_create(
-                        create,
-                        staged
-                            .envelope
-                            .sequencing_mode
-                            .unwrap_or(SequencingMode::Local),
-                        staged.envelope.federation_stream_id.clone(),
-                    )
-                    .map_err(|error| StateError::InvalidTree(error.to_string()))?,
-                    None,
-                ),
+                Some(create) => ItemState::from_create(
+                    create,
+                    staged
+                        .envelope
+                        .sequencing_mode
+                        .unwrap_or(SequencingMode::Local),
+                    staged.envelope.federation_stream_id.clone(),
+                )
+                .map_err(|error| StateError::InvalidTree(error.to_string()))?,
                 None => {
                     store.put_projection_item(&event.item_id, &staged).await?;
                     return Ok(());
@@ -458,16 +453,9 @@ async fn apply_projected_event<S: StateProjectorStore>(
                 .map_err(|error| StateError::InvalidTree(error.to_string()))?
         } else {
             crate::transition::AppliedTransition {
-                parent_folder_id_before: parent_before,
                 parent_folder_id_after: state.parent_folder_id.clone(),
             }
         };
-        if event.parent_folder_id_before != applied.parent_folder_id_before {
-            findings.push(format!(
-                "repo sequence {:?} event {}: parent-before mismatch",
-                commit.repo_seq, event.commit_event_idx
-            ));
-        }
         if event.parent_folder_id != applied.parent_folder_id_after {
             findings.push(format!(
                 "repo sequence {:?} event {}: parent-after mismatch",
@@ -1254,7 +1242,6 @@ mod tests {
             payload,
             created_at,
             parent_folder_id: None,
-            parent_folder_id_before: None,
         };
         (repo_id, OneCommitSource { commit, event })
     }
