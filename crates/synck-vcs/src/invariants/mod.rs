@@ -243,7 +243,7 @@ impl Invariant for SequencingModeRule {
         item_row: &ItemRow,
         _item_events: &[EventProposal],
     ) -> Result<(), CoreError> {
-        match (ctx.op, item_row.sequencing_mode) {
+        match (ctx.op, item_row.sequencing_mode()) {
             (OperationKind::Append, SequencingMode::Local) => Ok(()),
             (OperationKind::Append, SequencingMode::Federated) => Err(CoreError::ItemIsFederated {
                 repo_id: ctx.repo_id.clone(),

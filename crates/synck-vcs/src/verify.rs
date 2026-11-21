@@ -10,8 +10,8 @@ pub use crate::envelope::{VerifyCommit, VerifyEvent, VerifyRefEvent};
 use crate::naming::namespace_key;
 use crate::transition::{ItemState, apply_event as apply_item_event, check_source_revision};
 use crate::types::{
-    EventProposal, ItemId, LifecycleState, SequencingMode, canonical_json_bytes,
-    compute_sha256_digest_bytes, sha256_prefixed_hex_from_digest_bytes,
+    EventProposal, ItemId, LifecycleState, canonical_json_bytes, compute_sha256_digest_bytes,
+    sha256_prefixed_hex_from_digest_bytes,
 };
 
 #[derive(Debug)]
@@ -26,7 +26,6 @@ pub struct VerifyItem {
     pub head_seq: i64,
     pub ref_head_seq: i64,
     pub lifecycle_state: LifecycleState,
-    pub sequencing_mode: SequencingMode,
     pub federation_stream_id: Option<String>,
 }
 
@@ -97,7 +96,7 @@ impl SemanticVerifier {
                 VerifyCommitEvent::Item(event) => {
                     let sequencing = self.replayed_items.get(&event.item_id).map(|item| {
                         (
-                            item.state.sequencing_mode,
+                            item.state.sequencing_mode(),
                             item.state.federation_stream_id.clone(),
                         )
                     });
@@ -227,7 +226,6 @@ impl SemanticVerifier {
                 head_seq: replayed.head_seq,
                 ref_head_seq: self.last_ref_seq.get(item_id).copied().unwrap_or(0),
                 lifecycle_state: replayed.state.lifecycle_state,
-                sequencing_mode: replayed.state.sequencing_mode,
                 federation_stream_id: replayed.state.federation_stream_id.clone(),
             })
             .collect()
@@ -267,7 +265,6 @@ impl SemanticVerifier {
                 || item.head_seq != replayed.head_seq
                 || item.ref_head_seq != self.last_ref_seq.get(&item.item_id).copied().unwrap_or(0)
                 || item.lifecycle_state != replayed.state.lifecycle_state
-                || item.sequencing_mode != replayed.state.sequencing_mode
                 || item.federation_stream_id != replayed.state.federation_stream_id
             {
                 push(format!(
@@ -290,13 +287,8 @@ impl SemanticVerifier {
                     item.item_id, item.name
                 )),
             }
-            match (item.sequencing_mode, item.federation_stream_id.as_deref()) {
-                (SequencingMode::Local, None) => {}
-                (SequencingMode::Federated, Some(value)) if !value.is_empty() => {}
-                _ => push(format!(
-                    "item {}: sequencing mode and federation ID disagree",
-                    item.item_id
-                )),
+            if item.federation_stream_id.as_deref() == Some("") {
+                push(format!("item {}: empty federation stream ID", item.item_id));
             }
         }
 
@@ -352,7 +344,6 @@ impl SemanticVerifier {
                 "head_seq": item.head_seq,
                 "ref_head_seq": self.last_ref_seq.get(item_id).copied().unwrap_or(0),
                 "lifecycle_state": state.lifecycle_state,
-                "sequencing_mode": state.sequencing_mode,
                 "federation_stream_id": state.federation_stream_id,
             });
             data.extend_from_slice(&canonical_json_bytes(&value)?);
@@ -454,7 +445,7 @@ impl SemanticVerifier {
                 .entry(target.clone())
                 .or_default()
                 .insert(item_id.clone());
-            if state.sequencing_mode == SequencingMode::Federated {
+            if state.federation_stream_id.is_some() {
                 report("a federated item has a link");
             }
             let unchanged = before.is_some() && !set_links.contains(item_id);
@@ -499,7 +490,7 @@ impl SemanticVerifier {
             let Some(create) = proposal.create_item.as_ref() else {
                 return;
             };
-            let state = match ItemState::from_create(create, SequencingMode::Local, None) {
+            let state = match ItemState::from_create(create, None) {
                 Ok(state) => state,
                 Err(error) => {
                     findings.push(format!("{context}: invalid created name: {error}"));
@@ -671,7 +662,6 @@ mod tests {
             head_seq: 1,
             ref_head_seq: 0,
             lifecycle_state: LifecycleState::Live,
-            sequencing_mode: SequencingMode::Local,
             federation_stream_id: None,
         };
         (commit, vec![event], item)

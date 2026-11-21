@@ -64,7 +64,7 @@
             }
           ],
           "valid": true,
-          "state_digest": "sha256:a3643f5c2ceb64cd7d34797d57e539b2d435766830d03236278ca0bf8e4bc3df"
+          "state_digest": "sha256:affb2f3eadd26f01cbcaa1092965480b2409e1b6964c57947a06efa7bfe3d322"
         },
         {
           "events": [
@@ -77,7 +77,7 @@
             }
           ],
           "valid": true,
-          "state_digest": "sha256:4bd8b070e33afb39680205e15a4b6beef667f605d5a7af83789f20fd75899ca7"
+          "state_digest": "sha256:92efb2987c75cb03ec15ce8888662ae1918dcef57b0af351c5cd85449d022c3c"
         },
         {
           "events": [
@@ -99,7 +99,7 @@
             }
           ],
           "valid": true,
-          "state_digest": "sha256:5beb851309b489008c60517cae3f55e2e36b342df88d57be62a6109ccde8fd76"
+          "state_digest": "sha256:570f2887eb25b7373a8cd56ab8c81179993353014a6ef3f4e829eab906ea4cd1"
         }
       ]
     },

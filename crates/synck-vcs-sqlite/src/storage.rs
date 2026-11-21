@@ -16,8 +16,8 @@ use synck_vcs::errors::StorageError;
 use synck_vcs::storage::{SealedCommitInsert, StorageBackend, StorageTxn};
 use synck_vcs::types::{
     CommitEventRow, CommitId, CommitPk, CommitRow, EventInsertRow, EventRow, ItemCursor, ItemId,
-    ItemRow, LifecycleState, RefEventInsertRow, RefEventRow, RepoEventCursor, RepoId,
-    SequencingMode, Timestamp, commit_id_from_digest_bytes, commit_id_to_digest_bytes,
+    ItemRow, LifecycleState, RefEventInsertRow, RefEventRow, RepoEventCursor, RepoId, Timestamp,
+    commit_id_from_digest_bytes, commit_id_to_digest_bytes,
 };
 
 const APPLICATION_ID: i32 = 0x5359_4E4B;
@@ -614,16 +614,6 @@ fn item_from_row(row: &Row<'_>) -> rusqlite::Result<ItemRow> {
         "TOMBSTONED" => LifecycleState::Tombstoned,
         other => return Err(decode_error(8, format!("invalid lifecycle_state: {other}"))),
     };
-    let sequencing = match row.get::<_, String>(11)?.as_str() {
-        "LOCAL" => SequencingMode::Local,
-        "FEDERATED" => SequencingMode::Federated,
-        other => {
-            return Err(decode_error(
-                11,
-                format!("invalid sequencing_mode: {other}"),
-            ));
-        }
-    };
     let parent = row
         .get::<_, Option<String>>(3)?
         .map(|value| parse_item(value, 3))
@@ -640,12 +630,11 @@ fn item_from_row(row: &Row<'_>) -> rusqlite::Result<ItemRow> {
         lifecycle_state: lifecycle,
         created_at: parse_time_row(row.get(9)?, 9)?,
         created_by: row.get(10)?,
-        sequencing_mode: sequencing,
-        federation_stream_id: row.get(12)?,
-        record_key: row.get(13)?,
+        federation_stream_id: row.get(11)?,
+        record_key: row.get(12)?,
         link_folder_id: row
-            .get::<_, Option<String>>(14)?
-            .map(|value| parse_item(value, 14))
+            .get::<_, Option<String>>(13)?
+            .map(|value| parse_item(value, 13))
             .transpose()?,
     })
 }
@@ -782,7 +771,7 @@ fn commit_event_from_row(row: &Row<'_>) -> rusqlite::Result<CommitEventRow> {
     }
 }
 
-const ITEM_COLUMNS: &str = "repo_id, item_id, item_type, parent_folder_id, name, name_key, head_seq, ref_head_seq, lifecycle_state, created_at, created_by, sequencing_mode, federation_stream_id, record_key, link_folder_id";
+const ITEM_COLUMNS: &str = "repo_id, item_id, item_type, parent_folder_id, name, name_key, head_seq, ref_head_seq, lifecycle_state, created_at, created_by, federation_stream_id, record_key, link_folder_id";
 const COMMIT_COLUMNS: &str = "repo_id, commit_id, repo_seq, author_id, committer_id, message, occurred_at, created_at, event_count, operation_id";
 const EVENT_COLUMNS: &str = "e.repo_id, e.item_id, e.item_seq, e.event_type, c.commit_id, e.commit_event_idx, c.repo_seq, e.payload, c.created_at, e.parent_folder_id, (SELECT m.payload FROM vcs_metadata_objects m WHERE m.repo_id=e.repo_id AND m.object_id=synck_metadata_id(e.payload))";
 const REF_EVENT_COLUMNS: &str = "r.repo_id, r.owner_item_id, r.ref_seq, r.event_type, c.commit_id, r.commit_event_idx, c.repo_seq, r.payload, c.created_at, (SELECT m.payload FROM vcs_metadata_objects m WHERE m.repo_id=r.repo_id AND m.object_id=synck_metadata_id(r.payload))";
@@ -1257,13 +1246,6 @@ fn lifecycle_text(value: LifecycleState) -> &'static str {
     }
 }
 
-fn sequencing_text(value: SequencingMode) -> &'static str {
-    match value {
-        SequencingMode::Local => "LOCAL",
-        SequencingMode::Federated => "FEDERATED",
-    }
-}
-
 pub(crate) struct SqliteTxn {
     encrypted: bool,
     conn: Option<Connection>,
@@ -1480,7 +1462,7 @@ impl StorageTxn for SqliteTxn {
     async fn put_item(&mut self, item: &ItemRow) -> Result<(), StorageError> {
         self.conn()?
             .execute(
-                "INSERT INTO vcs_items (repo_id, item_id, item_type, parent_folder_id, name, name_key, head_seq, ref_head_seq, lifecycle_state, created_at, created_by, sequencing_mode, federation_stream_id, record_key, link_folder_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15) ON CONFLICT(repo_id, item_id) DO UPDATE SET item_type = excluded.item_type, parent_folder_id = excluded.parent_folder_id, name = excluded.name, name_key = excluded.name_key, record_key = excluded.record_key, link_folder_id = excluded.link_folder_id, head_seq = excluded.head_seq, ref_head_seq = excluded.ref_head_seq, lifecycle_state = excluded.lifecycle_state, created_at = excluded.created_at, created_by = excluded.created_by, sequencing_mode = excluded.sequencing_mode, federation_stream_id = excluded.federation_stream_id",
+                "INSERT INTO vcs_items (repo_id, item_id, item_type, parent_folder_id, name, name_key, head_seq, ref_head_seq, lifecycle_state, created_at, created_by, federation_stream_id, record_key, link_folder_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14) ON CONFLICT(repo_id, item_id) DO UPDATE SET item_type = excluded.item_type, parent_folder_id = excluded.parent_folder_id, name = excluded.name, name_key = excluded.name_key, record_key = excluded.record_key, link_folder_id = excluded.link_folder_id, head_seq = excluded.head_seq, ref_head_seq = excluded.ref_head_seq, lifecycle_state = excluded.lifecycle_state, created_at = excluded.created_at, created_by = excluded.created_by, federation_stream_id = excluded.federation_stream_id",
                 params![
                     item.repo_id.as_str(),
                     item.item_id.as_str(),
@@ -1493,7 +1475,6 @@ impl StorageTxn for SqliteTxn {
                     lifecycle_text(item.lifecycle_state),
                     format_timestamp(item.created_at),
                     item.created_by,
-                    sequencing_text(item.sequencing_mode),
                     item.federation_stream_id,
                     item.record_key,
                     item.link_folder_id.as_ref().map(ItemId::as_str),
@@ -2234,9 +2215,9 @@ mod checked_append_work_tests {
                     "INSERT INTO vcs_items (
                         repo_id, item_id, item_type, parent_folder_id, name, name_key,
                         head_seq, lifecycle_state, created_at, created_by,
-                        sequencing_mode, federation_stream_id
+                        federation_stream_id
                      ) VALUES (?1, ?2, 'FILE', NULL, ?3, ?3, 1, 'LIVE', ?4,
-                               'test', 'LOCAL', NULL)",
+                               'test', NULL)",
                 )
                 .expect("prepare unrelated-item insert");
             for index in 0..count {

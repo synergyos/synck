@@ -32,7 +32,7 @@ use synck_vcs::storage::{Storage, StorageBackend};
 use synck_vcs::types::{
     AcceptedCommit, CommitEventRow, CommitId, CommitProposal, EventContent, EventProposal,
     ItemCursor, ItemId, ItemRevision, ItemRow, LifecycleState, ObjectId, RefEventProposal,
-    RepoEventCursor, RepoId, SequencingMode, Timestamp,
+    RepoEventCursor, RepoId, Timestamp,
 };
 use synck_vcs::verify::{
     SemanticVerifier, VerifyCommit, VerifyCommitEvent, VerifyEvent, VerifyItem, VerifyRefEvent,
@@ -1112,7 +1112,7 @@ impl PortableRepository {
             .ok_or_else(|| invalid("item not found"))?;
         if item.item_type != kind
             || item.lifecycle_state != LifecycleState::Live
-            || item.sequencing_mode != SequencingMode::Local
+            || item.federation_stream_id.is_some()
         {
             return Err(invalid(
                 "operation requires a live local owner of the supported item type; federated authority is retained",
@@ -1350,7 +1350,6 @@ impl PortableRepository {
                 lifecycle_state: item.lifecycle_state,
                 created_at: item.created_at,
                 created_by: item.created_by,
-                sequencing_mode: item.sequencing_mode,
                 federation_stream_id: item.federation_stream_id,
             })
             .collect::<Vec<_>>();
@@ -2029,7 +2028,6 @@ impl PortableRepository {
                     head_seq: item.head_seq,
                     ref_head_seq: item.ref_head_seq,
                     lifecycle_state: item.lifecycle_state,
-                    sequencing_mode: item.sequencing_mode,
                     federation_stream_id: item.federation_stream_id,
                 });
             }

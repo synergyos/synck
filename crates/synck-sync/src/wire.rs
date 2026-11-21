@@ -21,9 +21,8 @@ use synck_vcs::codec::{
 };
 use synck_vcs::types::{
     CommitEventRow, CommitId, CommitRow, EventRow, ItemId, LifecycleState, ObjectId, RefEventRow,
-    RepoId, SequencingMode, Sha256Digest, SubtreeClosureGuard, Timestamp,
-    commit_id_from_digest_bytes, commit_id_to_digest_bytes, sha256_digest_from_digest_bytes,
-    sha256_digest_to_digest_bytes,
+    RepoId, Sha256Digest, SubtreeClosureGuard, Timestamp, commit_id_from_digest_bytes,
+    commit_id_to_digest_bytes, sha256_digest_from_digest_bytes, sha256_digest_to_digest_bytes,
 };
 
 type Result<T> = std::result::Result<T, ProtocolError>;
@@ -829,13 +828,6 @@ impl Wire for StateEntry {
                 LifecycleState::Tombstoned => 3,
             },
         );
-        put_u8(
-            out,
-            match self.sequencing_mode {
-                SequencingMode::Local => 1,
-                SequencingMode::Federated => 2,
-            },
-        );
         put_opt_str(out, self.federation_stream_id.as_ref())?;
         put_content(out, &self.content)?;
         put_opt_object(out, self.metadata_id.as_ref())?;
@@ -862,12 +854,12 @@ impl Wire for StateEntry {
                 3 => LifecycleState::Tombstoned,
                 _ => return Err(invalid("unknown lifecycle state")),
             },
-            sequencing_mode: match decoder.u8()? {
-                1 => SequencingMode::Local,
-                2 => SequencingMode::Federated,
-                _ => return Err(invalid("unknown sequencing mode")),
+            federation_stream_id: match get_opt_str(decoder)? {
+                Some(stream) if stream.is_empty() => {
+                    return Err(invalid("empty federation stream"));
+                }
+                stream => stream,
             },
-            federation_stream_id: get_opt_str(decoder)?,
             content: decoder.content()?.roles().clone(),
             metadata_id: get_opt(decoder, get_object)?,
             name_metadata_id: get_opt(decoder, get_object)?,

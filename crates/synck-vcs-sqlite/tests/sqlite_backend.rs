@@ -15,7 +15,7 @@ use synck_vcs::storage::{Storage, StorageBackend};
 use synck_vcs::types::{
     CommitEventRow, CommitId, CommitProposal, CreateItem, EventProposal, FederatedDomainProposal,
     FederatedProposal, ItemCursor, ItemId, ItemRevision, ItemRow, LifecycleState, RefEventProposal,
-    RepoEventCursor, RepoId, SequencingMode, SubtreeClosureGuard, commit_id_to_digest_bytes,
+    RepoEventCursor, RepoId, SubtreeClosureGuard, commit_id_to_digest_bytes,
 };
 use synck_vcs_sqlite::{SqliteStorage, format_timestamp, parse_timestamp};
 
@@ -85,7 +85,6 @@ async fn state_verification_bounds_bytes_without_rejecting_large_item_values() {
             lifecycle_state: LifecycleState::Live,
             created_at: Utc::now(),
             created_by: "a".repeat(size * 1024 * 1024),
-            sequencing_mode: SequencingMode::Local,
             federation_stream_id: None,
             content: None,
         }))
@@ -1257,7 +1256,6 @@ async fn rollback_discards_all_writes() {
             lifecycle_state: LifecycleState::Live,
             created_at: Utc::now(),
             created_by: "author".to_string(),
-            sequencing_mode: SequencingMode::Local,
             federation_stream_id: None,
         })
         .await
@@ -1320,7 +1318,6 @@ async fn item_timestamp_order_and_cursor_are_chronological() {
         lifecycle_state: LifecycleState::Live,
         created_at,
         created_by: "author".to_string(),
-        sequencing_mode: SequencingMode::Local,
         federation_stream_id: None,
     };
 
@@ -1436,7 +1433,6 @@ async fn live_name_conflict_maps_to_unique_violation() {
         lifecycle_state: LifecycleState::Live,
         created_at: now,
         created_by: "author".to_string(),
-        sequencing_mode: SequencingMode::Local,
         federation_stream_id: None,
     };
     let mut txn = storage.begin_txn().await.unwrap();
@@ -1464,7 +1460,6 @@ async fn non_unique_constraint_is_not_reported_as_a_name_conflict() {
         lifecycle_state: LifecycleState::Live,
         created_at: Utc::now(),
         created_by: "author".to_string(),
-        sequencing_mode: SequencingMode::Local,
         federation_stream_id: None,
     };
 
@@ -2229,9 +2224,9 @@ async fn sqlite_descendant_read_stops_at_the_overflow_sentinel() {
             "INSERT INTO vcs_items (
                 repo_id, item_id, item_type, parent_folder_id, name, name_key,
                 head_seq, lifecycle_state, created_at, created_by,
-                sequencing_mode, federation_stream_id
+                federation_stream_id
              ) VALUES (?1, ?2, 'FOLDER', NULL, 'root', 'root', 1, 'LIVE', ?3,
-                       'author', 'LOCAL', NULL)",
+                       'author', NULL)",
             params![repo_id.as_str(), root_id.as_str(), created_at],
         )
         .unwrap();
@@ -2241,9 +2236,9 @@ async fn sqlite_descendant_read_stops_at_the_overflow_sentinel() {
                 "INSERT INTO vcs_items (
                     repo_id, item_id, item_type, parent_folder_id, name, name_key,
                     head_seq, lifecycle_state, created_at, created_by,
-                    sequencing_mode, federation_stream_id
+                    federation_stream_id
                  ) VALUES (?1, ?2, 'FILE', ?3, ?4, ?4, 1, 'LIVE', ?5,
-                           'author', 'LOCAL', NULL)",
+                           'author', NULL)",
             )
             .unwrap();
         for index in 0..=9_999 {

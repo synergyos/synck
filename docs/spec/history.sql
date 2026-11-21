@@ -20,8 +20,7 @@ CREATE TABLE vcs_items (
     lifecycle_state TEXT NOT NULL CHECK (lifecycle_state IN ('LIVE','TRASH','TOMBSTONED')),
     created_at TEXT NOT NULL,
     created_by TEXT NOT NULL,
-    sequencing_mode TEXT NOT NULL CHECK (sequencing_mode IN ('LOCAL','FEDERATED')),
-    federation_stream_id TEXT, ref_head_seq INTEGER NOT NULL DEFAULT 0 CHECK (ref_head_seq >= 0),
+    federation_stream_id TEXT CHECK (federation_stream_id <> ''), ref_head_seq INTEGER NOT NULL DEFAULT 0 CHECK (ref_head_seq >= 0),
     PRIMARY KEY (repo_id, item_id),
     CHECK (
         (name IS NOT NULL AND name_key IS NOT NULL AND record_key IS NULL AND link_folder_id IS NULL)
@@ -84,7 +83,7 @@ WHERE link_folder_id IS NOT NULL;
 
 CREATE UNIQUE INDEX idx_vcs_items_federated_unique
 ON vcs_items (repo_id, federation_stream_id)
-WHERE sequencing_mode = 'FEDERATED' AND federation_stream_id IS NOT NULL;
+WHERE federation_stream_id IS NOT NULL;
 
 CREATE INDEX idx_vcs_items_repo_created_at_item_id
 ON vcs_items (repo_id, created_at, item_id);

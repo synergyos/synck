@@ -1050,12 +1050,12 @@ impl Repository {
                 _ => None,
             };
             if let Some(id) = target {
-                let mode: String = connection.query_row(
-                    "SELECT sequencing_mode FROM vcs_items WHERE repo_id=?1 AND item_id=?2",
+                let federated: bool = connection.query_row(
+                    "SELECT federation_stream_id IS NOT NULL FROM vcs_items WHERE repo_id=?1 AND item_id=?2",
                     params![self.config.repo_id.as_str(), id.as_str()],
                     |row| row.get(0),
                 )?;
-                if mode != "LOCAL" {
+                if federated {
                     return Err(LocalError::Invalid(
                         "externally sequenced items cannot be edited in a local checkout".into(),
                     ));

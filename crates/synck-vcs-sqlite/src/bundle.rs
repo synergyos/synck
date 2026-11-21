@@ -398,7 +398,6 @@ async fn install(
             lifecycle_state: head.lifecycle_state,
             created_at,
             created_by,
-            sequencing_mode: head.sequencing_mode,
             federation_stream_id: head.federation_stream_id,
         })
         .await

@@ -31,7 +31,7 @@ use crate::types::{
     CreatedItemInfo, EventInsertRow, EventProposal, EventRow, EventsDigest,
     FederatedDomainProposal, FederatedProposal, IngestedCommit, IngestedDomainCommit, ItemCursor,
     ItemId, ItemRow, LifecycleState, RefEventInsertRow, RefEventProposal, RepoEventCursor, RepoId,
-    SequencingMode, SubtreeClosureGuard, Timestamp,
+    SubtreeClosureGuard, Timestamp,
 };
 use crate::types::{
     CommitId, canonical_commit_bytes_for_hash, canonical_event_proposal_bytes,
@@ -1341,7 +1341,6 @@ impl Repo {
             &mut existing_rows_by_id,
             commit_created_at,
             &proposal.author_id,
-            self.config.default_sequencing_mode,
         )?;
 
         // Snapshot pre-commit item state before applying in-commit structural modifiers.
@@ -1728,11 +1727,8 @@ impl Repo {
                 })?;
 
                 let item_id = ItemId::new();
-                let state = ItemState::from_create(
-                    ci,
-                    SequencingMode::Federated,
-                    Some(proposal.federation_stream_id.clone()),
-                )
+                let state =
+                    ItemState::from_create(ci, Some(proposal.federation_stream_id.clone()))
                 .map_err(|e| map_create_error(&repo_id, &item_id, ci, e))?;
 
                 let mut lock_item_ids: BTreeSet<ItemId> = BTreeSet::new();
@@ -2450,7 +2446,6 @@ impl Repo {
                 &mut existing_rows_by_id,
                 commit_created_at,
                 &local_proposal.author_id,
-                SequencingMode::Local,
             )?;
 
             check_base_seqs(&repo_id, &items, &observed_base_seq, create_item_ids)?;
@@ -2620,7 +2615,6 @@ fn new_item_row(
         lifecycle_state: state.lifecycle_state,
         created_at,
         created_by,
-        sequencing_mode: state.sequencing_mode,
         federation_stream_id: state.federation_stream_id,
     }
 }
@@ -2726,7 +2720,7 @@ async fn check_final_items<T: StorageTxn + ?Sized>(
         if matches!(item.lifecycle_state, LifecycleState::Tombstoned) {
             continue;
         }
-        if matches!(item.sequencing_mode, SequencingMode::Federated) {
+        if item.federation_stream_id.is_some() {
             return invalid("a federated item has no link");
         }
         let folder = match items.get(target) {

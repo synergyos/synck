@@ -253,7 +253,6 @@ pub(super) fn seed_items(
     existing: &mut HashMap<ItemId, ItemRow>,
     created_at: Timestamp,
     author_id: &str,
-    sequencing_mode: SequencingMode,
 ) -> Result<HashMap<ItemId, ItemRow>, CoreError> {
     let repo_id = ctx.repo_id;
     let tombstone = TombstoneFinality;
@@ -288,7 +287,7 @@ pub(super) fn seed_items(
                     .map(|create| (idx, create))
             })
             .expect("created item must have a corresponding event");
-        let state = ItemState::from_create(create, sequencing_mode, None)
+        let state = ItemState::from_create(create, None)
             .map_err(|error| map_create_error(repo_id, item_id, create, error))?;
         let row = new_item_row(
             repo_id,

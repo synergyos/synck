@@ -317,7 +317,8 @@ Replay accepts that, and reconstruction leaves such a child out.
 Which items accept append and which accept ingest is a write-path rule: LOCAL items
 accept append and FEDERATED items accept ingest. A transition to federated requires
 `set_is_federated: true` and a nonempty stream; a return to local requires false and
-no stream field. A `federation_stream_id` is unique among FEDERATED items.
+no stream field. An item is FEDERATED exactly while it has a `federation_stream_id`,
+which is nonempty and unique among items; nothing stores the mode apart from it.
 
 A `CREATE` may carry `set_is_federated: true` and `set_federation_stream_id`, both or
 neither. That is federated bootstrap: the item starts FEDERATED. A FEDERATED item
@@ -334,8 +335,8 @@ locally.
 ### Tree items and records
 
 An item's class is the form of its `create_item`, so a reader needs no type
-registry and replays unknown future types. FILE, FOLDER and FEDERATED_MOUNT, which
-the core defines, are tree items; the record form is invalid for them. Every
+registry and replays unknown future types. FILE and FOLDER, which the core
+defines, are tree items; the record form is invalid for them. Every
 other type takes its class from history; a family that defines a type rejects
 the form it does not use, and must accept both if history holds both.
 
@@ -1096,8 +1097,8 @@ For each item created through that position, in ascending order of raw item ID
 bytes, form canonical JSON with exactly these fields, using null where a value is
 absent: `item_id`, `item_type`, `parent_folder_id`, `name`, `name_key`, `record_key`,
 `link_folder_id`, `content` (the current role map in its JSON form, `{}` when there is none),
-`head_seq`, `ref_head_seq`, `lifecycle_state`, `sequencing_mode` and
-`federation_stream_id`. The digest is SHA-256 over the 14 ASCII bytes
+`head_seq`, `ref_head_seq`, `lifecycle_state` and `federation_stream_id`, which
+is present exactly for a FEDERATED item. The digest is SHA-256 over the 14 ASCII bytes
 `synck-state-v1` and a line feed, followed by each item's JSON and a line feed.
 `vectors/records.json` gives the digest after every accepted commit.
 

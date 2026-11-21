@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use synck_vcs::types::{
     AuthorId, CommitEventRow, CommitId, CommitRow, EventProposal, ItemId, LifecycleState, ObjectId,
-    RefEventProposal, RepoId, SequencingMode, Sha256Digest, Timestamp,
+    RefEventProposal, RepoId, Sha256Digest, Timestamp,
 };
 use uuid::Uuid;
 
@@ -357,7 +357,7 @@ pub struct StateEntry {
     pub record_key: Option<String>,
     pub link_folder_id: Option<ItemId>,
     pub lifecycle_state: LifecycleState,
-    pub sequencing_mode: SequencingMode,
+    /// The stream a FEDERATED item follows; a LOCAL item has none.
     pub federation_stream_id: Option<String>,
     /// The current role map, empty when the item has no content.
     pub content: BTreeMap<String, synck_vcs::types::ContentRef>,

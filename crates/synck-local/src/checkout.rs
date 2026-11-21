@@ -189,12 +189,12 @@ impl Repository {
             .open_readonly()
             .map_err(|e| LocalError::Integrity(e.to_string()))?;
         for (path, node) in tree.iter().filter(|(path, _)| selected(paths, path)) {
-            let mode: String = connection.query_row(
-                "SELECT sequencing_mode FROM vcs_items WHERE repo_id=?1 AND item_id=?2",
+            let federated: bool = connection.query_row(
+                "SELECT federation_stream_id IS NOT NULL FROM vcs_items WHERE repo_id=?1 AND item_id=?2",
                 rusqlite::params![self.repository_id().as_str(), node.item_id.as_str()],
                 |r| r.get(0),
             )?;
-            if mode != "LOCAL" {
+            if federated {
                 return Err(LocalError::Invalid(format!(
                     "externally sequenced item cannot be checked out for editing: {path}"
                 )));

@@ -326,13 +326,13 @@ async fn mixed_history_import_preserves_ids_ref_heads_and_next_append() {
             .prepare(
                 "SELECT item_id, item_type, parent_folder_id, name, name_key, record_key,
                         link_folder_id, head_seq, ref_head_seq, lifecycle_state, created_at,
-                        created_by, sequencing_mode, federation_stream_id
+                        created_by, federation_stream_id
                  FROM vcs_items ORDER BY item_id",
             )
             .unwrap();
         let mut items = statement
             .query_map([], |row| {
-                (0..14)
+                (0..13)
                     .map(|index| row.get::<_, rusqlite::types::Value>(index))
                     .collect::<rusqlite::Result<Vec<_>>>()
             })

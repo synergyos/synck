@@ -8,7 +8,7 @@ use super::{
 };
 use crate::naming::namespace_key;
 use crate::types::{
-    CommitId, ItemId, LifecycleState, RepoId, SequencingMode, sha256_prefixed_hex_from_digest_bytes,
+    CommitId, ItemId, LifecycleState, RepoId, sha256_prefixed_hex_from_digest_bytes,
 };
 
 const ITEM_VALUE: u8 = 0x01;
@@ -111,10 +111,6 @@ fn encode_item_value(output: &mut Vec<u8>, value: &ItemValue) -> Result<(), Stat
     output.extend_from_slice(&value.created_at.timestamp().to_be_bytes());
     output.extend_from_slice(&value.created_at.timestamp_subsec_nanos().to_be_bytes());
     encode_string(output, &value.created_by)?;
-    output.push(match value.sequencing_mode {
-        SequencingMode::Local => 1,
-        SequencingMode::Federated => 2,
-    });
     match &value.federation_stream_id {
         None => output.push(0),
         Some(value) => {
@@ -157,11 +153,6 @@ fn decode_item_value(decoder: &mut Decoder<'_>) -> Result<ItemValue, StateError>
     let created_at = DateTime::from_timestamp(seconds, nanos)
         .ok_or_else(|| invalid("timestamp is out of range"))?;
     let created_by = decoder.string_u64()?;
-    let sequencing_mode = match decoder.u8()? {
-        1 => SequencingMode::Local,
-        2 => SequencingMode::Federated,
-        _ => return Err(invalid("unknown sequencing tag")),
-    };
     let federation_stream_id = match decoder.u8()? {
         0 => None,
         1 => Some(decoder.string_u64()?),
@@ -188,7 +179,6 @@ fn decode_item_value(decoder: &mut Decoder<'_>) -> Result<ItemValue, StateError>
         lifecycle_state,
         created_at,
         created_by,
-        sequencing_mode,
         federation_stream_id,
         content,
     };
@@ -215,10 +205,8 @@ fn validate_item_value(value: &ItemValue) -> Result<(), StateError> {
         }
         _ => return Err(invalid("item name and name key disagree")),
     }
-    match (value.sequencing_mode, value.federation_stream_id.as_deref()) {
-        (SequencingMode::Local, None) => {}
-        (SequencingMode::Federated, Some(stream)) if !stream.is_empty() => {}
-        _ => return Err(invalid("sequencing mode and federation stream disagree")),
+    if value.federation_stream_id.as_deref() == Some("") {
+        return Err(invalid("empty federation stream"));
     }
     if value
         .content

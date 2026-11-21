@@ -121,7 +121,7 @@ every event and refuses the commit unless its hash is that ID.
 | `StateRequest` | `StatePosition` after, `limit` |
 | `StatePosition` | `RepositoryIdentity`, `u64` changed_seq, `opt uuid` item_id |
 | `StatePage` | `StatePosition` after, `list StateEntry`, `list (uuid item_id, u64 changed_seq)` departed, `Cursor` through, `bool` has_more |
-| `StateEntry` | `uuid` item_id, `str` item_type, `u64` changed_seq, `seq` head_seq, `u64` ref_head_seq, `target` parent_folder_id, `opt str` name, `opt str` record_key, `target` link_folder_id, `u8` lifecycle_state (1 LIVE, 2 TRASH, 3 TOMBSTONED), `u8` sequencing_mode (1 LOCAL, 2 FEDERATED), `opt str` federation_stream_id, `content`, `opt digest` metadata_id, `opt digest` name_metadata_id, `time` created_at, `str` created_by, `time` changed_at, `str` changed_by |
+| `StateEntry` | `uuid` item_id, `str` item_type, `u64` changed_seq, `seq` head_seq, `u64` ref_head_seq, `target` parent_folder_id, `opt str` name, `opt str` record_key, `target` link_folder_id, `u8` lifecycle_state (1 LIVE, 2 TRASH, 3 TOMBSTONED), `opt str` federation_stream_id (present exactly for a FEDERATED item), `content`, `opt digest` metadata_id, `opt digest` name_metadata_id, `time` created_at, `str` created_by, `time` changed_at, `str` changed_by |
 | `ItemHistoriesRequest` | `RepositoryIdentity`, `list (uuid item_id, u64 after_seq, u64 after_ref_seq)`, `limit` |
 | `ItemHistoriesPage` | `RepositoryIdentity`, `list ItemHistoryPage` |
 | `ItemHistoryPage` | `uuid` item_id, `list ItemEvent` events, `list ItemEvent` refs, `list ItemCommit` commits, `bool` has_more |

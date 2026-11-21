@@ -28,7 +28,7 @@ use uuid::Uuid;
 
 use crate::types::{CommitId, ItemId, LifecycleState, RepoId, SequencingMode, Timestamp};
 
-pub const FORMAT_VERSION: u8 = 3;
+pub const FORMAT_VERSION: u8 = 4;
 pub const MAX_ENTRIES: usize = 16;
 pub const MIN_ENTRIES: usize = 8;
 pub const MAX_INDEX_NODE_BYTES: usize = 65_536;
@@ -102,9 +102,14 @@ pub struct ItemValue {
     pub lifecycle_state: LifecycleState,
     pub created_at: Timestamp,
     pub created_by: String,
-    pub sequencing_mode: SequencingMode,
     pub federation_stream_id: Option<String>,
     pub content: Option<ContentPointer>,
+}
+
+impl ItemValue {
+    pub fn sequencing_mode(&self) -> SequencingMode {
+        SequencingMode::of(self.federation_stream_id.as_deref())
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -259,7 +264,6 @@ mod tests {
             lifecycle_state: LifecycleState::Live,
             created_at: Utc.timestamp_opt(1_688_169_600, 0).unwrap(),
             created_by: "alice".to_string(),
-            sequencing_mode: SequencingMode::Local,
             federation_stream_id: None,
             content: Some(ContentPointer {
                 item_seq: head_seq,

@@ -15,7 +15,6 @@ pub struct ItemState {
     pub record_key: Option<String>,
     pub link_folder_id: Option<ItemId>,
     pub lifecycle_state: LifecycleState,
-    pub sequencing_mode: SequencingMode,
     pub federation_stream_id: Option<String>,
 }
 
@@ -30,7 +29,6 @@ pub enum TransitionError {
 impl ItemState {
     pub fn from_create(
         create: &CreateItem,
-        sequencing_mode: SequencingMode,
         federation_stream_id: Option<String>,
     ) -> Result<Self, NameError> {
         Ok(Self {
@@ -41,13 +39,16 @@ impl ItemState {
             record_key: create.key.clone(),
             link_folder_id: create.link.clone(),
             lifecycle_state: LifecycleState::Live,
-            sequencing_mode,
             federation_stream_id,
         })
     }
 
     pub fn is_tree(&self) -> bool {
         self.name.is_some()
+    }
+
+    pub fn sequencing_mode(&self) -> SequencingMode {
+        SequencingMode::of(self.federation_stream_id.as_deref())
     }
 
     pub fn write_to(&self, row: &mut ItemRow) {
@@ -58,7 +59,6 @@ impl ItemState {
         row.record_key.clone_from(&self.record_key);
         row.link_folder_id.clone_from(&self.link_folder_id);
         row.lifecycle_state = self.lifecycle_state;
-        row.sequencing_mode = self.sequencing_mode;
         row.federation_stream_id
             .clone_from(&self.federation_stream_id);
     }
@@ -74,7 +74,6 @@ impl From<&ItemRow> for ItemState {
             record_key: row.record_key.clone(),
             link_folder_id: row.link_folder_id.clone(),
             lifecycle_state: row.lifecycle_state,
-            sequencing_mode: row.sequencing_mode,
             federation_stream_id: row.federation_stream_id.clone(),
         }
     }
@@ -90,7 +89,6 @@ impl From<&ItemValue> for ItemState {
             record_key: value.record_key.clone(),
             link_folder_id: value.link_folder_id.clone(),
             lifecycle_state: value.lifecycle_state,
-            sequencing_mode: value.sequencing_mode,
             federation_stream_id: value.federation_stream_id.clone(),
         }
     }
@@ -158,8 +156,7 @@ pub fn apply_event(
         return Err(TransitionError::Invalid("merged_from on a created item"));
     }
     if proposal.source_revision().is_some()
-        && (state.sequencing_mode == SequencingMode::Federated
-            || proposal.set_is_federated == Some(true))
+        && (state.federation_stream_id.is_some() || proposal.set_is_federated == Some(true))
     {
         return Err(TransitionError::Invalid(
             "a federated event has no source revision",
@@ -185,13 +182,8 @@ pub fn apply_event(
             state.lifecycle_state = LifecycleState::Live;
         }
     }
-    if let Some(is_federated) = proposal.set_is_federated {
-        state.sequencing_mode = if is_federated {
-            SequencingMode::Federated
-        } else {
-            state.federation_stream_id = None;
-            SequencingMode::Local
-        };
+    if proposal.set_is_federated == Some(false) {
+        state.federation_stream_id = None;
     }
     if let Some(stream_id) = proposal.set_federation_stream_id.as_ref() {
         state.federation_stream_id = Some(stream_id.clone());
@@ -243,14 +235,13 @@ mod tests {
             record_key: None,
             link_folder_id: None,
             lifecycle_state: LifecycleState::Live,
-            sequencing_mode: SequencingMode::Local,
             federation_stream_id: None,
         };
         let applied = apply_event(&mut state, &proposal).unwrap();
         assert_eq!(applied.parent_folder_id_after, Some(parent));
         assert_eq!(state.name_key.as_deref(), Some("report.txt"));
         assert_eq!(state.lifecycle_state, LifecycleState::Trash);
-        assert_eq!(state.sequencing_mode, SequencingMode::Federated);
+        assert_eq!(state.sequencing_mode(), SequencingMode::Federated);
         assert_eq!(state.federation_stream_id.as_deref(), Some("stream"));
     }
 
@@ -266,11 +257,10 @@ mod tests {
             record_key: None,
             link_folder_id: None,
             lifecycle_state: LifecycleState::Live,
-            sequencing_mode: SequencingMode::Federated,
             federation_stream_id: Some("stream".to_string()),
         };
         apply_event(&mut state, &proposal).unwrap();
-        assert_eq!(state.sequencing_mode, SequencingMode::Local);
+        assert_eq!(state.sequencing_mode(), SequencingMode::Local);
         assert_eq!(state.federation_stream_id, None);
     }
 }

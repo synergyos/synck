@@ -9,7 +9,7 @@ use crate::repo::Repo;
 use crate::transition::{ItemState, apply_event};
 use crate::types::{
     CommitEventRow, CommitRow, EventRow, LifecycleState, RefEventRow, RepoEventCursor, RepoId,
-    SequencingMode, compute_sha256_digest_bytes,
+    compute_sha256_digest_bytes,
 };
 
 use super::{
@@ -410,7 +410,7 @@ async fn apply_projected_event<S: StateProjectorStore>(
                 Some(item) => EnvelopeItemState::from_head(
                     Some(item.head_seq),
                     item.lifecycle_state == LifecycleState::Tombstoned,
-                    Some(item.sequencing_mode),
+                    Some(item.sequencing_mode()),
                     item.federation_stream_id.clone(),
                 ),
                 None => EnvelopeItemState::default(),
@@ -433,15 +433,10 @@ async fn apply_projected_event<S: StateProjectorStore>(
         let mut state = match staged.current.as_ref() {
             Some(current) => ItemState::from(current),
             None => match proposal.create_item.as_ref() {
-                Some(create) => ItemState::from_create(
-                    create,
-                    staged
-                        .envelope
-                        .sequencing_mode
-                        .unwrap_or(SequencingMode::Local),
-                    staged.envelope.federation_stream_id.clone(),
-                )
-                .map_err(|error| StateError::InvalidTree(error.to_string()))?,
+                Some(create) => {
+                    { ItemState::from_create(create, staged.envelope.federation_stream_id.clone()) }
+                        .map_err(|error| StateError::InvalidTree(error.to_string()))?
+                }
                 None => {
                     store.put_projection_item(&event.item_id, &staged).await?;
                     return Ok(());
@@ -498,7 +493,6 @@ async fn apply_projected_event<S: StateProjectorStore>(
                 .as_ref()
                 .map(|item| item.created_by.clone())
                 .unwrap_or_else(|| commit.author_id.clone()),
-            sequencing_mode: state.sequencing_mode,
             federation_stream_id: state.federation_stream_id,
             content,
         });
@@ -793,8 +787,8 @@ mod tests {
         StateRootId, StateVerificationBatch,
     };
     use crate::types::{
-        CreateItem, EventProposal, EventsDigest, ItemId, RepoId, SequencingMode,
-        canonical_commit_bytes_for_hash, canonical_event_proposal_bytes, compute_commit_id,
+        CreateItem, EventProposal, EventsDigest, ItemId, RepoId, canonical_commit_bytes_for_hash,
+        canonical_event_proposal_bytes, compute_commit_id,
     };
 
     fn item(head_seq: i64) -> ItemValue {
@@ -811,7 +805,6 @@ mod tests {
             lifecycle_state: LifecycleState::Live,
             created_at: Utc.timestamp_opt(1_688_169_600, 0).unwrap(),
             created_by: "alice".to_string(),
-            sequencing_mode: SequencingMode::Local,
             federation_stream_id: None,
             content: None,
         }

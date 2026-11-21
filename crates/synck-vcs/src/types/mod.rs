@@ -345,6 +345,17 @@ pub enum SequencingMode {
     Federated,
 }
 
+impl SequencingMode {
+    /// An item is FEDERATED exactly while it follows a stream.
+    pub fn of(federation_stream_id: Option<&str>) -> Self {
+        if federation_stream_id.is_some() {
+            Self::Federated
+        } else {
+            Self::Local
+        }
+    }
+}
+
 /// Logical representation of an `items` table row.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ItemRow {
@@ -367,8 +378,14 @@ pub struct ItemRow {
     pub lifecycle_state: LifecycleState,
     pub created_at: Timestamp,
     pub created_by: String,
-    pub sequencing_mode: SequencingMode,
+    /// The stream a FEDERATED item follows; a LOCAL item has none.
     pub federation_stream_id: Option<String>,
+}
+
+impl ItemRow {
+    pub fn sequencing_mode(&self) -> SequencingMode {
+        SequencingMode::of(self.federation_stream_id.as_deref())
+    }
 }
 
 /// An opaque commitment to a salted, framed object.
@@ -827,7 +844,7 @@ pub struct CreateItem {
     pub derived_from: Option<ItemRevision>,
 }
 
-const TREE_ITEM_TYPES: &[&str] = &["FILE", "FOLDER", "FEDERATED_MOUNT"];
+const TREE_ITEM_TYPES: &[&str] = &["FILE", "FOLDER"];
 
 impl CreateItem {
     pub fn tree(

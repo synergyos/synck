@@ -1241,7 +1241,6 @@ def label_vector(owner, base_ref_seq, salt, metadata):
 # or ("fields", ((name, T), ...)). JSON values use the field names of the table.
 
 LIFECYCLE = ["LIVE", "TRASH", "TOMBSTONED"]
-MODES = ["LOCAL", "FEDERATED"]
 LIMITS = ["events_per_commit", "object_bytes", "quota_bytes"]
 REFUSALS = [
     "INVALID", "UNAUTHENTICATED", "FORBIDDEN", "NOT_FOUND", "OBJECT_MISSING", "CHECKPOINT",
@@ -1300,8 +1299,7 @@ SHAPES = {
         ("item_id", "uuid"), ("item_type", "str"), ("changed_seq", "u64"), ("head_seq", "seq"),
         ("ref_head_seq", "u64"), ("parent_folder_id", "target"), ("name", ("opt", "str")),
         ("record_key", ("opt", "str")), ("link_folder_id", "target"),
-        ("lifecycle_state", "lifecycle"), ("sequencing_mode", "mode"),
-        ("federation_stream_id", ("opt", "str")), ("content", "content"),
+        ("lifecycle_state", "lifecycle"), ("federation_stream_id", ("opt", "stream")), ("content", "content"),
         ("metadata_id", ("opt", "digest")), ("name_metadata_id", ("opt", "digest")),
         ("created_at", "time"), ("created_by", "str"), ("changed_at", "time"),
         ("changed_by", "str")),
@@ -1510,6 +1508,7 @@ CODECS = {
     "uuid": (uuid_bytes, Reader.uuid),
     "digest": (digest_bytes, Reader.digest),
     "str": (enc_str, Reader.str),
+    "stream": (enc_str, dec_stream),
     "bool": (enc_bool, Reader.bool),
     "seq": (u64, Reader.seq),
     "time": (enc_time, Reader.time),
@@ -1520,8 +1519,6 @@ CODECS = {
     "version": (u16, lambda r: dec_bounded(r, 2, 2, 2, "protocol version")),
     "lifecycle": (lambda v: u8(LIFECYCLE.index(v) + 1),
                   lambda r: LIFECYCLE[dec_bounded(r, 1, 1, 3, "lifecycle state") - 1]),
-    "mode": (lambda v: u8(MODES.index(v) + 1),
-             lambda r: MODES[dec_bounded(r, 1, 1, 2, "sequencing mode") - 1]),
     "envelope": (lambda v: blob(envelope(v)), lambda r: decode_envelope(r.blob())),
     "header": (lambda v: blob(commit_header(v)), lambda r: decode_header(r.blob())),
     "record": (enc_record, dec_record),
@@ -1652,8 +1649,7 @@ def new_sync_wire():
     file_entry = {
         "item_id": second, "item_type": "FILE", "changed_seq": 1, "head_seq": 7,
         "ref_head_seq": 3, "parent_folder_id": first, "name": "a.txt", "record_key": None,
-        "link_folder_id": None, "lifecycle_state": "LIVE", "sequencing_mode": "LOCAL",
-        "federation_stream_id": None,
+        "link_folder_id": None, "lifecycle_state": "LIVE", "federation_stream_id": None,
         "content": {"bytes": {"id": "sha256:" + "ab" * 32, "size": 7}},
         "metadata_id": "sha256:" + "5e" * 32, "name_metadata_id": None,
         "created_at": accepted, "created_by": "owner", "changed_at": occurred,
@@ -1662,7 +1658,7 @@ def new_sync_wire():
     chat_entry = dict(
         file_entry, item_id=chat, item_type="CHAT", head_seq=2, ref_head_seq=0,
         parent_folder_id=None, name=None, record_key="direct:" + "ab" * 32,
-        lifecycle_state="TRASH", sequencing_mode="FEDERATED", federation_stream_id="stream-1",
+        lifecycle_state="TRASH", federation_stream_id="stream-1",
         content={"body": {"id": "sha256:" + "6f" * 32, "size": 52},
                  "attachment": {"id": "sha256:" + "70" * 32, "size": 4096}},
         name_metadata_id="sha256:" + "71" * 32,
@@ -1772,7 +1768,7 @@ def new_sync_wire():
     entry_bytes = enc("StateEntry", file_entry)
     # item_id, item_type, changed_seq, head_seq, ref_head_seq, parent, name, no key, no link.
     lifecycle_at = 16 + 6 + 8 + 8 + 8 + 17 + len(enc(("opt", "str"), "a.txt")) + 1 + 1
-    assert entry_bytes[lifecycle_at:lifecycle_at + 2] == u8(1) + u8(1)
+    assert entry_bytes[lifecycle_at:lifecycle_at + 2] == u8(1) + u8(0)
     good_header = commit_header(commit)
     assert good_header[16] == 3
     bad_header = good_header[:16] + u8(7) + good_header[17:]
@@ -1820,8 +1816,8 @@ def new_sync_wire():
          "lifecycle state 4"),
         ("StateEntry", entry_bytes[:lifecycle_at] + u8(0) + entry_bytes[lifecycle_at + 1:],
          "lifecycle state 0"),
-        ("StateEntry", entry_bytes[:lifecycle_at + 1] + u8(3) + entry_bytes[lifecycle_at + 2:],
-         "sequencing mode 3"),
+        ("StateEntry", entry_bytes[:lifecycle_at + 1] + u8(1) + enc_str("")
+         + entry_bytes[lifecycle_at + 2:], "empty federation stream"),
         ("ObjectRequest", u32(0), "no object IDs"),
         ("ObjectRequest", u32(513) + digest_bytes(pack[0]["object_id"]) * 513,
          "513 object IDs"),
@@ -1968,7 +1964,7 @@ def new_repository():
         f"{quote(item['parent'])},{quote(item['name'])},"
         f"{quote(fold(item['name']) if item['tree'] else None)},{quote(item['key'])},"
         f"{quote(item['link'])},{item['seq']},{quote(item['life'])},{quote(created[item_id])},"
-        f"'owner','LOCAL',NULL,{item['ref']});"
+        f"'owner',NULL,{item['ref']});"
         for item_id, item in sorted(items.items())
     ]
     text = "\n".join([
@@ -2002,7 +1998,7 @@ def new_repository():
 # --- Structural rules: a small reference replay ----------------------------
 
 # The core's tree types; every other type takes its class from its create form.
-TREE_TYPES = {"FILE", "FOLDER", "FEDERATED_MOUNT"}
+TREE_TYPES = {"FILE", "FOLDER"}
 
 
 CORE_EVENTS = {
@@ -2047,7 +2043,6 @@ def state_digest(items):
             "head_seq": item["seq"],
             "ref_head_seq": item["ref"],
             "lifecycle_state": item["life"],
-            "sequencing_mode": item["mode"],
             "federation_stream_id": item["stream"],
         }) + b"\n"
     return sha_id(data)
@@ -2881,7 +2876,7 @@ def new_bundle():
             "type": "item", "item_id": folder_id, "item_type": "FOLDER", "parent_folder_id": None,
             "name": "Docs", "name_key": "docs", "record_key": None, "link_folder_id": None,
             "head_seq": 1, "ref_head_seq": 0, "lifecycle_state": "LIVE", "created_at": at,
-            "created_by": "owner", "sequencing_mode": "LOCAL", "federation_stream_id": None,
+            "created_by": "owner", "federation_stream_id": None,
         }), False),
         ("no end record", "".join(lines), False),
         ("cut after the commit", "".join(lines[:3]), False),
