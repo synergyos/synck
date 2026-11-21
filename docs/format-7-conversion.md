@@ -50,6 +50,10 @@ it cannot read, so it refuses the first encrypted object.
   the fold. An argument, every key of an `Arguments` event and any key the
   policy names as one, moves to the event's `revision`, and the event's new
   map is the item's map after it. Null values, which meant unset, are dropped.
+  `Completer` applies these rules to a live writer that still states changes
+  as format 7 did: the caller names each item's current map, and each event
+  comes back with its complete map. A live FILE content event may leave its
+  size to its bytes entry; history must hold it.
 - A FILE revision's facts move under its event's `revision`: `revision_origin`
   becomes `origin` and `provenance` stays `provenance`. Format 7 folded a
   `CREATE`'s into item state, so every later map repeated them; now no later

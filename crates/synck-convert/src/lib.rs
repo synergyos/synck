@@ -262,6 +262,7 @@ impl Converter {
         let mut source_metadata = None;
         let translated = translate(
             &self.policy,
+            true,
             &mut self.items,
             &mut event,
             &source.sizes,
@@ -310,6 +311,88 @@ pub struct StreamEvent {
 pub enum StreamRead {
     Item(Box<EventProposal>),
     Ref(RefEventProposal),
+}
+
+/// Completes a live writer's events with the rules of [`Converter`]: a writer
+/// that states each change as format 7 did gets format 8 events back, whose
+/// metadata is the item's complete map. Plain repositories only. The caller
+/// names every existing item an event changes, with its current map, and
+/// passes a commit's events in order; holding them at those maps is its job.
+pub struct Completer {
+    policy: Policy,
+    items: HashMap<ItemId, Item>,
+}
+
+impl Completer {
+    pub fn new(policy: Policy) -> Self {
+        Self {
+            policy,
+            items: HashMap::new(),
+        }
+    }
+
+    /// An existing item and its current map, or `None` when it has none to
+    /// read: none written, or its latest payload erased.
+    pub fn existing(
+        &mut self,
+        item_id: ItemId,
+        item_type: &str,
+        record: bool,
+        current: Option<Map<String, Value>>,
+    ) {
+        let metadata = current.unwrap_or_default();
+        self.items.insert(
+            item_id,
+            Item {
+                item_type: item_type.to_string(),
+                record,
+                written_empty: metadata.is_empty(),
+                metadata,
+            },
+        );
+    }
+
+    /// Complete one event in place, sizes in its content already. Returns the
+    /// upload intent a FILE event named, which leaves history.
+    pub fn complete(&mut self, event: &mut EventProposal) -> Result<Option<String>, ConvertError> {
+        if event.create_item.is_none() && event.set_metadata.is_none() {
+            return Ok(None);
+        }
+        let sizes: BTreeMap<ObjectId, u64> = event
+            .set_content
+            .iter()
+            .flat_map(|content| content.roles().values())
+            .map(|entry| (entry.id.clone(), entry.size))
+            .collect();
+        let translated = translate(
+            &self.policy,
+            false,
+            &mut self.items,
+            event,
+            &sizes,
+            |event| {
+                Ok(match &event.set_metadata {
+                    None => Patch::None,
+                    Some(reference) => match reference.value() {
+                        Some(Value::Object(map)) => Patch::Value(map.clone()),
+                        Some(_) => return Err(fail("metadata is not a JSON object")),
+                        None => return Err(fail("a written event's metadata is not resolved")),
+                    },
+                })
+            },
+        )?;
+        match translated.metadata {
+            Payload::Unchanged => {}
+            Payload::Omit => event.set_metadata = None,
+            Payload::Map(map) => {
+                event.set_metadata = Some(
+                    MetadataRef::new(Value::Object(map))
+                        .map_err(|error| fail(error.to_string()))?,
+                );
+            }
+        }
+        Ok(translated.upload_intent)
+    }
 }
 
 /// Reads a federation stream's v1 prefix into format 8 events, with the rules
@@ -361,6 +444,7 @@ impl StreamReader {
         let inline = metadata.clone();
         let translated = translate(
             &self.policy,
+            true,
             &mut self.items,
             &mut event,
             &source.sizes,
@@ -405,6 +489,7 @@ struct Translated {
 /// only for an item-level event.
 fn translate(
     policy: &Policy,
+    history: bool,
     items: &mut HashMap<ItemId, Item>,
     event: &mut EventProposal,
     sizes: &BTreeMap<ObjectId, u64>,
@@ -456,7 +541,7 @@ fn translate(
     if item.item_type == "FILE"
         && let Some(patch) = &mut patch
     {
-        file_size(&item_id, event, patch)?;
+        file_size(&item_id, event, patch, history)?;
         upload_intent = file_revision(event, &verb, patch, &mut revision)?;
     }
     let title = verb == "SET_TITLE" && item.record;
@@ -581,13 +666,17 @@ fn content_ref(id: ObjectId, sizes: &BTreeMap<ObjectId, u64>) -> Result<ContentR
 
 /// A FILE's format 7 metadata held its size as `content.size`, which its
 /// bytes entry now holds. A content event's must equal the supplied size; the
-/// key leaves every map.
+/// key leaves every map. A live writer may leave the size to the entry.
 fn file_size(
     item_id: &ItemId,
     event: &EventProposal,
     patch: &mut Map<String, Value>,
+    history: bool,
 ) -> Result<(), ConvertError> {
     let content = patch.remove("content");
+    if content.is_none() && !history {
+        return Ok(());
+    }
     let Some(size) = event
         .set_content
         .as_ref()
@@ -1286,6 +1375,56 @@ mod tests {
                 json!({"title": "Ship"}),
             ]
         );
+    }
+
+    #[test]
+    fn a_live_write_gets_its_complete_map() {
+        let file = ItemId::parse(FILE).unwrap();
+        let mut completer = Completer::new(Policy::FORMAT_7);
+        completer.existing(
+            file.clone(),
+            "FILE",
+            false,
+            Some(
+                json!({"color": "red", "tag": "a"})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            ),
+        );
+        let change = |event_type: &str, metadata: Value| EventProposal {
+            item_id: Some(file.clone()),
+            event_type: event_type.into(),
+            set_metadata: Some(MetadataRef::new(metadata).unwrap()),
+            set_content: (event_type == "FILE::SET_CONTENT")
+                .then(|| EventContent::bytes(ObjectId::from_digest([1; 32]), 1)),
+            create_item: None,
+            set_parent: None,
+            set_name: None,
+            set_link: None,
+            merged_from: None,
+            set_tombstoned: None,
+            set_in_trash: None,
+            set_is_federated: None,
+            set_federation_stream_id: None,
+            base_seq: Some(3),
+        };
+        let mut content = change(
+            "FILE::SET_CONTENT",
+            json!({"revision_origin": "LOCAL", "upload_intent_id": "u-1"}),
+        );
+        assert_eq!(
+            completer.complete(&mut content).unwrap().as_deref(),
+            Some("u-1")
+        );
+        let mut edit = change("FILE::SET_METADATA", json!({"tag": null, "note": "b"}));
+        assert_eq!(completer.complete(&mut edit).unwrap(), None);
+        let map = |event: &EventProposal| event.set_metadata.as_ref().unwrap().value().cloned();
+        assert_eq!(
+            map(&content),
+            Some(json!({"color": "red", "tag": "a", "revision": {"origin": "LOCAL"}}))
+        );
+        assert_eq!(map(&edit), Some(json!({"color": "red", "note": "b"})));
     }
 
     #[test]
