@@ -106,8 +106,11 @@ member, so no member ever translates format 8 back to format 7:
 
 Stored v1 proposals stay exactly as they are, because checkpoints and head
 digests cover them, and ClearingHouse cannot rewrite encrypted ones. A member
-reads a v1 prefix (a new member of an `ITEM` stream, or a resync) with the
-converter's per-event rules in stream order, after decrypting it. Every object
+reads a v1 prefix (a new member of an `ITEM` stream, or a resync) from the
+stream's first event, after decrypting it, with `StreamReader`: the
+converter's per-event rules without commit IDs or checkpoints. Its input is
+each event's format 7 proposal with content as role to object ID, its inline
+metadata and its objects' sizes; it drops the proposer's upload intents. Every object
 it names needs its size: a FILE's comes from `content.size` and must match the
 hydrated object; any other is the hydrated object's plaintext length. The Hub
 hydrates every blob a proposal names before applying it, so the sizes exist

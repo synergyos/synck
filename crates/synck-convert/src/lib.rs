@@ -209,89 +209,230 @@ impl Converter {
         (repo_seq, commit_event_idx): (i64, usize),
         written: &mut Vec<Metadata>,
     ) -> Result<Vec<u8>, ConvertError> {
-        let mut event: EventProposal = serde_json::from_value(sized(&source.payload, source)?)
-            .map_err(|error| fail(format!("format 7 item event: {error}")))?;
-        let item_id = event
-            .item_id
-            .clone()
-            .ok_or_else(|| fail("format 7 item event has no item_id"))?;
-        if let Some(create) = &event.create_item {
-            let item = Item {
-                item_type: create.item_type.clone(),
-                record: create.name.is_none(),
-                metadata: Map::new(),
-                written_empty: true,
+        let mut event: EventProposal = serde_json::from_value(sized(
+            serde_json::from_slice(&source.payload)
+                .map_err(|error| fail(format!("format 7 event: {error}")))?,
+            &source.sizes,
+        )?)
+        .map_err(|error| fail(format!("format 7 item event: {error}")))?;
+        let mut source_metadata = None;
+        let translated = translate(&mut self.items, &mut event, &source.sizes, |event| {
+            let Some(reference) = &event.set_metadata else {
+                return Ok(Patch::None);
             };
-            if self.items.insert(item_id.clone(), item).is_some() {
-                return Err(fail(format!("item {item_id} is created twice")));
+            source_metadata = readable(&reference.id(), source.metadata.as_deref())?;
+            Ok(match &source_metadata {
+                Some(metadata) => Patch::Value(object(metadata)?.clone()),
+                None => Patch::Erased,
+            })
+        })?;
+        if let Some(upload_intent_id) = translated.upload_intent {
+            self.upload_intents.push(UploadIntent {
+                repo_seq,
+                commit_event_idx,
+                upload_intent_id,
+            });
+        }
+        self.dropped_mailcal += u64::from(translated.dropped_mailcal);
+        match (translated.metadata, &source_metadata) {
+            (Payload::Unchanged, _) => {}
+            (Payload::Omit, _) => event.set_metadata = None,
+            (Payload::Map(map), Some(source)) => {
+                event.set_metadata = Some(rewrite(source, map, written)?);
             }
-        }
-        let item = self
-            .items
-            .get_mut(&item_id)
-            .ok_or_else(|| fail(format!("item {item_id} has an event before its CREATE")))?;
-        // A longer event type carries a subitem's metadata, a whole replacement
-        // already; it stays as it is.
-        let Some(verb) = event
-            .event_type
-            .split_once("::")
-            .map(|(_, verb)| verb.to_string())
-            .filter(|verb| !verb.contains("::"))
-        else {
-            return Ok(canonical_event_proposal_bytes(&event)?);
-        };
-        if item.item_type == "POST" {
-            post_blob_body(&mut event)?;
-        }
-        let Some(reference) = &event.set_metadata else {
-            return Ok(canonical_event_proposal_bytes(&event)?);
-        };
-        let source_metadata = readable(&reference.id(), source.metadata.as_deref())?;
-        let mut patch = source_metadata.as_ref().map(object).transpose()?.cloned();
-        let mut revision = Map::new();
-        if item.item_type == "FILE"
-            && let Some(patch) = &mut patch
-        {
-            file_size(&item_id, &event, patch)?;
-            if let Some(upload_intent_id) = file_revision(&event, &verb, patch, &mut revision)? {
-                self.upload_intents.push(UploadIntent {
-                    repo_seq,
-                    commit_event_idx,
-                    upload_intent_id,
-                });
-            }
-        }
-        item.fold(&event, &verb, patch.as_ref())?;
-        let (Some(source_metadata), Some(patch)) = (&source_metadata, patch) else {
-            item.written_empty = false;
-            return Ok(canonical_event_proposal_bytes(&event)?);
-        };
-        let mut map = item.metadata.clone();
-        overlay(&mut map, &patch);
-        if item.item_type == "EMAIL" && verb == "CREATE" {
-            email_originals(&item_id, &mut event, &mut map, &source.sizes)?;
-        } else if item.item_type == "POST" {
-            post_body(&item_id, &mut event, &patch, &mut map, &source.sizes)?;
-        } else if item.item_type == "EMAIL" {
-            map.remove("mailcal");
-            if patch.contains_key("mailcal") {
-                self.dropped_mailcal += 1;
-            }
-        }
-        // A FILE whose only key was its size now has no metadata to say, and
-        // omitting it leaves the current map, which is empty too.
-        let empty = map.is_empty();
-        if !revision.is_empty() {
-            map.insert("revision".into(), Value::Object(revision));
-        }
-        if item.item_type == "FILE" && map.is_empty() && item.written_empty {
-            event.set_metadata = None;
-        } else {
-            item.written_empty = empty;
-            event.set_metadata = Some(rewrite(source_metadata, map, written)?);
+            (Payload::Map(_), None) => unreachable!("a map comes from a readable payload"),
         }
         Ok(canonical_event_proposal_bytes(&event)?)
     }
+}
+
+/// One event of a federation stream's wire v1 history, as a member holds it
+/// after decrypting: the format 7 proposal as JSON, its content a map from role
+/// to object ID and without a metadata ID; its metadata, inline on the wire;
+/// and the size of every object its converted content names.
+pub struct StreamEvent {
+    pub kind: Kind,
+    pub proposal: Value,
+    pub metadata: Option<Value>,
+    pub sizes: BTreeMap<ObjectId, u64>,
+}
+
+pub enum StreamRead {
+    Item(Box<EventProposal>),
+    Ref(RefEventProposal),
+}
+
+/// Reads a federation stream's v1 prefix into format 8 events, with the rules
+/// of [`Converter`], from the stream's first event in stream order. A member
+/// files what it returns in its own repository; there are no commit IDs or
+/// checkpoints to compute. An upload intent belongs to the proposer's Hub and
+/// is dropped.
+#[derive(Default)]
+pub struct StreamReader {
+    items: HashMap<ItemId, Item>,
+    /// EMAIL events after CREATE whose payload held `mailcal`.
+    pub dropped_mailcal: u64,
+}
+
+impl StreamReader {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn read(&mut self, source: StreamEvent) -> Result<StreamRead, ConvertError> {
+        let proposal = sized(source.proposal, &source.sizes)?;
+        if proposal.get("metadata_id").is_some() || proposal.get("set_metadata").is_some() {
+            return Err(fail("a stream event carries its metadata apart"));
+        }
+        let metadata = source
+            .metadata
+            .map(|value| match value {
+                Value::Object(map) => Ok(map),
+                _ => Err(fail("metadata is not a JSON object")),
+            })
+            .transpose()?;
+        if source.kind == Kind::Ref {
+            let mut event: RefEventProposal = serde_json::from_value(proposal)
+                .map_err(|error| fail(format!("format 7 ref event: {error}")))?;
+            if let Some(mut map) = metadata {
+                if event.event_type.starts_with("FILE_VERSION::") {
+                    slim_label(&mut map);
+                }
+                event.set_metadata = Some(MetadataRef::new(Value::Object(map))?);
+            }
+            return Ok(StreamRead::Ref(event));
+        }
+        let mut event: EventProposal = serde_json::from_value(proposal)
+            .map_err(|error| fail(format!("format 7 item event: {error}")))?;
+        let inline = metadata.clone();
+        let translated = translate(&mut self.items, &mut event, &source.sizes, |_| {
+            Ok(metadata.map_or(Patch::None, Patch::Value))
+        })?;
+        self.dropped_mailcal += u64::from(translated.dropped_mailcal);
+        event.set_metadata = match translated.metadata {
+            Payload::Unchanged => inline
+                .map(|map| MetadataRef::new(Value::Object(map)))
+                .transpose()?,
+            Payload::Omit => None,
+            Payload::Map(map) => Some(MetadataRef::new(Value::Object(map))?),
+        };
+        Ok(StreamRead::Item(Box::new(event)))
+    }
+}
+
+/// An item event's format 7 metadata.
+enum Patch {
+    None,
+    Erased,
+    Value(Map<String, Value>),
+}
+
+/// What an item event's format 8 metadata becomes.
+enum Payload {
+    /// The source payload, or none, stays.
+    Unchanged,
+    Omit,
+    Map(Map<String, Value>),
+}
+
+struct Translated {
+    metadata: Payload,
+    upload_intent: Option<String>,
+    dropped_mailcal: bool,
+}
+
+/// The per-event rules of this crate, shared by stored history and
+/// federation streams. `event` is the format 8 proposal, content already
+/// sized, its metadata as the source names it; `patch` reads that metadata
+/// only for an item-level event.
+fn translate(
+    items: &mut HashMap<ItemId, Item>,
+    event: &mut EventProposal,
+    sizes: &BTreeMap<ObjectId, u64>,
+    patch: impl FnOnce(&EventProposal) -> Result<Patch, ConvertError>,
+) -> Result<Translated, ConvertError> {
+    let unchanged = Translated {
+        metadata: Payload::Unchanged,
+        upload_intent: None,
+        dropped_mailcal: false,
+    };
+    let item_id = event
+        .item_id
+        .clone()
+        .ok_or_else(|| fail("format 7 item event has no item_id"))?;
+    if let Some(create) = &event.create_item {
+        let item = Item {
+            item_type: create.item_type.clone(),
+            record: create.name.is_none(),
+            metadata: Map::new(),
+            written_empty: true,
+        };
+        if items.insert(item_id.clone(), item).is_some() {
+            return Err(fail(format!("item {item_id} is created twice")));
+        }
+    }
+    let item = items
+        .get_mut(&item_id)
+        .ok_or_else(|| fail(format!("item {item_id} has an event before its CREATE")))?;
+    // A longer event type carries a subitem's metadata, a whole replacement
+    // already; it stays as it is.
+    let Some(verb) = event
+        .event_type
+        .split_once("::")
+        .map(|(_, verb)| verb.to_string())
+        .filter(|verb| !verb.contains("::"))
+    else {
+        return Ok(unchanged);
+    };
+    if item.item_type == "POST" {
+        post_blob_body(event)?;
+    }
+    let mut patch = match patch(event)? {
+        Patch::None => return Ok(unchanged),
+        Patch::Erased => None,
+        Patch::Value(patch) => Some(patch),
+    };
+    let mut revision = Map::new();
+    let mut upload_intent = None;
+    if item.item_type == "FILE"
+        && let Some(patch) = &mut patch
+    {
+        file_size(&item_id, event, patch)?;
+        upload_intent = file_revision(event, &verb, patch, &mut revision)?;
+    }
+    item.fold(event, &verb, patch.as_ref())?;
+    let Some(patch) = patch else {
+        item.written_empty = false;
+        return Ok(unchanged);
+    };
+    let mut map = item.metadata.clone();
+    overlay(&mut map, &patch);
+    let mut dropped_mailcal = false;
+    if item.item_type == "EMAIL" && verb == "CREATE" {
+        email_originals(&item_id, event, &mut map, sizes)?;
+    } else if item.item_type == "POST" {
+        post_body(&item_id, event, &patch, &mut map, sizes)?;
+    } else if item.item_type == "EMAIL" {
+        map.remove("mailcal");
+        dropped_mailcal = patch.contains_key("mailcal");
+    }
+    // A FILE whose only key was its size now has no metadata to say, and
+    // omitting it leaves the current map, which is empty too.
+    let empty = map.is_empty();
+    if !revision.is_empty() {
+        map.insert("revision".into(), Value::Object(revision));
+    }
+    let metadata = if item.item_type == "FILE" && map.is_empty() && item.written_empty {
+        Payload::Omit
+    } else {
+        item.written_empty = empty;
+        Payload::Map(map)
+    };
+    Ok(Translated {
+        metadata,
+        upload_intent,
+        dropped_mailcal,
+    })
 }
 
 impl Item {
@@ -333,15 +474,12 @@ impl Item {
 
 /// Format 7 content maps named objects alone; format 8 entries add each one's
 /// stored size, which the driver supplies.
-fn sized(payload: &[u8], source: &SourceEvent) -> Result<Value, ConvertError> {
-    let mut event: Value = serde_json::from_slice(payload)
-        .map_err(|error| fail(format!("format 7 event: {error}")))?;
+fn sized(mut event: Value, sizes: &BTreeMap<ObjectId, u64>) -> Result<Value, ConvertError> {
     if let Some(Value::Object(roles)) = event.get_mut("set_content") {
         for entry in roles.values_mut() {
             let id: ObjectId = serde_json::from_value(entry.clone())
                 .map_err(|error| fail(format!("format 7 content: {error}")))?;
-            *entry = serde_json::to_value(content_ref(id, &source.sizes)?)
-                .expect("content entry is JSON");
+            *entry = serde_json::to_value(content_ref(id, sizes)?).expect("content entry is JSON");
         }
     }
     Ok(event)
@@ -529,19 +667,28 @@ fn post_body(
 }
 
 fn ref_event(source: &SourceEvent, written: &mut Vec<Metadata>) -> Result<Vec<u8>, ConvertError> {
-    let mut event: RefEventProposal = serde_json::from_value(sized(&source.payload, source)?)
-        .map_err(|error| fail(format!("format 7 ref event: {error}")))?;
+    let mut event: RefEventProposal = serde_json::from_value(sized(
+        serde_json::from_slice(&source.payload)
+            .map_err(|error| fail(format!("format 7 event: {error}")))?,
+        &source.sizes,
+    )?)
+    .map_err(|error| fail(format!("format 7 ref event: {error}")))?;
     if event.event_type.starts_with("FILE_VERSION::")
         && let Some(reference) = &event.set_metadata
         && let Some(source_metadata) = readable(&reference.id(), source.metadata.as_deref())?
     {
         let mut map = object(&source_metadata)?.clone();
-        for key in LABEL_FACTS {
-            map.remove(key);
-        }
+        slim_label(&mut map);
         event.set_metadata = Some(rewrite(&source_metadata, map, written)?);
     }
     Ok(canonical_ref_event_proposal_bytes(&event)?)
+}
+
+/// A label drops what its owner, commit and revision already hold (O11).
+fn slim_label(map: &mut Map<String, Value>) {
+    for key in LABEL_FACTS {
+        map.remove(key);
+    }
 }
 
 /// The verified source object, or `None` when it is erased.
@@ -779,7 +926,10 @@ mod tests {
                 1,
                 vec![
                     (event(FILE, "FILE::CREATE", None, &create), Some(&create)),
-                    (event(FILE, "FILE::SET_METADATA", Some(1), &edit), Some(&edit)),
+                    (
+                        event(FILE, "FILE::SET_METADATA", Some(1), &edit),
+                        Some(&edit),
+                    ),
                 ],
             ))
             .unwrap();
@@ -796,12 +946,148 @@ mod tests {
                 1,
                 vec![
                     (event(FILE, "FILE::CREATE", None, &create), Some(&create)),
-                    (event(FILE, "FILE::SET_METADATA", Some(1), &stray), Some(&stray)),
+                    (
+                        event(FILE, "FILE::SET_METADATA", Some(1), &stray),
+                        Some(&stray),
+                    ),
                 ],
             ))
             .err()
             .unwrap();
         assert!(error.0.contains("outside a content event"), "{error}");
+    }
+
+    /// The same history read as a stream: metadata inline, no metadata ID.
+    fn stream(events: &[(Value, Option<&Metadata>)]) -> Result<Vec<EventProposal>, ConvertError> {
+        let mut reader = StreamReader::new();
+        events
+            .iter()
+            .map(|(event, metadata)| {
+                let mut proposal = event.clone();
+                proposal.as_object_mut().unwrap().remove("metadata_id");
+                match reader.read(StreamEvent {
+                    kind: Kind::Item,
+                    proposal,
+                    metadata: metadata.map(|metadata| metadata.value().clone()),
+                    sizes: sizes(),
+                })? {
+                    StreamRead::Item(event) => Ok(*event),
+                    StreamRead::Ref(_) => unreachable!(),
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_stream_reads_as_its_stored_history_converts() {
+        let email = "019a2900-0000-7000-8000-000000000a02";
+        let original = ObjectId::from_digest([3; 32]);
+        let file_create = metadata(json!({"color": "red", "content": {"size": 1}}));
+        let file_content = metadata(json!({
+            "content": {"size": 2}, "revision_origin": "LOCAL", "upload_intent_id": "intent",
+        }));
+        let file_edit = metadata(json!({"color": null, "tag": "x"}));
+        let email_create =
+            metadata(json!({"mailcal": {"subject": "a", "source": {"blob_id": original}}}));
+        let email_repair = metadata(json!({"mailcal": {"subject": "b"}}));
+        let attachment = metadata(json!({"filename": "a.pdf"}));
+        let mut content = event(FILE, "FILE::SET_CONTENT", Some(1), &file_content);
+        content["set_content"] = json!({"bytes": ObjectId::from_digest([2; 32])});
+        let events = vec![
+            (
+                event(FILE, "FILE::CREATE", None, &file_create),
+                Some(&file_create),
+            ),
+            (content, Some(&file_content)),
+            (
+                event(FILE, "FILE::SET_METADATA", Some(1), &file_edit),
+                Some(&file_edit),
+            ),
+            (
+                event(email, "EMAIL::CREATE", None, &email_create),
+                Some(&email_create),
+            ),
+            (
+                event(email, "EMAIL::SET_METADATA", Some(1), &email_repair),
+                Some(&email_repair),
+            ),
+            (
+                event(
+                    email,
+                    "EMAIL::ATTACHMENT::SET_METADATA",
+                    Some(1),
+                    &attachment,
+                ),
+                Some(&attachment),
+            ),
+        ];
+        let stored = converter().convert(source(1, events.clone())).unwrap();
+        let sources = [
+            &file_create,
+            &file_content,
+            &file_edit,
+            &email_create,
+            &email_repair,
+            &attachment,
+        ];
+        let read = stream(&events).unwrap();
+        assert_eq!(
+            read.iter()
+                .map(|event| event
+                    .set_metadata
+                    .as_ref()
+                    .and_then(MetadataRef::value)
+                    .cloned()
+                    .unwrap_or(Value::Null))
+                .collect::<Vec<_>>(),
+            maps(&stored, &sources)
+        );
+        // Apart from their metadata objects, the events are the same.
+        for (read, payload) in read.into_iter().zip(&stored.payloads) {
+            let mut read = read;
+            let mut stored = decode_event_proposal(payload).unwrap();
+            read.set_metadata = None;
+            stored.set_metadata = None;
+            assert_eq!(
+                canonical_event_proposal_bytes(&read).unwrap(),
+                canonical_event_proposal_bytes(&stored).unwrap()
+            );
+        }
+        // A stream event names no metadata object.
+        let mut named = events[0].0.clone();
+        named["metadata_id"] = json!(file_create.id());
+        let error = StreamReader::new()
+            .read(StreamEvent {
+                kind: Kind::Item,
+                proposal: named,
+                metadata: None,
+                sizes: sizes(),
+            })
+            .err()
+            .unwrap();
+        assert!(error.0.contains("metadata apart"), "{error}");
+    }
+
+    #[test]
+    fn a_stream_label_drops_what_its_ref_holds() {
+        let read = StreamReader::new()
+            .read(StreamEvent {
+                kind: Kind::Ref,
+                proposal: json!({
+                    "owner_item_id": FILE, "event_type": "FILE_VERSION::CREATE",
+                    "base_ref_seq": 0,
+                }),
+                metadata: Some(json!({"version_id": "v", "file_item_id": FILE, "label": "L"})),
+                sizes: sizes(),
+            })
+            .unwrap();
+        let StreamRead::Ref(event) = read else {
+            panic!("a ref event reads as a ref event");
+        };
+        assert_eq!(
+            event.set_metadata.unwrap().value().unwrap(),
+            &json!({"version_id": "v", "label": "L"})
+        );
     }
 
     #[test]
