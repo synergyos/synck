@@ -41,21 +41,22 @@ impl ServerPolicy {
         check(PolicyLimitName::ObjectBytes, self.max_object_bytes, bytes)
     }
     pub fn check_quota(&self, stored: u64, additional: u64) -> Result<(), PolicyLimit> {
-        // Saturation is a refusal even when the arithmetic cannot fit u64.
-        if let Some(maximum) = self.quota_bytes
-            && stored.checked_add(additional).is_none()
+        // A total past 2^63 - 1, the largest count the protocol carries, is
+        // refused under any quota and reported as that count.
+        match stored
+            .checked_add(additional)
+            .filter(|total| *total <= i64::MAX as u64)
         {
-            return Err(PolicyLimit {
-                limit: PolicyLimitName::QuotaBytes,
-                maximum,
-                actual: u64::MAX,
-            });
+            Some(total) => check(PolicyLimitName::QuotaBytes, self.quota_bytes, total),
+            None => match self.quota_bytes {
+                Some(maximum) => Err(PolicyLimit {
+                    limit: PolicyLimitName::QuotaBytes,
+                    maximum,
+                    actual: i64::MAX as u64,
+                }),
+                None => Ok(()),
+            },
         }
-        check(
-            PolicyLimitName::QuotaBytes,
-            self.quota_bytes,
-            stored.saturating_add(additional),
-        )
     }
     /// Preflight every existing commit before starting any upload. The caller
     /// also inventories object sizes/quota and retains that complete report.

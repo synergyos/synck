@@ -622,11 +622,7 @@ pub(super) fn revert_event_count(item: &RevertIntentItem) -> Result<i64> {
 pub(super) fn expected_revert_commit_id(intent: &RevertIntent, author: &str) -> Result<CommitId> {
     let mut digest = EventsDigest::default();
     for event in &intent.events {
-        let canonical = canonical_event_proposal_bytes(event)?;
-        digest.push(
-            synck_vcs::types::COMMIT_EVENT_FAMILY_ITEM,
-            &compute_sha256_digest_bytes(&canonical),
-        );
+        digest.push(&canonical_event_proposal_bytes(event)?);
     }
     let events_digest = digest.finish(None);
     let commit = canonical_commit_bytes_for_hash(

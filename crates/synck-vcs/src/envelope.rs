@@ -1,4 +1,4 @@
-//! Streaming canonical accepted-commit envelope validation.
+//! Streaming accepted-commit envelope validation.
 //!
 //! The validator retains only commit-wide counters and digests. The caller
 //! owns per-item state, so a projector can keep it in disk-backed staging
@@ -7,23 +7,20 @@
 use serde::{Deserialize, Serialize};
 
 use crate::types::{
-    COMMIT_EVENT_FAMILY_ITEM, COMMIT_EVENT_FAMILY_REF, COMMIT_FORMAT_VERSION, CommitId,
-    EventProposal, EventsDigest, ItemId, RefEventProposal, SequencingMode, Sha256Digest,
-    canonical_event_proposal_bytes, canonical_ref_event_proposal_bytes,
-    canonical_stored_commit_bytes_for_hash, compute_commit_id, compute_sha256_digest_bytes,
+    CommitId, EventProposal, EventsDigest, ItemId, RefEventProposal, SequencingMode,
+    canonical_commit_bytes_for_hash, compute_commit_id, decode_event_proposal,
+    decode_ref_event_proposal,
 };
 
 #[derive(Clone, Debug)]
 pub struct VerifyCommit {
     pub commit_id: Option<CommitId>,
     pub repo_seq: Option<i64>,
-    pub format_version: i32,
     pub author_id: String,
     pub committer_id: String,
     pub occurred_at: Option<crate::types::Timestamp>,
     pub message: Option<String>,
     pub event_count: Option<i32>,
-    pub events_digest: Option<Sha256Digest>,
 }
 
 #[derive(Debug)]
@@ -33,7 +30,6 @@ pub struct VerifyEvent {
     pub item_seq: i64,
     pub event_type: String,
     pub payload: Vec<u8>,
-    pub event_payload_digest: Vec<u8>,
     pub parent_folder_id: Option<ItemId>,
     pub parent_folder_id_before: Option<ItemId>,
 }
@@ -45,7 +41,6 @@ pub struct VerifyRefEvent {
     pub ref_seq: i64,
     pub event_type: String,
     pub payload: Vec<u8>,
-    pub event_payload_digest: Vec<u8>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -130,17 +125,8 @@ impl CommitEnvelopeValidator {
             }
             None => findings.push(format!("{label}: repo_seq is absent")),
         }
-        if !matches!(commit.format_version, COMMIT_FORMAT_VERSION) {
-            findings.push(format!(
-                "{label}: unsupported commit format {}",
-                commit.format_version
-            ));
-        }
         if commit.commit_id.is_none() {
             findings.push(format!("{label}: commit ID is absent"));
-        }
-        if commit.events_digest.is_none() {
-            findings.push(format!("{label}: events digest is absent"));
         }
         Self {
             commit: commit.clone(),
@@ -186,17 +172,12 @@ impl CommitEnvelopeValidator {
         }
         item.head_seq = Some(event.item_seq);
 
-        let proposal: EventProposal = match serde_json::from_slice(&event.payload) {
+        self.events_hasher.push(&event.payload);
+        let proposal = match decode_event_proposal(&event.payload) {
             Ok(proposal) => proposal,
             Err(error) => {
                 self.findings
-                    .push(format!("{context}: invalid event payload: {error}"));
-                self.hash_payload(
-                    &event.payload,
-                    &event.event_payload_digest,
-                    COMMIT_EVENT_FAMILY_ITEM,
-                    &context,
-                );
+                    .push(format!("{context}: invalid envelope: {error}"));
                 return None;
             }
         };
@@ -214,21 +195,6 @@ impl CommitEnvelopeValidator {
                 proposal.base_seq, item.commit_base_seq
             ));
         }
-        match canonical_event_proposal_bytes(&proposal) {
-            Ok(canonical) if canonical == event.payload => {}
-            Ok(_) => self
-                .findings
-                .push(format!("{context}: payload is not canonical")),
-            Err(error) => self
-                .findings
-                .push(format!("{context}: event canonicalization failed: {error}")),
-        }
-        self.hash_payload(
-            &event.payload,
-            &event.event_payload_digest,
-            COMMIT_EVENT_FAMILY_ITEM,
-            &context,
-        );
 
         if previous_item_seq.is_none() && proposal.create_item.is_none() {
             self.findings
@@ -342,17 +308,12 @@ impl CommitEnvelopeValidator {
             owner.commit_base_seq = Some(owner.head_seq);
             owner.commit_started = true;
         }
-        let proposal: RefEventProposal = match serde_json::from_slice(&event.payload) {
+        self.events_hasher.push(&event.payload);
+        let proposal = match decode_ref_event_proposal(&event.payload) {
             Ok(proposal) => proposal,
             Err(error) => {
                 self.findings
-                    .push(format!("{context}: invalid ref event payload: {error}"));
-                self.hash_payload(
-                    &event.payload,
-                    &event.event_payload_digest,
-                    COMMIT_EVENT_FAMILY_REF,
-                    &context,
-                );
+                    .push(format!("{context}: invalid ref envelope: {error}"));
                 return None;
             }
         };
@@ -378,21 +339,6 @@ impl CommitEnvelopeValidator {
                 proposal.base_ref_seq, owner.commit_base_seq
             ));
         }
-        match canonical_ref_event_proposal_bytes(&proposal) {
-            Ok(canonical) if canonical == event.payload => {}
-            Ok(_) => self
-                .findings
-                .push(format!("{context}: payload is not canonical")),
-            Err(error) => self.findings.push(format!(
-                "{context}: ref event canonicalization failed: {error}"
-            )),
-        }
-        self.hash_payload(
-            &event.payload,
-            &event.event_payload_digest,
-            COMMIT_EVENT_FAMILY_REF,
-            &context,
-        );
         Some(proposal)
     }
 
@@ -407,12 +353,7 @@ impl CommitEnvelopeValidator {
                 .push(format!("{}: event count mismatch", self.label));
         }
         let events_digest = self.events_hasher.finish(self.commit.repo_seq);
-        if self.commit.events_digest.as_ref() != Some(&events_digest) {
-            self.findings
-                .push(format!("{}: events digest mismatch", self.label));
-        }
-        match canonical_stored_commit_bytes_for_hash(
-            self.commit.format_version,
+        match canonical_commit_bytes_for_hash(
             &self.commit.author_id,
             &self.commit.committer_id,
             self.commit.occurred_at,
@@ -426,37 +367,18 @@ impl CommitEnvelopeValidator {
                         .push(format!("{}: commit ID mismatch", self.label));
                 }
             }
-            Err(error) => self.findings.push(format!(
-                "{}: commit canonicalization failed: {error}",
-                self.label
-            )),
+            Err(error) => self
+                .findings
+                .push(format!("{}: invalid commit header: {error}", self.label)),
         }
         self.findings
-    }
-
-    fn hash_payload(
-        &mut self,
-        payload: &[u8],
-        stored_digest: &[u8],
-        event_family: u8,
-        context: &str,
-    ) {
-        let payload_digest = compute_sha256_digest_bytes(payload);
-        if stored_digest != payload_digest {
-            self.findings
-                .push(format!("{context}: payload digest mismatch"));
-        }
-        self.events_hasher.push(event_family, &payload_digest);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{
-        CreateItem, canonical_commit_bytes_for_hash, canonical_event_proposal_bytes,
-        sha256_prefixed_hex_from_digest_bytes,
-    };
+    use crate::types::{CreateItem, canonical_event_proposal_bytes};
 
     fn validate_proposals(
         proposals: Vec<EventProposal>,
@@ -464,32 +386,26 @@ mod tests {
     ) -> (Vec<String>, EnvelopeItemState) {
         let item_id = ItemId::new();
         let initial_head = item.head_seq.unwrap_or(0);
-        let mut digest_input = Vec::new();
+        let mut digest = EventsDigest::default();
         let events: Vec<_> = proposals
             .into_iter()
             .enumerate()
             .map(|(index, mut proposal)| {
                 proposal.item_id = Some(item_id.clone());
                 let payload = canonical_event_proposal_bytes(&proposal).unwrap();
-                let payload_digest = compute_sha256_digest_bytes(&payload);
-                digest_input.push(COMMIT_EVENT_FAMILY_ITEM);
-                digest_input.extend_from_slice(&payload_digest);
+                digest.push(&payload);
                 VerifyEvent {
                     commit_event_idx: i32::try_from(index).unwrap(),
                     item_id: item_id.clone(),
                     item_seq: initial_head + i64::try_from(index).unwrap() + 1,
                     event_type: proposal.event_type,
                     payload,
-                    event_payload_digest: payload_digest.to_vec(),
                     parent_folder_id: None,
                     parent_folder_id_before: None,
                 }
             })
             .collect();
-        let events_digest = Sha256Digest::parse(sha256_prefixed_hex_from_digest_bytes(
-            compute_sha256_digest_bytes(&digest_input),
-        ))
-        .unwrap();
+        let events_digest = digest.finish(Some(1));
         let author = "author".to_string();
         let commit_bytes = canonical_commit_bytes_for_hash(
             &author,
@@ -503,13 +419,11 @@ mod tests {
         let commit = VerifyCommit {
             commit_id: Some(compute_commit_id(&commit_bytes)),
             repo_seq: Some(1),
-            format_version: COMMIT_FORMAT_VERSION,
             committer_id: author.clone(),
             occurred_at: None,
             author_id: author,
             message: None,
             event_count: Some(i32::try_from(events.len()).unwrap()),
-            events_digest: Some(events_digest),
         };
         let mut previous = None;
         let mut validator = CommitEnvelopeValidator::begin(&commit, &mut previous);

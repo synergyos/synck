@@ -1,12 +1,15 @@
 //! Structural closure over every retained event, independent of item families.
 use synck_vcs::{
     metadata::MetadataRef,
-    types::{CommitEventRow, EventContent, EventProposal, ObjectId, RefEventProposal},
+    types::{
+        CommitEventRow, EventContent, EventProposal, ObjectId, RefEventProposal,
+        decode_event_proposal, decode_ref_event_proposal,
+    },
 };
 
 #[derive(Debug, thiserror::Error)]
 #[error("invalid event envelope: {0}")]
-pub struct ReferenceError(#[from] serde_json::Error);
+pub struct ReferenceError(#[from] synck_vcs::codec::DecodeError);
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct HistoryReferences {
@@ -41,8 +44,8 @@ pub fn ref_event_references(event: &RefEventProposal) -> Result<HistoryReference
 pub fn commit_event_references(row: &CommitEventRow) -> Result<HistoryReferences, ReferenceError> {
     // Presence or interpretation of metadata cannot alter closure.
     match row {
-        CommitEventRow::Item(row) => event_references(&serde_json::from_slice(&row.payload)?),
-        CommitEventRow::Ref(row) => ref_event_references(&serde_json::from_slice(&row.payload)?),
+        CommitEventRow::Item(row) => event_references(&decode_event_proposal(&row.payload)?),
+        CommitEventRow::Ref(row) => ref_event_references(&decode_ref_event_proposal(&row.payload)?),
     }
 }
 

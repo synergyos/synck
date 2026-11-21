@@ -68,7 +68,7 @@ async fn fixture_with_domain(domain: bool) -> Fixture {
     let folder = ItemId::new();
     let file = ItemId::new();
     let chat = ItemId::new();
-    fs::write(metadata.join("config.json"),serde_json::to_vec(&json!({"format_version":7,"repo_id":repo_id,"author":"original-author","authority":"LOCAL"})).unwrap()).unwrap();
+    fs::write(metadata.join("config.json"),serde_json::to_vec(&json!({"format_version":8,"repo_id":repo_id,"author":"original-author","authority":"LOCAL"})).unwrap()).unwrap();
     fs::write(metadata.join("lock"), []).unwrap();
     let storage = SqliteStorage::new(metadata.join("repository.sqlite3"));
     storage.init_schema().await.unwrap();
@@ -288,7 +288,7 @@ async fn complete_mixed_repository_reads_offline_and_keeps_exact_history_and_bod
     }
     let config: serde_json::Value =
         serde_json::from_slice(&fs::read(archived.join(".synck/config.json")).unwrap()).unwrap();
-    assert_eq!(config["format_version"], 7);
+    assert_eq!(config["format_version"], 8);
     assert!(config.get("author").is_none());
     assert_eq!(canonical_rows(&fixture.source), canonical_rows(&archived));
     let reimported = fixture.root.join("reimported");
@@ -410,10 +410,10 @@ async fn invalid_materialization_missing_body_and_extra_objects_never_publish() 
     let repo_id = RepoId::new();
     let generation = uuid::Uuid::now_v7();
     let mut bytes = serde_json::to_vec(&json!({
-        "type": "synck_vcs_bundle_header", "bundle_format_version": 5,
+        "type": "synck_vcs_bundle_header", "bundle_format_version": 6,
         "repo_id": repo_id, "history_generation": generation.to_string(), "encrypted": false,
-        "exported_at": "2026-01-02T00:00:00Z", "commit_format_version": 6,
-        "schema": {"subsystem":"synck_vcs_sqlite", "schema_id":"core-v7"}
+        "exported_at": "2026-01-02T00:00:00Z",
+        "schema": {"subsystem":"synck_vcs_sqlite", "schema_id":"core-v8"}
     }))
     .unwrap();
     bytes.push(b'\n');
@@ -595,9 +595,9 @@ async fn linked_repository_content_is_rejected_without_touching_its_target() {
 fn canonical_rows(root: &std::path::Path) -> Vec<Vec<String>> {
     let db = rusqlite::Connection::open(root.join(".synck/repository.sqlite3")).unwrap();
     [
-        "SELECT commit_id,repo_seq,author_id,committer_id,hex(events_digest) FROM vcs_commits ORDER BY repo_seq",
-        "SELECT c.commit_id,e.item_id,e.item_seq,hex(e.payload),hex(e.event_payload_digest) FROM vcs_events e JOIN vcs_commits c USING(repo_id,commit_pk) ORDER BY c.repo_seq,e.commit_event_idx",
-        "SELECT c.commit_id,e.owner_item_id,e.ref_seq,hex(e.payload),hex(e.event_payload_digest) FROM vcs_ref_events e JOIN vcs_commits c USING(repo_id,commit_pk) ORDER BY c.repo_seq,e.commit_event_idx",
+        "SELECT commit_id,repo_seq,author_id,committer_id,hex(checkpoint) FROM vcs_commits ORDER BY repo_seq",
+        "SELECT c.commit_id,e.item_id,e.item_seq,hex(e.payload) FROM vcs_events e JOIN vcs_commits c USING(repo_id,commit_pk) ORDER BY c.repo_seq,e.commit_event_idx",
+        "SELECT c.commit_id,e.owner_item_id,e.ref_seq,hex(e.payload) FROM vcs_ref_events e JOIN vcs_commits c USING(repo_id,commit_pk) ORDER BY c.repo_seq,e.commit_event_idx",
         "SELECT item_id,head_seq,ref_head_seq FROM vcs_items ORDER BY item_id",
         "SELECT domain_id,last_domain_seq FROM vcs_federation_domains ORDER BY domain_id",
     ].into_iter().map(|sql| {
@@ -613,7 +613,7 @@ async fn unsupported_format_is_rejected_without_mutation() {
     let source = &fixture.source;
     let path = source.join(".synck/config.json");
     let mut config: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-    for version in [3, 4, 5, 6, 8] {
+    for version in [3, 4, 5, 6, 7, 9] {
         config["format_version"] = json!(version);
         let bytes = serde_json::to_vec(&config).unwrap();
         fs::write(&path, &bytes).unwrap();
@@ -621,9 +621,12 @@ async fn unsupported_format_is_rejected_without_mutation() {
             .err()
             .expect("unsupported format")
             .to_string();
-        assert!(error.contains("format-7"));
+        assert!(error.contains("format-8"));
         if version == 6 {
             assert!(error.contains("Synck 0.1.x"));
+        }
+        if version == 7 {
+            assert!(error.contains("Synck 0.4.0"));
         }
         let destination = fixture.root.join("rejected");
         assert!(import_repository(source, &destination).await.is_err());

@@ -1,4 +1,4 @@
-//! Shared format-7 synchronization contract. Storage, authentication and atomic
+//! Shared protocol 2 synchronization contract over format 8. Storage, authentication and atomic
 //! Core acceptance belong to the authority; transfer validation is not acceptance.
 
 #![forbid(unsafe_code)]
@@ -6,10 +6,12 @@
 mod history;
 mod policy;
 mod proposal;
+mod wire;
 
-pub use history::{HistoryVerifier, verify_published_commit};
+pub use history::HistoryVerifier;
 pub use policy::{PolicyLimit, PolicyLimitName, PublicationViolation, ServerPolicy};
 pub use proposal::{ProposalVerifier, ValidatedProposal, validate_submit};
+pub use wire::{Refusal, Wire, decode, encode, event_len, header_len, submit_header};
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -19,9 +21,10 @@ use synck_vcs::types::{
 };
 use uuid::Uuid;
 
-pub const PROTOCOL_VERSION: u16 = 1;
-/// Bounds apply to a transfer, never to an accepted commit. Eight MiB permits
-/// any format-valid single event even with numeric-byte JSON history encoding.
+pub const PROTOCOL_VERSION: u16 = 2;
+/// Bounds apply to a transfer, never to an accepted commit. Eight MiB fits
+/// any format-valid single event. Receivers cap a body at `MAX_PAGE_BYTES`
+/// before decoding it.
 pub const MAX_PAGE_RECORDS: usize = 512;
 pub const MAX_PAGE_BYTES: usize = 8 * 1024 * 1024;
 /// Objects in one object pack, uploaded or requested.
@@ -30,9 +33,9 @@ pub const MAX_PACK_OBJECTS: usize = 512;
 /// so one request stays bounded and a cut-off transfer resumes per pack. It
 /// bounds no object.
 pub const PACK_BYTES: u64 = 64 * 1024 * 1024;
-/// A pack entry's header: the object ID (`sha256:` and 64 hex digits), then
-/// its size as eight big-endian bytes. The object's exact bytes follow.
-pub const PACK_HEADER_BYTES: usize = 71 + 8;
+/// A pack entry's header: the object ID's 32 digest bytes, then its size as
+/// eight big-endian bytes. The object's exact bytes follow.
+pub const PACK_HEADER_BYTES: usize = 32 + 8;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProtocolError {
@@ -51,6 +54,11 @@ pub enum ProtocolError {
     #[error(transparent)]
     Core(#[from] synck_vcs::errors::CoreError),
 }
+impl From<synck_vcs::codec::DecodeError> for ProtocolError {
+    fn from(error: synck_vcs::codec::DecodeError) -> Self {
+        Self::Invalid(error.0)
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -60,7 +68,9 @@ pub struct RepositoryIdentity {
 }
 impl RepositoryIdentity {
     pub fn validate(&self) -> Result<(), ProtocolError> {
-        if self.generation.get_version_num() != 7 {
+        if self.generation.get_version_num() != 7
+            || self.generation.get_variant() != uuid::Variant::RFC4122
+        {
             return Err(invalid("generation must be UUIDv7"));
         }
         Ok(())
@@ -108,43 +118,22 @@ impl Cursor {
 #[serde(deny_unknown_fields)]
 pub struct Capabilities {
     pub protocol_version: u16,
-    pub repository: RepositoryIdentity,
     pub encrypted: bool,
+    /// The published head; its repository is the server's.
     pub latest: Cursor,
     /// None for every field is the reference server's unrestricted policy.
     pub policy: ServerPolicy,
-    /// The server takes and serves object packs (`PUT /objects`, `POST
-    /// /objects`). Absent from servers that predate them.
-    #[serde(default)]
-    pub object_packs: bool,
-    /// The server serves `POST /state` and `POST /items/history`. Left out
-    /// when false, so readers that predate it still parse this.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub state_read: bool,
-    /// The server serves `POST /items/histories`. Left out when false.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub item_histories: bool,
-    /// The server serves `POST /commits`. Left out when false.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub commit_log: bool,
 }
 impl Capabilities {
     pub fn validate(&self) -> Result<(), ProtocolError> {
-        self.repository.validate()?;
         self.latest.validate()?;
         if self.protocol_version != PROTOCOL_VERSION {
             return Err(invalid("unsupported sync protocol version"));
         }
-        if self.latest.repository != self.repository {
-            return Err(ProtocolError::Generation);
-        }
         if self.latest.repo_seq == 0
-            && self.latest != Cursor::genesis(self.repository.clone(), self.encrypted)?
+            && self.latest != Cursor::genesis(self.latest.repository.clone(), self.encrypted)?
         {
             return Err(ProtocolError::Checkpoint);
-        }
-        if (self.item_histories || self.commit_log) && !self.state_read {
-            return Err(invalid("state reads advertised without state_read"));
         }
         Ok(())
     }
@@ -302,14 +291,13 @@ impl HistoryRequest {
         Ok(())
     }
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PublishedHeader {
     pub commit: CommitRow,
     pub checkpoint: Sha256Digest,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug)]
 pub struct HistoryPage {
     pub after: HistoryPosition,
     /// Ordered commit fragments sharing the page's event and byte budgets.
@@ -317,8 +305,7 @@ pub struct HistoryPage {
     pub fragments: Vec<HistoryFragment>,
     pub has_more: bool,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug)]
 pub struct HistoryFragment {
     /// Repeat the identical header when continuing a commit.
     pub header: PublishedHeader,
@@ -403,53 +390,29 @@ pub struct StateDeparture {
     pub item_id: ItemId,
     pub changed_seq: u64,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ItemHistoryRequest {
-    pub repository: RepositoryIdentity,
-    pub item_id: ItemId,
-    pub after_seq: u64,
-    #[serde(default)]
-    pub after_ref_seq: u64,
-    pub limit: usize,
-}
-impl ItemHistoryRequest {
-    pub fn validate(&self) -> Result<(), ProtocolError> {
-        self.repository.validate()?;
-        if self.after_seq > i64::MAX as u64 || self.after_ref_seq > i64::MAX as u64 {
-            return Err(invalid("item sequence overflow"));
-        }
-        if self.limit == 0 || self.limit > MAX_PAGE_RECORDS {
-            return Err(ProtocolError::Limit("item history page events"));
-        }
-        Ok(())
-    }
-}
-/// One item's published events in `item_seq` order, each tagged `item`, and
-/// the published ref events it owns in `ref_seq` order, each tagged `ref`.
-/// `commits` describes the commit of every row in the page.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+/// One item's published events in `item_seq` order and the published ref
+/// events it owns in `ref_seq` order. `commits` holds the commit of every row
+/// in the page once, by ascending `repo_seq`.
+#[derive(Clone, Debug)]
 pub struct ItemHistoryPage {
     pub item_id: ItemId,
     pub events: Vec<CommitEventRow>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub refs: Vec<CommitEventRow>,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub commits: BTreeMap<CommitId, ItemHistoryCommit>,
+    pub commits: Vec<ItemCommit>,
     pub has_more: bool,
 }
-/// A commit's `author_id`, and its `occurred_at`, or its `created_at` when it
-/// has none.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ItemHistoryCommit {
+/// A commit's `occurred_at` is its `created_at` when it has none.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ItemCommit {
+    pub repo_seq: u64,
+    pub commit_id: CommitId,
     pub author_id: AuthorId,
     pub occurred_at: Timestamp,
+    pub created_at: Timestamp,
 }
 
-/// One item of an `ItemHistoriesRequest`, read as `ItemHistoryRequest` reads
-/// it.
+/// One item of an `ItemHistoriesRequest`: its item events after `after_seq`
+/// and its ref events after `after_ref_seq`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ItemHistoryPosition {
@@ -489,9 +452,9 @@ impl ItemHistoriesRequest {
 }
 /// The pages of a prefix of the request's items, in their order. Every page
 /// but the last is complete.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug)]
 pub struct ItemHistoriesPage {
+    pub repository: RepositoryIdentity,
     pub pages: Vec<ItemHistoryPage>,
 }
 
@@ -549,14 +512,6 @@ pub struct CommitSummaryEvent {
     pub event_type: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PublishedCommit {
-    pub commit: CommitRow,
-    pub events: Vec<CommitEventRow>,
-    pub checkpoint: Sha256Digest,
-}
-
 /// `POST /leases`: reserve repository paths, as `synck lock acquire` does.
 /// `ttl` is 1 to 86400 seconds.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -564,7 +519,7 @@ pub struct PublishedCommit {
 pub struct LeaseRequest {
     pub paths: Vec<String>,
     pub owner: String,
-    pub ttl: u64,
+    pub ttl: u32,
 }
 /// The token is the only proof of ownership; it is never listed.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -590,7 +545,7 @@ pub struct Leases {
 #[serde(deny_unknown_fields)]
 pub struct LeaseRenewal {
     pub token: String,
-    pub ttl: u64,
+    pub ttl: u32,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -623,24 +578,4 @@ fn digest_id(bytes: [u8; 32]) -> Sha256Digest {
 }
 fn invalid(message: impl Into<String>) -> ProtocolError {
     ProtocolError::Invalid(message.into())
-}
-
-/// Count wire bytes without allocating a second serialized page. Transports
-/// must additionally bound the request/response body before deserialization.
-fn check_page_size(value: &impl Serialize) -> Result<(), ProtocolError> {
-    struct Counter(usize);
-    impl std::io::Write for Counter {
-        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-            self.0 = self
-                .0
-                .checked_add(bytes.len())
-                .filter(|n| *n <= MAX_PAGE_BYTES)
-                .ok_or_else(|| std::io::Error::other("page byte limit"))?;
-            Ok(bytes.len())
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-    serde_json::to_writer(Counter(0), value).map_err(|_| ProtocolError::Limit("page bytes"))
 }

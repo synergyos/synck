@@ -17,8 +17,8 @@ use synck_vcs::naming::{compute_name_key, portable_name, validate_display_name};
 use synck_vcs::object::{EncryptedFrame, Header, Object, verify_encrypted_frame};
 use synck_vcs::state::{decode_node, encode_node};
 use synck_vcs::types::{
-    EventProposal, RefEventProposal, canonical_event_proposal_bytes, canonical_json_bytes,
-    canonical_ref_event_proposal_bytes,
+    canonical_event_proposal_bytes, canonical_json_bytes, canonical_ref_event_proposal_bytes,
+    decode_event_proposal, decode_ref_event_proposal,
 };
 
 /// Canonical JSON is a fixed point.
@@ -76,14 +76,16 @@ pub fn state_node(data: &[u8]) {
     }
 }
 
-/// Parsed proposals reach their canonical encoding without panicking.
+/// Each envelope has exactly one encoding.
 pub fn event(data: &[u8]) {
-    if let Ok(event) = serde_json::from_slice::<EventProposal>(data) {
-        let _ = canonical_event_proposal_bytes(&event);
+    if let Ok(event) = decode_event_proposal(data) {
+        let bytes = canonical_event_proposal_bytes(&event).expect("a decoded envelope encodes");
+        assert_eq!(bytes, data);
         let _ = event.source_revision();
     }
-    if let Ok(event) = serde_json::from_slice::<RefEventProposal>(data) {
-        let _ = canonical_ref_event_proposal_bytes(&event);
+    if let Ok(event) = decode_ref_event_proposal(data) {
+        let bytes = canonical_ref_event_proposal_bytes(&event).expect("a decoded envelope encodes");
+        assert_eq!(bytes, data);
     }
 }
 

@@ -9,22 +9,22 @@ fn event() -> EventProposal {
 }
 
 #[test]
-fn format_payload_limit_checks_exact_canonical_bytes() {
+fn format_payload_limit_bounds_the_exact_envelope() {
     let mut event = event();
-    event.set_federation_stream_id = Some(String::new());
-    let overhead = canonical_event_proposal_bytes(&event).unwrap().len();
-    event.set_federation_stream_id = Some("x".repeat(MAX_EVENT_PAYLOAD_BYTES - overhead));
-    assert_eq!(
-        canonical_event_proposal_bytes(&event).unwrap().len(),
-        MAX_EVENT_PAYLOAD_BYTES
-    );
+    event.set_federation_stream_id = Some("x".repeat(u16::MAX as usize));
+    let bytes = canonical_event_proposal_bytes(&event).unwrap();
+    decode_event_proposal(&bytes).unwrap();
     event.set_federation_stream_id.as_mut().unwrap().push('x');
+    assert!(canonical_event_proposal_bytes(&event).is_err());
+    let mut oversized = bytes;
+    oversized.resize(MAX_EVENT_PAYLOAD_BYTES + 1, 0);
     assert!(
-        canonical_event_proposal_bytes(&event)
+        decode_event_proposal(&oversized)
             .unwrap_err()
             .to_string()
             .contains("event payload")
     );
+    let mut event = self::event();
     event.event_type = "x".repeat(MAX_EVENT_TYPE_BYTES + 1);
     assert!(canonical_event_proposal_bytes(&event).is_err());
 }
@@ -45,7 +45,7 @@ fn format_has_no_commit_event_or_aggregate_payload_cap() {
         expected
     );
     let mut large = event.clone();
-    large.set_federation_stream_id = Some("x".repeat(512 * 1024));
+    large.set_federation_stream_id = Some("x".repeat(u16::MAX as usize));
     assert_eq!(
         validate_payload_limits(&vec![large; 10], &[])
             .unwrap()
@@ -80,16 +80,8 @@ fn format_metadata_limits_are_fixed_utf8_bytes() {
     }
     let digest = Sha256Digest::parse(format!("sha256:{}", "00".repeat(32))).unwrap();
     assert!(
-        canonical_stored_commit_bytes_for_hash(
-            COMMIT_FORMAT_VERSION,
-            &author,
-            &author,
-            None,
-            Some(&(message + "x")),
-            1,
-            &digest
-        )
-        .is_err()
+        canonical_commit_bytes_for_hash(&author, &author, None, Some(&(message + "x")), 1, &digest)
+            .is_err()
     );
 }
 
@@ -108,17 +100,16 @@ fn bundle_reader_enforces_metadata_and_operation_limits() {
     let mut record = serde_json::json!({"type":"commit", "commit_id":format!("sha256:{}", "00".repeat(32)),
         "checkpoint":format!("sha256:{}", "00".repeat(32)), "repo_seq":1,
         "operation_id":"x".repeat(MAX_OPERATION_ID_BYTES),
-        "format_version":COMMIT_FORMAT_VERSION, "author_id":"a", "committer_id":"c",
+        "author_id":"a", "committer_id":"c",
         "message":"x".repeat(MAX_MESSAGE_BYTES), "occurred_at":null,
-        "created_at":"2026-10-28T00:00:00Z", "event_count":1, "events_digest":format!("sha256:{}", "00".repeat(32))});
+        "created_at":"2026-10-28T00:00:00Z", "event_count":1});
     let read = |record: &serde_json::Value| {
         let header = serde_json::json!({"type":"synck_vcs_bundle_header",
             "bundle_format_version":synck_vcs::bundle::BUNDLE_FORMAT_VERSION,
             "repo_id":"019a2900-0000-7000-8000-000000000001",
             "history_generation":"019a2900-0000-7000-8000-000000000002", "encrypted":false,
             "exported_at":"2026-10-30T12:00:00.000000000Z",
-            "schema":{"subsystem":"synck_vcs_sqlite","schema_id":"core-v7"},
-            "commit_format_version":COMMIT_FORMAT_VERSION});
+            "schema":{"subsystem":"synck_vcs_sqlite","schema_id":"core-v8"}});
         let bundle = format!("{header}\n{record}\n");
         let mut bytes = bundle.as_bytes();
         let mut reader = synck_vcs::bundle::BundleReader::new(&mut bytes);

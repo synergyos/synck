@@ -146,12 +146,8 @@ fn state_nodes_survive_mutation() {
 #[test]
 fn events_survive_mutation() {
     let vector = vectors("events.json");
-    let seeds: Vec<Vec<u8>> = vector
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|case| serde_json::to_vec(&case["event"]).unwrap())
-        .collect();
+    let mut seeds = hex_bytes(&vector["valid"], "envelope_hex");
+    seeds.extend(hex_bytes(&vector["invalid"], "envelope_hex"));
     exercise("event", synck_fuzz::event, &seeds);
 }
 

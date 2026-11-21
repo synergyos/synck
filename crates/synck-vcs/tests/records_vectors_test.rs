@@ -1,10 +1,8 @@
 use std::collections::HashMap;
 
-use sha2::{Digest, Sha256};
 use synck_vcs::types::{
-    COMMIT_FORMAT_VERSION, ItemId, Sha256Digest, canonical_json_bytes,
-    canonical_stored_commit_bytes_for_hash, compute_commit_id, empty_commit_events_digest,
-    sha256_prefixed_hex_from_digest_bytes,
+    EventProposal, EventsDigest, ItemId, RefEventProposal, canonical_commit_bytes_for_hash,
+    canonical_event_proposal_bytes, canonical_ref_event_proposal_bytes, compute_commit_id,
 };
 use synck_vcs::verify::{
     SemanticVerifier, VerifyCommit, VerifyCommitEvent, VerifyEvent, VerifyRefEvent,
@@ -51,15 +49,18 @@ fn replay(vector: &serde_json::Value, encrypted: bool) {
         let mut ref_seq: HashMap<ItemId, i64> = HashMap::new();
         let mut parents: HashMap<ItemId, Option<ItemId>> = HashMap::new();
         for (index, commit) in vector["commits"].as_array().unwrap().iter().enumerate() {
-            let mut hasher = Sha256::new();
+            let mut hasher = EventsDigest::default();
             let mut position = 0;
             let mut events = Vec::new();
             for event in commit["events"].as_array().unwrap() {
                 let item_id = ItemId::parse(event["item_id"].as_str().unwrap()).unwrap();
-                let payload = canonical_json_bytes(event).unwrap();
-                let digest = Sha256::digest(&payload);
-                hasher.update([0]);
-                hasher.update(digest);
+                let proposal: EventProposal = serde_json::from_value(event.clone()).unwrap();
+                // Some invalid events have no envelope: the encoder refuses them.
+                let Ok(payload) = canonical_event_proposal_bytes(&proposal) else {
+                    assert!(!commit["valid"].as_bool().unwrap(), "{name} commit {index}");
+                    return;
+                };
+                hasher.push(&payload);
                 let seq = item_seq.entry(item_id.clone()).or_default();
                 *seq += 1;
                 let previous = parents.get(&item_id).cloned().flatten();
@@ -80,7 +81,6 @@ fn replay(vector: &serde_json::Value, encrypted: bool) {
                     item_id,
                     event_type: event["event_type"].as_str().unwrap().to_string(),
                     payload,
-                    event_payload_digest: digest.to_vec(),
                     parent_folder_id: after,
                     parent_folder_id_before: before,
                 });
@@ -89,10 +89,9 @@ fn replay(vector: &serde_json::Value, encrypted: bool) {
             let mut ref_events = Vec::new();
             for event in commit["ref_events"].as_array().into_iter().flatten() {
                 let owner = ItemId::parse(event["owner_item_id"].as_str().unwrap()).unwrap();
-                let payload = canonical_json_bytes(event).unwrap();
-                let digest = Sha256::digest(&payload);
-                hasher.update([1]);
-                hasher.update(digest);
+                let proposal: RefEventProposal = serde_json::from_value(event.clone()).unwrap();
+                let payload = canonical_ref_event_proposal_bytes(&proposal).unwrap();
+                hasher.push(&payload);
                 let seq = ref_seq.entry(owner.clone()).or_default();
                 *seq += 1;
                 ref_events.push(VerifyRefEvent {
@@ -101,22 +100,13 @@ fn replay(vector: &serde_json::Value, encrypted: bool) {
                     ref_seq: *seq,
                     event_type: event["event_type"].as_str().unwrap().to_string(),
                     payload,
-                    event_payload_digest: digest.to_vec(),
                 });
                 position += 1;
             }
-            let events_digest = if position == 0 {
-                empty_commit_events_digest(index as i64 + 1)
-            } else {
-                Sha256Digest::parse(sha256_prefixed_hex_from_digest_bytes(
-                    hasher.finalize().into(),
-                ))
-                .unwrap()
-            };
+            let events_digest = hasher.finish(Some(index as i64 + 1));
             let author = "author".to_string();
             let message = commit["message"].as_str().map(str::to_string);
-            let commit_id = canonical_stored_commit_bytes_for_hash(
-                COMMIT_FORMAT_VERSION,
+            let commit_id = canonical_commit_bytes_for_hash(
                 &author,
                 &author,
                 None,
@@ -129,13 +119,11 @@ fn replay(vector: &serde_json::Value, encrypted: bool) {
             let header = VerifyCommit {
                 commit_id,
                 repo_seq: Some(index as i64 + 1),
-                format_version: COMMIT_FORMAT_VERSION,
                 author_id: author.clone(),
                 committer_id: author,
                 occurred_at: None,
                 message,
                 event_count: Some(position),
-                events_digest: Some(events_digest),
             };
             let findings = verifier.verify_commit_events(
                 &header,

@@ -2,17 +2,14 @@ use std::collections::BTreeMap;
 
 use serde::Deserialize;
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 use synck_file_folder::{
     BlobRef, CurrentItem, ImmutableItemKind, Intent, IntentProposal, ItemBase, Location,
     ProfileLifecycleState, SemanticErrorCode, compute_operation_id, project_commit,
     project_proposal_events, validate_and_materialize, validate_projected_proposal,
 };
 use synck_vcs::types::{
-    COMMIT_FORMAT_VERSION, CommitId, CommitRow, EventContent, EventProposal, EventRow, ItemId,
-    ObjectId, RepoId, Sha256Digest, canonical_commit_bytes_for_hash,
-    canonical_event_proposal_bytes, compute_commit_id, compute_sha256_digest_bytes,
-    sha256_prefixed_hex_from_digest_bytes,
+    CommitId, CommitRow, EventContent, EventProposal, EventRow, EventsDigest, ItemId, ObjectId,
+    RepoId, canonical_commit_bytes_for_hash, canonical_event_proposal_bytes, compute_commit_id,
 };
 
 const INTENTS_FIXTURE: &str = include_str!("../../../docs/spec/vectors/file-folder/intents.json");
@@ -1440,23 +1437,19 @@ fn accepted_commit(
 ) -> (CommitRow, Vec<EventRow>) {
     let repo_id = repo_id();
     let mut item_heads = BTreeMap::<ItemId, i64>::new();
-    let mut digest_hasher = Sha256::new();
+    let mut digest_hasher = EventsDigest::default();
     let mut rows = Vec::new();
     for (index, proposal) in proposals.iter().enumerate() {
         let payload = canonical_event_proposal_bytes(proposal).unwrap();
-        let digest = compute_sha256_digest_bytes(&payload);
-        digest_hasher.update([synck_vcs::types::COMMIT_EVENT_FAMILY_ITEM]);
-        digest_hasher.update(digest);
+        digest_hasher.push(&payload);
         let item_id = proposal.item_id.clone().unwrap();
         let item_seq = item_heads
             .entry(item_id.clone())
             .or_insert_with(|| proposal.base_seq.unwrap_or(0));
         *item_seq += 1;
-        rows.push((index, item_id, *item_seq, proposal, payload, digest));
+        rows.push((index, item_id, *item_seq, proposal, payload));
     }
-    let events_digest_bytes: [u8; 32] = digest_hasher.finalize().into();
-    let events_digest =
-        Sha256Digest::parse(sha256_prefixed_hex_from_digest_bytes(events_digest_bytes)).unwrap();
+    let events_digest = digest_hasher.finish(Some(1));
     let author = "author".to_string();
     let commit_bytes = canonical_commit_bytes_for_hash(
         &author,
@@ -1471,44 +1464,36 @@ fn accepted_commit(
     let accepted_at = "2026-08-20T12:00:00Z".parse().unwrap();
     let event_rows = rows
         .into_iter()
-        .map(
-            |(index, item_id, item_seq, proposal, payload, digest)| EventRow {
-                metadata: proposal
-                    .set_metadata
-                    .as_ref()
-                    .and_then(|value| value.payload())
-                    .cloned(),
-                repo_id: repo_id.clone(),
-                item_id,
-                item_seq,
-                event_type: proposal.event_type.clone(),
-                commit_id: commit_id.clone(),
-                commit_event_idx: index as i32,
-                repo_seq: Some(1),
-                payload,
-                event_payload_digest: Sha256Digest::parse(sha256_prefixed_hex_from_digest_bytes(
-                    digest,
-                ))
-                .unwrap(),
-                created_at: accepted_at,
-                parent_folder_id: None,
-                parent_folder_id_before: None,
-            },
-        )
+        .map(|(index, item_id, item_seq, proposal, payload)| EventRow {
+            metadata: proposal
+                .set_metadata
+                .as_ref()
+                .and_then(|value| value.payload())
+                .cloned(),
+            repo_id: repo_id.clone(),
+            item_id,
+            item_seq,
+            event_type: proposal.event_type.clone(),
+            commit_id: commit_id.clone(),
+            commit_event_idx: index as i32,
+            repo_seq: Some(1),
+            payload,
+            created_at: accepted_at,
+            parent_folder_id: None,
+            parent_folder_id_before: None,
+        })
         .collect();
     (
         CommitRow {
             repo_id,
             commit_id,
             repo_seq: Some(1),
-            format_version: COMMIT_FORMAT_VERSION,
             author_id: author,
             committer_id: "committer".to_string(),
             message: message.map(str::to_string),
             occurred_at: None,
             created_at: accepted_at,
             event_count: proposals.len() as i32,
-            events_digest,
         },
         event_rows,
     )

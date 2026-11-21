@@ -34,7 +34,9 @@ pub struct WithdrawnSave {
     /// When the commit was made.
     pub saved_at: DateTime<Utc>,
     pub withdrawn_at: DateTime<Utc>,
-    /// Item events, then ref events, as a proposal to a server carries them.
+    /// Item events, then ref events, as a proposal to a server carries them;
+    /// stored as their envelopes in lowercase hexadecimal.
+    #[serde(with = "envelopes")]
     pub records: Vec<ProposalRecord>,
     /// Each metadata object the events name, as hexadecimal stored bytes.
     pub metadata_objects: BTreeMap<ObjectId, String>,
@@ -86,23 +88,9 @@ impl WithdrawnSave {
         let mut digest = EventsDigest::default();
         let mut count = 0usize;
         for record in &self.records {
-            let (family, bytes) = match record {
-                ProposalRecord::Item(event) => (
-                    COMMIT_EVENT_FAMILY_ITEM,
-                    canonical_event_proposal_bytes(event)?,
-                ),
-                ProposalRecord::Ref(event) => (
-                    COMMIT_EVENT_FAMILY_REF,
-                    canonical_ref_event_proposal_bytes(event)?,
-                ),
-                ProposalRecord::Guard(_) | ProposalRecord::SubtreeGuard(_) => {
-                    return Err(LocalError::Integrity(format!(
-                        "withdrawn {} holds a head guard",
-                        self.name()
-                    )));
-                }
-            };
-            digest.push(family, &compute_sha256_digest_bytes(&bytes));
+            digest.push(&envelopes::envelope(record).map_err(|error| {
+                LocalError::Integrity(format!("withdrawn {}: {error}", self.name()))
+            })?);
             count += 1;
         }
         let commit_id = compute_commit_id(&canonical_commit_bytes_for_hash(
@@ -459,5 +447,60 @@ impl Repository {
         } else {
             Err(LocalError::Integrity(findings.summary()))
         }
+    }
+}
+
+/// `records` as the hexadecimal of each record's envelope; the kind byte tells
+/// an item envelope from an attached-ref one.
+mod envelopes {
+    use serde::{Deserialize, Deserializer, Serializer, de::Error as _, ser::Error as _};
+    use synck_sync::ProposalRecord;
+    use synck_vcs::codec::{
+        KIND_ITEM, KIND_REF, canonical_event_proposal_bytes, canonical_ref_event_proposal_bytes,
+        decode_event_proposal, decode_ref_event_proposal,
+    };
+
+    pub(super) fn envelope(record: &ProposalRecord) -> Result<Vec<u8>, String> {
+        match record {
+            ProposalRecord::Item(event) => canonical_event_proposal_bytes(event),
+            ProposalRecord::Ref(event) => canonical_ref_event_proposal_bytes(event),
+            ProposalRecord::Guard(_) | ProposalRecord::SubtreeGuard(_) => {
+                return Err("a withdrawn save holds no guards".to_string());
+            }
+        }
+        .map_err(|error| error.to_string())
+    }
+
+    pub(super) fn serialize<S: Serializer>(
+        records: &[ProposalRecord],
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        let records = records
+            .iter()
+            .map(|record| envelope(record).map(hex::encode))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(S::Error::custom)?;
+        serializer.collect_seq(records)
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Vec<ProposalRecord>, D::Error> {
+        Vec::<String>::deserialize(deserializer)?
+            .into_iter()
+            .map(|text| {
+                if text.bytes().any(|byte| byte.is_ascii_uppercase()) {
+                    return Err("envelope hexadecimal must be lowercase".to_string());
+                }
+                let bytes = hex::decode(&text).map_err(|error| error.to_string())?;
+                match bytes.first() {
+                    Some(&KIND_ITEM) => decode_event_proposal(&bytes).map(ProposalRecord::Item),
+                    Some(&KIND_REF) => decode_ref_event_proposal(&bytes).map(ProposalRecord::Ref),
+                    _ => return Err("not an envelope".to_string()),
+                }
+                .map_err(|error| error.to_string())
+            })
+            .collect::<Result<_, _>>()
+            .map_err(D::Error::custom)
     }
 }

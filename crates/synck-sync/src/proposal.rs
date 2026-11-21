@@ -1,12 +1,11 @@
 use crate::{
     CommitMetadata, MAX_PAGE_RECORDS, ProposalPage, ProposalRecord, ProtocolError,
-    RepositoryIdentity, SubmitRequest, check_page_size, digest_id, invalid,
+    RepositoryIdentity, SubmitRequest, digest_id, invalid, wire,
 };
 use sha2::{Digest, Sha256};
 use synck_vcs::types::{
-    CommitId, EventsDigest, ItemId, Sha256Digest, Timestamp, canonical_commit_bytes_for_hash,
-    canonical_event_proposal_bytes, canonical_json_bytes, canonical_ref_event_proposal_bytes,
-    compute_commit_id,
+    CommitId, EventsDigest, ItemId, Sha256Digest, Timestamp, canonical_event_proposal_bytes,
+    canonical_ref_event_proposal_bytes, compute_commit_id,
 };
 
 #[derive(Debug)]
@@ -42,16 +41,8 @@ pub fn validate_submit(request: &SubmitRequest) -> Result<ValidatedProposal, Pro
             "event count does not fit the canonical representation",
         ));
     }
-    let commit_id = compute_commit_id(&canonical_commit_bytes_for_hash(
-        &metadata.author_id,
-        &metadata.committer_id,
-        metadata.occurred_at,
-        metadata.message.as_deref(),
-        request.event_count as usize,
-        &request.events_digest,
-    )?);
-    let value = serde_json::to_value(request).map_err(|e| invalid(e.to_string()))?;
-    let request_digest = digest_id(Sha256::digest(canonical_json_bytes(&value)?).into());
+    let commit_id = compute_commit_id(&wire::submit_header(request)?);
+    let request_digest = digest_id(Sha256::digest(wire::encode(request)?).into());
     Ok(ValidatedProposal {
         request_digest,
         commit_id,
@@ -122,7 +113,6 @@ impl ProposalVerifier {
         if page.records.is_empty() || page.records.len() > MAX_PAGE_RECORDS {
             return Err(ProtocolError::Limit("proposal page records"));
         }
-        check_page_size(page)?;
         let mut next = self.clone();
         for record in &page.records {
             match record {
@@ -133,24 +123,14 @@ impl ProposalVerifier {
                     {
                         return Err(invalid("item follows ref or guard"));
                     }
-                    if event.item_id.is_none()
-                        || event.event_type.trim().is_empty()
-                        || event.base_seq.is_some_and(|seq| seq < 1)
-                        || (event.create_item.is_some() && event.base_seq.is_some())
-                    {
-                        return Err(invalid("invalid item proposal shape"));
-                    }
-                    next.event(0, canonical_event_proposal_bytes(event)?)?;
+                    next.event(&canonical_event_proposal_bytes(event)?)?;
                 }
                 ProposalRecord::Ref(event) => {
                     if next.previous_guard.is_some() || next.previous_subtree.is_some() {
                         return Err(invalid("ref follows guard"));
                     }
-                    if event.event_type.trim().is_empty() || event.base_ref_seq < 0 {
-                        return Err(invalid("invalid ref proposal shape"));
-                    }
                     next.refs_started = true;
-                    next.event(1, canonical_ref_event_proposal_bytes(event)?)?;
+                    next.event(&canonical_ref_event_proposal_bytes(event)?)?;
                 }
                 ProposalRecord::Guard(guard) => {
                     if next.previous_subtree.is_some()
@@ -162,13 +142,7 @@ impl ProposalVerifier {
                     {
                         return Err(invalid("head guards must be unique, sorted and positive"));
                     }
-                    let value = serde_json::to_value(guard).map_err(|e| invalid(e.to_string()))?;
-                    next.guards_hasher
-                        .update(Sha256::digest(canonical_json_bytes(&value)?));
-                    next.guards = next
-                        .guards
-                        .checked_add(1)
-                        .ok_or_else(|| invalid("guard count overflow"))?;
+                    next.guard(record)?;
                     next.previous_guard = Some(guard.item_id.clone());
                 }
                 ProposalRecord::SubtreeGuard(guard) => {
@@ -191,15 +165,7 @@ impl ProposalVerifier {
                             "subtree guards must be sorted with exact positive heads",
                         ));
                     }
-                    // Domain separation preserves legacy head-guard hashes and
-                    // prevents interpreting a subtree as a plain item guard.
-                    let value = serde_json::to_value(record).map_err(|e| invalid(e.to_string()))?;
-                    next.guards_hasher
-                        .update(Sha256::digest(canonical_json_bytes(&value)?));
-                    next.guards = next
-                        .guards
-                        .checked_add(1)
-                        .ok_or_else(|| invalid("guard count overflow"))?;
+                    next.guard(record)?;
                     next.previous_subtree = Some(guard.root_item_id.clone());
                 }
             }
@@ -211,14 +177,24 @@ impl ProposalVerifier {
         *self = next;
         Ok(())
     }
-    fn event(&mut self, family: u8, payload: Vec<u8>) -> Result<(), ProtocolError> {
+    fn event(&mut self, envelope: &[u8]) -> Result<(), ProtocolError> {
         self.events = self
             .events
             .checked_add(1)
             .filter(|n| *n <= i32::MAX as u64)
-            .ok_or_else(|| invalid("event count does not fit the canonical representation"))?;
-        self.events_hasher
-            .push(family, &Sha256::digest(payload).into());
+            .ok_or_else(|| invalid("event count exceeds 2^31 - 1"))?;
+        self.events_hasher.push(envelope);
+        Ok(())
+    }
+    /// A guard hashes as its encoded record, tag included, so a subtree guard
+    /// never reads as a head guard.
+    fn guard(&mut self, record: &ProposalRecord) -> Result<(), ProtocolError> {
+        self.guards_hasher
+            .update(Sha256::digest(wire::encode(record)?));
+        self.guards = self
+            .guards
+            .checked_add(1)
+            .ok_or_else(|| invalid("guard count overflow"))?;
         Ok(())
     }
     /// Build the final request from the exact uploaded stream. Guards bind the

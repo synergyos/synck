@@ -265,7 +265,7 @@ deletes them.
 
 ### HTTPS clones: a sync server as the origin
 
-`synck clone https://HOST/v1/repositories/REPO_ID DIRECTORY --author NAME`
+`synck clone https://HOST/v2/repositories/REPO_ID DIRECTORY --author NAME`
 clones a repository from a [sync server](sync-server.md), with a read or write
 token in `SYNCK_TOKEN`; `http://` is accepted only to this machine. The clone
 verifies the server's whole history from its first commit, page by page, and
@@ -274,7 +274,7 @@ The token is kept in `.synck/remote-token` (mode 0600); replace that file to
 change it.
 
 ```sh
-SYNCK_TOKEN=... synck clone https://sync.example/v1/repositories/0190... matter --author laptop
+SYNCK_TOKEN=... synck clone https://sync.example/v2/repositories/0190... matter --author laptop
 cd matter
 synck commit -m "Revise the brief"   # sent to the server at once
 synck pull                           # take in everyone else's commits

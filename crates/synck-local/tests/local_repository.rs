@@ -141,7 +141,7 @@ async fn repository_discovery_rejects_format_one() {
         Ok(_) => panic!("repository discovery accepted format 1"),
         Err(error) => error,
     };
-    assert!(error.to_string().contains("format-7"));
+    assert!(error.to_string().contains("format-8"));
 }
 
 #[tokio::test]
@@ -416,12 +416,7 @@ async fn historical_folder_export_does_not_read_unselected_file_content() {
         .export_tree(&root, commit.as_str(), None, &output.join("complete"))
         .await
         .unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("historical content event digest disagrees"),
-        "{error}"
-    );
+    assert!(error.to_string().contains("invalid encoding"), "{error}");
     assert!(!output.join("complete").exists());
 }
 

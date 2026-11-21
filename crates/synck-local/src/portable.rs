@@ -1,4 +1,4 @@
-//! Format 7 repositories: canonical data and content without a working checkout.
+//! Format 8 repositories: canonical data and content without a working checkout.
 //!
 //! Opening and reading never repairs history or touches a working tree. Imported
 //! copies are followers. Local activation records an operator's source-retirement
@@ -20,10 +20,7 @@ use synck_file_folder::{
     BlobRef, CurrentItem, Intent, IntentProposal, Location, ProfileLifecycleState,
 };
 use synck_items::reader::{ItemReader, ReadContext, ReadableItem, RefReadContext};
-use synck_vcs::bundle::{
-    BundleReader, validate_bundle_event_payload_json_and_digest,
-    validate_bundle_ref_event_payload_json_and_digest,
-};
+use synck_vcs::bundle::BundleReader;
 use synck_vcs::config::CoreConfig;
 use synck_vcs::limits::{MAX_ACTOR_ID_BYTES, MAX_MESSAGE_BYTES};
 use synck_vcs::object::{
@@ -34,7 +31,7 @@ use synck_vcs::state::{NamespaceKey, StateIndexStore, StateTree};
 use synck_vcs::storage::{Storage, StorageBackend};
 use synck_vcs::types::{
     AcceptedCommit, CommitEventRow, CommitId, CommitProposal, EventContent, EventProposal,
-    ItemCursor, ItemId, ItemRevision, ItemRow, LifecycleState, ObjectId, RefEventRow,
+    ItemCursor, ItemId, ItemRevision, ItemRow, LifecycleState, ObjectId, RefEventProposal,
     RepoEventCursor, RepoId, SequencingMode, Timestamp,
 };
 use synck_vcs::verify::{
@@ -55,12 +52,15 @@ use crate::repository::{
 mod served;
 pub use served::{Acceptance, Accepted, PackEntry, Proposal, ServedRepository};
 
-pub const FORMAT_VERSION: u32 = 7;
+pub const FORMAT_VERSION: u32 = 8;
 const MAX_PAYLOAD_BYTES: usize = HEADER_BYTES + synck_items::body_events::MAX_BODY_BYTES;
 pub(crate) fn unsupported_format(version: Option<u64>) -> LocalError {
     let reader = match version {
         Some(6) => {
             "Open format 6 with Synck 0.1.x, export its working files, and initialize a new repository with this release."
+        }
+        Some(7) => {
+            "Open format 7 with Synck 0.4.0, export its working files, and initialize a new repository with this release."
         }
         _ => {
             "Open this repository with the release that created it; this release has no migration reader."
@@ -159,7 +159,18 @@ pub struct PortableLogPage {
 pub struct PortableItem {
     pub item: ReadableItem,
     /// Exact attached-ref history, retained independently from item_seq.
-    pub refs: Vec<RefEventRow>,
+    pub refs: Vec<PortableRef>,
+}
+
+/// One attached-ref event and its decoded envelope.
+#[derive(Debug, Serialize)]
+pub struct PortableRef {
+    pub ref_seq: i64,
+    pub event_type: String,
+    pub commit_id: CommitId,
+    pub repo_seq: Option<i64>,
+    pub created_at: Timestamp,
+    pub event: RefEventProposal,
 }
 
 #[derive(Debug, Serialize)]
@@ -483,7 +494,7 @@ pub(crate) fn stored_operation_id(id: &Uuid) -> String {
 }
 
 impl PortableRepository {
-    /// Open exactly this format-7 repository. No discovery, migration, recovery,
+    /// Open exactly this format-8 repository. No discovery, migration, recovery,
     /// checkout scan, indexing or authoritative database writes occur here.
     pub fn open(root: &Path) -> Result<Self> {
         let root_dir = directory(root)?;
@@ -1394,11 +1405,6 @@ impl PortableRepository {
                     .ref_seq
                     .checked_add(1)
                     .ok_or_else(|| corrupt("ref sequence exhausted"))?;
-                validate_bundle_ref_event_payload_json_and_digest(
-                    std::str::from_utf8(&row.payload).map_err(corrupt)?,
-                    row.event_payload_digest.as_str(),
-                )
-                .map_err(corrupt)?;
                 let event = row.proposal()?;
                 let commit = self
                     .storage
@@ -1417,8 +1423,14 @@ impl PortableRepository {
                         },
                     )
                     .map_err(corrupt)?;
-
-                refs.push(row);
+                refs.push(PortableRef {
+                    ref_seq: row.ref_seq,
+                    event_type: row.event_type,
+                    commit_id: row.commit_id,
+                    repo_seq: row.repo_seq,
+                    created_at: row.created_at,
+                    event,
+                });
             }
             if done {
                 break;
@@ -1445,11 +1457,6 @@ impl PortableRepository {
                 if through.is_some_and(|seq| row.repo_seq.is_none_or(|event_seq| event_seq > seq)) {
                     break 'history;
                 }
-                validate_bundle_event_payload_json_and_digest(
-                    std::str::from_utf8(&row.payload).map_err(corrupt)?,
-                    row.event_payload_digest.as_str(),
-                )
-                .map_err(corrupt)?;
                 let mut event: EventProposal = row.proposal()?;
                 let mut body_erased = false;
                 if let Some(content_id) = event
@@ -1857,7 +1864,6 @@ impl PortableRepository {
         for table in [
             "vcs_metadata_objects",
             "vcs_commits",
-            "vcs_checkpoints",
             "vcs_history_generations",
             "vcs_events",
             "vcs_ref_events",
@@ -1952,13 +1958,11 @@ impl PortableRepository {
                     &VerifyCommit {
                         commit_id: Some(commit.commit_id.clone()),
                         repo_seq: commit.repo_seq,
-                        format_version: commit.format_version,
                         committer_id: commit.committer_id,
                         occurred_at: commit.occurred_at,
                         author_id: commit.author_id,
                         message: commit.message,
                         event_count: Some(commit.event_count),
-                        events_digest: Some(commit.events_digest),
                     },
                     owned.iter().map(VerifyOwned::borrowed),
                 );
@@ -3037,10 +3041,6 @@ impl From<CommitEventRow> for VerifyOwned {
                 item_seq: e.item_seq,
                 event_type: e.event_type,
                 payload: e.payload,
-                event_payload_digest: synck_vcs::types::sha256_digest_to_digest_bytes(
-                    &e.event_payload_digest,
-                )
-                .to_vec(),
                 parent_folder_id: e.parent_folder_id,
                 parent_folder_id_before: e.parent_folder_id_before,
             }),
@@ -3050,10 +3050,6 @@ impl From<CommitEventRow> for VerifyOwned {
                 ref_seq: e.ref_seq,
                 event_type: e.event_type,
                 payload: e.payload,
-                event_payload_digest: synck_vcs::types::sha256_digest_to_digest_bytes(
-                    &e.event_payload_digest,
-                )
-                .to_vec(),
             }),
         }
     }

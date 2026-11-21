@@ -159,7 +159,8 @@ pub(crate) fn proposal_from_rows(
     for row in rows {
         match row {
             CommitEventRow::Item(row) => {
-                let mut event: EventProposal = serde_json::from_slice(&row.payload)?;
+                let mut event = decode_event_proposal(&row.payload)
+                    .map_err(|error| LocalError::Integrity(error.to_string()))?;
                 if let (Some(reference), Some(metadata)) =
                     (event.set_metadata.as_mut(), row.metadata)
                 {
@@ -170,7 +171,8 @@ pub(crate) fn proposal_from_rows(
                 events.push(event);
             }
             CommitEventRow::Ref(row) => {
-                let mut event: RefEventProposal = serde_json::from_slice(&row.payload)?;
+                let mut event = decode_ref_event_proposal(&row.payload)
+                    .map_err(|error| LocalError::Integrity(error.to_string()))?;
                 if let (Some(reference), Some(metadata)) =
                     (event.set_metadata.as_mut(), row.metadata)
                 {

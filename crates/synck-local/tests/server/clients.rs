@@ -94,7 +94,7 @@ pub(super) async fn fixture() -> Fixture {
     ok(&origin, "", &["commit", "-m", "Add the brief"]);
     let writer = tokens::add(&state, "laptop", Access::Write, &[repo_id.clone()]).unwrap();
     let (running, address) = start(&state, &[origin.clone()], "127.0.0.1:0".parse().unwrap());
-    let url = format!("http://{address}/v1/repositories/{}", repo_id.as_str());
+    let url = format!("http://{address}/v2/repositories/{}", repo_id.as_str());
     Fixture {
         parent,
         state,

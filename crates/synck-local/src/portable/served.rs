@@ -46,7 +46,7 @@ pub struct ServedRepository {
     _wal_indexes: std::sync::Mutex<Vec<rusqlite::Connection>>,
 }
 
-/// A verified protocol-1 upload, in stream order.
+/// A verified protocol 2 upload, in stream order.
 /// One object of a pack.
 pub enum PackEntry {
     Metadata(Vec<u8>),
@@ -137,18 +137,15 @@ impl ServedRepository {
 
     /// Blocking SQLite reads: call it off async worker threads.
     pub fn capabilities(&self) -> Result<synck_sync::Capabilities> {
-        let repository = self.identity()?;
-        let latest = self.storage.history_head(&repository).map_err(corrupt)?;
+        let latest = self
+            .storage
+            .history_head(&self.identity()?)
+            .map_err(corrupt)?;
         Ok(synck_sync::Capabilities {
             protocol_version: synck_sync::PROTOCOL_VERSION,
-            repository,
             encrypted: self.encrypted,
             latest,
             policy: synck_sync::ServerPolicy::default(),
-            object_packs: true,
-            state_read: false,
-            item_histories: false,
-            commit_log: false,
         })
     }
 
@@ -157,10 +154,6 @@ impl ServedRepository {
             self.root.join(".synck").join(OBJECT_STORE_FILE),
             &self.repo_id,
         )
-    }
-
-    pub fn has_object(&self, id: &ObjectId) -> Result<bool> {
-        self.holds_object(&self.object_store(), id)
     }
 
     fn holds_object(&self, store: &ChunkStore, id: &ObjectId) -> Result<bool> {
@@ -183,14 +176,6 @@ impl ServedRepository {
                 self.root.join(".synck/objects").join(name),
             ),
         }
-    }
-
-    /// A metadata object's exact bytes from history, which protocol 1 serves
-    /// at the same route as content. Blocking.
-    pub fn metadata_object(&self, id: &ObjectId) -> Result<Option<Vec<u8>>> {
-        self.storage
-            .metadata_object(&self.repo_id, id)
-            .map_err(corrupt)
     }
 
     /// What an object pack of `ids` holds, read through one connection to each
@@ -262,7 +247,7 @@ impl ServedRepository {
                 PackEntry::Metadata(bytes) => bytes.len() as u64,
                 PackEntry::Content(size) => *size,
             };
-            let mut header = id.as_str().as_bytes().to_vec();
+            let mut header = id.as_bytes().to_vec();
             header.extend(size.to_be_bytes());
             out.write_all(&header).at("send object pack", &self.root)?;
             match (entry, &chunks) {
@@ -281,11 +266,6 @@ impl ServedRepository {
             sent += size;
         }
         Ok(())
-    }
-
-    /// Stream an object's exact stored bytes, refusing any other digest. Blocking.
-    pub fn copy_object(&self, id: &ObjectId, out: &mut dyn Write) -> Result<u64> {
-        self.copy_from(&self.object_store(), id, out)
     }
 
     fn copy_from(&self, store: &ChunkStore, id: &ObjectId, out: &mut dyn Write) -> Result<u64> {

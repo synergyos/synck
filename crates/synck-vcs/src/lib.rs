@@ -1,7 +1,7 @@
 //! Synck VCS core library.
 //!
 //! This crate implements the low-level engine for Synck:
-//! - content-addressed commits with canonical JSON encoding,
+//! - content-addressed commits in the format 8 binary encoding,
 //! - items/events/commits tables backed by pluggable storage backends,
 //! - structural invariants (parent existence/type, acyclicity, name uniqueness,
 //!   tombstone finality, sequencing mode rules),
@@ -21,6 +21,7 @@ mod assigned;
 pub mod bundle;
 mod case_folding;
 pub mod checkpoint;
+pub mod codec;
 pub mod config;
 pub mod content;
 pub mod envelope;

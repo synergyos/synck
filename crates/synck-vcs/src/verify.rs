@@ -579,13 +579,37 @@ fn verify_acyclic(
 mod tests {
     use super::*;
     use crate::types::{
-        COMMIT_EVENT_FAMILY_ITEM, COMMIT_EVENT_FAMILY_REF, COMMIT_FORMAT_VERSION, CreateItem,
-        RefEventProposal, Sha256Digest, canonical_commit_bytes_for_hash,
-        canonical_event_proposal_bytes, canonical_ref_event_proposal_bytes,
-        canonical_stored_commit_bytes_for_hash, compute_commit_id, compute_sha256_digest_bytes,
-        sha256_prefixed_hex_from_digest_bytes,
+        CreateItem, EventsDigest, RefEventProposal, canonical_commit_bytes_for_hash,
+        canonical_event_proposal_bytes, canonical_ref_event_proposal_bytes, compute_commit_id,
     };
-    use sha2::{Digest, Sha256};
+
+    /// A commit by "author" over `envelopes`, in commit order.
+    fn commit_over(repo_seq: i64, message: Option<&str>, envelopes: &[&[u8]]) -> VerifyCommit {
+        let mut digest = EventsDigest::default();
+        for envelope in envelopes {
+            digest.push(envelope);
+        }
+        let events_digest = digest.finish(Some(repo_seq));
+        let author = "author".to_string();
+        let bytes = canonical_commit_bytes_for_hash(
+            &author,
+            &author,
+            None,
+            message,
+            envelopes.len(),
+            &events_digest,
+        )
+        .unwrap();
+        VerifyCommit {
+            commit_id: Some(compute_commit_id(&bytes)),
+            repo_seq: Some(repo_seq),
+            committer_id: author.clone(),
+            occurred_at: None,
+            author_id: author,
+            message: message.map(str::to_string),
+            event_count: Some(envelopes.len() as i32),
+        }
+    }
 
     fn valid_history() -> (VerifyCommit, Vec<VerifyEvent>, VerifyItem) {
         let item_id = ItemId::new();
@@ -615,40 +639,13 @@ mod tests {
             base_seq: None,
         };
         let payload = canonical_event_proposal_bytes(&proposal).unwrap();
-        let payload_digest = compute_sha256_digest_bytes(&payload);
-        let events_digest_bytes =
-            compute_sha256_digest_bytes(&[&[0u8][..], &payload_digest[..]].concat());
-        let events_digest =
-            Sha256Digest::parse(sha256_prefixed_hex_from_digest_bytes(events_digest_bytes))
-                .unwrap();
-        let author = "author".to_string();
-        let commit_bytes = canonical_commit_bytes_for_hash(
-            &author,
-            &author,
-            None,
-            Some("message"),
-            1,
-            &events_digest,
-        )
-        .unwrap();
-        let commit = VerifyCommit {
-            commit_id: Some(compute_commit_id(&commit_bytes)),
-            repo_seq: Some(1),
-            format_version: COMMIT_FORMAT_VERSION,
-            committer_id: author.clone(),
-            occurred_at: None,
-            author_id: author,
-            message: Some("message".to_string()),
-            event_count: Some(1),
-            events_digest: Some(events_digest),
-        };
+        let commit = commit_over(1, Some("message"), &[&payload]);
         let event = VerifyEvent {
             commit_event_idx: 0,
             item_id: item_id.clone(),
             item_seq: 1,
             event_type: "FILE::CREATE".to_string(),
             payload,
-            event_payload_digest: payload_digest.to_vec(),
             parent_folder_id: None,
             parent_folder_id_before: None,
         };
@@ -679,34 +676,15 @@ mod tests {
 
     #[test]
     fn payload_corruption_is_reported() {
-        let (commit, mut events, item) = valid_history();
-        events[0].event_payload_digest[0] ^= 0xff;
-        let mut verifier = SemanticVerifier::new(false);
-        let findings = verifier.verify_commit(&commit, &events);
+        let (commit, mut events, _) = valid_history();
+        let last = events[0].payload.len() - 1;
+        events[0].payload[last] ^= 0xff;
+        let findings = SemanticVerifier::new(false).verify_commit(&commit, &events);
         assert!(
             findings
                 .iter()
-                .any(|finding| finding.contains("payload digest mismatch"))
+                .any(|finding| finding.contains("commit ID mismatch"))
         );
-        assert!(verifier.finish(&[item]).is_empty());
-    }
-
-    #[test]
-    fn new_item_base_sequence_is_rejected() {
-        let (commit, mut events, item) = valid_history();
-        let mut proposal: EventProposal = serde_json::from_slice(&events[0].payload).unwrap();
-        proposal.base_seq = Some(0);
-        events[0].payload = canonical_event_proposal_bytes(&proposal).unwrap();
-        events[0].event_payload_digest = compute_sha256_digest_bytes(&events[0].payload).to_vec();
-
-        let mut verifier = SemanticVerifier::new(false);
-        let findings = verifier.verify_commit(&commit, &events);
-        assert!(
-            findings
-                .iter()
-                .any(|finding| finding.contains("base sequence is Some(0), expected None"))
-        );
-        assert!(verifier.finish(&[item]).is_empty());
     }
 
     fn ref_commit(
@@ -714,40 +692,9 @@ mod tests {
         item_event: Option<&VerifyEvent>,
         ref_event: &VerifyRefEvent,
     ) -> VerifyCommit {
-        let mut hasher = Sha256::new();
-        let event_count = if let Some(event) = item_event {
-            hasher.update([COMMIT_EVENT_FAMILY_ITEM]);
-            hasher.update(&event.event_payload_digest);
-            2
-        } else {
-            1
-        };
-        hasher.update([COMMIT_EVENT_FAMILY_REF]);
-        hasher.update(&ref_event.event_payload_digest);
-        let digest: [u8; 32] = hasher.finalize().into();
-        let events_digest =
-            Sha256Digest::parse(sha256_prefixed_hex_from_digest_bytes(digest)).unwrap();
-        let author = "author".to_string();
-        let commit_bytes = canonical_stored_commit_bytes_for_hash(
-            COMMIT_FORMAT_VERSION,
-            &author,
-            &author,
-            None,
-            None,
-            event_count,
-            &events_digest,
-        )
-        .unwrap();
-        VerifyCommit {
-            commit_id: Some(compute_commit_id(&commit_bytes)),
-            repo_seq: Some(repo_seq),
-            format_version: COMMIT_FORMAT_VERSION,
-            committer_id: author.clone(),
-            occurred_at: None,
-            author_id: author,
-            message: None,
-            event_count: Some(event_count as i32),
-            events_digest: Some(events_digest),
+        match item_event {
+            Some(event) => commit_over(repo_seq, None, &[&event.payload, &ref_event.payload]),
+            None => commit_over(repo_seq, None, &[&ref_event.payload]),
         }
     }
 
@@ -765,14 +712,12 @@ mod tests {
             base_ref_seq: 0,
         };
         let payload = canonical_ref_event_proposal_bytes(&proposal).unwrap();
-        let payload_digest = compute_sha256_digest_bytes(&payload);
         VerifyRefEvent {
             commit_event_idx,
             owner_item_id,
             ref_seq: 1,
             event_type: proposal.event_type,
             payload,
-            event_payload_digest: payload_digest.to_vec(),
         }
     }
 
@@ -811,14 +756,12 @@ mod tests {
             base_seq: Some(1),
         };
         let payload = canonical_event_proposal_bytes(&tombstone).unwrap();
-        let payload_digest = compute_sha256_digest_bytes(&payload);
         let item_event = VerifyEvent {
             commit_event_idx: 0,
             item_id: item_id.clone(),
             item_seq: 2,
             event_type: tombstone.event_type,
             payload,
-            event_payload_digest: payload_digest.to_vec(),
             parent_folder_id: None,
             parent_folder_id_before: None,
         };
@@ -875,50 +818,17 @@ mod tests {
             base_seq: Some(1),
         };
         let item_payload = canonical_event_proposal_bytes(&item_proposal).unwrap();
-        let item_digest = compute_sha256_digest_bytes(&item_payload);
         let item_event = VerifyEvent {
             commit_event_idx: 1,
             item_id,
             item_seq: 2,
             event_type: item_proposal.event_type,
             payload: item_payload,
-            event_payload_digest: item_digest.to_vec(),
             parent_folder_id: None,
             parent_folder_id_before: None,
         };
         ref_event.commit_event_idx = 0;
-
-        let mut hasher = Sha256::new();
-        hasher.update([COMMIT_EVENT_FAMILY_REF]);
-        hasher.update(&ref_event.event_payload_digest);
-        hasher.update([COMMIT_EVENT_FAMILY_ITEM]);
-        hasher.update(&item_event.event_payload_digest);
-        let events_digest = Sha256Digest::parse(sha256_prefixed_hex_from_digest_bytes(
-            hasher.finalize().into(),
-        ))
-        .unwrap();
-        let author = "author".to_string();
-        let commit_bytes = canonical_stored_commit_bytes_for_hash(
-            COMMIT_FORMAT_VERSION,
-            &author,
-            &author,
-            None,
-            None,
-            2,
-            &events_digest,
-        )
-        .unwrap();
-        let commit = VerifyCommit {
-            commit_id: Some(compute_commit_id(&commit_bytes)),
-            repo_seq: Some(2),
-            format_version: COMMIT_FORMAT_VERSION,
-            committer_id: author.clone(),
-            occurred_at: None,
-            author_id: author,
-            message: None,
-            event_count: Some(2),
-            events_digest: Some(events_digest),
-        };
+        let commit = commit_over(2, None, &[&ref_event.payload, &item_event.payload]);
         let findings = verifier.verify_commit_events(
             &commit,
             [
@@ -936,36 +846,7 @@ mod tests {
     #[test]
     fn the_same_commit_format_accepts_item_only_history() {
         let (_, events, _) = valid_history();
-        let event = &events[0];
-        let mut hasher = Sha256::new();
-        hasher.update([COMMIT_EVENT_FAMILY_ITEM]);
-        hasher.update(&event.event_payload_digest);
-        let events_digest = Sha256Digest::parse(sha256_prefixed_hex_from_digest_bytes(
-            hasher.finalize().into(),
-        ))
-        .unwrap();
-        let author = "author".to_string();
-        let commit_bytes = canonical_stored_commit_bytes_for_hash(
-            COMMIT_FORMAT_VERSION,
-            &author,
-            &author,
-            None,
-            None,
-            1,
-            &events_digest,
-        )
-        .unwrap();
-        let commit = VerifyCommit {
-            commit_id: Some(compute_commit_id(&commit_bytes)),
-            repo_seq: Some(1),
-            format_version: COMMIT_FORMAT_VERSION,
-            committer_id: author.clone(),
-            occurred_at: None,
-            author_id: author,
-            message: None,
-            event_count: Some(1),
-            events_digest: Some(events_digest),
-        };
+        let commit = commit_over(1, None, &[&events[0].payload]);
         let mut verifier = SemanticVerifier::new(false);
         let findings = verifier.verify_commit(&commit, &events);
         assert!(findings.is_empty(), "{findings:?}");

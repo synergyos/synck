@@ -7,12 +7,11 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode, header};
 use http_body_util::BodyExt as _;
-use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 use synck_file_folder::{BlobRef, Intent, IntentProposal, Location};
 use synck_sync::{
-    CommitMetadata, ProposalPage, ProposalRecord, ProposalVerifier, RepositoryIdentity,
-    SubmitRequest,
+    CommitMetadata, ProposalPage, ProposalRecord, ProposalVerifier, Refusal, RepositoryIdentity,
+    SubmitRequest, SubmitResult, Wire,
 };
 use synck_vcs::types::{EventProposal, ItemId, ObjectId, RepoId};
 use tower::ServiceExt as _;
@@ -57,11 +56,28 @@ pub async fn send_with(
     )
 }
 
-pub fn status_of(body: &[u8]) -> String {
-    serde_json::from_slice::<Value>(body).unwrap()["status"]
-        .as_str()
-        .unwrap()
-        .to_string()
+pub fn wire<T: Wire>(value: &T) -> Vec<u8> {
+    synck_sync::encode(value).unwrap()
+}
+
+pub fn refusal(body: &[u8]) -> Refusal {
+    synck_sync::decode(body).unwrap()
+}
+
+pub fn submit_result(body: &[u8]) -> SubmitResult {
+    synck_sync::decode(body).unwrap()
+}
+
+/// An object pack: per object, its raw digest, its size as a big-endian
+/// `u64`, and its bytes.
+pub fn pack(objects: &[(ObjectId, &[u8])]) -> Vec<u8> {
+    let mut pack = Vec::new();
+    for (id, bytes) in objects {
+        pack.extend(id.as_bytes());
+        pack.extend((bytes.len() as u64).to_be_bytes());
+        pack.extend(*bytes);
+    }
+    pack
 }
 
 pub fn create_file(repo_id: &RepoId, name: &str, bytes: &[u8]) -> (ItemId, EventProposal) {

@@ -13,7 +13,6 @@ pub struct LogEntry {
     pub author: String,
     pub message: Option<String>,
     pub event_count: usize,
-    pub events_digest: String,
 }
 
 #[derive(Debug)]
@@ -36,8 +35,8 @@ pub struct CommitEvent {
     pub item_name_before: Option<String>,
     pub item_seq: i64,
     pub event_type: String,
-    pub payload: String,
-    pub event_payload_digest: String,
+    /// The decoded envelope.
+    pub payload: serde_json::Value,
     pub created_at: DateTime<Utc>,
     pub parent_folder_id: Option<String>,
     pub parent_folder_name: Option<String>,
@@ -78,7 +77,6 @@ pub struct HistoryCommit {
     pub message: Option<String>,
     pub changes: Vec<Change>,
     pub event_count: usize,
-    pub events_digest: String,
 }
 
 #[derive(Debug)]
@@ -217,7 +215,6 @@ pub(super) fn history_commit(commit: CommitRow, changes: Vec<Change>) -> Result<
         message: commit.message,
         changes,
         event_count: checked_commit_event_count(commit.event_count, &commit.commit_id)?,
-        events_digest: commit.events_digest.to_string(),
     })
 }
 
@@ -814,7 +811,6 @@ impl Repository {
                     author: commit.author_id,
                     message: commit.message,
                     event_count: checked_commit_event_count(commit.event_count, &commit.commit_id)?,
-                    events_digest: commit.events_digest.to_string(),
                 })
             })
             .collect()
@@ -899,7 +895,6 @@ impl Repository {
                     &entry.commit.commit_id,
                     entry.commit.repo_seq,
                     entry.commit.event_count,
-                    &entry.commit.events_digest,
                 )
                 .await?;
             output.push(DetailedEventLogEntry { entry, events });
@@ -967,7 +962,6 @@ impl Repository {
                 &commit.commit_id,
                 commit.repo_seq,
                 commit.event_count,
-                &commit.events_digest,
             )
             .await?;
         Ok(EventHistoryCommit { commit, events })
@@ -1041,8 +1035,8 @@ impl Repository {
             .state_index_store(self.config().repo_id().clone())
             .map_err(|error| LocalError::Integrity(error.to_string()))?;
         self.catch_up_state_index_in(&mut store).await?;
-        let (events, _) = self
-            .present_commit_event_rows_in(&mut store, &commit_id, repo_seq, start, rows, false)
+        let events = self
+            .present_commit_event_rows_in(&mut store, &commit_id, repo_seq, start, rows)
             .await?;
         let end = start + events.len();
         Ok(CommitEventPage {
@@ -1063,7 +1057,6 @@ impl Repository {
         commit_id: &str,
         repo_seq: i64,
         event_count: usize,
-        events_digest: &str,
     ) -> Result<Vec<CommitEvent>> {
         let parsed_commit_id = CommitId::parse(commit_id).map_err(|error| {
             LocalError::Integrity(format!("repository contains invalid commit ID: {error}"))
@@ -1083,15 +1076,8 @@ impl Repository {
             )));
         }
 
-        let (output, calculated_events_digest) = self
-            .present_commit_event_rows_in(store, &parsed_commit_id, repo_seq, 0, rows, true)
-            .await?;
-        if calculated_events_digest.as_deref() != Some(events_digest) {
-            return Err(LocalError::Integrity(format!(
-                "commit {commit_id} events digest disagrees with its ordered event payloads"
-            )));
-        }
-        Ok(output)
+        self.present_commit_event_rows_in(store, &parsed_commit_id, repo_seq, 0, rows)
+            .await
     }
 
     pub(super) async fn present_commit_event_rows_in<S: StateProjectorStore>(
@@ -1101,8 +1087,7 @@ impl Repository {
         repo_seq: i64,
         expected_start_index: usize,
         rows: Vec<CommitEventRow>,
-        calculate_commit_digest: bool,
-    ) -> Result<(Vec<CommitEvent>, Option<String>)> {
+    ) -> Result<Vec<CommitEvent>> {
         self.catch_up_state_index_in(store).await?;
         let root = self
             .historical_root_after_projection(store, repo_seq, Some(commit_id))
@@ -1117,7 +1102,6 @@ impl Repository {
             None => None,
         };
 
-        let mut commit_hasher = EventsDigest::default();
         let mut output = Vec::with_capacity(rows.len());
         for (offset, event) in rows.into_iter().enumerate() {
             let index = expected_start_index.checked_add(offset).ok_or_else(|| {
@@ -1139,7 +1123,7 @@ impl Repository {
                     }
                     let proposal: EventProposal = event.proposal().map_err(|error| {
                         LocalError::Integrity(format!(
-                            "commit {commit_id} event {index} has invalid canonical JSON: {error}"
+                            "commit {commit_id} event {index} has an invalid envelope: {error}"
                         ))
                     })?;
                     if proposal.item_id.as_ref() != Some(&event.item_id)
@@ -1148,27 +1132,6 @@ impl Repository {
                         return Err(LocalError::Integrity(format!(
                             "commit {commit_id} event {index} payload disagrees with its envelope"
                         )));
-                    }
-                    let canonical = canonical_event_proposal_bytes(&proposal).map_err(|error| {
-                        LocalError::Integrity(format!(
-                            "commit {commit_id} event {index} cannot be canonicalized: {error}"
-                        ))
-                    })?;
-                    if canonical != event.payload {
-                        return Err(LocalError::Integrity(format!(
-                            "commit {commit_id} event {index} payload is not canonical"
-                        )));
-                    }
-                    let payload_digest = compute_sha256_digest_bytes(&event.payload);
-                    if sha256_prefixed_hex_from_digest_bytes(payload_digest)
-                        != event.event_payload_digest.as_str()
-                    {
-                        return Err(LocalError::Integrity(format!(
-                            "commit {commit_id} event {index} payload digest disagrees with its bytes"
-                        )));
-                    }
-                    if calculate_commit_digest {
-                        commit_hasher.push(COMMIT_EVENT_FAMILY_ITEM, &payload_digest);
                     }
                     let presentation =
                         commit_event_presentation(store, &root, previous.as_ref(), &proposal)
@@ -1185,9 +1148,7 @@ impl Repository {
                         item_name_before: presentation.item_name_before,
                         item_seq: event.item_seq,
                         event_type: event.event_type,
-                        payload: String::from_utf8(canonical)
-                            .expect("canonical event JSON is valid UTF-8"),
-                        event_payload_digest: event.event_payload_digest.to_string(),
+                        payload: event_json(&proposal)?,
                         created_at: event.created_at,
                         parent_folder_id: event.parent_folder_id.map(|value| value.to_string()),
                         parent_folder_name: presentation.parent_folder_name,
@@ -1213,41 +1174,17 @@ impl Repository {
                             "commit {commit_id} ref event {index} has an inconsistent envelope"
                         )));
                     }
-                    let proposal: RefEventProposal = event.proposal()
-                        .map_err(|error| {
-                            LocalError::Integrity(format!(
-                                "commit {commit_id} ref event {index} has invalid canonical JSON: {error}"
-                            ))
-                        })?;
+                    let proposal: RefEventProposal = event.proposal().map_err(|error| {
+                        LocalError::Integrity(format!(
+                            "commit {commit_id} ref event {index} has an invalid envelope: {error}"
+                        ))
+                    })?;
                     if proposal.owner_item_id != event.owner_item_id
                         || proposal.event_type != event.event_type
                     {
                         return Err(LocalError::Integrity(format!(
                             "commit {commit_id} ref event {index} payload disagrees with its envelope"
                         )));
-                    }
-                    let canonical = canonical_ref_event_proposal_bytes(&proposal).map_err(
-                        |error| {
-                            LocalError::Integrity(format!(
-                                "commit {commit_id} ref event {index} cannot be canonicalized: {error}"
-                            ))
-                        },
-                    )?;
-                    if canonical != event.payload {
-                        return Err(LocalError::Integrity(format!(
-                            "commit {commit_id} ref event {index} payload is not canonical"
-                        )));
-                    }
-                    let payload_digest = compute_sha256_digest_bytes(&event.payload);
-                    if sha256_prefixed_hex_from_digest_bytes(payload_digest)
-                        != event.event_payload_digest.as_str()
-                    {
-                        return Err(LocalError::Integrity(format!(
-                            "commit {commit_id} ref event {index} payload digest disagrees with its bytes"
-                        )));
-                    }
-                    if calculate_commit_digest {
-                        commit_hasher.push(COMMIT_EVENT_FAMILY_REF, &payload_digest);
                     }
                     let presentation =
                         ref_commit_event_presentation(store, &root, previous.as_ref(), &proposal)
@@ -1264,9 +1201,7 @@ impl Repository {
                         item_name_before: presentation.item_name_before,
                         item_seq: event.ref_seq,
                         event_type: event.event_type,
-                        payload: String::from_utf8(canonical)
-                            .expect("canonical ref-event JSON is valid UTF-8"),
-                        event_payload_digest: event.event_payload_digest.to_string(),
+                        payload: event_json(&proposal)?,
                         created_at: event.created_at,
                         parent_folder_id: None,
                         parent_folder_name: presentation.parent_folder_name,
@@ -1282,9 +1217,66 @@ impl Repository {
                 }
             }
         }
-        let calculated_events_digest =
-            calculate_commit_digest.then(|| commit_hasher.finish(Some(repo_seq)).to_string());
-        Ok((output, calculated_events_digest))
+        Ok(output)
+    }
+
+    /// The exact envelope of event `index` of a commit and its decoded form,
+    /// for `synck cat-event`.
+    pub async fn cat_event(
+        &self,
+        revision: &str,
+        index: i32,
+    ) -> Result<(Vec<u8>, serde_json::Value)> {
+        self.recover_current().await?;
+        let commit = self.resolve_revision(revision).await?;
+        let repo_seq = commit.repo_seq.ok_or_else(|| {
+            LocalError::Integrity(format!(
+                "commit {} has no repository sequence",
+                commit.commit_id
+            ))
+        })?;
+        if index < 0 || index >= commit.event_count {
+            return Err(LocalError::Invalid(format!(
+                "commit {} has events 0 through {}",
+                commit.commit_id,
+                commit.event_count - 1
+            )));
+        }
+        let row = self
+            .core()
+            .list_repo_commit_events(
+                self.config().repo_id().clone(),
+                Some(RepoEventCursor {
+                    repo_seq,
+                    commit_event_idx: index - 1,
+                }),
+                1,
+            )
+            .await?
+            .pop()
+            .filter(|row| row.commit_id() == &commit.commit_id && row.commit_event_idx() == index)
+            .ok_or_else(|| {
+                LocalError::Integrity(format!(
+                    "commit {} event {index} is missing",
+                    commit.commit_id
+                ))
+            })?;
+        let corrupt = |error: synck_vcs::errors::CoreError| {
+            LocalError::Integrity(format!(
+                "commit {} event {index} has an invalid envelope: {error}",
+                commit.commit_id
+            ))
+        };
+        Ok(match row {
+            CommitEventRow::Item(row) => {
+                let event = event_json(&row.proposal().map_err(corrupt)?)?;
+                (row.payload, event)
+            }
+            CommitEventRow::Ref(row) => {
+                let event = event_json(&row.proposal().map_err(corrupt)?)?;
+                (row.payload, event)
+            }
+        })
     }
 
     pub(crate) async fn resolve_revision(&self, input: &str) -> Result<CommitRow> {
@@ -2053,9 +2045,8 @@ impl Repository {
             let sql = format!(
                 "WITH requested(item_id, item_seq) AS (VALUES {values})
                  SELECT e.item_id, e.item_seq, e.event_type, e.payload,
-                        e.event_payload_digest,
                         (SELECT m.payload FROM vcs_metadata_objects m WHERE m.repo_id=e.repo_id
-                         AND m.object_id=unhex(substr(json_extract(CAST(e.payload AS TEXT), '$.metadata_id'),8)))
+                         AND m.object_id=synck_metadata_id(e.payload))
                  FROM requested r
                  -- CROSS JOIN keeps one index probe per requested row; SQLite
                  -- otherwise may scan every event and compare it to each row.
@@ -2077,12 +2068,11 @@ impl Repository {
                     row.get::<_, i64>(1)?,
                     row.get::<_, String>(2)?,
                     row.get::<_, Vec<u8>>(3)?,
-                    row.get::<_, Vec<u8>>(4)?,
-                    row.get::<_, Option<Vec<u8>>>(5)?,
+                    row.get::<_, Option<Vec<u8>>>(4)?,
                 ))
             })?;
             for row in rows {
-                let (item_id, item_seq, event_type, payload, stored_digest, metadata) = row?;
+                let (item_id, item_seq, event_type, payload, metadata) = row?;
                 let item_id = ItemId::parse(item_id).map_err(|error| {
                     LocalError::Integrity(format!("invalid historical event item ID: {error}"))
                 })?;
@@ -2096,24 +2086,16 @@ impl Repository {
                         "historical content query returned the wrong sequence for {item_id}"
                     )));
                 }
-                let stored_digest: [u8; 32] = stored_digest.try_into().map_err(|_| {
-                    LocalError::Integrity(format!(
-                        "historical content event for {item_id} has an invalid digest"
-                    ))
-                })?;
-                if stored_digest != pointer.event_digest
-                    || compute_sha256_digest_bytes(&payload) != pointer.event_digest
-                {
+                if compute_sha256_digest_bytes(&payload) != pointer.event_digest {
                     return Err(LocalError::Integrity(format!(
                         "historical content event digest disagrees for {item_id}"
                     )));
                 }
-                let mut proposal: EventProposal =
-                    serde_json::from_slice(&payload).map_err(|error| {
-                        LocalError::Integrity(format!(
-                            "invalid historical content event for {item_id}: {error}"
-                        ))
-                    })?;
+                let mut proposal = decode_event_proposal(&payload).map_err(|error| {
+                    LocalError::Integrity(format!(
+                        "invalid historical content event for {item_id}: {error}"
+                    ))
+                })?;
                 if let Some(bytes) = metadata {
                     let reference = proposal.set_metadata.as_mut().ok_or_else(|| {
                         LocalError::Integrity("unexpected metadata payload".into())
@@ -2124,9 +2106,7 @@ impl Repository {
                         .resolve(resolved)
                         .map_err(|e| LocalError::Integrity(e.to_string()))?;
                 }
-                if canonical_event_proposal_bytes(&proposal)? != payload
-                    || proposal.item_id.as_ref() != Some(&item_id)
-                    || proposal.event_type != event_type
+                if proposal.item_id.as_ref() != Some(&item_id) || proposal.event_type != event_type
                 {
                     return Err(LocalError::Integrity(format!(
                         "historical content event identity disagrees for {item_id}"
@@ -2613,4 +2593,9 @@ impl Repository {
         }
         Ok(output)
     }
+}
+
+/// An event's JSON view for `--json` output: its decoded envelope.
+fn event_json(event: &impl serde::Serialize) -> Result<serde_json::Value> {
+    serde_json::to_value(event).map_err(|error| LocalError::Integrity(error.to_string()))
 }

@@ -1,8 +1,8 @@
 use serde_json::Value;
 use synck_vcs::types::{
     CreateItem, EventContent, EventProposal, ItemId, Sha256Digest, canonical_commit_bytes_for_hash,
-    canonical_event_proposal_bytes, compute_sha256_digest_bytes, sha256_digest_to_digest_bytes,
-    sha256_prefixed_hex_from_digest_bytes,
+    canonical_event_proposal_bytes, compute_sha256_digest_bytes, decode_commit_header,
+    decode_event_proposal, sha256_digest_to_digest_bytes, sha256_prefixed_hex_from_digest_bytes,
 };
 use uuid::Uuid;
 
@@ -173,6 +173,8 @@ fn gen_event_proposal(rng: &mut XorShift64) -> EventProposal {
         None
     };
 
+    // A created item has no base sequence and no other structural modifier.
+    let modify = create_item.is_none();
     EventProposal {
         set_link: None,
         merged_from: None,
@@ -200,32 +202,25 @@ fn gen_event_proposal(rng: &mut XorShift64) -> EventProposal {
         },
         create_item,
         set_parent: match rng.gen_usize(3) {
+            _ if !modify => None,
             0 => None,
             1 => Some(None),
             _ => Some(Some(gen_item_id(rng))),
         },
-        set_name: if rng.next_bool() {
+        set_name: if modify && rng.next_bool() {
             Some(gen_string(rng, 64))
         } else {
             None
         },
-        set_tombstoned: if rng.next_bool() {
-            Some(rng.next_bool())
-        } else {
-            None
-        },
-        set_in_trash: if rng.next_bool() {
+        set_tombstoned: (modify && rng.next_bool()).then_some(true),
+        set_in_trash: if modify && rng.next_bool() {
             Some(rng.next_bool())
         } else {
             None
         },
         set_is_federated: None,
         set_federation_stream_id: None,
-        base_seq: if rng.next_bool() {
-            Some((rng.next_u32() % 10_000) as i64)
-        } else {
-            None
-        },
+        base_seq: modify.then(|| (rng.next_u32() % 10_000) as i64 + 1),
     }
 }
 
@@ -235,7 +230,7 @@ fn canonical_event_bytes_roundtrip_is_idempotent() {
     for _ in 0..fuzz_iters() {
         let ev = gen_event_proposal(&mut rng);
         let b1 = canonical_event_proposal_bytes(&ev).expect("canonicalize");
-        let parsed: EventProposal = serde_json::from_slice(&b1).expect("parse canonical bytes");
+        let parsed = decode_event_proposal(&b1).expect("decode canonical bytes");
         let b2 = canonical_event_proposal_bytes(&parsed).expect("re-canonicalize");
         assert_eq!(b1, b2);
     }
@@ -254,7 +249,7 @@ fn canonical_json_value_roundtrip_is_idempotent() {
 }
 
 #[test]
-fn canonical_commit_bytes_are_canonical_json() {
+fn canonical_commit_headers_round_trip() {
     let mut rng = XorShift64::new(0x636f_6d6d_6974_2d31);
     for _ in 0..fuzz_iters().min(300) {
         // Author IDs are nonempty and at most 256 bytes.
@@ -279,8 +274,16 @@ fn canonical_commit_bytes_are_canonical_json() {
         )
         .expect("canonical commit bytes");
 
-        let v: Value = serde_json::from_slice(&b1).expect("parse canonical commit json");
-        let b2 = serde_json_canonicalizer::to_vec(&v).expect("canonicalize parsed json");
+        let header = decode_commit_header(&b1).expect("decode commit header");
+        let b2 = canonical_commit_bytes_for_hash(
+            &header.author_id,
+            &header.committer_id,
+            header.occurred_at,
+            header.message.as_deref(),
+            header.event_count as usize,
+            &header.events_digest,
+        )
+        .expect("re-encode commit header");
         assert_eq!(b1, b2);
     }
 }

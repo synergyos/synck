@@ -14,8 +14,8 @@ use synck_vcs::repo::Repo;
 use synck_vcs::state::StateIndexStore;
 use synck_vcs::storage::{Storage, StorageBackend};
 use synck_vcs::types::{
-    COMMIT_FORMAT_VERSION, CommitEventRow, CommitProposal, CreateItem, EventContent, EventProposal,
-    ItemId, RefEventProposal, RepoId,
+    CommitEventRow, CommitProposal, CreateItem, EventContent, EventProposal, ItemId,
+    RefEventProposal, RepoId,
 };
 use synck_vcs_sqlite::{SqliteStorage, format_timestamp};
 
@@ -142,7 +142,6 @@ async fn export_records(source: &SqliteStorage, repo_id: &RepoId) -> Vec<Value> 
             subsystem: SCHEMA_META_SUBSYSTEM_VCS.into(),
             schema_id: "source-pg-physical-schema-provenance".into()
         },
-        commit_format_version: COMMIT_FORMAT_VERSION,
     })];
     let connection = source.open_readonly().unwrap();
     let mut statement = connection.prepare("SELECT object_id, payload FROM vcs_metadata_objects WHERE repo_id=?1 ORDER BY object_id").unwrap();
@@ -184,14 +183,12 @@ async fn export_records(source: &SqliteStorage, repo_id: &RepoId) -> Vec<Value> 
             checkpoint: synck_vcs::types::sha256_digest_from_digest_bytes(&previous).unwrap(),
             repo_seq: sequence,
             operation_id,
-            format_version: commit.format_version,
             author_id: commit.author_id,
             committer_id: commit.committer_id,
             message: commit.message,
             occurred_at: commit.occurred_at.map(format_timestamp),
             created_at: format_timestamp(commit.created_at),
             event_count: commit.event_count,
-            events_digest: commit.events_digest.to_string(),
         }));
         for event in source
             .list_commit_events_readonly(repo_id, &commit.commit_id, 100)
@@ -207,8 +204,7 @@ async fn export_records(source: &SqliteStorage, repo_id: &RepoId) -> Vec<Value> 
                     item_id: event.item_id.to_string(),
                     item_seq: event.item_seq,
                     event_type: event.event_type,
-                    payload_json: String::from_utf8(event.payload).unwrap(),
-                    event_payload_digest: event.event_payload_digest.to_string(),
+                    payload_hex: hex::encode(&event.payload),
                     created_at: format_timestamp(event.created_at),
                     parent_folder_id: event.parent_folder_id.map(|id| id.to_string()),
                     parent_folder_id_before: event.parent_folder_id_before.map(|id| id.to_string()),
@@ -221,8 +217,7 @@ async fn export_records(source: &SqliteStorage, repo_id: &RepoId) -> Vec<Value> 
                     owner_item_id: event.owner_item_id.to_string(),
                     ref_seq: event.ref_seq,
                     event_type: event.event_type,
-                    payload_json: String::from_utf8(event.payload).unwrap(),
-                    event_payload_digest: event.event_payload_digest.to_string(),
+                    payload_hex: hex::encode(&event.payload),
                     created_at: format_timestamp(event.created_at),
                 }),
             });
@@ -395,7 +390,7 @@ async fn mixed_history_import_preserves_ids_ref_heads_and_next_append() {
         connection
             .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
             .unwrap(),
-        7
+        8
     );
     let mut state = target.state_index_store(repo_id.clone()).unwrap();
     assert_eq!(
@@ -521,7 +516,6 @@ async fn invalid_or_incomplete_bundle_rolls_back_and_allows_clean_retry() {
         let connection = target.open_readonly().unwrap();
         for table in [
             "vcs_commits",
-            "vcs_checkpoints",
             "vcs_history_generations",
             "vcs_events",
             "vcs_ref_events",
@@ -585,7 +579,7 @@ async fn sequencer_rejects_gaps_without_publishing_partial_history() {
         .unwrap_err();
     assert!(error.to_string().contains("publication counter"), "{error}");
     let (pending, checkpoints): (i64, i64) = db.query_row(
-        "SELECT (SELECT count(*) FROM vcs_commits WHERE repo_seq IS NULL), (SELECT count(*) FROM vcs_checkpoints)",
+        "SELECT (SELECT count(*) FROM vcs_commits WHERE repo_seq IS NULL), (SELECT count(*) FROM vcs_commits WHERE checkpoint IS NOT NULL)",
         [], |row| Ok((row.get(0)?, row.get(1)?)),
     ).unwrap();
     assert_eq!((pending, checkpoints), (1, 2));
@@ -669,7 +663,7 @@ async fn sequencer_counter_mismatch_preserves_acceptance_and_repairs_from_histor
     db.execute("UPDATE vcs_repo_activity_heads SET next_repo_seq=9", [])
         .unwrap();
     db.execute(
-        "UPDATE vcs_checkpoints SET checkpoint=zeroblob(32) WHERE repo_seq=2",
+        "UPDATE vcs_commits SET checkpoint=zeroblob(32) WHERE repo_seq=2",
         [],
     )
     .unwrap();

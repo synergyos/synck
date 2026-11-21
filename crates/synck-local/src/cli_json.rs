@@ -54,8 +54,6 @@ pub(crate) fn detailed_log_entry(value: &DetailedLogEntry) -> Value {
 }
 
 pub(crate) fn commit_event(value: &CommitEvent) -> Value {
-    let payload: Value = serde_json::from_str(&value.payload)
-        .expect("validated canonical event payload is valid JSON");
     json!({
         "repo_id": value.repo_id,
         "commit_id": value.commit_id,
@@ -64,8 +62,7 @@ pub(crate) fn commit_event(value: &CommitEvent) -> Value {
         "item_id": value.item_id,
         "item_seq": value.item_seq,
         "event_type": value.event_type,
-        "payload": payload,
-        "event_payload_digest": value.event_payload_digest,
+        "payload": value.payload,
         "created_at": value.created_at.to_rfc3339(),
         "parent_folder_id": value.parent_folder_id,
         "parent_folder_id_before": value.parent_folder_id_before,
@@ -78,10 +75,6 @@ pub(crate) fn detailed_event_log_entry(value: &DetailedEventLogEntry) -> Value {
         .as_object_mut()
         .expect("detailed log entry renders as an object");
     object.insert("event_count".to_string(), json!(value.events.len()));
-    object.insert(
-        "events_digest".to_string(),
-        json!(value.entry.commit.events_digest),
-    );
     object.insert(
         "events".to_string(),
         json!(value.events.iter().map(commit_event).collect::<Vec<_>>()),
@@ -116,10 +109,6 @@ pub(crate) fn event_history_commit(value: &EventHistoryCommit) -> Value {
         .as_object_mut()
         .expect("history commit renders as an object");
     object.insert("event_count".to_string(), json!(value.events.len()));
-    object.insert(
-        "events_digest".to_string(),
-        json!(value.commit.events_digest),
-    );
     object.insert(
         "events".to_string(),
         json!(value.events.iter().map(commit_event).collect::<Vec<_>>()),

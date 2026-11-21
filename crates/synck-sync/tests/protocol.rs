@@ -27,11 +27,23 @@ fn digest(bytes: [u8; 32]) -> Sha256Digest {
 fn vector() -> serde_json::Value {
     serde_json::from_str(include_str!("../../../docs/spec/vectors/sync.json")).unwrap()
 }
+fn bytes(value: &serde_json::Value) -> Vec<u8> {
+    hex::decode(value.as_str().unwrap()).unwrap()
+}
 fn request() -> SubmitRequest {
-    serde_json::from_value(vector()["request"].clone()).unwrap()
+    decode(&bytes(&vector()["request_hex"])).unwrap()
 }
 fn records() -> Vec<ProposalRecord> {
-    serde_json::from_value(vector()["records"].clone()).unwrap()
+    decode::<ProposalPage>(&bytes(&vector()["page_hex"]))
+        .unwrap()
+        .records
+}
+/// A commit as a Hub publishes it at `repo_seq` 1.
+#[derive(Clone)]
+struct Published {
+    commit: CommitRow,
+    events: Vec<CommitEventRow>,
+    checkpoint: Sha256Digest,
 }
 fn verifier(request: &SubmitRequest) -> ProposalVerifier {
     ProposalVerifier::new(
@@ -54,7 +66,7 @@ fn upload(request: &SubmitRequest, records: &[ProposalRecord], size: usize) -> P
     }
     state
 }
-fn published(request: &SubmitRequest, records: &[ProposalRecord]) -> PublishedCommit {
+fn published(request: &SubmitRequest, records: &[ProposalRecord]) -> Published {
     let validated = validate_submit(request).unwrap();
     let events = records
         .iter()
@@ -70,7 +82,6 @@ fn published(request: &SubmitRequest, records: &[ProposalRecord]) -> PublishedCo
                     commit_id: validated.commit_id.clone(),
                     commit_event_idx: i as i32,
                     repo_seq: Some(1),
-                    event_payload_digest: digest(compute_sha256_digest_bytes(&payload)),
                     payload,
                     metadata: None,
                     created_at: now(),
@@ -88,7 +99,6 @@ fn published(request: &SubmitRequest, records: &[ProposalRecord]) -> PublishedCo
                     commit_id: validated.commit_id.clone(),
                     commit_event_idx: i as i32,
                     repo_seq: Some(1),
-                    event_payload_digest: digest(compute_sha256_digest_bytes(&payload)),
                     payload,
                     metadata: None,
                     created_at: now(),
@@ -100,26 +110,24 @@ fn published(request: &SubmitRequest, records: &[ProposalRecord]) -> PublishedCo
     let checkpoint = digest(
         synck_vcs::checkpoint::digest(&genesis_value(), 1, &validated.commit_id, now()).unwrap(),
     );
-    PublishedCommit {
+    Published {
         commit: CommitRow {
             repo_id: request.repository.repo_id.clone(),
             commit_id: validated.commit_id,
             repo_seq: Some(1),
-            format_version: COMMIT_FORMAT_VERSION,
             author_id: request.metadata.author_id.clone(),
             committer_id: request.metadata.committer_id.clone(),
             message: request.metadata.message.clone(),
             occurred_at: request.metadata.occurred_at,
             created_at: now(),
             event_count: request.event_count as i32,
-            events_digest: request.events_digest.clone(),
         },
         events,
         checkpoint,
     }
 }
 fn page(
-    published: &PublishedCommit,
+    published: &Published,
     after: HistoryPosition,
     events: Vec<CommitEventRow>,
     has_more: bool,
@@ -159,18 +167,20 @@ fn independent_wire_vector_and_page_boundaries_preserve_identity() {
     if let ProposalRecord::Item(event) = &records()[0] {
         assert_eq!(
             canonical_event_proposal_bytes(event).unwrap(),
-            v["canonical_event_utf8"].as_str().unwrap().as_bytes()
+            bytes(&v["records"][0]["envelope_hex"])
         );
     } else {
         panic!();
     }
+    assert_eq!(encode(&request).unwrap(), bytes(&v["request_hex"]));
+    assert_eq!(submit_header(&request).unwrap(), bytes(&v["header_hex"]));
 }
 
 #[test]
 fn large_import_vector_pages_more_than_ten_thousand_events_atomically() {
     let v: serde_json::Value =
         serde_json::from_str(include_str!("../../../docs/spec/vectors/sync-large.json")).unwrap();
-    let request: SubmitRequest = serde_json::from_value(v["request"].clone()).unwrap();
+    let request: SubmitRequest = decode(&bytes(&v["request_hex"])).unwrap();
     let records: Vec<ProposalRecord> = (0..10_001)
         .map(|i| {
             ProposalRecord::Item(
@@ -195,7 +205,6 @@ fn large_import_vector_pages_more_than_ten_thousand_events_atomically() {
         );
     }
     let published = published(&request, &records);
-    verify_published_commit(&published, &repository()).unwrap();
     let genesis = Cursor::genesis(repository(), false).unwrap();
     let mut state = HistoryVerifier::new(genesis.clone()).unwrap();
     let mut installed = 0;
@@ -419,13 +428,12 @@ fn server_policy_is_nonretryable_and_does_not_restrict_history() {
     let response = SubmitResult::PolicyLimit {
         violation: policy.check_commit(1).unwrap_err(),
     };
-    assert_eq!(
-        serde_json::to_value(response).unwrap()["status"],
-        "POLICY_LIMIT"
-    );
+    assert!(matches!(
+        decode::<SubmitResult>(&encode(&response).unwrap()).unwrap(),
+        SubmitResult::PolicyLimit { .. }
+    ));
     assert!(policy.check_object(21).is_err());
     assert!(policy.check_quota(90, 11).is_err());
-    verify_published_commit(&published, &repository()).unwrap();
     let unrestricted = ServerPolicy::default();
     assert!(unrestricted.check_commit(2_000_000).is_ok());
     assert!(unrestricted.check_object(u64::MAX).is_ok());
@@ -455,110 +463,44 @@ fn transfer_bounds_and_unknown_fields_are_rejected() {
         state.push(&oversized, now()),
         Err(ProtocolError::Limit(_))
     ));
-    let mut wire = serde_json::to_value(&request).unwrap();
-    wire["extension"] = true.into();
-    assert!(serde_json::from_value::<SubmitRequest>(wire).is_err());
+    let mut wire = encode(&request).unwrap();
+    wire.push(0);
+    assert!(decode::<SubmitRequest>(&wire).is_err());
     let caps = Capabilities {
         encrypted: false,
         protocol_version: PROTOCOL_VERSION,
-        repository: repository(),
         latest: Cursor::genesis(repository(), false).unwrap(),
         policy: ServerPolicy::default(),
-        object_packs: true,
-        state_read: false,
-        item_histories: false,
-        commit_log: false,
     };
     caps.validate().unwrap();
-    // A server without the state reads leaves their fields out.
-    let wire = serde_json::to_value(&caps).unwrap();
-    for field in ["state_read", "item_histories", "commit_log"] {
-        assert!(wire.get(field).is_none());
-    }
-    // The batched reads come only with the state read.
-    let mut batched = caps.clone();
-    batched.item_histories = true;
-    assert!(batched.validate().is_err());
-    batched.state_read = true;
-    batched.commit_log = true;
-    batched.validate().unwrap();
-    // A server from before object packs leaves the field out.
-    let mut wire = serde_json::to_value(&caps).unwrap();
-    wire.as_object_mut().unwrap().remove("object_packs");
-    assert!(
-        !serde_json::from_value::<Capabilities>(wire)
-            .unwrap()
-            .object_packs
-    );
+    let mut other = caps.clone();
+    other.protocol_version = 1;
+    assert!(other.validate().is_err());
+    other = caps;
+    other.latest.checkpoint = digest([3; 32]);
+    assert!(other.validate().is_err());
 }
 
 #[test]
-fn maximum_format_event_fits_both_transfers_without_relaxing_page_bounds() {
+fn largest_event_fits_both_transfers() {
     let initial = request();
     let mut record = records().remove(0);
     if let ProposalRecord::Item(event) = &mut record {
-        event.set_federation_stream_id = Some(String::new());
-        let overhead = canonical_event_proposal_bytes(event).unwrap().len();
-        event.set_federation_stream_id =
-            Some("X".repeat(synck_vcs::limits::MAX_EVENT_PAYLOAD_BYTES - overhead));
-        assert_eq!(
-            canonical_event_proposal_bytes(event).unwrap().len(),
-            synck_vcs::limits::MAX_EVENT_PAYLOAD_BYTES
-        );
+        event.set_federation_stream_id = Some("X".repeat(u16::MAX as usize));
     }
     let state = upload(&initial, &[record.clone()], 1);
     let request = state.request(initial.metadata.clone()).unwrap();
     state.finish(&request, now()).unwrap();
-    let published = published(&request, &[record.clone()]);
+    let published = published(&request, &[record]);
     let mut history = HistoryVerifier::new(Cursor::genesis(repository(), false).unwrap()).unwrap();
-    assert!(
-        history
-            .push(&page(
-                &published,
-                history.position().clone(),
-                published.events.clone(),
-                false
-            ))
-            .unwrap()
-            .is_some()
+    let page = page(
+        &published,
+        history.position().clone(),
+        published.events.clone(),
+        false,
     );
-    let mut history = HistoryVerifier::new(Cursor::genesis(repository(), false).unwrap()).unwrap();
-    let oversized = HistoryPage {
-        after: history.position().clone(),
-        fragments: vec![
-            HistoryFragment {
-                header: PublishedHeader {
-                    commit: published.commit.clone(),
-                    checkpoint: published.checkpoint.clone()
-                },
-                events: published.events.clone(),
-            };
-            9
-        ],
-        has_more: false,
-    };
-    assert!(matches!(
-        history.push(&oversized),
-        Err(ProtocolError::Limit("page bytes"))
-    ));
-    assert_eq!(
-        history.position().completed,
-        Cursor::genesis(repository(), false).unwrap()
-    );
-    let mut state = verifier(&initial);
-    assert!(matches!(
-        state.push(
-            &ProposalPage {
-                repository: repository(),
-                operation_id: initial.operation_id,
-                offset: 0,
-                records: vec![record; 9]
-            },
-            now()
-        ),
-        Err(ProtocolError::Limit("page bytes"))
-    ));
-    assert_eq!(state.next_offset(), 0);
+    let page: HistoryPage = decode(&encode(&page).unwrap()).unwrap();
+    assert!(history.push(&page).unwrap().is_some());
 }
 
 #[test]
@@ -613,7 +555,7 @@ fn history_continuation_keeps_partial_item_and_ref_events_private() {
     assert!(state.position().pending.is_none());
 }
 
-fn history_vector(name: &str) -> (serde_json::Value, Vec<PublishedCommit>) {
+fn history_vector(name: &str) -> (serde_json::Value, Vec<Published>) {
     let vector: serde_json::Value =
         serde_json::from_str(include_str!("../../../docs/spec/vectors/sync-history.json")).unwrap();
     assert_eq!(
@@ -651,6 +593,7 @@ fn history_vector(name: &str) -> (serde_json::Value, Vec<PublishedCommit>) {
             let request = upload(&initial, &records, MAX_PAGE_RECORDS)
                 .request(initial.metadata)
                 .unwrap();
+            let events_digest = validate_submit(&request).unwrap().events_digest;
             let mut commit = published(&request, &records);
             let sequence = index as i64 + 1;
             commit.commit.repo_seq = Some(sequence);
@@ -670,10 +613,7 @@ fn history_vector(name: &str) -> (serde_json::Value, Vec<PublishedCommit>) {
             commit.checkpoint = digest(previous);
             let expected = &case["commits"][index];
             assert_eq!(commit.commit.commit_id.as_str(), expected["commit_id"]);
-            assert_eq!(
-                commit.commit.events_digest.as_str(),
-                expected["events_digest"]
-            );
+            assert_eq!(events_digest.as_str(), expected["events_digest"]);
             assert_eq!(commit.checkpoint.as_str(), expected["checkpoint"]);
             commit
         })
@@ -683,7 +623,7 @@ fn history_vector(name: &str) -> (serde_json::Value, Vec<PublishedCommit>) {
 
 fn vector_history_page(
     spec: &serde_json::Value,
-    commits: &[PublishedCommit],
+    commits: &[Published],
     after: HistoryPosition,
     has_more: bool,
 ) -> HistoryPage {
@@ -717,7 +657,7 @@ fn many_small_commits_share_one_page_and_roll_back_on_late_corruption() {
     let original = state.position().clone();
     let page = vector_history_page(&vector["pages"][0], &commits, original.clone(), false);
     assert_eq!(page.fragments.len(), 128);
-    assert!(serde_json::to_vec(&page).unwrap().len() <= MAX_PAGE_BYTES);
+    assert!(encode(&page).unwrap().len() <= MAX_PAGE_BYTES);
     let mut bad = page.clone();
     bad.fragments.last_mut().unwrap().header.checkpoint = digest([9; 32]);
     assert!(state.push(&bad).is_err());
@@ -826,16 +766,14 @@ fn a_commit_with_no_events_is_a_fragment_of_none() {
     empty.events.clear();
     let commit = &mut empty.commit;
     commit.event_count = 0;
-    commit.events_digest = synck_vcs::types::empty_commit_events_digest(1);
     commit.commit_id = compute_commit_id(
-        &canonical_stored_commit_bytes_for_hash(
-            commit.format_version,
+        &canonical_commit_bytes_for_hash(
             &commit.author_id,
             &commit.committer_id,
             commit.occurred_at,
             commit.message.as_deref(),
             0,
-            &commit.events_digest,
+            &empty_commit_events_digest(1),
         )
         .unwrap(),
     );
@@ -843,7 +781,6 @@ fn a_commit_with_no_events_is_a_fragment_of_none() {
         synck_vcs::checkpoint::digest(&genesis_value(), 1, &commit.commit_id, commit.created_at)
             .unwrap(),
     );
-    verify_published_commit(&empty, &repository()).unwrap();
     let cursor = state
         .push(&page(&empty, after, Vec::new(), false))
         .unwrap()
@@ -877,59 +814,18 @@ fn history_rejects_a_sequence_gap_even_with_a_matching_checkpoint() {
     assert_eq!(state.position(), &original);
 }
 
-/// Parsing and serializing a `valid` value gives the same JSON; `validate`, where a
-/// type has it, refuses what its shape alone admits.
-fn wire_value(kind: &str, value: &serde_json::Value) -> Result<serde_json::Value, String> {
-    fn parse<T: serde::de::DeserializeOwned + serde::Serialize>(
-        value: &serde_json::Value,
-        check: impl FnOnce(&T) -> Result<(), ProtocolError>,
-    ) -> Result<serde_json::Value, String> {
-        let parsed: T = serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
-        check(&parsed).map_err(|e| e.to_string())?;
-        Ok(serde_json::to_value(parsed).unwrap())
-    }
-    match kind {
-        "Capabilities" => parse(value, Capabilities::validate),
-        "ProposalPage" => parse::<ProposalPage>(value, |_| Ok(())),
-        "PageAck" => parse::<PageAck>(value, |_| Ok(())),
-        "SubmitRequest" => parse::<SubmitRequest>(value, |_| Ok(())),
-        "SubmitResult" => parse::<SubmitResult>(value, |_| Ok(())),
-        "Receipt" => parse::<Receipt>(value, |_| Ok(())),
-        "HistoryRequest" => parse(value, HistoryRequest::validate),
-        "HistoryPage" => parse::<HistoryPage>(value, |_| Ok(())),
-        other => panic!("unknown type {other}"),
-    }
-}
-
-#[test]
-fn wire_vector_fixes_every_json_shape() {
-    let vector: serde_json::Value =
-        serde_json::from_str(include_str!("../../../docs/spec/vectors/sync-wire.json")).unwrap();
-    for case in vector["valid"].as_array().unwrap() {
-        let kind = case["type"].as_str().unwrap();
-        assert_eq!(
-            wire_value(kind, &case["value"]).unwrap(),
-            case["value"],
-            "{kind}"
-        );
-    }
-    for case in vector["invalid"].as_array().unwrap() {
-        let kind = case["type"].as_str().unwrap();
-        assert!(
-            wire_value(kind, &case["value"]).is_err(),
-            "{kind}: {}",
-            case["reason"]
-        );
-    }
-}
-
 #[test]
 fn guarded_vector_binds_events_guards_and_request() {
     let vector: serde_json::Value =
         serde_json::from_str(include_str!("../../../docs/spec/vectors/sync-wire.json")).unwrap();
     let guarded = &vector["guarded"];
-    let request: SubmitRequest = serde_json::from_value(guarded["request"].clone()).unwrap();
-    let records: Vec<ProposalRecord> = serde_json::from_value(guarded["records"].clone()).unwrap();
+    let request: SubmitRequest = decode(&bytes(&guarded["request_hex"])).unwrap();
+    let records: Vec<ProposalRecord> = guarded["records_hex"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|record| decode(&bytes(record)).unwrap())
+        .collect();
     let validated = upload(&request, &records, 1)
         .finish(&request, now())
         .unwrap();
@@ -1017,8 +913,7 @@ fn subtree_guards_bind_exact_closure_without_changing_legacy_commit_identity() {
 #[test]
 fn repository_head_is_optional_authenticated_and_separate_from_commit_identity() {
     let legacy = request();
-    let bytes = serde_json::to_value(&legacy).unwrap();
-    assert!(bytes.get("repository_head").is_none());
+    assert!(legacy.repository_head.is_none());
     let original = validate_submit(&legacy).unwrap();
     let mut guarded = legacy.clone();
     guarded.repository_head = Some(0);

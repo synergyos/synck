@@ -3,11 +3,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde_json::Value;
 use synck_vcs::naming::compute_name_key;
 use synck_vcs::types::{
-    COMMIT_EVENT_FAMILY_ITEM, COMMIT_EVENT_FAMILY_REF, COMMIT_FORMAT_VERSION, CommitEventRow,
-    CommitRow, EventProposal, EventRow, EventsDigest, ItemId, ObjectId, RefEventProposal,
-    RefEventRow, canonical_event_proposal_bytes, canonical_ref_event_proposal_bytes,
-    canonical_stored_commit_bytes_for_hash, compute_commit_id, compute_sha256_digest_bytes,
-    sha256_prefixed_hex_from_digest_bytes,
+    CommitEventRow, CommitRow, EventProposal, EventRow, EventsDigest, ItemId, ObjectId,
+    RefEventProposal, RefEventRow, canonical_commit_bytes_for_hash, canonical_event_proposal_bytes,
+    compute_commit_id,
 };
 
 use crate::error::{SemanticError, SemanticErrorCode};
@@ -78,10 +76,7 @@ fn project_commit_with_refs(
             "commit event count overflows",
         )
     })?;
-    if !matches!(commit.format_version, COMMIT_FORMAT_VERSION)
-        || commit.event_count < 0
-        || commit.event_count as usize != total_events
-    {
+    if commit.event_count < 0 || commit.event_count as usize != total_events {
         return Err(error(
             SemanticErrorCode::MalformedProfileEvent,
             "commit envelope does not match its complete event list",
@@ -298,26 +293,13 @@ fn parse_and_verify_events<'a>(
                 "event envelope does not match its commit",
             ));
         }
-        let digest = compute_sha256_digest_bytes(&row.payload);
-        if sha256_prefixed_hex_from_digest_bytes(digest) != row.event_payload_digest.as_str() {
-            return Err(error(
-                SemanticErrorCode::MalformedProfileEvent,
-                "event payload digest mismatch",
-            ));
-        }
-        aggregate_digest.push(COMMIT_EVENT_FAMILY_ITEM, &digest);
+        aggregate_digest.push(&row.payload);
         let proposal: EventProposal = row.proposal().map_err(|failure| {
             error(
                 SemanticErrorCode::MalformedProfileEvent,
                 format!("event payload does not decode strictly: {failure}"),
             )
         })?;
-        if canonical_event_proposal_bytes(&proposal).map_err(core_canonical_error)? != row.payload {
-            return Err(error(
-                SemanticErrorCode::MalformedProfileEvent,
-                "event payload is not canonical",
-            ));
-        }
         if proposal.item_id.as_ref() != Some(&row.item_id) || proposal.event_type != row.event_type
         {
             return Err(error(
@@ -344,27 +326,13 @@ fn parse_and_verify_events<'a>(
                 "ref event envelope does not match its commit",
             ));
         }
-        let digest = compute_sha256_digest_bytes(&row.payload);
-        if sha256_prefixed_hex_from_digest_bytes(digest) != row.event_payload_digest.as_str() {
-            return Err(error(
-                SemanticErrorCode::MalformedProfileEvent,
-                "ref event payload digest mismatch",
-            ));
-        }
+        aggregate_digest.push(&row.payload);
         let proposal: RefEventProposal = row.proposal().map_err(|failure| {
             error(
                 SemanticErrorCode::MalformedProfileEvent,
                 format!("ref event payload does not decode strictly: {failure}"),
             )
         })?;
-        if canonical_ref_event_proposal_bytes(&proposal).map_err(core_canonical_error)?
-            != row.payload
-        {
-            return Err(error(
-                SemanticErrorCode::MalformedProfileEvent,
-                "ref event payload is not canonical",
-            ));
-        }
         if proposal.owner_item_id != row.owner_item_id || proposal.event_type != row.event_type {
             return Err(error(
                 SemanticErrorCode::MalformedProfileEvent,
@@ -416,22 +384,15 @@ fn parse_and_verify_events<'a>(
                 entry.get_mut().1 = row.ref_seq;
             }
         }
-        aggregate_digest.push(COMMIT_EVENT_FAMILY_REF, &digest);
     }
-    if aggregate_digest.finish(commit.repo_seq) != commit.events_digest {
-        return Err(error(
-            SemanticErrorCode::MalformedProfileEvent,
-            "commit events_digest mismatch",
-        ));
-    }
-    let commit_bytes = canonical_stored_commit_bytes_for_hash(
-        commit.format_version,
+    let events_digest = aggregate_digest.finish(commit.repo_seq);
+    let commit_bytes = canonical_commit_bytes_for_hash(
         &commit.author_id,
         &commit.committer_id,
         commit.occurred_at,
         commit.message.as_deref(),
         events.len() + ref_events.len(),
-        &commit.events_digest,
+        &events_digest,
     )
     .map_err(core_canonical_error)?;
     if compute_commit_id(&commit_bytes) != commit.commit_id {
@@ -943,10 +904,9 @@ fn error(code: SemanticErrorCode, detail: impl Into<String>) -> SemanticError {
 
 #[cfg(test)]
 mod tests {
-    use sha2::{Digest, Sha256};
     use synck_vcs::types::{
-        COMMIT_FORMAT_VERSION, RefEventProposal, RefEventRow, RepoId, Sha256Digest,
-        canonical_ref_event_proposal_bytes, canonical_stored_commit_bytes_for_hash, now,
+        EventsDigest, RefEventProposal, RefEventRow, RepoId, canonical_commit_bytes_for_hash,
+        canonical_ref_event_proposal_bytes, now,
     };
 
     use super::*;
@@ -968,38 +928,24 @@ mod tests {
             base_ref_seq: 0,
         };
         let payload = canonical_ref_event_proposal_bytes(&proposal).unwrap();
-        let payload_digest = compute_sha256_digest_bytes(&payload);
-        let mut aggregate = Sha256::new();
-        aggregate.update([COMMIT_EVENT_FAMILY_REF]);
-        aggregate.update(payload_digest);
-        let events_digest = Sha256Digest::parse(sha256_prefixed_hex_from_digest_bytes(
-            aggregate.finalize().into(),
-        ))
-        .unwrap();
+        let mut events_digest = EventsDigest::default();
+        events_digest.push(&payload);
+        let events_digest = events_digest.finish(Some(1));
         let author = "author".to_string();
-        let commit_bytes = canonical_stored_commit_bytes_for_hash(
-            COMMIT_FORMAT_VERSION,
-            &author,
-            &author,
-            None,
-            None,
-            1,
-            &events_digest,
-        )
-        .unwrap();
+        let commit_bytes =
+            canonical_commit_bytes_for_hash(&author, &author, None, None, 1, &events_digest)
+                .unwrap();
         let commit_id = compute_commit_id(&commit_bytes);
         let commit = CommitRow {
             repo_id: repo_id.clone(),
             commit_id: commit_id.clone(),
             repo_seq: Some(1),
-            format_version: COMMIT_FORMAT_VERSION,
             author_id: author.clone(),
             committer_id: author,
             message: None,
             occurred_at: None,
             created_at: now(),
             event_count: 1,
-            events_digest,
         };
         let row = RefEventRow {
             metadata: proposal
@@ -1015,10 +961,6 @@ mod tests {
             commit_event_idx: 0,
             repo_seq: Some(1),
             payload,
-            event_payload_digest: Sha256Digest::parse(sha256_prefixed_hex_from_digest_bytes(
-                payload_digest,
-            ))
-            .unwrap(),
             created_at: now(),
         };
 

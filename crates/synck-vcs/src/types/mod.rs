@@ -101,7 +101,7 @@ macro_rules! uuid_v7_id {
                 let uuid = Uuid::parse_str(s_ref).map_err(|_| IdParseError {
                     kind: IdParseErrorKind::InvalidUuidV7,
                 })?;
-                if uuid.get_version_num() != 7 {
+                if uuid.get_version_num() != 7 || uuid.get_variant() != uuid::Variant::RFC4122 {
                     return Err(IdParseError {
                         kind: IdParseErrorKind::InvalidUuidV7,
                     });
@@ -431,23 +431,8 @@ impl<'de> Deserialize<'de> for ObjectId {
 
 pub use crate::content::EventContent;
 
-/// Exact canonical payload bytes as one JSON string, as in a history bundle.
-mod payload_json {
-    use super::{Deserialize, Deserializer, Serializer};
-
-    pub fn serialize<S: Serializer>(payload: &[u8], serializer: S) -> Result<S::Ok, S::Error> {
-        let text = std::str::from_utf8(payload).map_err(serde::ser::Error::custom)?;
-        serializer.serialize_str(text)
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<u8>, D::Error> {
-        String::deserialize(deserializer).map(String::into_bytes)
-    }
-}
-
 /// Logical representation of an `events` table row.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug)]
 pub struct EventRow {
     pub repo_id: RepoId,
     pub item_id: ItemId,
@@ -459,15 +444,10 @@ pub struct EventRow {
     ///
     /// For per-item reads, events may be unsequenced (`repo_seq = None`).
     /// Repo-wide scans return only sequenced events.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repo_seq: Option<i64>,
-    /// Canonical RFC 8785 JSON bytes for the EventProposal payload.
-    #[serde(rename = "payload_json", with = "payload_json")]
+    /// The item envelope.
     pub payload: Vec<u8>,
-    #[serde(skip)]
     pub metadata: Option<Metadata>,
-    /// SHA-256 digest of the canonical payload bytes.
-    pub event_payload_digest: Sha256Digest,
     pub created_at: Timestamp,
     /// Parent folder after this event is applied.
     pub parent_folder_id: Option<ItemId>,
@@ -498,7 +478,7 @@ pub struct ItemCursor {
 /// Unlike `EventRow` (which is shaped for reads and includes `commit_id`),
 /// this struct uses `commit_pk` to allow streaming event insertion before
 /// the final content-addressed `commit_id` is known.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug)]
 pub struct EventInsertRow {
     pub repo_id: RepoId,
     pub commit_pk: CommitPk,
@@ -507,12 +487,9 @@ pub struct EventInsertRow {
     pub item_id: ItemId,
     pub item_seq: i64,
     pub event_type: EventType,
-    /// Canonical RFC 8785 JSON bytes for the EventProposal payload.
+    /// The item envelope.
     pub payload: Vec<u8>,
-    #[serde(skip)]
     pub metadata: Option<Metadata>,
-    /// Raw 32-byte SHA-256 digest of `payload`.
-    pub event_payload_digest: [u8; 32],
     pub created_at: Timestamp,
     pub parent_folder_id: Option<ItemId>,
     pub parent_folder_id_before: Option<ItemId>,
@@ -539,8 +516,7 @@ pub struct RefEventProposal {
 }
 
 /// Logical representation of an attached ref-event row.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug)]
 pub struct RefEventRow {
     pub repo_id: RepoId,
     pub owner_item_id: ItemId,
@@ -548,18 +524,15 @@ pub struct RefEventRow {
     pub event_type: EventType,
     pub commit_id: CommitId,
     pub commit_event_idx: i32,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repo_seq: Option<i64>,
-    #[serde(rename = "payload_json", with = "payload_json")]
+    /// The attached-ref envelope.
     pub payload: Vec<u8>,
-    #[serde(skip)]
     pub metadata: Option<Metadata>,
-    pub event_payload_digest: Sha256Digest,
     pub created_at: Timestamp,
 }
 
 /// Storage row for an attached ref event before the commit id is sealed.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug)]
 pub struct RefEventInsertRow {
     pub repo_id: RepoId,
     pub commit_pk: CommitPk,
@@ -568,15 +541,12 @@ pub struct RefEventInsertRow {
     pub ref_seq: i64,
     pub event_type: EventType,
     pub payload: Vec<u8>,
-    #[serde(skip)]
     pub metadata: Option<Metadata>,
-    pub event_payload_digest: [u8; 32],
     pub created_at: Timestamp,
 }
 
 /// One event in complete commit/repository order.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(tag = "event_family", rename_all = "snake_case")]
+#[derive(Clone, Debug)]
 pub enum CommitEventRow {
     Item(EventRow),
     Ref(RefEventRow),
@@ -606,18 +576,17 @@ impl CommitEventRow {
 }
 
 /// Logical representation of a `commits` table row.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CommitRow {
     /// Repository membership; not part of canonical commit identity.
     pub repo_id: RepoId,
-    /// Hash of the version-selected canonical commit header and ordered events.
+    /// SHA-256 of the commit header.
     pub commit_id: CommitId,
     /// Repository-local placement assigned after acceptance; not part of
     /// canonical commit identity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repo_seq: Option<i64>,
-    pub format_version: i32,
     pub author_id: AuthorId,
     pub committer_id: CommitterId,
     pub message: Option<String>,
@@ -626,7 +595,6 @@ pub struct CommitRow {
     pub occurred_at: Option<Timestamp>,
     pub created_at: Timestamp,
     pub event_count: i32,
-    pub events_digest: Sha256Digest,
 }
 
 // --- Commit proposals and results ---
@@ -804,30 +772,16 @@ impl RefEventProposal {
 }
 
 impl EventRow {
-    pub fn proposal(&self) -> Result<EventProposal, serde_json::Error> {
-        crate::limits::check_bytes(
-            "event payload",
-            self.payload.len(),
-            crate::limits::MAX_EVENT_PAYLOAD_BYTES,
-        )
-        .map_err(serde::de::Error::custom)?;
-        let mut event: EventProposal = serde_json::from_slice(&self.payload)?;
-        canonical_event_proposal_bytes(&event).map_err(serde::de::Error::custom)?;
+    pub fn proposal(&self) -> Result<EventProposal, CoreError> {
+        let mut event = crate::codec::decode_event_proposal(&self.payload)?;
         resolve_metadata(&mut event.set_metadata, self.metadata.as_ref())?;
         Ok(event)
     }
 }
 
 impl RefEventRow {
-    pub fn proposal(&self) -> Result<RefEventProposal, serde_json::Error> {
-        crate::limits::check_bytes(
-            "event payload",
-            self.payload.len(),
-            crate::limits::MAX_EVENT_PAYLOAD_BYTES,
-        )
-        .map_err(serde::de::Error::custom)?;
-        let mut event: RefEventProposal = serde_json::from_slice(&self.payload)?;
-        canonical_ref_event_proposal_bytes(&event).map_err(serde::de::Error::custom)?;
+    pub fn proposal(&self) -> Result<RefEventProposal, CoreError> {
+        let mut event = crate::codec::decode_ref_event_proposal(&self.payload)?;
         resolve_metadata(&mut event.set_metadata, self.metadata.as_ref())?;
         Ok(event)
     }
@@ -836,13 +790,13 @@ impl RefEventRow {
 fn resolve_metadata(
     reference: &mut Option<MetadataRef>,
     metadata: Option<&Metadata>,
-) -> Result<(), serde_json::Error> {
+) -> Result<(), CoreError> {
     if let Some(metadata) = metadata {
         reference
             .as_mut()
-            .ok_or_else(|| serde::de::Error::custom("unexpected metadata payload"))?
+            .ok_or_else(|| CoreError::InvalidProposal("unexpected metadata payload".into()))?
             .resolve(metadata.clone())
-            .map_err(serde::de::Error::custom)?;
+            .map_err(|error| CoreError::InvalidProposal(error.to_string()))?;
     }
     Ok(())
 }
@@ -1173,7 +1127,7 @@ pub fn sha256_prefixed_hex_from_digest_bytes(bytes: [u8; 32]) -> String {
 
 /// The `events_digest` of a commit with no events, which hashes the commit's
 /// sequence as eight big-endian bytes. Nothing else tells two such commits
-/// apart, and no run of 33-byte event records can equal these bytes.
+/// apart, and no run of 32-byte event digests can equal these bytes.
 pub fn empty_commit_events_digest(repo_seq: i64) -> Sha256Digest {
     Sha256Digest::parse(sha256_prefixed_hex_from_digest_bytes(
         compute_sha256_digest_bytes(&repo_seq.to_be_bytes()),
@@ -1181,9 +1135,8 @@ pub fn empty_commit_events_digest(repo_seq: i64) -> Sha256Digest {
     .expect("internal SHA-256 digest is valid")
 }
 
-/// A commit's `events_digest`: SHA-256 over each event's family byte and the
-/// SHA-256 of its canonical payload, in commit order. The one definition every
-/// writer and verifier uses.
+/// A commit's `events_digest`: SHA-256 of its event digests concatenated in
+/// commit order. The one definition every writer and verifier uses.
 #[derive(Clone, Default)]
 pub struct EventsDigest {
     hasher: Sha256,
@@ -1191,9 +1144,9 @@ pub struct EventsDigest {
 }
 
 impl EventsDigest {
-    pub fn push(&mut self, family: u8, payload_digest: &[u8; 32]) {
-        self.hasher.update([family]);
-        self.hasher.update(payload_digest);
+    /// Add the next event by its envelope.
+    pub fn push(&mut self, envelope: &[u8]) {
+        self.hasher.update(compute_sha256_digest_bytes(envelope));
         self.events += 1;
     }
 
@@ -1246,11 +1199,6 @@ fn sha256_id_to_digest_bytes(s: &str) -> [u8; 32] {
         .expect("sha256 id bytes must decode to 32 bytes")
 }
 
-/// Canonicalize an `EventProposal` into RFC 8785 canonical JSON bytes.
-///
-/// Hard rule: the canonical payload is sparse: fields that are conceptually
-/// absent are omitted (not emitted as JSON `null`). `null` is only used where
-/// it has defined semantics (for example `set_parent: null` meaning “move to root”).
 impl EventProposal {
     /// A subitem event adds objects to its item's closure, never to its snapshot.
     pub fn replaces_content(&self) -> bool {
@@ -1258,131 +1206,11 @@ impl EventProposal {
     }
 }
 
-pub fn canonical_event_proposal_bytes(ev: &EventProposal) -> Result<Vec<u8>, CoreError> {
-    crate::limits::validate_item_event_type(&ev.event_type)?;
-    if let Some(create) = &ev.create_item {
-        create.validate()?;
-        if ev.event_type.split("::").next() != Some(create.item_type.as_str()) {
-            return Err(CoreError::InvalidProposal(format!(
-                "`{}` cannot create a {}",
-                ev.event_type, create.item_type
-            )));
-        }
-        if create.item_type == "FILE"
-            && ev
-                .set_content
-                .as_ref()
-                .and_then(|content| content.get("bytes"))
-                .is_none()
-        {
-            return Err(CoreError::InvalidProposal(
-                "a FILE is created with its first bytes".to_string(),
-            ));
-        }
-    }
-    for name in ev
-        .create_item
-        .as_ref()
-        .and_then(|item| item.name.as_deref())
-        .into_iter()
-        .chain(ev.set_name.as_deref())
-    {
-        crate::limits::check_bytes("name", name.len(), crate::limits::MAX_NAME_BYTES)?;
-    }
-    let value = serde_json::to_value(ev).map_err(|e| {
-        CoreError::InvalidProposal(format!(
-            "serialize event proposal to json value failed: {e}"
-        ))
-    })?;
-    let bytes = canonical_json_bytes(&value)?;
-    crate::limits::check_bytes(
-        "event payload",
-        bytes.len(),
-        crate::limits::MAX_EVENT_PAYLOAD_BYTES,
-    )?;
-    Ok(bytes)
-}
-
-/// Canonicalize a narrow attached-ref proposal into RFC 8785 JSON bytes.
-pub fn canonical_ref_event_proposal_bytes(ev: &RefEventProposal) -> Result<Vec<u8>, CoreError> {
-    crate::limits::validate_event_type(&ev.event_type)?;
-    let value = serde_json::to_value(ev).map_err(|e| {
-        CoreError::InvalidProposal(format!(
-            "serialize ref event proposal to json value failed: {e}"
-        ))
-    })?;
-    let bytes = canonical_json_bytes(&value)?;
-    crate::limits::check_bytes(
-        "event payload",
-        bytes.len(),
-        crate::limits::MAX_EVENT_PAYLOAD_BYTES,
-    )?;
-    Ok(bytes)
-}
-
-/// The sole accepted commit encoding for Synck 0.2.
-pub const COMMIT_FORMAT_VERSION: i32 = 6;
-pub const COMMIT_EVENT_FAMILY_ITEM: u8 = 0;
-pub const COMMIT_EVENT_FAMILY_REF: u8 = 1;
-
-/// Repository placement and acceptance time belong to the checkpoint, not this
-/// content identity. Optional values are explicit JSON nulls.
-pub fn canonical_commit_bytes_for_hash(
-    author_id: &AuthorId,
-    committer_id: &CommitterId,
-    occurred_at: Option<Timestamp>,
-    message: Option<&str>,
-    event_count: usize,
-    events_digest: &Sha256Digest,
-) -> Result<Vec<u8>, CoreError> {
-    crate::limits::validate_commit_metadata(author_id, committer_id, message, None)?;
-    if occurred_at.is_some_and(|time| time.timestamp_subsec_nanos() >= 1_000_000_000) {
-        return Err(CoreError::InvalidProposal(
-            "leap seconds are not supported".into(),
-        ));
-    }
-    if occurred_at.is_some_and(|time| !timestamp_has_format_year(time)) {
-        return Err(CoreError::InvalidProposal(
-            "a time's UTC year must be 0000 through 9999".into(),
-        ));
-    }
-    let value = serde_json::json!({
-        "object_type": "vcs_commit",
-        "format_version": COMMIT_FORMAT_VERSION,
-        "author_id": author_id,
-        "committer_id": committer_id,
-        "occurred_at": occurred_at.map(|time| time.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true)),
-        "message": message,
-        "event_count": event_count,
-        "events_digest": events_digest.as_str(),
-    });
-    canonical_json_bytes(&value)
-}
-
-/// Reject every previous format rather than guessing an interpretation.
-pub fn canonical_stored_commit_bytes_for_hash(
-    format_version: i32,
-    author_id: &AuthorId,
-    committer_id: &CommitterId,
-    occurred_at: Option<Timestamp>,
-    message: Option<&str>,
-    event_count: usize,
-    events_digest: &Sha256Digest,
-) -> Result<Vec<u8>, CoreError> {
-    if format_version != COMMIT_FORMAT_VERSION {
-        return Err(CoreError::InvalidProposal(format!(
-            "unsupported commit format version: {format_version}"
-        )));
-    }
-    canonical_commit_bytes_for_hash(
-        author_id,
-        committer_id,
-        occurred_at,
-        message,
-        event_count,
-        events_digest,
-    )
-}
+pub use crate::codec::{
+    CommitHeader, canonical_commit_bytes_for_hash, canonical_event_proposal_bytes,
+    canonical_ref_event_proposal_bytes, decode_commit_header, decode_event_proposal,
+    decode_ref_event_proposal,
+};
 
 #[cfg(test)]
 mod tests {
@@ -1487,29 +1315,6 @@ mod tests {
     }
 
     #[test]
-    fn canonical_event_proposal_bytes_are_utf8_json() {
-        let ev = EventProposal {
-            set_link: None,
-            merged_from: None,
-            item_id: Some(ItemId::parse("01890c6c-1111-7777-8888-aaaaaaaaaaaa").unwrap()),
-            event_type: "ITEM::NOTE".to_string(),
-            set_metadata: None,
-            set_content: None,
-            create_item: None,
-            set_parent: None,
-            set_name: None,
-            set_tombstoned: None,
-            set_in_trash: None,
-            set_is_federated: None,
-            set_federation_stream_id: None,
-            base_seq: Some(1),
-        };
-
-        let bytes = canonical_event_proposal_bytes(&ev).unwrap();
-        let _s = String::from_utf8(bytes).expect("canonical event bytes must be valid UTF-8");
-    }
-
-    #[test]
     fn canonical_event_accepts_integers_at_the_limit() {
         let ev = EventProposal {
             set_link: None,
@@ -1535,8 +1340,7 @@ mod tests {
 
         let bytes =
             canonical_event_proposal_bytes(&ev).expect("integers at the limit must be accepted");
-        let parsed: EventProposal =
-            serde_json::from_slice(&bytes).expect("canonical event must deserialize");
+        let parsed = decode_event_proposal(&bytes).expect("canonical event must decode");
         assert_eq!(
             canonical_event_proposal_bytes(&parsed).unwrap(),
             bytes,
@@ -1647,7 +1451,7 @@ mod tests {
     }
 
     #[test]
-    fn set_parent_root_move_is_unambiguous_in_canonical_json() {
+    fn set_parent_root_move_is_unambiguous_in_the_envelope() {
         let item_id = ItemId::parse("01890c6c-1111-7777-8888-aaaaaaaaaaaa").unwrap();
 
         // No change => set_parent is absent.
@@ -1668,20 +1472,15 @@ mod tests {
             base_seq: Some(1),
         };
         let bytes = canonical_event_proposal_bytes(&no_change).unwrap();
-        let json = String::from_utf8(bytes).unwrap();
-        assert!(!json.contains("\"set_parent\""));
-        let parsed: EventProposal = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.set_parent, None);
+        assert_eq!(decode_event_proposal(&bytes).unwrap().set_parent, None);
 
         // Move to root => set_parent is explicitly JSON null (field present).
         let to_root = EventProposal {
             set_parent: Some(None),
             ..no_change
         };
-        let bytes = canonical_event_proposal_bytes(&to_root).unwrap();
-        let json = String::from_utf8(bytes).unwrap();
-        assert!(json.contains("\"set_parent\":null"));
-        let parsed: EventProposal = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.set_parent, Some(None));
+        let root = canonical_event_proposal_bytes(&to_root).unwrap();
+        assert_ne!(root, bytes);
+        assert_eq!(decode_event_proposal(&root).unwrap().set_parent, Some(None));
     }
 }

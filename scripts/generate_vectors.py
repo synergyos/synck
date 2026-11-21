@@ -10,7 +10,6 @@ from format.md. With --check it writes nothing and fails if a vector would chang
 """
 
 import copy
-import datetime
 import hashlib
 import json
 import re
@@ -79,26 +78,381 @@ def salted_utf8(salt, data):
     return SALT_PREFIX + b"\x01" + salt + data
 
 
-def header(author, committer, occurred, message, count, digest):
+# --- Binary encoding (format.md, "Binary encoding") ------------------------
+#
+# Encoders take the readable JSON form of a value and return its bytes. A strict
+# decoder reads the bytes back, so every valid vector is checked to round-trip and
+# every rejected one to be refused.
+
+MAX_SEQ = 2**63 - 1
+
+
+class Malformed(Exception):
+    pass
+
+
+def u8(value):
+    return value.to_bytes(1, "big")
+
+
+def u16(value):
+    return value.to_bytes(2, "big")
+
+
+def u32(value):
+    return value.to_bytes(4, "big")
+
+
+def u64(value):
+    return value.to_bytes(8, "big")
+
+
+def i64(value):
+    return value.to_bytes(8, "big", signed=True)
+
+
+def uuid_bytes(value):
+    return bytes.fromhex(value.replace("-", ""))
+
+
+def uuid_text(raw):
+    h = raw.hex()
+    return f"{h[:8]}-{h[8:12]}-{h[12:16]}-{h[16:20]}-{h[20:]}"
+
+
+def digest_bytes(value):
+    assert re.fullmatch(r"sha256:[0-9a-f]{64}", value), value
+    return bytes.fromhex(value[7:])
+
+
+def enc_str(text):
+    raw = text.encode("utf-8")
+    return u16(len(raw)) + raw
+
+
+def enc_bool(value):
+    assert isinstance(value, bool)
+    return u8(int(value))
+
+
+def enc_time(text):
+    seconds, nanos = parse_time(text)
+    return i64(seconds) + u32(nanos)
+
+
+def enc_target(value):
+    return b"\0" if value is None else b"\1" + uuid_bytes(value)
+
+
+def enc_source(value):
+    assert set(value) == {"item_id", "item_seq"}, value
+    return uuid_bytes(value["item_id"]) + u64(value["item_seq"])
+
+
+def enc_content(roles):
+    ordered = sorted(roles, key=lambda role: role.encode("utf-8"))
+    return u8(len(ordered)) + b"".join(enc_str(r) + digest_bytes(roles[r]) for r in ordered)
+
+
+def blob(data):
+    return u32(len(data)) + data
+
+
+def days_from_civil(year, month, day):
+    year -= month <= 2
+    era = year // 400
+    yoe = year - era * 400
+    doy = (153 * (month + (-3 if month > 2 else 9)) + 2) // 5 + day - 1
+    return era * 146097 + yoe * 365 + yoe // 4 - yoe // 100 + doy - 719468
+
+
+def civil_from_days(days):
+    days += 719468
+    era = days // 146097
+    doe = days - era * 146097
+    yoe = (doe - doe // 1460 + doe // 36524 - doe // 146096) // 365
+    doy = doe - (365 * yoe + yoe // 4 - yoe // 100)
+    mp = (5 * doy + 2) // 153
+    month = mp + (3 if mp < 10 else -9)
+    return yoe + era * 400 + (month <= 2), month, doy - (153 * mp + 2) // 5 + 1
+
+
+TIME_MIN = days_from_civil(0, 1, 1) * 86400
+TIME_MAX = days_from_civil(10000, 1, 1) * 86400 - 1
+
+
+def parse_time(text):
+    match = re.fullmatch(r"(\d{4})-(\d\d)-(\d\d)T(\d\d):(\d\d):(\d\d)(?:\.(\d{1,9}))?Z", text)
+    year, month, day, hour, minute, second = map(int, match.groups()[:6])
+    seconds = days_from_civil(year, month, day) * 86400 + hour * 3600 + minute * 60 + second
+    return seconds, int((match.group(7) or "").ljust(9, "0"))
+
+
+def format_time(seconds, nanos):
+    days, rest = divmod(seconds, 86400)
+    year, month, day = civil_from_days(days)
+    return (f"{year:04}-{month:02}-{day:02}T{rest // 3600:02}:{rest // 60 % 60:02}:"
+            f"{rest % 60:02}.{nanos:09}Z")
+
+
+class Reader:
+    def __init__(self, data):
+        self.data, self.pos = data, 0
+
+    def take(self, n):
+        if self.pos + n > len(self.data):
+            raise Malformed("truncated")
+        self.pos += n
+        return self.data[self.pos - n:self.pos]
+
+    def end(self):
+        if self.pos != len(self.data):
+            raise Malformed("trailing bytes")
+
+    def at_end(self):
+        return self.pos == len(self.data)
+
+    def uint(self, width):
+        return int.from_bytes(self.take(width), "big")
+
+    def u64(self):
+        value = self.uint(8)
+        if value > MAX_SEQ:
+            raise Malformed("u64 above 2^63 - 1")
+        return value
+
+    def i64(self):
+        return int.from_bytes(self.take(8), "big", signed=True)
+
+    def uuid(self):
+        raw = self.take(16)
+        if raw[6] >> 4 != 7 or raw[8] >> 6 != 2:
+            raise Malformed("not a UUIDv7")
+        return uuid_text(raw)
+
+    def digest(self):
+        return "sha256:" + self.take(32).hex()
+
+    def str(self):
+        raw = self.take(self.uint(2))
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            raise Malformed("invalid UTF-8") from None
+        if "\0" in text:
+            raise Malformed("U+0000 in a string")
+        return text
+
+    def bool(self):
+        value = self.uint(1)
+        if value > 1:
+            raise Malformed("bool above 1")
+        return value == 1
+
+    def seq(self):
+        value = self.uint(8)
+        if not 1 <= value <= MAX_SEQ:
+            raise Malformed("seq out of range")
+        return value
+
+    def time(self):
+        seconds, nanos = self.i64(), self.uint(4)
+        if nanos >= 10**9 or not TIME_MIN <= seconds <= TIME_MAX:
+            raise Malformed("time out of range")
+        return format_time(seconds, nanos)
+
+    def target(self):
+        tag = self.uint(1)
+        if tag > 1:
+            raise Malformed("target tag above 1")
+        return self.uuid() if tag else None
+
+    def source(self):
+        return {"item_id": self.uuid(), "item_seq": self.seq()}
+
+    def content(self):
+        count = self.uint(1)
+        if count > 32:
+            raise Malformed("more than 32 roles")
+        roles, last = {}, None
+        for _ in range(count):
+            role = self.str()
+            if last is not None and role.encode("utf-8") <= last:
+                raise Malformed("roles not in strictly increasing order")
+            last = role.encode("utf-8")
+            roles[role] = self.digest()
+        return roles
+
+    def blob(self):
+        return self.take(self.uint(4))
+
+
+def enc_create(create):
+    if "name" in create:
+        assert set(create) <= {"item_type", "name", "parent_folder_id", "derived_from"}, create
+        flags = 2 * ("parent_folder_id" in create) | 8 * ("derived_from" in create)
+        body = enc_str(create["name"])
+        if "parent_folder_id" in create:
+            body += uuid_bytes(create["parent_folder_id"])
+    else:
+        assert set(create) <= {"item_type", "link", "key", "derived_from"}, create
+        flags = 1 | 2 * ("link" in create) | 4 * ("key" in create) | 8 * ("derived_from" in create)
+        body = uuid_bytes(create["link"]) if "link" in create else b""
+        if "key" in create:
+            body += enc_str(create["key"])
+    if "derived_from" in create:
+        body += enc_source(create["derived_from"])
+    return u8(flags) + enc_str(create["item_type"]) + body
+
+
+def dec_create(r):
+    flags = r.uint(1)
+    create = {"item_type": None}
+    if flags & 0xF0 or (not flags & 1 and flags & 4):
+        raise Malformed("unknown create_item flag bit")
+    create["item_type"] = r.str()
+    if flags & 1:
+        if flags & 2:
+            create["link"] = r.uuid()
+        if flags & 4:
+            create["key"] = r.str()
+    else:
+        create["name"] = r.str()
+        if flags & 2:
+            create["parent_folder_id"] = r.uuid()
+    if flags & 8:
+        create["derived_from"] = r.source()
+    return create
+
+
+def enc_tombstoned(value):
+    assert value is True
+    return b""
+
+
+def dec_stream(r):
+    stream = r.str()
+    if not stream:
+        raise Malformed("empty federation stream")
+    return stream
+
+
+# Item envelope fields in flag-bit order: name, encoder, decoder.
+ITEM_FIELDS = [
+    ("create_item", enc_create, dec_create),
+    ("base_seq", u64, Reader.seq),
+    ("metadata_id", digest_bytes, Reader.digest),
+    ("set_content", enc_content, Reader.content),
+    ("set_parent", enc_target, Reader.target),
+    ("set_name", enc_str, Reader.str),
+    ("set_link", enc_target, Reader.target),
+    ("merged_from", enc_source, Reader.source),
+    ("set_in_trash", enc_bool, Reader.bool),
+    ("set_tombstoned", enc_tombstoned, lambda r: True),
+    ("set_is_federated", enc_bool, Reader.bool),
+    ("set_federation_stream_id", enc_str, dec_stream),
+]
+REF_FIELDS = [
+    ("metadata_id", digest_bytes, Reader.digest),
+    ("set_content", enc_content, Reader.content),
+]
+
+
+def envelope(event):
+    """The exact bytes of an item or attached-ref envelope given as JSON."""
+    if "owner_item_id" in event:
+        kind, fields, width = 2, REF_FIELDS, 1
+        head = uuid_bytes(event["owner_item_id"]) + u64(event["base_ref_seq"])
+        known = {"owner_item_id", "event_type", "base_ref_seq"}
+    else:
+        kind, fields, width = 1, ITEM_FIELDS, 2
+        head = uuid_bytes(event["item_id"])
+        known = {"item_id", "event_type"}
+    if set(event) - known - {name for name, _, _ in fields}:
+        raise ValueError(f"not encodable: {sorted(set(event) - known)}")
+    flags, body = 0, b""
+    for bit, (name, encode, _) in enumerate(fields):
+        if name in event:
+            flags |= 1 << bit
+            body += encode(event[name])
+    return u8(kind) + enc_str(event["event_type"]) + head + flags.to_bytes(width, "big") + body
+
+
+def decode_envelope(data):
+    r = Reader(data)
+    kind = r.uint(1)
+    if kind == 1:
+        event = {"event_type": r.str(), "item_id": r.uuid()}
+        fields, flags = ITEM_FIELDS, r.uint(2)
+    elif kind == 2:
+        event = {"event_type": r.str(), "owner_item_id": r.uuid(), "base_ref_seq": r.u64()}
+        fields, flags = REF_FIELDS, r.uint(1)
+    else:
+        raise Malformed("wrong kind byte")
+    if flags >> len(fields):
+        raise Malformed("unknown flag bit")
+    for bit, (name, _, decode) in enumerate(fields):
+        if flags >> bit & 1:
+            event[name] = decode(r)
+    r.end()
+    return event
+
+
+def commit_header(header):
+    """The exact bytes of a commit header given as JSON."""
+    assert set(header) == {
+        "author_id", "committer_id", "occurred_at", "message", "event_count", "events_digest",
+    }, header
+    flags = (header["occurred_at"] is not None) | 2 * (header["message"] is not None)
+    data = u8(3) + enc_str(header["author_id"]) + enc_str(header["committer_id"]) + u8(flags)
+    if header["occurred_at"] is not None:
+        data += enc_time(header["occurred_at"])
+    if header["message"] is not None:
+        data += enc_str(header["message"])
+    return data + u32(header["event_count"]) + digest_bytes(header["events_digest"])
+
+
+def decode_header(data):
+    r = Reader(data)
+    if r.uint(1) != 3:
+        raise Malformed("wrong kind byte")
+    header = {"author_id": r.str(), "committer_id": r.str()}
+    flags = r.uint(1)
+    if flags >> 2:
+        raise Malformed("unknown flag bit")
+    header["occurred_at"] = r.time() if flags & 1 else None
+    header["message"] = r.str() if flags & 2 else None
+    header["event_count"] = r.uint(4)
+    header["events_digest"] = r.digest()
+    r.end()
+    return header
+
+
+def events_digest(envelopes, repo_seq=None):
+    """SHA-256 of the event digests in index order; of the position for no events."""
+    if not envelopes:
+        return sha_id(u64(repo_seq))
+    return sha_id(b"".join(sha(data) for data in envelopes))
+
+
+def header(author, committer, occurred, message, envelopes, repo_seq=None):
     return {
-        "object_type": "vcs_commit",
-        "format_version": 6,
-        "author_id": author,
-        "committer_id": committer,
-        "occurred_at": occurred,
-        "message": message,
-        "event_count": count,
-        "events_digest": digest,
+        "author_id": author, "committer_id": committer, "occurred_at": occurred,
+        "message": message, "event_count": len(envelopes),
+        "events_digest": events_digest(envelopes, repo_seq),
     }
 
 
-def events_digest(items):
-    """items: (family byte, raw 32-byte event digest)."""
-    return sha_id(b"".join(bytes([family]) + digest for family, digest in items))
+def checked_envelope(event):
+    data = envelope(event)
+    assert decode_envelope(data) == event, event
+    return data
 
 
-def empty_commit_digest(repo_seq):
-    return sha_id(repo_seq.to_bytes(8, "big"))
+def checked_header(value):
+    data = commit_header(value)
+    assert decode_header(data) == value, value
+    return data
 
 
 def checkpoint(previous, seq, commit_id, seconds, nanos):
@@ -117,7 +471,7 @@ def genesis(repo_id, generation, encrypted=False):
         b"synck-genesis-v1"
         + uuid_bytes(repo_id)
         + uuid_bytes(generation)
-        + (7).to_bytes(4, "big")
+        + u32(8)
         + bytes([1 if encrypted else 0])
     )
 
@@ -184,10 +538,6 @@ ENCRYPTED_PREFIX = b"SYNCK_ENCRYPTED\0"
 AAD_PREFIX = b"synck-encrypted-v1"
 
 
-def uuid_bytes(value):
-    return bytes.fromhex(value.replace("-", ""))
-
-
 def encrypted_aad(scheme, epoch, repo_id, item_id, role):
     raw = role.encode("ascii")
     return (
@@ -201,19 +551,18 @@ def encrypted_aad(scheme, epoch, repo_id, item_id, role):
     )
 
 
-def encrypted_object(scheme, epoch, key, nonce, repo_id, item_id, role, plaintext):
-    aad = encrypted_aad(scheme, epoch, repo_id, item_id, role)
-    head = ENCRYPTED_PREFIX + scheme.to_bytes(2, "big") + epoch.to_bytes(8, "big") + nonce
-    if scheme == 2:
-        return head + segmented_seal(key, nonce, plaintext, aad), aad
-    return head + xchacha_seal(key, nonce, plaintext, aad), aad
+def encrypted_object(epoch, key, nonce, repo_id, item_id, role, plaintext):
+    """Scheme 2, the only scheme."""
+    aad = encrypted_aad(2, epoch, repo_id, item_id, role)
+    head = ENCRYPTED_PREFIX + u16(2) + u64(epoch) + nonce
+    return head + segmented_seal(key, nonce, plaintext, aad), aad
 
 
 SEGMENT = 65536
 
 
 def segmented_seal(key, prefix, plaintext, aad):
-    """Scheme 2: scheme 1's cipher over 64 KiB segments."""
+    """XChaCha20-Poly1305 over 64 KiB segments."""
     assert len(prefix) == 19
     parts = [plaintext[i:i + SEGMENT] for i in range(0, len(plaintext), SEGMENT)] or [b""]
     return b"".join(
@@ -339,34 +688,29 @@ def folder_event(ordinal):
     }
 
 
-def accepted_time(text):
-    value = datetime.datetime.strptime(text[:19], "%Y-%m-%dT%H:%M:%S")
-    seconds = int(value.replace(tzinfo=datetime.timezone.utc).timestamp())
-    return seconds, int(text[20:-1].ljust(9, "0"))
-
-
 def history_case(case, history):
-    seconds, nanos = accepted_time(history["accepted_at"])
+    seconds, nanos = parse_time(history["accepted_at"])
     meta = history["metadata"]
     repository = history["repository"]
     previous = genesis(repository["repo_id"], repository["generation"])
     ordinal = 0
     commits = []
     for index, count in enumerate(case["event_counts"]):
-        pairs = []
+        envelopes = []
         for _ in range(count):
-            pairs.append((0, sha(jcs_bytes(folder_event(ordinal)))))
+            envelopes.append(checked_envelope(folder_event(ordinal)))
             ordinal += 1
-        digest = events_digest(pairs)
         commit = header(
             meta["author_id"], meta["committer_id"], meta["occurred_at"],
-            f"commit-{index}", count, digest,
+            f"commit-{index}", envelopes, index + 1,
         )
-        commit_id = sha_id(jcs_bytes(commit))
+        data = checked_header(commit)
+        commit_id = sha_id(data)
         previous = checkpoint(previous, index + 1, commit_id, seconds, nanos)
         commits.append({
             "commit_id": commit_id,
-            "events_digest": digest,
+            "events_digest": commit["events_digest"],
+            "header_hex": data.hex(),
             "checkpoint": "sha256:" + previous.hex(),
         })
     return commits
@@ -502,72 +846,59 @@ def new_encrypted():
     repo = "019a2900-0000-7000-8000-000000000001"
     item = "019a2900-0000-7000-8000-000000000003"
     key = bytes(range(0x80, 0xA0))
-    nonce = bytes(range(0x40, 0x58))
+    nonce = bytes(range(0x40, 0x53))
     entries = []
 
-    def valid(name, epoch, role, plaintext, scheme=1):
-        stored_nonce = nonce if scheme == 1 else nonce[:19]
-        payload, aad = encrypted_object(scheme, epoch, key, stored_nonce, repo, item, role, plaintext)
+    def valid(name, epoch, role, plaintext):
+        payload, aad = encrypted_object(epoch, key, nonce, repo, item, role, plaintext)
         entries.append({
-            "name": name, "frame_valid": True, "opens": True, "scheme": scheme, "key_epoch": epoch,
-            "key_hex": key.hex(), "nonce_hex": stored_nonce.hex(), "repo_id": repo,
+            "name": name, "frame_valid": True, "opens": True, "scheme": 2, "key_epoch": epoch,
+            "key_hex": key.hex(), "nonce_hex": nonce.hex(), "repo_id": repo,
             "item_id": item, "role": role, "plaintext_hex": plaintext.hex(),
             "aad_hex": aad.hex(), "payload_hex": payload.hex(), "id": sha_id(payload),
         })
 
     valid("file bytes", 1, "bytes", bytes.fromhex("00ff0180"))
+    valid("empty file", 1, "bytes", b"")
     valid("empty body", 3, "body", b"")
     valid("metadata", 2, "metadata", b'{"title":"Budget"}')
     valid("ingest key at epoch 0", 0, "source", b"From: a\r\n\r\nb")
-
     good = bytes.fromhex(entries[0]["payload_hex"])
 
-    def invalid(name, change, frame_valid=True):
-        vector = dict(entries[0], name=name, frame_valid=frame_valid, opens=False)
-        vector.pop("aad_hex")
-        vector.pop("plaintext_hex")
-        vector.update(change)
-        payload = bytes.fromhex(vector["payload_hex"])
-        vector["id"] = sha_id(payload)
-        entries.append(vector)
-
-    invalid("wrong item", {"item_id": "019a2900-0000-7000-8000-000000000004"})
-    invalid("wrong role", {"role": "body"})
-    invalid("wrong epoch in the header", {"key_epoch": 2, "payload_hex": (
-        good[:18] + (2).to_bytes(8, "big") + good[26:]).hex()})
-    invalid("unknown scheme", {"scheme": 3, "payload_hex": (
-        good[:16] + (3).to_bytes(2, "big") + good[18:]).hex()})
-    invalid("scheme 0 is not defined", {"scheme": 0, "payload_hex": (
-        good[:16] + (0).to_bytes(2, "big") + good[18:]).hex()}, False)
-    invalid("truncated tag", {"payload_hex": good[:-1].hex()})
-    invalid("no room for a tag", {"payload_hex": good[:66 - 1].hex()}, False)
-
-    valid("segmented file bytes", 1, "bytes", bytes.fromhex("00ff0180"), scheme=2)
-    valid("segmented empty file", 1, "bytes", b"", scheme=2)
-    base = entries[-2]
-    short = bytes.fromhex(base["payload_hex"])
-
-    def segmented_invalid(name, payload, frame_valid=True):
-        vector = dict(base, name=name, frame_valid=frame_valid, opens=False)
+    def invalid(name, payload, frame_valid=True, **change):
+        vector = dict(entries[0], name=name, frame_valid=frame_valid, opens=False, **change)
         vector.pop("aad_hex")
         vector.pop("plaintext_hex")
         vector["payload_hex"] = payload.hex()
         vector["id"] = sha_id(payload)
         entries.append(vector)
 
-    # A one-segment object whose segment claims not to be the last.
-    prefix = short[26:45]
+    invalid("wrong item", good, item_id="019a2900-0000-7000-8000-000000000004")
+    invalid("wrong role", good, role="body")
+    invalid("wrong epoch in the header", good[:18] + u64(2) + good[26:], key_epoch=2)
+    invalid("unknown scheme", good[:16] + u16(3) + good[18:], False, scheme=3)
+    invalid("scheme 0 is not defined", good[:16] + u16(0) + good[18:], False, scheme=0)
+    # Format 7's scheme 1: one XChaCha20-Poly1305 seal under a 24-byte nonce.
+    nonce24 = bytes(range(0x40, 0x58))
+    aad1 = encrypted_aad(1, 1, repo, item, "bytes")
+    invalid("scheme 1 is not a scheme", ENCRYPTED_PREFIX + u16(1) + u64(1) + nonce24 + xchacha_seal(
+        key, nonce24, bytes.fromhex("00ff0180"), aad1), False, scheme=1, nonce_hex=nonce24.hex())
+    invalid("truncated tag", good[:-1])
+    invalid("no room for a tag", good[:45 + 15], False)
+    # A one-segment object whose segment claims not to be the last, or another index.
     aad = encrypted_aad(2, 1, repo, item, "bytes")
-    segmented_invalid("segment not marked last", short[:45] + xchacha_seal(
-        key, prefix + (0).to_bytes(4, "big") + b"\0", bytes.fromhex("00ff0180"), aad))
-    segmented_invalid("segment with the wrong index", short[:45] + xchacha_seal(
-        key, prefix + (1).to_bytes(4, "big") + b"\1", bytes.fromhex("00ff0180"), aad))
-    segmented_invalid("segmented, no room for a tag", short[:45 + 15], False)
+    invalid("segment not marked last", good[:45] + xchacha_seal(
+        key, nonce + u32(0) + b"\0", bytes.fromhex("00ff0180"), aad))
+    invalid("segment with the wrong index", good[:45] + xchacha_seal(
+        key, nonce + u32(1) + b"\1", bytes.fromhex("00ff0180"), aad))
+    for vector in entries:
+        assert segmented_frame_valid(len(bytes.fromhex(vector["payload_hex"])) - 45) or (
+            not vector["frame_valid"]), vector["name"]
     save("encrypted.json", entries)
 
 
 def new_encrypted_segments():
-    """Scheme 2 objects too large to list in hex, and its key-free length rule."""
+    """Objects too large to list in hex, and the key-free length rule."""
     repo = "019a2900-0000-7000-8000-000000000001"
     item = "019a2900-0000-7000-8000-000000000003"
     key = bytes(range(0x80, 0xA0))
@@ -579,7 +910,7 @@ def new_encrypted_segments():
         ("two full segments and part of a third", 2 * SEGMENT + 300),
     ]:
         plaintext = bytes(i % 251 for i in range(length))
-        payload, _ = encrypted_object(2, 1, key, nonce, repo, item, "bytes", plaintext)
+        payload, _ = encrypted_object(1, key, nonce, repo, item, "bytes", plaintext)
         objects.append({
             "name": name, "plaintext_length": length, "segments": -(-length // SEGMENT),
             "stored_length": len(payload), "id": sha_id(payload),
@@ -611,7 +942,7 @@ def new_checkpoints():
         ("another generation", repo, other, False),
     ]
     genesis_cases = [{
-        "name": name, "repo_id": r, "generation": g, "format_version": 7,
+        "name": name, "repo_id": r, "generation": g, "format_version": 8,
         "encrypted": e, "value": genesis(r, g, e).hex(),
     } for name, r, g, e in cases]
     assert len({case["value"] for case in genesis_cases}) == len(cases)
@@ -627,24 +958,29 @@ def new_checkpoints():
     save("checkpoints.json", {"genesis": genesis_cases, "steps": steps})
 
 
+def refused(decode, data):
+    try:
+        decode(data)
+    except Malformed:
+        return data.hex()
+    raise AssertionError(f"accepted: {data.hex()}")
+
+
 def new_events():
-    vectors = load("events.json")
-    meta_salt = bytes([7]) * 32
+    vectors = load("events.json")["valid"]
 
     def finish(vector):
-        event_bytes = jcs_bytes(vector["event"])
-        digest = sha(event_bytes)
-        vector["canonical_event"] = event_bytes.decode("utf-8")
-        vector["event_digest"] = "sha256:" + digest.hex()
-        vector["events_digest"] = events_digest([(0, digest)])
+        data = checked_envelope(vector["event"])
+        vector["envelope_hex"] = data.hex()
+        vector["event_digest"] = sha_id(data)
         old = vector["commit"]
-        commit = header(
-            old["author_id"], old["committer_id"], old["occurred_at"], old["message"],
-            1, vector["events_digest"],
+        vector["commit"] = header(
+            old["author_id"], old["committer_id"], old["occurred_at"], old["message"], [data],
         )
-        vector["commit"] = commit
-        vector["canonical_commit"] = jcs(commit)
-        vector["commit_id"] = sha_id(jcs_bytes(commit))
+        vector["events_digest"] = vector["commit"]["events_digest"]
+        head = checked_header(vector["commit"])
+        vector["header_hex"] = head.hex()
+        vector["commit_id"] = sha_id(head)
         return vector
 
     def set_metadata(vector, value, salt):
@@ -659,7 +995,7 @@ def new_events():
             meta = vector["metadata"]
             payload = bytes.fromhex(meta["payload_hex"])
             assert payload[49:] == jcs_bytes(meta["value"]), vector["name"]
-            assert sha_id(payload) == meta["id"]
+            assert sha_id(payload) == meta["id"] == vector["event"]["metadata_id"]
         finish(vector)
 
     template = {"commit": {
@@ -714,24 +1050,92 @@ def new_events():
     add("canonical_vector_set_title", {
         "item_id": record, "base_seq": 5, "event_type": "EMAIL::SET_TITLE",
     }, {"title": "2026-03-01 Budget"})
-    save("events.json", vectors)
+    add("canonical_vector_trash", {
+        "item_id": record, "base_seq": 6, "event_type": "EMAIL::TRASH", "set_in_trash": True,
+    })
+    add("canonical_vector_tombstone", {
+        "item_id": record, "base_seq": 7, "event_type": "EMAIL::TOMBSTONE", "set_tombstoned": True,
+    })
+    add("canonical_vector_ref_with_content", {
+        "owner_item_id": record, "event_type": "NOTE::PUT", "base_ref_seq": 5,
+        "set_content": {"body": body, "attachment": "sha256:" + "3b" * 32},
+    }, {"title": "Note"})
+    assert all(decode_envelope(bytes.fromhex(v["envelope_hex"])) == v["event"] for v in vectors)
+
+    # Rejected encodings, each one change away from an accepted envelope.
+    item = uuid_bytes(record)
+    digest = digest_bytes(body)
+
+    def raw(event_type, flags, fields, item_id=item, kind=1):
+        return u8(kind) + enc_str(event_type) + item_id + u16(flags) + fields
+
+    def ref(flags, fields, base=u64(0)):
+        return u8(2) + enc_str("FILE_VERSION::CREATE") + item + base + u8(flags) + fields
+
+    def roles(*names):
+        return u8(len(names)) + b"".join(enc_str(name) + digest for name in names)
+
+    trash = raw("EMAIL::TRASH", 0x102, u64(6) + u8(1))
+    assert decode_envelope(trash) == vectors[-3]["event"]
+    federate = 1 << 1 | 1 << 10 | 1 << 11
+    rejected = [
+        ("trailing byte", trash + b"\0"),
+        ("truncated", trash[:-1]),
+        ("kind byte 0", u8(0) + trash[1:]),
+        ("kind byte 3", u8(3) + trash[1:]),
+        ("item flag bit 12", raw("EMAIL::TRASH", 0x1102, u64(6) + u8(1))),
+        ("item flag bit 15", raw("EMAIL::TRASH", 0x8102, u64(6) + u8(1))),
+        ("ref flag bit 2", ref(4, b"")),
+        ("create_item flag bit 4", raw("TASK::CREATE", 1, u8(0x11) + enc_str("TASK"))),
+        ("tree create_item with bit 2", raw(
+            "FOLDER::CREATE", 1, u8(0x04) + enc_str("FOLDER") + enc_str("a") + enc_str("k"))),
+        ("item ID is a UUIDv4", raw(
+            "EMAIL::TRASH", 0x102, u64(6) + u8(1),
+            uuid_bytes("01890c6c-4444-4777-8888-dddddddddddd"))),
+        ("item ID has another variant", raw(
+            "EMAIL::TRASH", 0x102, u64(6) + u8(1),
+            uuid_bytes("01890c6c-4444-7777-c888-dddddddddddd"))),
+        ("bool value 2", raw("EMAIL::TRASH", 0x102, u64(6) + u8(2))),
+        ("base_seq 0", raw("EMAIL::TRASH", 0x102, u64(0) + u8(1))),
+        ("base_seq 2^63", raw("EMAIL::TRASH", 0x102, u64(2**63) + u8(1))),
+        ("base_ref_seq 2^63", ref(0, b"", u64(2**63))),
+        ("source item_seq 0", raw("TASK::NOTE", 0x82, u64(1) + uuid_bytes(folder) + u64(0))),
+        ("content roles out of order", raw(
+            "EMAIL::SET_CONTENT", 0x0A, u64(1) + roles("source", "provider"))),
+        ("content role repeated", raw("TASK::SET_CONTENT", 0x0A, u64(1) + roles("body", "body"))),
+        ("33 content roles", raw(
+            "TASK::SET_CONTENT", 0x0A, u64(1) + roles(*(f"r{i:02}" for i in range(33))))),
+        ("target tag 2", raw("FILE::SET_PARENT", 0x12, u64(1) + u8(2) + uuid_bytes(folder))),
+        ("string holds U+0000", raw("FILE::SET_NAME", 0x22, u64(1) + u16(3) + b"a\0b")),
+        ("string holds invalid UTF-8", raw("FILE::SET_NAME", 0x22, u64(1) + u16(2) + b"\xc3\x28")),
+        ("string runs past the end", raw("FILE::SET_NAME", 0x22, u64(1) + u16(10) + b"abc")),
+        ("empty federation stream", raw("TASK::FEDERATE", federate, u64(1) + u8(1) + u16(0))),
+    ]
+    save("events.json", {
+        "valid": vectors,
+        "invalid": [
+            {"name": name, "envelope_hex": refused(decode_envelope, data)}
+            for name, data in rejected
+        ],
+    })
 
 
 def new_commits():
     vectors = load("commits.json")
     for vector in vectors:
-        pairs = []
+        envelopes = []
         for event in vector["events"]:
-            digest = sha(event["payload"].encode("utf-8"))
-            event["digest"] = "sha256:" + digest.hex()
-            pairs.append((event["family"], digest))
+            data = checked_envelope(event["event"])
+            event["envelope_hex"] = data.hex()
+            event["digest"] = sha_id(data)
+            envelopes.append(data)
         old = vector["header"]
         vector["header"] = header(
-            old["author_id"], old["committer_id"], old["occurred_at"], old["message"],
-            old["event_count"], events_digest(pairs),
+            old["author_id"], old["committer_id"], old["occurred_at"], old["message"], envelopes,
         )
-        vector["canonical"] = jcs(vector["header"])
-        vector["commit_id"] = sha_id(vector["canonical"].encode("utf-8"))
+        data = checked_header(vector["header"])
+        vector["header_hex"] = data.hex()
+        vector["commit_id"] = sha_id(data)
     save("commits.json", vectors)
 
 
@@ -742,74 +1146,442 @@ def new_sync():
     save("sync-history.json", history)
     for name in ("sync.json", "sync-large.json"):
         vector = load(name)
+        request = vector["request"]
         if name == "sync.json":
-            raw = jcs_bytes(vector["records"][0]["value"])
-            vector["canonical_event_utf8"] = raw.decode("utf-8")
-            vector["events_digest"] = events_digest([(0, sha(raw))])
-            vector["request"]["events_digest"] = vector["events_digest"]
-        vector["request_digest"] = sha_id(jcs_bytes(vector["request"]))
-        meta = vector["request"]["metadata"]
-        commit = header(
-            meta["author_id"], meta["committer_id"], meta["occurred_at"], meta["message"],
-            vector["request"]["event_count"], vector["events_digest"],
+            for record in vector["records"]:
+                record["envelope_hex"] = checked_envelope(record["value"]).hex()
+            envelopes = [bytes.fromhex(record["envelope_hex"]) for record in vector["records"]]
+        else:
+            count = vector["event_generation"]["count"]
+            envelopes = [checked_envelope(folder_event(i)) for i in range(count)]
+            vector["first_envelope_hex"] = envelopes[0].hex()
+            vector["last_envelope_hex"] = envelopes[-1].hex()
+        old = request["header"]
+        request["header"] = header(
+            old["author_id"], old["committer_id"], old["occurred_at"], old["message"], envelopes,
         )
-        vector["commit_id"] = sha_id(jcs_bytes(commit))
+        request["guard_count"], request["guards_digest"] = 0, sha_id(b"")
+        vector["events_digest"] = request["header"]["events_digest"]
+        head = checked_header(request["header"])
+        vector["header_hex"] = head.hex()
+        vector["commit_id"] = sha_id(head)
+        data = wire("SubmitRequest", request)
+        vector["request_hex"] = data.hex()
+        vector["request_digest"] = sha_id(data)
+        if name == "sync.json":
+            vector["page_hex"] = wire("ProposalPage", {
+                "repository": request["repository"], "operation_id": request["operation_id"],
+                "offset": 0, "records": [
+                    {"kind": r["kind"], "value": r["value"]} for r in vector["records"]
+                ],
+            }).hex()
         save(name, vector)
 
 
 def new_file_version():
-    vector = load("file-version.json")
-    salt = bytes.fromhex(vector["metadata_payload_hex"])[17:49]
-    payload = salted_utf8(salt, jcs_bytes(vector["metadata"]))
-    vector["metadata_payload_hex"] = payload.hex()
-    vector["event"]["metadata_id"] = sha_id(payload)
-    event_bytes = jcs_bytes(vector["event"])
-    vector["canonical_event"] = event_bytes.decode("utf-8")
-    vector["event_digest"] = sha_id(event_bytes)
-    vector["with_source_commit"] = file_version_with_source()
-    save("file-version.json", vector)
-
-
-def file_version_with_source():
-    """A revision from an earlier commit is named by its commit and event index."""
-    metadata = {
-        "file_item_id": "01890f47-6a4c-7d8e-9f01-123456789abc",
+    owner = "01890f47-6a4c-7d8e-9f01-123456789abc"
+    first = label_vector(owner, 0, bytes(range(32)), {
+        "version_id": "01890f47-6a4d-7e9f-8012-23456789abcd",
+        "source_item_seq": 1,
+        "kind": "MINOR",
+        "label_source": "INTERNAL",
+        "order_key": 1024,
+    })
+    first["with_description"] = label_vector(owner, 1, bytes(range(32, 64)), {
         "version_id": "01890f47-6a4e-7f00-8123-3456789abcde",
         "source_item_seq": 2,
-        "source_commit_id": "sha256:" + "3c" * 32,
-        "source_commit_event_idx": 1,
         "kind": "MAJOR",
         "label_source": "EXTERNAL",
         "order_key": 2048,
-        "operation_id": "named-label",
         "description": "Sent to the reviewer",
+    })
+    save("file-version.json", first)
+
+
+def label_vector(owner, base_ref_seq, salt, metadata):
+    """A FILE_VERSION::CREATE label: slim metadata, the owner only in the envelope."""
+    assert set(metadata) - {"description"} == {
+        "version_id", "source_item_seq", "kind", "label_source", "order_key",
     }
-    payload = salted_utf8(bytes(range(32, 64)), jcs_bytes(metadata))
+    payload = salted_utf8(salt, jcs_bytes(metadata))
     event = {
-        "owner_item_id": metadata["file_item_id"],
+        "owner_item_id": owner,
         "event_type": "FILE_VERSION::CREATE",
-        "base_ref_seq": 1,
+        "base_ref_seq": base_ref_seq,
         "metadata_id": sha_id(payload),
     }
-    event_bytes = jcs_bytes(event)
+    data = checked_envelope(event)
     return {
         "metadata": metadata,
         "metadata_payload_hex": payload.hex(),
         "event": event,
-        "canonical_event": event_bytes.decode("utf-8"),
-        "event_digest": sha_id(event_bytes),
+        "envelope_hex": data.hex(),
+        "event_digest": sha_id(data),
     }
 
 
+# --- Protocol 2 messages (protocol.md, "Encoding") --------------------------
+#
+# A shape is a primitive name, a SHAPES name, or ("opt", T), ("list", T[, min, max])
+# or ("fields", ((name, T), ...)). JSON values use the field names of the table.
+
+LIFECYCLE = ["LIVE", "TRASH", "TOMBSTONED"]
+MODES = ["LOCAL", "FEDERATED"]
+LIMITS = ["events_per_commit", "object_bytes", "quota_bytes"]
+REFUSALS = [
+    "INVALID", "UNAUTHENTICATED", "FORBIDDEN", "NOT_FOUND", "OBJECT_MISSING", "CHECKPOINT",
+    "LOCKED", "LOCK_LOST", "GENERATION", "OPERATION_REUSED", "OBJECTS_MISSING",
+    "UPLOAD_EXPIRED", "SERVER_OVERLOADED",
+]
+
+
+def fields(*pairs):
+    return ("fields", pairs)
+
+
+GUARDED_ITEM = fields(("item_id", "uuid"), ("head_seq", "seq"))
+CONFLICT = fields(("item_id", "uuid"), ("head_seq", "u64"))
+
+SHAPES = {
+    "RepositoryIdentity": fields(("repo_id", "uuid"), ("generation", "uuid")),
+    "Cursor": fields(
+        ("repository", "RepositoryIdentity"), ("repo_seq", "u64"), ("checkpoint", "digest")),
+    "Capabilities": fields(
+        ("protocol_version", "version"), ("encrypted", "bool"), ("latest", "Cursor"),
+        ("policy", "ServerPolicy")),
+    "ServerPolicy": fields(
+        ("max_events_per_commit", ("opt", "u64")), ("max_object_bytes", ("opt", "u64")),
+        ("quota_bytes", ("opt", "u64"))),
+    "ProposalPage": fields(
+        ("repository", "RepositoryIdentity"), ("operation_id", "str"), ("offset", "u64"),
+        ("records", ("list", "Record"))),
+    "Record": "record",
+    "PageAck": fields(("next_offset", "u64"), ("expires_at", "time")),
+    "SubmitRequest": fields(
+        ("repository", "RepositoryIdentity"), ("operation_id", "str"),
+        ("repository_head", ("opt", "u64")), ("header", "header"), ("guard_count", "u64"),
+        ("guards_digest", "digest")),
+    "SubmitResult": "submit_result",
+    "Receipt": fields(
+        ("operation_id", "str"), ("request_digest", "digest"), ("commit_id", "digest"),
+        ("accepted_at", "time"), ("published", ("opt", "Cursor"))),
+    "HistoryRequest": fields(("after", "HistoryPosition"), ("limit", "limit")),
+    "HistoryPosition": fields(
+        ("completed", "Cursor"),
+        ("pending", ("opt", fields(("commit_id", "digest"), ("next_event_index", "index"))))),
+    "HistoryPage": fields(
+        ("after", "HistoryPosition"), ("fragments", ("list", "Fragment")), ("has_more", "bool")),
+    "Fragment": fields(("header", "PublishedHeader"), ("events", ("list", "Event"))),
+    "PublishedHeader": "published_header",
+    "Event": "event",
+    "StateRequest": fields(("after", "StatePosition"), ("limit", "limit")),
+    "StatePosition": fields(
+        ("repository", "RepositoryIdentity"), ("changed_seq", "u64"), ("item_id", ("opt", "uuid"))),
+    "StatePage": fields(
+        ("after", "StatePosition"), ("entries", ("list", "StateEntry")),
+        ("departed", ("list", fields(("item_id", "uuid"), ("changed_seq", "u64")))),
+        ("through", "Cursor"), ("has_more", "bool")),
+    "StateEntry": fields(
+        ("item_id", "uuid"), ("item_type", "str"), ("changed_seq", "u64"), ("head_seq", "seq"),
+        ("ref_head_seq", "u64"), ("parent_folder_id", "target"), ("name", ("opt", "str")),
+        ("record_key", ("opt", "str")), ("link_folder_id", "target"),
+        ("lifecycle_state", "lifecycle"), ("sequencing_mode", "mode"),
+        ("federation_stream_id", ("opt", "str")), ("content", "content"),
+        ("metadata_id", ("opt", "digest")), ("name_metadata_id", ("opt", "digest")),
+        ("created_at", "time"), ("created_by", "str"), ("changed_at", "time"),
+        ("changed_by", "str")),
+    "ItemHistoriesRequest": fields(
+        ("repository", "RepositoryIdentity"),
+        ("items", ("list", fields(
+            ("item_id", "uuid"), ("after_seq", "u64"), ("after_ref_seq", "u64")), 1, 512)),
+        ("limit", "limit")),
+    "ItemHistoriesPage": fields(
+        ("repository", "RepositoryIdentity"), ("pages", ("list", "ItemHistoryPage"))),
+    "ItemHistoryPage": fields(
+        ("item_id", "uuid"), ("events", ("list", "ItemEvent")), ("refs", ("list", "ItemEvent")),
+        ("commits", ("list", "ItemCommit")), ("has_more", "bool")),
+    "ItemEvent": fields(("repo_seq", "u64"), ("commit_event_idx", "u32"), ("event", "Event")),
+    "ItemCommit": fields(
+        ("repo_seq", "u64"), ("commit_id", "digest"), ("author_id", "str"),
+        ("occurred_at", "time"), ("created_at", "time")),
+    "CommitLogRequest": fields(
+        ("repository", "RepositoryIdentity"), ("before_seq", ("opt", "u64")), ("limit", "limit")),
+    "CommitLogPage": fields(("commits", ("list", "CommitSummary")), ("has_more", "bool")),
+    "CommitSummary": fields(
+        ("repo_seq", "u64"), ("commit_id", "digest"), ("author_id", "str"),
+        ("occurred_at", "time"), ("event_count", "u32"),
+        ("events", ("list", fields(
+            ("item_id", "uuid"), ("item_seq", "seq"), ("commit_event_idx", "u32"),
+            ("event_type", "str"))))),
+    "ObjectRequest": ("list", "digest", 1, 512),
+    "LeaseRequest": fields(("paths", ("list", "str")), ("owner", "str"), ("ttl", "u32")),
+    "Lease": fields(("token", "str"), ("paths", ("list", "LeasedPath"))),
+    "LeasedPath": fields(("path", "str"), ("owner", "str"), ("expires_at", "i64")),
+    "Leases": ("list", "LeasedPath"),
+    "LeaseRenewal": fields(("token", "str"), ("ttl", "u32")),
+    "LeaseToken": fields(("token", "str")),
+    "LeasePaths": ("list", "str"),
+    "Released": fields(("released", "u64")),
+    # Not in the shape table: a refused request's body and an object pack.
+    "Refusal": "refusal",
+    "ObjectPack": "object_pack",
+}
+
+
+def dec_bounded(r, width, low, high, what):
+    value = r.uint(width)
+    if not low <= value <= high:
+        raise Malformed(f"{what} out of range")
+    return value
+
+
+def enc_record(value):
+    kind, body = value["kind"], value["value"]
+    assert set(value) == {"kind", "value"}, value
+    if kind in ("item", "ref"):
+        data = envelope(body)
+        assert data[0] == (1 if kind == "item" else 2), value
+        return u8(data[0]) + blob(data)
+    if kind == "guard":
+        return u8(3) + wire_encode(GUARDED_ITEM, body)
+    assert kind == "subtree_guard", value
+    assert set(body) == {"root_item_id", "require_empty_live_descendants", "descendants"}
+    return (u8(4) + uuid_bytes(body["root_item_id"])
+            + enc_bool(body["require_empty_live_descendants"])
+            + wire_encode(("list", GUARDED_ITEM), body["descendants"]))
+
+
+def dec_record(r):
+    tag = r.uint(1)
+    if tag in (1, 2):
+        data = r.blob()
+        body = decode_envelope(data)
+        if data[0] != tag:
+            raise Malformed("record tag does not match the envelope kind")
+        return {"kind": "item" if tag == 1 else "ref", "value": body}
+    if tag == 3:
+        return {"kind": "guard", "value": wire_decode(GUARDED_ITEM, r)}
+    if tag == 4:
+        return {"kind": "subtree_guard", "value": {
+            "root_item_id": r.uuid(), "require_empty_live_descendants": r.bool(),
+            "descendants": wire_decode(("list", GUARDED_ITEM), r),
+        }}
+    raise Malformed("unknown record tag")
+
+
+def enc_submit_result(value):
+    status = value["status"]
+    if status == "accepted":
+        assert set(value) == {"status", "receipt"}
+        return u8(0) + wire_encode("Receipt", value["receipt"])
+    if status == "conflict":
+        assert set(value) == {"status", "items"}
+        return u8(1) + wire_encode(("list", CONFLICT), value["items"])
+    assert status == "POLICY_LIMIT" and set(value) == {"status", "limit", "maximum", "actual"}
+    return u8(2) + u8(LIMITS.index(value["limit"]) + 1) + u64(value["maximum"]) + u64(value["actual"])
+
+
+def dec_submit_result(r):
+    status = r.uint(1)
+    if status == 0:
+        return {"status": "accepted", "receipt": wire_decode("Receipt", r)}
+    if status == 1:
+        return {"status": "conflict", "items": wire_decode(("list", CONFLICT), r)}
+    if status == 2:
+        limit = LIMITS[dec_bounded(r, 1, 1, len(LIMITS), "policy limit") - 1]
+        return {"status": "POLICY_LIMIT", "limit": limit, "maximum": r.u64(), "actual": r.u64()}
+    raise Malformed("unknown status")
+
+
+PUBLISHED_HEADER = (
+    "commit_id", "repo_seq", "created_at", "checkpoint", "author_id", "committer_id",
+    "occurred_at", "message", "event_count",
+)
+
+
+def enc_published_header(value):
+    assert set(value) == set(PUBLISHED_HEADER), value
+    occurred, message = value["occurred_at"], value["message"]
+    data = (digest_bytes(value["commit_id"]) + u64(value["repo_seq"])
+            + enc_time(value["created_at"]) + digest_bytes(value["checkpoint"])
+            + enc_str(value["author_id"]) + enc_str(value["committer_id"])
+            + u8((occurred is not None) | 2 * (message is not None)))
+    if occurred is not None:
+        data += enc_time(occurred)
+    if message is not None:
+        data += enc_str(message)
+    return data + u32(value["event_count"])
+
+
+def dec_published_header(r):
+    value = {
+        "commit_id": r.digest(), "repo_seq": r.u64(), "created_at": r.time(),
+        "checkpoint": r.digest(), "author_id": r.str(), "committer_id": r.str(),
+    }
+    flags = r.uint(1)
+    if flags >> 2:
+        raise Malformed("unknown flag bit")
+    value["occurred_at"] = r.time() if flags & 1 else None
+    value["message"] = r.str() if flags & 2 else None
+    value["event_count"] = r.uint(4)
+    return value
+
+
+def enc_event(value):
+    data = envelope(value["envelope"])
+    if data[0] == 1:
+        assert set(value) == {"envelope", "item_seq", "parent_folder_id",
+                              "parent_folder_id_before"}, value
+        return (blob(data) + u64(value["item_seq"]) + enc_target(value["parent_folder_id"])
+                + enc_target(value["parent_folder_id_before"]))
+    assert set(value) == {"envelope", "ref_seq"}, value
+    return blob(data) + u64(value["ref_seq"])
+
+
+def dec_event(r):
+    data = r.blob()
+    body = decode_envelope(data)
+    if data[0] == 2:
+        return {"envelope": body, "ref_seq": r.seq()}
+    return {
+        "envelope": body, "item_seq": r.seq(), "parent_folder_id": r.target(),
+        "parent_folder_id_before": r.target(),
+    }
+
+
+def enc_refusal(value):
+    code = value["code"]
+    data = u8(REFUSALS.index(code) + 1)
+    if code == "LOCKED":
+        assert set(value) == {"code", "path", "owner"}
+        return data + enc_str(value["path"]) + enc_str(value["owner"])
+    if code == "OBJECTS_MISSING":
+        assert set(value) == {"code", "objects"}
+        return data + wire_encode(("list", "digest"), value["objects"])
+    assert set(value) == {"code"}
+    return data
+
+
+def dec_refusal(r):
+    code = REFUSALS[dec_bounded(r, 1, 1, len(REFUSALS), "refusal code") - 1]
+    if code == "LOCKED":
+        return {"code": code, "path": r.str(), "owner": r.str()}
+    if code == "OBJECTS_MISSING":
+        return {"code": code, "objects": wire_decode(("list", "digest"), r)}
+    return {"code": code}
+
+
+def enc_pack(entries):
+    data = b""
+    for entry in entries:
+        assert set(entry) == {"object_id", "bytes_hex"}
+        stored = bytes.fromhex(entry["bytes_hex"])
+        data += digest_bytes(entry["object_id"]) + u64(len(stored)) + stored
+    return data
+
+
+def dec_pack(r):
+    entries = []
+    while not r.at_end():
+        object_id, size = r.digest(), r.u64()
+        stored = r.take(size)
+        if sha_id(stored) != object_id:
+            raise Malformed("object does not match its ID")
+        entries.append({"object_id": object_id, "bytes_hex": stored.hex()})
+    if not 1 <= len(entries) <= 512:
+        raise Malformed("a pack holds 1 to 512 objects")
+    return entries
+
+
+CODECS = {
+    "u32": (u32, lambda r: r.uint(4)),
+    "u64": (u64, Reader.u64),
+    "i64": (i64, Reader.i64),
+    "uuid": (uuid_bytes, Reader.uuid),
+    "digest": (digest_bytes, Reader.digest),
+    "str": (enc_str, Reader.str),
+    "bool": (enc_bool, Reader.bool),
+    "seq": (u64, Reader.seq),
+    "time": (enc_time, Reader.time),
+    "target": (enc_target, Reader.target),
+    "content": (enc_content, Reader.content),
+    "limit": (u16, lambda r: dec_bounded(r, 2, 1, 512, "limit")),
+    "index": (u32, lambda r: dec_bounded(r, 4, 1, 2**32 - 1, "pending event index")),
+    "version": (u16, lambda r: dec_bounded(r, 2, 2, 2, "protocol version")),
+    "lifecycle": (lambda v: u8(LIFECYCLE.index(v) + 1),
+                  lambda r: LIFECYCLE[dec_bounded(r, 1, 1, 3, "lifecycle state") - 1]),
+    "mode": (lambda v: u8(MODES.index(v) + 1),
+             lambda r: MODES[dec_bounded(r, 1, 1, 2, "sequencing mode") - 1]),
+    "envelope": (lambda v: blob(envelope(v)), lambda r: decode_envelope(r.blob())),
+    "header": (lambda v: blob(commit_header(v)), lambda r: decode_header(r.blob())),
+    "record": (enc_record, dec_record),
+    "submit_result": (enc_submit_result, dec_submit_result),
+    "published_header": (enc_published_header, dec_published_header),
+    "event": (enc_event, dec_event),
+    "refusal": (enc_refusal, dec_refusal),
+    "object_pack": (enc_pack, dec_pack),
+}
+
+
+def wire_encode(shape, value):
+    shape = SHAPES.get(shape, shape) if isinstance(shape, str) else shape
+    if isinstance(shape, str):
+        return CODECS[shape][0](value)
+    if shape[0] == "opt":
+        return b"\0" if value is None else b"\1" + wire_encode(shape[1], value)
+    if shape[0] == "list":
+        return u32(len(value)) + b"".join(wire_encode(shape[1], v) for v in value)
+    assert set(value) == {name for name, _ in shape[1]}, (value, shape)
+    return b"".join(wire_encode(kind, value[name]) for name, kind in shape[1])
+
+
+def wire_decode(shape, r):
+    shape = SHAPES.get(shape, shape) if isinstance(shape, str) else shape
+    if isinstance(shape, str):
+        return CODECS[shape][1](r)
+    if shape[0] == "opt":
+        tag = r.uint(1)
+        if tag > 1:
+            raise Malformed("opt tag above 1")
+        return wire_decode(shape[1], r) if tag else None
+    if shape[0] == "list":
+        count = r.uint(4)
+        low, high = shape[2:] or (0, 2**32 - 1)
+        if not low <= count <= high:
+            raise Malformed("list length out of range")
+        return [wire_decode(shape[1], r) for _ in range(count)]
+    return {name: wire_decode(kind, r) for name, kind in shape[1]}
+
+
+def wire_message(shape):
+    def decode(data):
+        r = Reader(data)
+        value = wire_decode(shape, r)
+        r.end()
+        return value
+    return decode
+
+
+def wire(shape, value):
+    """The bytes of one protocol value, checked to decode back to it."""
+    data = wire_encode(shape, value)
+    assert wire_message(shape)(data) == value, (shape, value)
+    return data
+
+
 def new_sync_wire():
-    """Every JSON shape of protocol 1, and a proposal with head guards."""
+    """One value of every protocol 2 shape, bytes a receiver refuses, and a guarded proposal."""
     identity = {
         "repo_id": "019a2900-0000-7000-8000-000000000001",
         "generation": "019a2900-0000-7000-8000-000000000002",
     }
     first = "019a2900-0000-7000-8000-000000000100"
     second = "019a2900-0000-7000-8000-000000000101"
+    parent = "019a2900-0000-7000-8000-000000000102"
+    chat = "019a2900-0000-7000-8000-000000000103"
+    gone = "019a2900-0000-7000-8000-000000000104"
     accepted = "2026-10-28T00:00:00.123456789Z"
+    occurred = "2026-10-28T09:00:00.000000000Z"
     genesis_value = genesis(identity["repo_id"], identity["generation"])
     start = {
         "repository": identity,
@@ -817,75 +1589,113 @@ def new_sync_wire():
         "checkpoint": "sha256:" + genesis_value.hex(),
     }
 
+    item_event = {
+        "item_id": first, "base_seq": 3, "event_type": "FOLDER::SET_NAME", "set_name": "renamed",
+    }
+    ref_event = {
+        "owner_item_id": second, "event_type": "FILE_VERSION::TOMBSTONE",
+        "metadata_id": "sha256:" + "4d" * 32, "base_ref_seq": 2,
+    }
     records = [
-        {"kind": "item", "value": {
-            "item_id": first, "base_seq": 3, "event_type": "FOLDER::SET_NAME",
-            "set_name": "renamed",
-        }},
-        {"kind": "ref", "value": {
-            "owner_item_id": second, "event_type": "FILE_VERSION::TOMBSTONE",
-            "metadata_id": "sha256:" + "4d" * 32, "base_ref_seq": 2,
-        }},
+        {"kind": "item", "value": item_event},
+        {"kind": "ref", "value": ref_event},
         {"kind": "guard", "value": {"item_id": first, "head_seq": 3}},
         {"kind": "guard", "value": {"item_id": second, "head_seq": 7}},
+        {"kind": "subtree_guard", "value": {
+            "root_item_id": first, "require_empty_live_descendants": False,
+            "descendants": [{"item_id": second, "head_seq": 7}],
+        }},
     ]
-    item_payload = jcs_bytes(records[0]["value"])
-    ref_payload = jcs_bytes(records[1]["value"])
-    digest = events_digest([(0, sha(item_payload)), (1, sha(ref_payload))])
-    guards = b"".join(sha(jcs_bytes(r["value"])) for r in records[2:])
-    occurred = "2026-10-28T09:00:00.000000000Z"
-    metadata = {
-        "author_id": "owner", "committer_id": "device", "message": "Tidy",
-        "occurred_at": occurred,
-    }
+    record_bytes = [wire("Record", record) for record in records]
+    envelopes = [checked_envelope(item_event), checked_envelope(ref_event)]
+    guards_digest = sha_id(b"".join(sha(data) for data in record_bytes[2:]))
+    commit = header("owner", "device", occurred, "Tidy", envelopes)
+    commit_id = sha_id(checked_header(commit))
     request = {
-        "repository": identity, "operation_id": "op:guarded", "metadata": metadata,
-        "event_count": 2, "events_digest": digest,
-        "guard_count": 2, "guards_digest": sha_id(guards),
+        "repository": identity, "operation_id": "op:guarded", "repository_head": 0,
+        "header": commit, "guard_count": 3, "guards_digest": guards_digest,
     }
-    commit_id = sha_id(jcs_bytes(header("owner", "device", occurred, "Tidy", 2, digest)))
-    request_digest = sha_id(jcs_bytes(request))
+    request_bytes = wire("SubmitRequest", request)
+    request_digest = sha_id(request_bytes)
 
-    seconds, nanos = accepted_time(accepted)
-    tip = checkpoint(genesis_value, 1, commit_id, seconds, nanos)
-    tip_id = "sha256:" + tip.hex()
+    seconds, nanos = parse_time(accepted)
+    tip_id = "sha256:" + checkpoint(genesis_value, 1, commit_id, seconds, nanos).hex()
     published = {"repository": identity, "repo_seq": 1, "checkpoint": tip_id}
-    row = {
-        "repo_id": identity["repo_id"], "commit_id": commit_id, "repo_seq": 1,
-        "format_version": 6, "author_id": "owner", "committer_id": "device",
-        "message": "Tidy", "occurred_at": occurred, "created_at": accepted,
-        "event_count": 2, "events_digest": digest,
+    published_header = {
+        "commit_id": commit_id, "repo_seq": 1, "created_at": accepted, "checkpoint": tip_id,
+        "author_id": "owner", "committer_id": "device", "occurred_at": occurred,
+        "message": "Tidy", "event_count": 2,
     }
     item_row = {
-        "event_family": "item", "repo_id": identity["repo_id"], "item_id": first,
-        "item_seq": 4, "event_type": "FOLDER::SET_NAME", "commit_id": commit_id,
-        "commit_event_idx": 0, "repo_seq": 1, "payload_json": item_payload.decode("utf-8"),
-        "event_payload_digest": sha_id(item_payload), "created_at": accepted,
-        "parent_folder_id": None, "parent_folder_id_before": None,
+        "envelope": item_event, "item_seq": 4, "parent_folder_id": parent,
+        "parent_folder_id_before": None,
     }
-    ref_row = {
-        "event_family": "ref", "repo_id": identity["repo_id"], "owner_item_id": second,
-        "ref_seq": 3, "event_type": "FILE_VERSION::TOMBSTONE", "commit_id": commit_id,
-        "commit_event_idx": 1, "repo_seq": 1, "payload_json": ref_payload.decode("utf-8"),
-        "event_payload_digest": sha_id(ref_payload), "created_at": accepted,
-    }
-    fragment = {"header": {"commit": row, "checkpoint": tip_id}, "events": [item_row, ref_row]}
+    ref_row = {"envelope": ref_event, "ref_seq": 3}
+    fragment = {"header": published_header, "events": [item_row, ref_row]}
     done = {"completed": start, "pending": None}
+    pending = {"completed": start, "pending": {"commit_id": commit_id, "next_event_index": 1}}
     receipt = {
         "operation_id": "op:guarded", "request_digest": request_digest,
         "commit_id": commit_id, "accepted_at": accepted, "published": published,
     }
+    policy = {"max_events_per_commit": 500, "max_object_bytes": None, "quota_bytes": None}
     capabilities = {
-        "protocol_version": 1, "repository": identity, "encrypted": False, "latest": published,
-        "policy": {"max_events_per_commit": 500, "max_object_bytes": None, "quota_bytes": None},
+        "protocol_version": 2, "encrypted": False, "latest": published, "policy": policy,
     }
+    file_entry = {
+        "item_id": second, "item_type": "FILE", "changed_seq": 1, "head_seq": 7,
+        "ref_head_seq": 3, "parent_folder_id": first, "name": "a.txt", "record_key": None,
+        "link_folder_id": None, "lifecycle_state": "LIVE", "sequencing_mode": "LOCAL",
+        "federation_stream_id": None, "content": {"bytes": "sha256:" + "ab" * 32},
+        "metadata_id": "sha256:" + "5e" * 32, "name_metadata_id": None,
+        "created_at": accepted, "created_by": "owner", "changed_at": occurred,
+        "changed_by": "owner",
+    }
+    chat_entry = dict(
+        file_entry, item_id=chat, item_type="CHAT", head_seq=2, ref_head_seq=0,
+        parent_folder_id=None, name=None, record_key="direct:" + "ab" * 32,
+        lifecycle_state="TRASH", sequencing_mode="FEDERATED", federation_stream_id="stream-1",
+        content={"body": "sha256:" + "6f" * 32, "attachment": "sha256:" + "70" * 32},
+        name_metadata_id="sha256:" + "71" * 32,
+    )
+    state_start = {"repository": identity, "changed_seq": 0, "item_id": None}
+    item_commit = {
+        "repo_seq": 1, "commit_id": commit_id, "author_id": "owner", "occurred_at": occurred,
+        "created_at": accepted,
+    }
+    first_history = {
+        "item_id": first, "events": [{"repo_seq": 1, "commit_event_idx": 0, "event": item_row}],
+        "refs": [], "commits": [item_commit], "has_more": False,
+    }
+    second_history = {
+        "item_id": second, "events": [],
+        "refs": [{"repo_seq": 1, "commit_event_idx": 1, "event": ref_row}],
+        "commits": [item_commit], "has_more": False,
+    }
+    summary = {
+        "repo_seq": 1, "commit_id": commit_id, "author_id": "owner", "occurred_at": occurred,
+        "event_count": 2, "events": [{
+            "item_id": first, "item_seq": 4, "commit_event_idx": 0,
+            "event_type": "FOLDER::SET_NAME",
+        }],
+    }
+    leased = {"path": "docs/notes.txt", "owner": "agent-1", "expires_at": 1793145600}
+    one, empty = b"one\n", b""
+    pack = [
+        {"object_id": sha_id(one), "bytes_hex": one.hex()},
+        {"object_id": sha_id(empty), "bytes_hex": ""},
+    ]
     valid = [
+        ("RepositoryIdentity", identity),
+        ("Cursor", published),
         ("Capabilities", capabilities),
+        ("ServerPolicy", policy),
         ("ProposalPage", {
             "repository": identity, "operation_id": "op:guarded", "offset": 0,
             "records": records,
         }),
-        ("PageAck", {"next_offset": 4, "expires_at": accepted}),
+        *(("Record", record) for record in records),
+        ("PageAck", {"next_offset": 5, "expires_at": accepted}),
         ("SubmitRequest", request),
         ("SubmitResult", {"status": "accepted", "receipt": receipt}),
         ("SubmitResult", {"status": "conflict", "items": [
@@ -895,57 +1705,148 @@ def new_sync_wire():
             "status": "POLICY_LIMIT", "limit": "events_per_commit", "maximum": 500,
             "actual": 1200,
         }),
+        ("Receipt", receipt),
         ("Receipt", dict(receipt, published=None)),
         ("HistoryRequest", {"after": done, "limit": 512}),
-        ("HistoryRequest", {"after": {
-            "completed": start, "pending": {"commit_id": commit_id, "next_event_index": 1},
-        }, "limit": 1}),
+        ("HistoryRequest", {"after": pending, "limit": 1}),
+        ("HistoryPosition", pending),
         ("HistoryPage", {"after": done, "fragments": [fragment], "has_more": False}),
+        ("Fragment", fragment),
+        ("PublishedHeader", published_header),
+        ("PublishedHeader", dict(published_header, occurred_at=None, message=None)),
+        ("Event", item_row),
+        ("Event", ref_row),
+        ("StateRequest", {"after": state_start, "limit": 512}),
+        ("StatePosition", {"repository": identity, "changed_seq": 1, "item_id": second}),
+        ("StatePage", {
+            "after": state_start, "entries": [file_entry],
+            "departed": [{"item_id": gone, "changed_seq": 1}], "through": published,
+            "has_more": False,
+        }),
+        ("StateEntry", file_entry),
+        ("StateEntry", chat_entry),
+        ("ItemHistoriesRequest", {"repository": identity, "items": [
+            {"item_id": first, "after_seq": 3, "after_ref_seq": 0},
+            {"item_id": second, "after_seq": 7, "after_ref_seq": 2},
+        ], "limit": 512}),
+        ("ItemHistoriesPage", {"repository": identity, "pages": [first_history, second_history]}),
+        ("ItemHistoryPage", first_history),
+        ("ItemEvent", first_history["events"][0]),
+        ("ItemCommit", item_commit),
+        ("CommitLogRequest", {"repository": identity, "before_seq": None, "limit": 50}),
+        ("CommitLogRequest", {"repository": identity, "before_seq": 2, "limit": 50}),
+        ("CommitLogPage", {"commits": [summary], "has_more": False}),
+        ("CommitSummary", summary),
+        ("ObjectRequest", [entry["object_id"] for entry in pack]),
+        ("LeaseRequest", {"paths": ["docs/notes.txt"], "owner": "agent-1", "ttl": 600}),
+        ("Lease", {"token": "lease-token-1", "paths": [leased]}),
+        ("LeasedPath", leased),
+        ("Leases", [leased]),
+        ("LeaseRenewal", {"token": "lease-token-1", "ttl": 600}),
+        ("LeaseToken", {"token": "lease-token-1"}),
+        ("LeasePaths", ["docs"]),
+        ("Released", {"released": 1}),
+        ("Refusal", {"code": "INVALID"}),
+        ("Refusal", {"code": "LOCKED", "path": "docs/notes.txt", "owner": "agent-1"}),
+        ("Refusal", {"code": "OBJECTS_MISSING", "objects": [pack[0]["object_id"]]}),
+        ("ObjectPack", pack),
     ]
+    assert {kind for kind, _ in valid} == set(SHAPES)
+
+    def enc(shape, value):
+        return wire_encode(shape, value)
+
+    caps_tail = enc("Cursor", published) + enc("ServerPolicy", policy)
+    item_bytes = envelope(item_event)
+    guard = enc("Record", records[2])
+    assert item_bytes[35:37] == u16(0x22)
+    entry_bytes = enc("StateEntry", file_entry)
+    # item_id, item_type, changed_seq, head_seq, ref_head_seq, parent, name, no key, no link.
+    lifecycle_at = 16 + 6 + 8 + 8 + 8 + 17 + len(enc(("opt", "str"), "a.txt")) + 1 + 1
+    assert entry_bytes[lifecycle_at:lifecycle_at + 2] == u8(1) + u8(1)
+    good_header = commit_header(commit)
+    assert good_header[16] == 3
+    bad_header = good_header[:16] + u8(7) + good_header[17:]
+    ack = enc("PageAck", {"next_offset": 5, "expires_at": accepted})
     invalid = [
-        ("Capabilities", dict(capabilities, protocol_version=2), "another protocol version"),
-        ("Capabilities", dict(capabilities, extension=True), "unknown field"),
-        ("ProposalPage", {
-            "repository": identity, "operation_id": "op:guarded", "offset": 0,
-            "records": [{"kind": "note", "value": {}}],
-        }, "unknown record kind"),
-        ("ProposalPage", {
-            "repository": identity, "operation_id": "op:guarded", "offset": 0,
-            "records": [{"kind": "guard", "value": dict(records[2]["value"], note="x")}],
-        }, "unknown field in a guard"),
-        ("PageAck", {"next_offset": 4, "expires_at": accepted, "extension": 1}, "unknown field"),
-        ("SubmitRequest", dict(request, extension=True), "unknown field"),
-        ("SubmitResult", {"status": "maybe"}, "unknown status"),
-        ("SubmitResult", {
-            "status": "POLICY_LIMIT", "limit": "events_per_commit", "maximum": 500,
-            "actual": 1200, "extension": 1,
-        }, "unknown field"),
-        ("HistoryRequest", {"after": done, "limit": 0}, "limit below one"),
-        ("HistoryRequest", {"after": done, "limit": 513}, "limit above a page"),
-        ("HistoryPage", {
-            "after": done, "has_more": False, "fragments": [
-                dict(fragment, events=[dict(item_row, extension=1), ref_row]),
-            ],
-        }, "unknown field in an event row"),
-        ("HistoryPage", {
-            "after": done, "has_more": False, "fragments": [
-                dict(fragment, header=dict(fragment["header"], commit=dict(row, extension=1))),
-            ],
-        }, "unknown field in a commit row"),
+        ("Capabilities", enc("Capabilities", capabilities) + b"\0", "trailing byte"),
+        ("Capabilities", u16(1) + enc_bool(False) + caps_tail, "protocol version 1"),
+        ("Capabilities", u16(2) + u8(2) + caps_tail, "bool value 2"),
+        ("ServerPolicy", u8(2) + u64(500) + u8(0) + u8(0), "opt tag 2"),
+        ("RepositoryIdentity", uuid_bytes("019a2900-0000-4000-8000-000000000001")
+         + uuid_bytes(identity["generation"]), "repository ID is a UUIDv4"),
+        ("Cursor", enc("Cursor", published)[:-1], "truncated"),
+        ("Record", u8(0) + blob(item_bytes), "record tag 0"),
+        ("Record", u8(5) + blob(item_bytes), "record tag 5"),
+        ("Record", u8(1) + blob(envelope(ref_event)), "tag 1 holds an attached-ref envelope"),
+        ("Record", u8(2) + blob(item_bytes), "tag 2 holds an item envelope"),
+        ("Record", u8(1) + blob(item_bytes + b"\0"), "envelope with a trailing byte"),
+        ("Record", u8(1) + blob(u8(3) + item_bytes[1:]), "envelope with kind byte 3"),
+        ("Record", u8(1) + blob(item_bytes[:35] + u16(0x1022) + item_bytes[37:]),
+         "envelope with flag bit 12"),
+        ("Record", u8(1) + u32(len(item_bytes) + 1) + item_bytes, "blob runs past the end"),
+        ("Record", guard[:-8] + u64(0), "head guard with seq 0"),
+        ("Record", u8(4) + uuid_bytes(first) + u8(2) + u32(0), "subtree guard with bool 2"),
+        ("PageAck", u64(2**63) + ack[8:], "next_offset 2^63"),
+        ("PageAck", ack[:16] + u32(10**9), "nanoseconds 10^9"),
+        ("SubmitRequest", enc("SubmitRequest", request).replace(
+            enc_str("op:guarded"), enc_str("op:\0guard")), "operation ID holds U+0000"),
+        ("SubmitRequest", enc("SubmitRequest", request).replace(
+            blob(good_header), blob(bad_header)), "header flag bit 2"),
+        ("SubmitResult", u8(3), "status 3"),
+        ("SubmitResult", u8(2) + u8(4) + u64(500) + u64(1200), "policy limit code 4"),
+        ("SubmitResult", u8(2) + u8(0) + u64(500) + u64(1200), "policy limit code 0"),
+        ("HistoryRequest", enc("HistoryPosition", done) + u16(0), "limit 0"),
+        ("HistoryRequest", enc("HistoryPosition", done) + u16(513), "limit 513"),
+        ("HistoryPosition", enc("Cursor", start) + u8(1) + digest_bytes(commit_id) + u32(0),
+         "pending event index 0"),
+        ("PublishedHeader", enc("PublishedHeader", published_header).replace(
+            enc_str("device") + u8(3), enc_str("device") + u8(7)), "flag bit 2"),
+        ("Event", blob(item_bytes) + u64(4) + u8(2) + uuid_bytes(parent) + u8(0),
+         "target tag 2"),
+        ("Event", blob(item_bytes) + u64(4) + enc_target(parent), "item event without its before"),
+        ("StateEntry", entry_bytes.replace(
+            u8(1) + enc_str("bytes"), u8(2) + enc_str("bytes") + digest_bytes(
+                "sha256:" + "ab" * 32) + enc_str("attachment")), "content roles out of order"),
+        ("StateEntry", entry_bytes[:lifecycle_at] + u8(4) + entry_bytes[lifecycle_at + 1:],
+         "lifecycle state 4"),
+        ("StateEntry", entry_bytes[:lifecycle_at] + u8(0) + entry_bytes[lifecycle_at + 1:],
+         "lifecycle state 0"),
+        ("StateEntry", entry_bytes[:lifecycle_at + 1] + u8(3) + entry_bytes[lifecycle_at + 2:],
+         "sequencing mode 3"),
+        ("ObjectRequest", u32(0), "no object IDs"),
+        ("ObjectRequest", u32(513) + digest_bytes(pack[0]["object_id"]) * 513,
+         "513 object IDs"),
+        ("ItemHistoriesRequest", enc("RepositoryIdentity", identity) + u32(0) + u16(512),
+         "no items"),
+        ("Leases", u32(2) + enc("LeasedPath", leased), "list count past the end"),
+        ("Refusal", u8(0), "refusal code 0"),
+        ("Refusal", u8(14), "refusal code 14"),
+        ("Refusal", u8(1) + b"\0", "trailing byte"),
+        ("ObjectPack", b"", "no objects"),
+        ("ObjectPack", digest_bytes(sha_id(one)) + u64(5) + one, "size runs past the end"),
+        ("ObjectPack", digest_bytes(sha_id(one)) + u64(4) + b"two\n", "bytes do not match the ID"),
     ]
     save("sync-wire.json", {
-        "description": "One JSON value for each protocol shape. A `valid` value parses and "
-                       "serializes to the same JSON value; an `invalid` value is refused. "
-                       "`guarded` is one proposal with two head guards.",
-        "valid": [{"type": kind, "value": value} for kind, value in valid],
+        "description": "One value of each protocol 2 shape: `valid` gives its readable JSON "
+                       "`value` and its exact `bytes_hex`, which decode to that value; "
+                       "`invalid` gives bytes a receiver refuses. `guarded` is one proposal "
+                       "with two head guards and a subtree guard.",
+        "valid": [
+            {"type": kind, "value": value, "bytes_hex": wire(kind, value).hex()}
+            for kind, value in valid
+        ],
         "invalid": [
-            {"type": kind, "value": value, "reason": reason} for kind, value, reason in invalid
+            {"type": kind, "bytes_hex": refused(wire_message(kind), data), "reason": reason}
+            for kind, data, reason in invalid
         ],
         "guarded": {
-            "request": request, "records": records, "canonical_events": [
-                item_payload.decode("utf-8"), ref_payload.decode("utf-8"),
-            ],
-            "commit_id": commit_id, "request_digest": request_digest,
+            "request": request, "records": records,
+            "envelopes_hex": [data.hex() for data in envelopes],
+            "records_hex": [data.hex() for data in record_bytes],
+            "guards_digest": guards_digest,
+            "commit_id": commit_id, "request_hex": request_bytes.hex(),
+            "request_digest": request_digest,
         },
     })
 
@@ -971,14 +1872,12 @@ def new_repository():
     def file_metadata(name):
         return metadata({"content": {"size": len(blobs[name])}})
 
-    def label(version, item_seq, kind, order, operation, event_index, source=None):
+    def label(version, item_seq, kind, order):
         value = {
-            "file_item_id": notes, "version_id": f"019a2900-0000-7000-8000-00000000b00{version}",
-            "source_item_seq": item_seq, "source_commit_event_idx": event_index, "kind": kind,
-            "label_source": "INTERNAL", "order_key": order, "operation_id": operation,
+            "version_id": f"019a2900-0000-7000-8000-00000000b00{version}",
+            "source_item_seq": item_seq, "kind": kind, "label_source": "INTERNAL",
+            "order_key": order,
         }
-        if source:
-            value["source_commit_id"] = source
         return {
             "owner_item_id": notes, "event_type": "FILE_VERSION::CREATE",
             "base_ref_seq": version - 1, "metadata_id": metadata(value),
@@ -990,20 +1889,11 @@ def new_repository():
         {"item_id": notes, "event_type": "FILE::CREATE",
          "create_item": {"item_type": "FILE", "name": "notes.txt", "parent_folder_id": docs},
          "metadata_id": file_metadata("one\n"), "set_content": {"bytes": ids["one\n"]}},
-    ], [label(1, 1, "MINOR", 1024, "first-label", 1)]), ("Change the notes", [
+    ], [label(1, 1, "MINOR", 1024)]), ("Change the notes", [
         {"item_id": notes, "base_seq": 1, "event_type": "FILE::SET_CONTENT",
          "metadata_id": file_metadata("two\n"), "set_content": {"bytes": ids["two\n"]}},
-    ], [])]
-    second_commit = None
-
-    def identify(events, refs, message, seq):
-        pairs = [(0, sha(jcs_bytes(e))) for e in events] + [(1, sha(jcs_bytes(r))) for r in refs]
-        digest = events_digest(pairs) if pairs else empty_commit_digest(seq)
-        return sha_id(jcs_bytes(header("owner", "owner", None, message, len(pairs), digest))), digest
-
-    second_commit = identify(commits[1][1], commits[1][2], commits[1][0], 2)[0]
-    commits += [("Name the second revision", [], [
-        label(2, 2, "MAJOR", 2048, "second-label", 0, second_commit),
+    ], []), ("Name the second revision", [], [
+        label(2, 2, "MAJOR", 2048),
     ]), ("Nothing remains of this commit", [], []), ("Move the notes and file a task", [
         {"item_id": notes, "base_seq": 2, "event_type": "FILE::SET_PARENT", "set_parent": None},
         {"item_id": scratch, "event_type": "FILE::CREATE",
@@ -1018,31 +1908,31 @@ def new_repository():
     def quote(text):
         return "NULL" if text is None else "'" + text.replace("'", "''") + "'"
 
-    def blob(data):
+    def hexblob(data):
         return "X'" + data.hex().upper() + "'"
 
     def stamp(index):
         return f"2026-10-28T00:00:{index:02d}.000000001Z"
 
-    rows = {
-        "commits": [], "events": [], "refs": [], "checkpoints": [],
-    }
+    rows = {"commits": [], "events": [], "refs": []}
     items = {}
     created = {}
     previous = genesis(repo, generation)
     expected = []
     for index, (message, events, refs) in enumerate(commits, 1):
         at = stamp(index)
-        commit_id, digest = identify(events, refs, message, index)
+        envelopes = [checked_envelope(e) for e in events + refs]
+        commit_id = sha_id(checked_header(header("owner", "owner", None, message, envelopes, index)))
+        seconds, nanos = parse_time(at)
+        previous = checkpoint(previous, index, commit_id, seconds, nanos)
         pk = f"019a2900-0000-7000-8000-00000000c{index:03x}"
         replayed = replay_commit(items, {"events": events, "ref_events": refs, "message": message})
         rows["commits"].append(
             f"INSERT INTO vcs_commits VALUES({quote(repo)},{quote(pk)},"
-            f"{blob(bytes.fromhex(commit_id[7:]))},{index},NULL,6,'owner','owner',{quote(message)},"
-            f"NULL,{quote(at)},{len(events) + len(refs)},{blob(bytes.fromhex(digest[7:]))});"
+            f"{hexblob(digest_bytes(commit_id))},{index},NULL,'owner','owner',{quote(message)},"
+            f"NULL,{quote(at)},{len(envelopes)},{hexblob(previous)});"
         )
         for position, event in enumerate(events):
-            payload = jcs_bytes(event)
             item_id = event["item_id"]
             created.setdefault(item_id, at)
             seq = items.get(item_id, {"seq": 0})["seq"] + 1
@@ -1051,25 +1941,17 @@ def new_repository():
             rows["events"].append(
                 f"INSERT INTO vcs_events VALUES({quote(repo)},{quote(pk)},{position},"
                 f"{quote(item_id)},{seq},{quote(event['event_type'])},"
-                f"CAST({quote(payload.decode('utf-8'))} AS BLOB),{blob(sha(payload))},"
-                f"{quote(at)},{quote(after)},"
+                f"{hexblob(envelopes[position])},{quote(at)},{quote(after)},"
                 f"{quote(before if 'set_parent' in event else None)});"
             )
         for position, event in enumerate(refs, len(events)):
-            payload = jcs_bytes(event)
             owner = event["owner_item_id"]
             rows["refs"].append(
                 f"INSERT INTO vcs_ref_events VALUES({quote(repo)},{quote(pk)},{position},"
                 f"{quote(owner)},{event['base_ref_seq'] + 1},{quote(event['event_type'])},"
-                f"CAST({quote(payload.decode('utf-8'))} AS BLOB),{blob(sha(payload))},{quote(at)});"
+                f"{hexblob(envelopes[position])},{quote(at)});"
             )
         items = replayed
-        seconds, nanos = accepted_time(at)
-        previous = checkpoint(previous, index, commit_id, seconds, nanos)
-        rows["checkpoints"].append(
-            f"INSERT INTO vcs_checkpoints VALUES({quote(repo)},{index},"
-            f"{blob(bytes.fromhex(commit_id[7:]))},{blob(previous)});"
-        )
         expected.append({
             "repo_seq": index, "commit_id": commit_id, "checkpoint": "sha256:" + previous.hex(),
             "state_digest": state_digest(items),
@@ -1089,10 +1971,10 @@ def new_repository():
         f"{quote(stamp(len(commits)))});",
         *(
             f"INSERT INTO vcs_metadata_objects VALUES({quote(repo)},"
-            f"{blob(bytes.fromhex(object_id[7:]))},{blob(payload)});"
+            f"{hexblob(digest_bytes(object_id))},{hexblob(payload)});"
             for object_id, payload in sorted(stored.items())
         ),
-        *rows["commits"], *rows["events"], *rows["refs"], *item_rows, *rows["checkpoints"],
+        *rows["commits"], *rows["events"], *rows["refs"], *item_rows,
     ]) + "\n"
     database = sqlite3.connect(":memory:")
     database.execute("PRAGMA foreign_keys = ON")
@@ -1101,7 +1983,7 @@ def new_repository():
 
     write("repository/rows.sql", text)
     write("repository/config.json", json.dumps({
-        "format_version": 7, "repo_id": repo, "authority": "FOLLOWER", "storage_mode": "WHOLE_FILE",
+        "format_version": 8, "repo_id": repo, "authority": "FOLLOWER", "storage_mode": "WHOLE_FILE",
     }, indent=2) + "\n")
     for name, data in blobs.items():
         write("repository/objects/" + ids[name][7:], data.decode("utf-8"))
@@ -1178,6 +2060,8 @@ def replay_commit(items, commit):
     heads = {i: v["seq"] for i, v in items.items()}
     changed_links = set()
     created, rebound, mode_changed = set(), set(), set()
+    for event in commit["events"] + commit.get("ref_events", []):
+        envelope(event)  # every case must have bytes
     for event in commit["events"]:
         item_id = event["item_id"]
         create = event.get("create_item")
@@ -1191,8 +2075,6 @@ def replay_commit(items, commit):
         if modifies and ("set_is_federated" in event or "set_federation_stream_id" in event):
             raise Invalid("a federation transition changes nothing else")
         if source is not None:
-            if set(source) != {"item_id", "item_seq"}:
-                raise Invalid("unknown source field")
             if source["item_id"] == item_id:
                 raise Invalid("an item is not its own source")
             if not 1 <= source["item_seq"] <= heads.get(source["item_id"], 0):
@@ -1205,14 +2087,7 @@ def replay_commit(items, commit):
                 raise Invalid("created twice")
             kind = create["item_type"]
             check_item_type(kind)
-            if set(create) - {"item_type", "name", "parent_folder_id", "key", "link",
-                              "derived_from"}:
-                raise Invalid("unknown create field")
             tree = "name" in create
-            if tree and ("key" in create or "link" in create):
-                raise Invalid("tree item with key or link")
-            if not tree and "parent_folder_id" in create:
-                raise Invalid("record with parent")
             if tree and kind in RECORD_TYPES:
                 raise Invalid("record type in tree form")
             if not tree and kind in TREE_TYPES:
@@ -1259,8 +2134,6 @@ def replay_commit(items, commit):
             item["link"] = event["set_link"]
             changed_links.add(item_id)
         if "set_tombstoned" in event:
-            if not event["set_tombstoned"]:
-                raise Invalid("a tombstone is permanent")
             item["life"] = "TOMBSTONED"
         if "set_in_trash" in event:
             if event["set_in_trash"] and item["life"] == "LIVE":
@@ -1403,15 +2276,6 @@ def new_records():
             "create_item": {"item_type": "TASK", "name": "a"},
         }], False)]),
         ("tree item without name", [([record("r1", "FOLDER")], False)]),
-        ("record with parent", [([record("r1", "TASK", parent_folder_id=f1)], False)]),
-        ("tree item with key", [([{
-            "item_id": ids["r1"], "event_type": "FOLDER::CREATE",
-            "create_item": {"item_type": "FOLDER", "name": "a", "key": "k"},
-        }], False)]),
-        ("tree item with link", [([folder("F"), {
-            "item_id": ids["r1"], "event_type": "FOLDER::CREATE",
-            "create_item": {"item_type": "FOLDER", "name": "a", "link": f1},
-        }], False)]),
         ("empty key", [([record("r1", "CHAT", key="")], False)]),
         ("file created with bytes", [([{
             "item_id": ids["r1"], "event_type": "FILE::CREATE",
@@ -1720,10 +2584,6 @@ def new_records():
             ([update("r1", 1, "FILE::SET_PARENT", set_parent=f1)], True),
             ([update("r1", 2, "FILE::TOMBSTONE", set_tombstoned=True)], True),
         ]),
-        ("a tombstone is permanent", [
-            ([record("r1", "TASK")], True),
-            ([update("r1", 1, "ITEM::NOTE", set_tombstoned=False)], False),
-        ]),
         ("no event follows a tombstone in one commit", [
             ([record("r1", "TASK")], True),
             ([update("r1", 1, "TASK::TOMBSTONE", set_tombstoned=True),
@@ -1874,7 +2734,7 @@ def bundle_end(lines, tip):
 
 
 def bundle_valid(text, genesis_value):
-    """The end-record rules alone: a reader checks these before accepting anything."""
+    """The end-record rules, event times and commit IDs."""
     if not text.endswith("\n"):
         return False
     lines = text.split("\n")[:-1]
@@ -1892,18 +2752,21 @@ def bundle_valid(text, genesis_value):
         return False
     commits = [record for record in records if record["type"] == "commit"]
     tip = commits[-1]["checkpoint"] if commits else genesis_value
-    times = {record["commit_id"]: accepted_time(record["created_at"]) for record in commits}
-    if any(
-        record["type"] == "event" and accepted_time(record["created_at"]) != times[record["commit_id"]]
-        for record in records
-    ):
+    times = {record["commit_id"]: parse_time(record["created_at"]) for record in commits}
+    events = [record for record in records if record["type"] in ("event", "ref_event")]
+    if any(parse_time(record["created_at"]) != times[record["commit_id"]] for record in events):
         return False
-    if any(
-        record["event_count"] == 0
-        and record["events_digest"] != empty_commit_digest(record["repo_seq"])
-        for record in commits
-    ):
-        return False
+    for commit in commits:
+        envelopes = [
+            bytes.fromhex(record["payload_hex"]) for record in events
+            if record["commit_id"] == commit["commit_id"]
+        ]
+        value = header(
+            commit["author_id"], commit["committer_id"], commit["occurred_at"],
+            commit["message"], envelopes, commit["repo_seq"],
+        )
+        if commit["event_count"] != len(envelopes) or sha_id(commit_header(value)) != commit["commit_id"]:
+            return False
     return (
         end["record_count"] == len(records)
         and end["checkpoint"] == tip
@@ -1921,10 +2784,9 @@ def new_bundle():
     content = "sha256:" + "ab" * 32
     meta = salted_utf8(bytes([9]) * 32, jcs_bytes({"content": {"size": 1}}))
     head = bundle_line({
-        "type": "synck_vcs_bundle_header", "bundle_format_version": 5, "repo_id": repo,
+        "type": "synck_vcs_bundle_header", "bundle_format_version": 6, "repo_id": repo,
         "history_generation": generation, "encrypted": False, "exported_at": at,
-        "schema": {"subsystem": "synck_vcs_sqlite", "schema_id": "core-v7"},
-        "commit_format_version": 6,
+        "schema": {"subsystem": "synck_vcs_sqlite", "schema_id": "core-v8"},
     })
     first = {
         "item_id": folder_id, "event_type": "FOLDER::CREATE",
@@ -1935,11 +2797,9 @@ def new_bundle():
         "create_item": {"item_type": "FILE", "name": "a.txt", "parent_folder_id": folder_id},
         "metadata_id": sha_id(meta), "set_content": {"bytes": content},
     }
-    pairs = [(0, sha(jcs_bytes(first))), (0, sha(jcs_bytes(second)))]
-    digest = events_digest(pairs)
-    commit = header("owner", "device", None, "add a file", 2, digest)
-    commit_id = sha_id(jcs_bytes(commit))
-    seconds, nanos = accepted_time(at)
+    envelopes = [checked_envelope(first), checked_envelope(second)]
+    commit_id = sha_id(checked_header(header("owner", "device", None, "add a file", envelopes)))
+    seconds, nanos = parse_time(at)
     base = genesis(repo, generation)
     tip = "sha256:" + checkpoint(base, 1, commit_id, seconds, nanos).hex()
 
@@ -1947,8 +2807,7 @@ def new_bundle():
         return bundle_line({
             "type": "event", "commit_id": commit_id, "repo_seq": 1, "commit_event_idx": index,
             "item_id": value["item_id"], "item_seq": 1, "event_type": value["event_type"],
-            "payload_json": jcs(value), "event_payload_digest": "sha256:" + pairs[index][1].hex(),
-            "created_at": at, "parent_folder_id": parent, "parent_folder_id_before": None,
+            "payload_hex": envelopes[index].hex(), "created_at": at, "parent_folder_id": parent, "parent_folder_id_before": None,
         })
 
     def item(item_id, kind, parent, name):
@@ -1964,9 +2823,9 @@ def new_bundle():
         bundle_line({"type": "metadata", "object_id": sha_id(meta), "payload_hex": meta.hex()}),
         bundle_line({
             "type": "commit", "commit_id": commit_id, "checkpoint": tip, "repo_seq": 1,
-            "operation_id": "op:1", "format_version": 6, "author_id": "owner",
+            "operation_id": "op:1", "author_id": "owner",
             "committer_id": "device", "message": "add a file", "occurred_at": None,
-            "created_at": at, "event_count": 2, "events_digest": digest,
+            "created_at": at, "event_count": 2,
         }),
         event(0, first, None),
         event(1, second, folder_id),
@@ -1994,23 +2853,24 @@ def new_bundle():
 
     blank = lines[:3] + ["\n"] + lines[3:]
 
-    def with_empty_commit(digest):
-        commit_id = sha_id(jcs_bytes(header("owner", "device", None, "nothing left", 0, digest)))
+    def with_empty_commit(position):
+        commit_id = sha_id(commit_header(header(
+            "owner", "device", None, "nothing left", [], position)))
         end_tip = "sha256:" + checkpoint(
-            bytes.fromhex(tip[7:]), 2, commit_id, *accepted_time(at)).hex()
+            bytes.fromhex(tip[7:]), 2, commit_id, *parse_time(at)).hex()
         body = lines[:5] + [bundle_line({
             "type": "commit", "commit_id": commit_id, "checkpoint": end_tip, "repo_seq": 2,
-            "operation_id": None, "format_version": 6, "author_id": "owner",
+            "operation_id": None, "author_id": "owner",
             "committer_id": "device", "message": "nothing left", "occurred_at": None,
-            "created_at": at, "event_count": 0, "events_digest": digest,
+            "created_at": at, "event_count": 0,
         })] + lines[5:]
         return "".join(body) + bundle_end(body, end_tip)
 
     cases = [
         ("complete", whole, True),
         ("empty history", head + bundle_end([head], genesis_value), True),
-        ("a commit with no events", with_empty_commit(empty_commit_digest(2)), True),
-        ("an empty commit hashes its position", with_empty_commit(events_digest([])), False),
+        ("a commit with no events", with_empty_commit(2), True),
+        ("an empty commit hashes its position", with_empty_commit(1), False),
         ("blank body line", "".join(blank) + bundle_end(blank, tip), True),
         ("event spells the same instant another way", event_time("2026-10-30T12:00:00Z"), True),
         ("event time differs from its commit", event_time("2026-10-30T12:00:00.000000001Z"), False),

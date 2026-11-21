@@ -397,17 +397,13 @@ pub(crate) fn materialize_events(
         events.push(proposal);
         if initial_file {
             let file_id = file_id.expect("materialized content has an item ID");
-            let source_commit_event_idx = i32::try_from(events.len() - 1)
-                .map_err(|_| LocalError::Invalid("commit event index overflow".to_string()))?;
             let version_id = Uuid::now_v7().to_string();
             ref_events.push(
                 synck_file_folder::file_versions::automatic_initial_ref_event(
-                    repo_id,
                     &file_id,
                     &version_id,
                     0,
                     1,
-                    source_commit_event_idx,
                 )
                 .map_err(LocalError::Invalid)?,
             );

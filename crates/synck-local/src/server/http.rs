@@ -1,26 +1,27 @@
-//! The served repositories and the protocol-1 routes under
-//! `/v1/repositories/{repo_id}/sync` (`synck/docs/spec/protocol.md`).
+//! The served repositories and the protocol 2 routes under
+//! `/v2/repositories/{repo_id}/sync` (`synck/docs/spec/protocol.md`). The
+//! state-read routes (`/state`, `/items/histories`, `/commits`) are a Hub's;
+//! this reference server answers them `NOT_FOUND`.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use axum::Router;
 use axum::body::{Body, Bytes};
 use axum::extract::{DefaultBodyLimit, Path as UrlPath, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
-use axum::{Json, Router};
 use futures_util::TryStreamExt as _;
 use rand::RngCore as _;
-use serde::de::DeserializeOwned;
 use sha2::{Digest as _, Sha256};
 use synck_sync::{
-    Capabilities, HistoryPage, HistoryRequest, Lease, LeasePaths, LeaseRenewal, LeaseRequest,
-    LeaseToken, LeasedPath, Leases, MAX_PACK_OBJECTS, MAX_PAGE_BYTES, ObjectRequest, PACK_BYTES,
-    PACK_HEADER_BYTES, PageAck, ProposalPage, ProposalRecord, ProtocolError, Receipt, Released,
-    SubmitRequest, SubmitResult, validate_submit,
+    HistoryRequest, Lease, LeasePaths, LeaseRenewal, LeaseRequest, LeaseToken, LeasedPath, Leases,
+    MAX_PACK_OBJECTS, MAX_PAGE_BYTES, ObjectRequest, PACK_BYTES, PACK_HEADER_BYTES, ProposalPage,
+    ProposalRecord, ProtocolError, Receipt, Released, SubmitRequest, SubmitResult, Wire,
+    validate_submit,
 };
 use synck_vcs::types::{ObjectId, RepoId};
 use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWriteExt as _};
@@ -199,7 +200,7 @@ impl Server {
 }
 
 pub fn router(server: Arc<Server>) -> Router {
-    let sync = "/v1/repositories/{repo_id}/sync";
+    let sync = "/v2/repositories/{repo_id}/sync";
     Router::new()
         .route(&format!("{sync}/capabilities"), get(capabilities))
         .route(
@@ -233,29 +234,30 @@ pub fn router(server: Arc<Server>) -> Router {
                 .layer(DefaultBodyLimit::max(MAX_SUBMIT_BYTES))
                 .put(upload_objects),
         )
-        .route(
-            &format!("{sync}/objects/{{object_id}}"),
-            get(download_object).put(upload_object),
-        )
         .fallback(|| async { Error::NotFound })
         .with_state(server)
 }
 
-fn json<T: DeserializeOwned>(body: &[u8]) -> Result<T> {
-    serde_json::from_slice(body).map_err(|error| Error::Invalid(error.to_string()))
+fn message<T: Wire>(body: &[u8]) -> Result<T> {
+    Ok(synck_sync::decode(body)?)
+}
+
+fn reply<T: Wire>(value: &T) -> Result<Response> {
+    let body = synck_sync::encode(value)?;
+    Ok(([(header::CONTENT_TYPE, "application/octet-stream")], body).into_response())
 }
 
 async fn capabilities(
     State(server): State<Arc<Server>>,
     UrlPath(repo_id): UrlPath<String>,
     headers: HeaderMap,
-) -> Result<Json<Capabilities>> {
+) -> Result<Response> {
     let repository = server.authorize(&headers, &repo_id, Access::Read).await?;
     let capabilities = server
         .jobs
         .run(move || Ok(repository.capabilities()?))
         .await?;
-    Ok(Json(capabilities))
+    reply(&capabilities)
 }
 
 async fn upload_page(
@@ -263,9 +265,9 @@ async fn upload_page(
     UrlPath((repo_id, operation_id, offset)): UrlPath<(String, String, u64)>,
     headers: HeaderMap,
     body: Bytes,
-) -> Result<Json<PageAck>> {
+) -> Result<Response> {
     let repository = server.authorize(&headers, &repo_id, Access::Write).await?;
-    let page: ProposalPage = json(&body)?;
+    let page: ProposalPage = message(&body)?;
     if page.operation_id != operation_id || page.offset != offset {
         return Err(Error::Invalid(
             "the page names another operation or offset".into(),
@@ -276,7 +278,7 @@ async fn upload_page(
         .jobs
         .run(move || job.uploads.put_page(&repository.identity()?, &page))
         .await?;
-    Ok(Json(ack))
+    reply(&ack)
 }
 
 async fn submit(
@@ -284,9 +286,9 @@ async fn submit(
     UrlPath(repo_id): UrlPath<String>,
     headers: HeaderMap,
     body: Bytes,
-) -> Result<Json<SubmitResult>> {
+) -> Result<Response> {
     let repository = server.authorize(&headers, &repo_id, Access::Write).await?;
-    let request: SubmitRequest = json(&body)?;
+    let request: SubmitRequest = message(&body)?;
     let lock_tokens = headers
         .get_all(LOCK_TOKEN)
         .iter()
@@ -302,14 +304,14 @@ async fn submit(
         .jobs
         .run(move || job.submit(&repository, request, lock_tokens))
         .await?;
-    Ok(Json(result))
+    reply(&result)
 }
 
 async fn receipt(
     State(server): State<Arc<Server>>,
     UrlPath((repo_id, operation_id)): UrlPath<(String, String)>,
     headers: HeaderMap,
-) -> Result<Json<Receipt>> {
+) -> Result<Response> {
     let repository = server.authorize(&headers, &repo_id, Access::Read).await?;
     let job = server.clone();
     let receipt = server
@@ -331,7 +333,7 @@ async fn receipt(
             })
         })
         .await?;
-    Ok(Json(receipt))
+    reply(&receipt)
 }
 
 async fn history(
@@ -339,9 +341,9 @@ async fn history(
     UrlPath(repo_id): UrlPath<String>,
     headers: HeaderMap,
     body: Bytes,
-) -> Result<Json<HistoryPage>> {
+) -> Result<Response> {
     let repository = server.authorize(&headers, &repo_id, Access::Read).await?;
-    let request: HistoryRequest = json(&body)?;
+    let request: HistoryRequest = message(&body)?;
     let page = server
         .jobs
         .run(move || {
@@ -353,7 +355,7 @@ async fn history(
                 .ok_or(Error::Protocol(ProtocolError::Checkpoint))
         })
         .await?;
-    Ok(Json(page))
+    reply(&page)
 }
 
 fn leased(locks: Vec<crate::AgentLock>) -> Vec<LeasedPath> {
@@ -371,15 +373,15 @@ async fn leases(
     State(server): State<Arc<Server>>,
     UrlPath(repo_id): UrlPath<String>,
     headers: HeaderMap,
-) -> Result<Json<Leases>> {
+) -> Result<Response> {
     let repository = server.authorize(&headers, &repo_id, Access::Read).await?;
     let locks = server
         .jobs
         .run(move || Ok(repository.reservations()?))
         .await?;
-    Ok(Json(Leases {
+    reply(&Leases {
         locks: leased(locks),
-    }))
+    })
 }
 
 async fn reserve(
@@ -387,17 +389,17 @@ async fn reserve(
     UrlPath(repo_id): UrlPath<String>,
     headers: HeaderMap,
     body: Bytes,
-) -> Result<Json<Lease>> {
+) -> Result<Response> {
     let repository = server.authorize(&headers, &repo_id, Access::Write).await?;
-    let request: LeaseRequest = json(&body)?;
+    let request: LeaseRequest = message(&body)?;
     let lease = server
         .jobs
-        .run(move || Ok(repository.reserve(request.paths, &request.owner, request.ttl)?))
+        .run(move || Ok(repository.reserve(request.paths, &request.owner, request.ttl.into())?))
         .await?;
-    Ok(Json(Lease {
+    reply(&Lease {
         token: lease.token,
         locks: leased(lease.locks),
-    }))
+    })
 }
 
 async fn renew(
@@ -407,10 +409,10 @@ async fn renew(
     body: Bytes,
 ) -> Result<StatusCode> {
     let repository = server.authorize(&headers, &repo_id, Access::Write).await?;
-    let request: LeaseRenewal = json(&body)?;
+    let request: LeaseRenewal = message(&body)?;
     server
         .jobs
-        .run(move || Ok(repository.renew_reservation(&request.token, request.ttl)?))
+        .run(move || Ok(repository.renew_reservation(&request.token, request.ttl.into())?))
         .await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -420,16 +422,16 @@ async fn release(
     UrlPath(repo_id): UrlPath<String>,
     headers: HeaderMap,
     body: Bytes,
-) -> Result<Json<Released>> {
+) -> Result<Response> {
     let repository = server.authorize(&headers, &repo_id, Access::Write).await?;
-    let request: LeaseToken = json(&body)?;
+    let request: LeaseToken = message(&body)?;
     let released = server
         .jobs
         .run(move || Ok(repository.release_reservation(&request.token)?))
         .await?;
-    Ok(Json(Released {
+    reply(&Released {
         released: released as u64,
-    }))
+    })
 }
 
 async fn break_leases(
@@ -437,53 +439,16 @@ async fn break_leases(
     UrlPath(repo_id): UrlPath<String>,
     headers: HeaderMap,
     body: Bytes,
-) -> Result<Json<Released>> {
+) -> Result<Response> {
     let repository = server.authorize(&headers, &repo_id, Access::Write).await?;
-    let request: LeasePaths = json(&body)?;
+    let request: LeasePaths = message(&body)?;
     let released = server
         .jobs
         .run(move || Ok(repository.break_reservations(&request.paths)?))
         .await?;
-    Ok(Json(Released {
+    reply(&Released {
         released: released as u64,
-    }))
-}
-
-fn object_id(text: &str) -> Result<ObjectId> {
-    ObjectId::parse(text).map_err(|error| Error::Invalid(error.to_string()))
-}
-
-async fn download_object(
-    State(server): State<Arc<Server>>,
-    UrlPath((repo_id, object_id_text)): UrlPath<(String, String)>,
-    headers: HeaderMap,
-) -> Result<Response> {
-    let repository = server.authorize(&headers, &repo_id, Access::Read).await?;
-    let id = object_id(&object_id_text)?;
-    let (checked, checked_id) = (repository.clone(), id.clone());
-    if let Some(bytes) = server
-        .jobs
-        .run(move || Ok(checked.metadata_object(&checked_id)?))
-        .await?
-    {
-        return Ok(([(header::CONTENT_TYPE, "application/octet-stream")], bytes).into_response());
-    }
-    let (checked, checked_id) = (repository.clone(), id.clone());
-    if !server
-        .jobs
-        .run(move || Ok(checked.has_object(&checked_id)?))
-        .await?
-    {
-        return Err(Error::ObjectMissing);
-    }
-    let body = server
-        .jobs
-        .stream(move |out| {
-            repository.copy_object(&id, out)?;
-            Ok(())
-        })
-        .await?;
-    Ok(([(header::CONTENT_TYPE, "application/octet-stream")], body).into_response())
+    })
 }
 
 /// Removes an object upload however its request ends.
@@ -543,26 +508,6 @@ async fn stage(
     Ok(staged)
 }
 
-async fn upload_object(
-    State(server): State<Arc<Server>>,
-    UrlPath((repo_id, object_id_text)): UrlPath<(String, String)>,
-    headers: HeaderMap,
-    body: Body,
-) -> Result<StatusCode> {
-    let repository = server.authorize(&headers, &repo_id, Access::Write).await?;
-    let id = object_id(&object_id_text)?;
-    let staged = stage(&server, body_reader(body), &id).await?;
-    server
-        .jobs
-        .run(move || {
-            repository.install_objects([(&id, staged.0.as_path())])?;
-            drop(staged);
-            Ok(())
-        })
-        .await?;
-    Ok(StatusCode::NO_CONTENT)
-}
-
 /// An object pack: entries of `PACK_HEADER_BYTES` and the object's bytes.
 /// All are checked before any is stored, then stored under one lock.
 async fn upload_objects(
@@ -592,11 +537,16 @@ async fn upload_objects(
             )));
         }
         let (id, size) = header.split_at(PACK_HEADER_BYTES - 8);
-        let id =
-            object_id(std::str::from_utf8(id).map_err(|error| Error::Invalid(error.to_string()))?)?;
+        let id = ObjectId::from_digest(id.try_into().expect("32 bytes"));
         let size = u64::from_be_bytes(size.try_into().expect("eight bytes"));
+        if size > i64::MAX as u64 {
+            return Err(Error::Invalid("an object size exceeds 2^63 - 1".into()));
+        }
         let file = stage(&server, (&mut body).take(size), &id).await?;
         staged.push((id, file));
+    }
+    if staged.is_empty() {
+        return Err(Error::Invalid("an object pack holds no objects".into()));
     }
     server
         .jobs
@@ -618,12 +568,7 @@ async fn download_objects(
     body: Bytes,
 ) -> Result<Response> {
     let repository = server.authorize(&headers, &repo_id, Access::Read).await?;
-    let request: ObjectRequest = json(&body)?;
-    if request.objects.is_empty() || request.objects.len() > MAX_PACK_OBJECTS {
-        return Err(Error::Invalid(format!(
-            "ask for 1 to {MAX_PACK_OBJECTS} objects"
-        )));
-    }
+    let request: ObjectRequest = message(&body)?;
     let checked = repository.clone();
     let ids = request.objects;
     let (ids, entries) = server
@@ -644,7 +589,7 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-/// Plain HTTP on loopback only: protocol 1 requires TLS on any network, so a
+/// Plain HTTP on loopback only: protocol 2 requires TLS on any network, so a
 /// proxy on this host terminates it.
 pub async fn serve(server: Server, listen: SocketAddr) -> Result<()> {
     if !listen.ip().is_loopback() {

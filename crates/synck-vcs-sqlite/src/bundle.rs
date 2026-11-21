@@ -8,8 +8,8 @@ use std::sync::Arc;
 use rusqlite::params;
 use synck_vcs::bundle::{
     BundleCommitRecord, BundleHeader, BundleReader, BundleRecord, BundleSchema, ImportFailure,
-    bounded_commit_payload_bytes, parse_rfc3339_utc, validate_bundle_event_payload_json_and_digest,
-    validate_bundle_ref_event_payload_json_and_digest, validate_import_repo_seq,
+    bounded_commit_payload_bytes, bundle_event_payload, bundle_ref_event_payload,
+    parse_rfc3339_utc, validate_import_repo_seq,
 };
 use synck_vcs::config::CoreConfig;
 use synck_vcs::repo::Repo;
@@ -70,7 +70,6 @@ impl PendingCommit {
                 commit_pk: CommitPk::new(),
                 repo_seq: Some(record.repo_seq),
                 operation_id: record.operation_id,
-                format_version: record.format_version,
                 author_id: record.author_id,
                 committer_id: record.committer_id,
                 message: record.message,
@@ -81,7 +80,6 @@ impl PendingCommit {
                     .transpose()?,
                 created_at: parse_rfc3339_utc(&record.created_at)?,
                 commit_id: CommitId::parse_stored(&record.commit_id)?,
-                events_digest: Sha256Digest::parse_stored(&record.events_digest)?,
                 event_count: record.event_count,
             },
             events: Vec::new(),
@@ -118,13 +116,11 @@ impl PendingCommit {
         let commit = VerifyCommit {
             commit_id: Some(row.commit_id.clone()),
             repo_seq: row.repo_seq,
-            format_version: row.format_version,
             committer_id: row.committer_id.clone(),
             occurred_at: row.occurred_at,
             author_id: row.author_id.clone(),
             message: row.message.clone(),
             event_count: Some(row.event_count),
-            events_digest: Some(row.events_digest.clone()),
         };
         let findings =
             verifier.verify_commit_events(&commit, self.events.iter().map(PendingEvent::borrowed));
@@ -138,7 +134,7 @@ impl PendingCommit {
             .conn()
             .map_err(detail)?
             .query_row(
-                "SELECT checkpoint FROM vcs_checkpoints WHERE repo_id=?1 AND repo_seq=?2",
+                "SELECT checkpoint FROM vcs_commits WHERE repo_id=?1 AND repo_seq=?2",
                 params![repo_id.as_str(), row.repo_seq],
                 |row| row.get(0),
             )
@@ -158,10 +154,6 @@ impl PendingCommit {
                         event_type: event.event_type,
                         payload: event.payload,
                         metadata: None,
-                        event_payload_digest: event
-                            .event_payload_digest
-                            .try_into()
-                            .expect("validated SHA-256"),
                         created_at,
                         parent_folder_id: event.parent_folder_id,
                         parent_folder_id_before: event.parent_folder_id_before,
@@ -178,10 +170,6 @@ impl PendingCommit {
                         event_type: event.event_type,
                         payload: event.payload,
                         metadata: None,
-                        event_payload_digest: event
-                            .event_payload_digest
-                            .try_into()
-                            .expect("validated SHA-256"),
                         created_at,
                     })
                     .await
@@ -271,7 +259,6 @@ async fn install(
     for table in [
         "vcs_metadata_objects",
         "vcs_commits",
-        "vcs_checkpoints",
         "vcs_events",
         "vcs_ref_events",
         "vcs_items",
@@ -352,7 +339,7 @@ async fn install(
                     record.repo_seq,
                     record.commit_event_idx,
                     created_at,
-                    record.payload_json.len(),
+                    record.payload_hex.len() / 2,
                 )?;
                 if record.item_seq == 1 {
                     origins.insert(
@@ -360,18 +347,14 @@ async fn install(
                         (created_at, current.row.author_id.clone()),
                     );
                 }
-                let hash = validate_bundle_event_payload_json_and_digest(
-                    &record.payload_json,
-                    &record.event_payload_digest,
-                )?;
+                let payload = bundle_event_payload(&record.payload_hex)?;
                 current.events.push(PendingEvent::Item(
                     VerifyEvent {
                         commit_event_idx: record.commit_event_idx,
                         item_id: item_id(record.item_id)?,
                         item_seq: record.item_seq,
                         event_type: record.event_type,
-                        payload: record.payload_json.into_bytes(),
-                        event_payload_digest: hash.to_vec(),
+                        payload,
                         parent_folder_id: optional_item_id(record.parent_folder_id)?,
                         parent_folder_id_before: optional_item_id(record.parent_folder_id_before)?,
                     },
@@ -388,20 +371,16 @@ async fn install(
                     record.repo_seq,
                     record.commit_event_idx,
                     created_at,
-                    record.payload_json.len(),
+                    record.payload_hex.len() / 2,
                 )?;
-                let hash = validate_bundle_ref_event_payload_json_and_digest(
-                    &record.payload_json,
-                    &record.event_payload_digest,
-                )?;
+                let payload = bundle_ref_event_payload(&record.payload_hex)?;
                 current.events.push(PendingEvent::Ref(
                     VerifyRefEvent {
                         commit_event_idx: record.commit_event_idx,
                         owner_item_id: item_id(record.owner_item_id)?,
                         ref_seq: record.ref_seq,
                         event_type: record.event_type,
-                        payload: record.payload_json.into_bytes(),
-                        event_payload_digest: hash.to_vec(),
+                        payload,
                     },
                     created_at,
                 ));

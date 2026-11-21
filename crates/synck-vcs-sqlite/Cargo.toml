@@ -13,7 +13,7 @@ synck-vcs = { path = "../synck-vcs" }
 synck-sync = { path = "../synck-sync" }
 async-trait.workspace = true
 chrono.workspace = true
-rusqlite = { workspace = true, features = ["blob"] }
+rusqlite = { workspace = true, features = ["blob", "functions"] }
 serde_json.workspace = true
 hex.workspace = true
 uuid.workspace = true

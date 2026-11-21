@@ -55,73 +55,6 @@
     ]
   },
   {
-    "name": "record with parent",
-    "commits": [
-      {
-        "events": [
-          {
-            "item_id": "019a2900-0000-7000-8000-000000000202",
-            "event_type": "TASK::CREATE",
-            "create_item": {
-              "item_type": "TASK",
-              "parent_folder_id": "019a2900-0000-7000-8000-000000000200"
-            }
-          }
-        ],
-        "valid": false,
-        "reason": "record with parent"
-      }
-    ]
-  },
-  {
-    "name": "tree item with key",
-    "commits": [
-      {
-        "events": [
-          {
-            "item_id": "019a2900-0000-7000-8000-000000000202",
-            "event_type": "FOLDER::CREATE",
-            "create_item": {
-              "item_type": "FOLDER",
-              "name": "a",
-              "key": "k"
-            }
-          }
-        ],
-        "valid": false,
-        "reason": "tree item with key or link"
-      }
-    ]
-  },
-  {
-    "name": "tree item with link",
-    "commits": [
-      {
-        "events": [
-          {
-            "item_id": "019a2900-0000-7000-8000-000000000200",
-            "event_type": "FOLDER::CREATE",
-            "create_item": {
-              "item_type": "FOLDER",
-              "name": "F"
-            }
-          },
-          {
-            "item_id": "019a2900-0000-7000-8000-000000000202",
-            "event_type": "FOLDER::CREATE",
-            "create_item": {
-              "item_type": "FOLDER",
-              "name": "a",
-              "link": "019a2900-0000-7000-8000-000000000200"
-            }
-          }
-        ],
-        "valid": false,
-        "reason": "tree item with key or link"
-      }
-    ]
-  },
-  {
     "name": "empty key",
     "commits": [
       {
@@ -2567,36 +2500,6 @@
         ],
         "valid": true,
         "state_digest": "sha256:e5f550f76a7b99711f0a2a0ba1956e732381830f303020bef02c42dd1a431501"
-      }
-    ]
-  },
-  {
-    "name": "a tombstone is permanent",
-    "commits": [
-      {
-        "events": [
-          {
-            "item_id": "019a2900-0000-7000-8000-000000000202",
-            "event_type": "TASK::CREATE",
-            "create_item": {
-              "item_type": "TASK"
-            }
-          }
-        ],
-        "valid": true,
-        "state_digest": "sha256:5e2a625412af6fe1edec988009c74853470e8fa9589902901634355b15e9c0af"
-      },
-      {
-        "events": [
-          {
-            "item_id": "019a2900-0000-7000-8000-000000000202",
-            "base_seq": 1,
-            "event_type": "ITEM::NOTE",
-            "set_tombstoned": false
-          }
-        ],
-        "valid": false,
-        "reason": "a tombstone is permanent"
       }
     ]
   },

@@ -27,16 +27,15 @@ use crate::transition::{
     ItemState, TransitionError, apply_event as apply_item_event, check_source_revision,
 };
 use crate::types::{
-    AcceptedCommit, COMMIT_EVENT_FAMILY_ITEM, COMMIT_EVENT_FAMILY_REF, COMMIT_FORMAT_VERSION,
-    CommitEventRow, CommitPk, CommitProposal, CommitRow, CreateItem, CreatedItemInfo,
-    EventInsertRow, EventProposal, EventRow, EventsDigest, FederatedDomainProposal,
-    FederatedProposal, IngestedCommit, IngestedDomainCommit, ItemCursor, ItemId, ItemRow,
-    LifecycleState, RefEventInsertRow, RefEventProposal, RepoEventCursor, RepoId, SequencingMode,
-    SubtreeClosureGuard, Timestamp,
+    AcceptedCommit, CommitEventRow, CommitPk, CommitProposal, CommitRow, CreateItem,
+    CreatedItemInfo, EventInsertRow, EventProposal, EventRow, EventsDigest,
+    FederatedDomainProposal, FederatedProposal, IngestedCommit, IngestedDomainCommit, ItemCursor,
+    ItemId, ItemRow, LifecycleState, RefEventInsertRow, RefEventProposal, RepoEventCursor, RepoId,
+    SequencingMode, SubtreeClosureGuard, Timestamp,
 };
 use crate::types::{
     CommitId, canonical_commit_bytes_for_hash, canonical_event_proposal_bytes,
-    canonical_ref_event_proposal_bytes, compute_commit_id, compute_sha256_digest_bytes, now,
+    canonical_ref_event_proposal_bytes, compute_commit_id, now,
 };
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -1885,14 +1884,12 @@ impl Repo {
                 repo_id: repo_id.clone(),
                 commit_id: commit_id.clone(),
                 repo_seq,
-                format_version: COMMIT_FORMAT_VERSION,
                 author_id: proposal.author_id.clone(),
                 committer_id: proposal.committer_id.clone(),
                 message: proposal.message.clone(),
                 occurred_at: proposal.occurred_at,
                 created_at: commit_created_at,
                 event_count: rows.sealed.event_count,
-                events_digest: rows.sealed.events_digest.clone(),
             };
 
             let last_item_seq = *item_seqs.last().expect("non-empty events validated above");

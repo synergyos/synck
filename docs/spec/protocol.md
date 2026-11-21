@@ -1,30 +1,25 @@
-# Central synchronization protocol 1
+# Central synchronization protocol 2
 
-This transport-neutral contract uses [format 7](format.md), commit format 6 and
-its objects. `synck-sync` provides wire values, streaming verification and
+This transport-neutral contract uses [format 8](format.md) and its objects.
+`synck-sync` provides the wire encoding, streaming verification and
 admission-policy helpers. Authentication, durable staging, cleanup, transaction
 installation and Core acceptance belong to the authority/client adapters.
 `portable::ServedRepository` in `synck-local` is the repository side of a
-server: acceptance, history pages, objects and leases. HTTPS clone/pull
-integration and the resumable import executor remain work in the central-sync
-plan. Library tests are not evidence that those executables or a deployed
-service exist.
-
-This replaces the initial unshipped protocol-1 draft with pages within commits.
-There is no 0.1 fallback or downgrade. Consumers pin the same public revision.
+server: acceptance, history pages, objects and leases. Library tests are not
+evidence that a deployed service exists.
 
 ## Identity and complete cursors
 
-`RepositoryIdentity` is `{repo_id, generation}`: both are UUIDv7. Generation
-identifies one ordered history. Administrative history replacement changes the
-generation; it never silently resets a client's state or erases pending work.
+`RepositoryIdentity` is a repository ID and a history generation, both UUIDv7.
+Generation identifies one ordered history. Administrative history replacement
+changes the generation; it never silently resets a client's state or erases
+pending work.
 
-`Cursor` is `{repository, repo_seq, checkpoint}`. Genesis has sequence zero and
-the repository's genesis value as its checkpoint. Published positions are positive signed 64-bit
-values starting at 1, with no gaps. Every next header must have the previous
-sequence plus one; reject missing positions even if the checkpoint hash matches.
-Checkpoints use the canonical framing and exact
-acceptance timestamp. A cursor authenticates continuity from an already trusted
+A `Cursor` is a repository identity, a `repo_seq` and the checkpoint at it.
+Genesis has sequence zero and the repository's genesis value as its checkpoint.
+Published positions start at 1, with no gaps. Every next header must have the
+previous sequence plus one; reject missing positions even if the checkpoint
+hash matches. A cursor authenticates continuity from an already trusted
 checkpoint, not the remote party's identity. Validate it against stored history.
 
 ## Trust model
@@ -33,11 +28,11 @@ The authority orders history and clients trust it for what they cannot check.
 A client holding a cursor can prove:
 
 - **No rewrite.** Every later commit extends that cursor's checkpoint. An edited,
-  dropped or reordered commit already seen fails continuation with `Checkpoint`.
+  dropped or reordered commit already seen fails continuation with `CHECKPOINT`.
 - **No silent replacement.** Replacing history needs a new generation, which the
   client sees.
-- **Exact content.** Each event re-encodes canonically and matches its digest;
-  each commit ID matches its envelope.
+- **Exact content.** Each envelope decodes strictly and hashes to its digest;
+  each commit ID is the hash of its header.
 
 A client cannot prove:
 
@@ -51,446 +46,374 @@ A client cannot prove:
   its storage, can record a valid commit under any author.
 
 Signed checkpoints and author signatures over commit IDs would close these gaps
-without changing commit identity. Neither is part of protocol 1.
+without changing commit identity. Neither is part of protocol 2.
 
-## Discovery, transfer and admission policy
+## Routes
 
-All routes are under `/v1/repositories/{repo_id}/sync`:
+All routes are under `/v2/repositories/{repo_id}/sync`. A Hub serves every
+route; the reference `synck serve` answers the state reads (`/state`,
+`/items/histories`, `/commits`) `NOT_FOUND`:
 
 | Method and suffix | Request / result |
 | --- | --- |
 | `GET /capabilities` | `Capabilities` |
 | `PUT /uploads/{operation_id}/pages/{offset}` | `ProposalPage` / `PageAck` |
 | `POST /proposals` | `SubmitRequest` / `SubmitResult` |
-| `GET /receipts/{operation_id}` | exact accepted `Receipt`, or not found |
+| `GET /receipts/{operation_id}` | `Receipt`, or `NOT_FOUND` |
 | `POST /history` | `HistoryRequest` / `HistoryPage` |
-| `POST /state` | `StateRequest` / `StatePage` (see State read) |
-| `POST /items/history` | `ItemHistoryRequest` / `ItemHistoryPage` (see State read) |
-| `POST /items/histories` | `ItemHistoriesRequest` / `ItemHistoriesPage` (see State read) |
-| `POST /commits` | `CommitLogRequest` / `CommitLogPage` (see State read) |
-| `PUT /objects/{object_id}` | exact stored bytes, immutable installation |
-| `GET /objects/{object_id}` | exact stored bytes, or explicit missing |
-| `PUT /objects` | an object pack, immutable installation of each object |
-| `POST /objects` | `ObjectRequest` / an object pack, or explicit missing |
+| `POST /state` | `StateRequest` / `StatePage` |
+| `POST /items/histories` | `ItemHistoriesRequest` / `ItemHistoriesPage` |
+| `POST /commits` | `CommitLogRequest` / `CommitLogPage` |
+| `PUT /objects` | object pack / 204 |
+| `POST /objects` | `ObjectRequest` / object pack |
 | `GET /leases` | `Leases` |
 | `POST /leases` | `LeaseRequest` / `Lease` |
 | `POST /leases/renew` | `LeaseRenewal` / 204 |
 | `POST /leases/release` | `LeaseToken` / `Released` |
 | `POST /leases/break` | `LeasePaths` / `Released` |
 
-HTTP deployments require authenticated TLS and authorization on every route,
-including receipts and immutable object downloads. IDs are not access tokens.
-Operations/staging are scoped to repository, generation and authenticated owner.
-Operation IDs use the format's 256-byte nonblank UTF-8 rule, not an ASCII-only
-subset. Encode an operation ID as one URL path segment; it is never a filesystem
-path. Do not log content.
+Bodies are `application/octet-stream` in the encoding below. HTTP deployments
+require authenticated TLS and authorization on every route, including receipts
+and objects. IDs are not access tokens. Operations and staging are scoped to
+repository, generation and authenticated owner. An operation ID follows the
+format's rule (nonblank UTF-8, at most 256 bytes); it travels percent-encoded as
+one URL path segment and is never a filesystem path. Do not log content.
 
-An object ID names content or a metadata object, and both travel through the
-object routes. History rows carry metadata by ID only, so a client fetches each
-metadata object it lacks from `GET /objects` and installs it through Core's
-metadata API before replaying the commit. A proposal requires every content and
-metadata object it names: missing ones are `OBJECTS_MISSING`, and the authority
-installs uploaded metadata through Core's metadata API before accepting the
-commit that points to it.
+## Encoding
 
-A server whose `Capabilities` has `object_packs: true` also moves objects in
-packs, many per request. A pack is a sequence of entries, each the object ID's
-71 ASCII bytes, the object's size as 8 big-endian bytes, then its exact stored
-bytes; the body ends after the last entry. `PUT /objects` takes at most **512
-entries**, checks each against its ID, and stores them only when all are valid.
-`POST /objects` takes an `ObjectRequest` of 1 to 512 IDs and answers a pack of
-those objects in request order, ending after the entry that brings it to **64
-MiB**; the client asks again for the rest. One object that is not stored refuses
-the whole request with `OBJECT_MISSING`. Uploads aim for the same 64 MiB; neither
-bound limits an object's size. A client of a server without `object_packs` uses
-the per-object routes.
+Messages use the format's [binary encoding](format.md#binary-encoding) and its
+strict decoding: a receiver refuses trailing bytes, unknown tags and flag bits,
+and any value a field's rule forbids. Beyond the format's types:
 
-`Capabilities` contains `protocol_version: 1`, `repository`, `encrypted` (a client
-needs it to compute the genesis value), `latest` complete cursor, `policy`,
-`object_packs`, `state_read`, `item_histories` and `commit_log`. A server without
-`state_read: true` has neither `/state` nor `/items/history`. A server without
-`item_histories: true` has no `/items/histories`; its clients read each item
-through `/items/history`. A server without `commit_log: true` has no `/commits`.
-Both are true only with `state_read`. Fixed transfer bounds are **512 records per page** and
-**8 MiB of serialized JSON per page**. These are not commit limits. The byte
-bound fits any format-valid individual event, with `payload_json` escaped.
-Producers stop a page before either bound, and paginate again. They
-bound the source query and construction, not just the final serialization.
-Receivers cap network bytes before parsing; in-memory validation alone cannot
-protect an unbounded parser. Headers are small because format limits are fixed.
+| Type | Bytes |
+| --- | --- |
+| `opt T` | `u8` 0 for absent, or 1 followed by `T` |
+| `list T` | `u32` count, then each `T` |
+| `blob` | `u32` length, then that many bytes |
+| `envelope` | `blob` holding one item or attached-ref envelope; its kind byte tells which |
+| `header` | `blob` holding one commit header |
+| `limit` | `u16` from 1 to 512 |
 
-`policy` has nullable `max_events_per_commit`, `max_object_bytes` and `quota_bytes`.
-Null means unrestricted. Object/quota byte counts refer to stored object bytes. The authority checks quota against its durable usage and new,
-nonduplicated object bytes transactionally. Policy may refuse admission of valid
-content; it never makes existing accepted history invalid or untransferable.
-The reference `synck serve` advertises all three values as null and can serve any
-valid repository. Limits must not be smuggled into format constants.
+An envelope or header inside a message is verified as history verifies it, and
+its digest is SHA-256 of its exact bytes. A `SubmitRequest` carries its commit
+header, so its commit ID is computed, never sent. History carries a commit's ID
+with the header's other fields; the receiver rebuilds the header once it has
+every event and refuses the commit unless its hash is that ID.
 
-A refusal is non-retryable without changing the work or policy:
+| Shape | Fields in order |
+| --- | --- |
+| `RepositoryIdentity` | `uuid` repo_id, `uuid` generation |
+| `Cursor` | `RepositoryIdentity`, `u64` repo_seq, `digest` checkpoint |
+| `Capabilities` | `u16` protocol_version (2), `bool` encrypted, `Cursor` latest, `ServerPolicy` |
+| `ServerPolicy` | `opt u64` max_events_per_commit, `opt u64` max_object_bytes, `opt u64` quota_bytes |
+| `ProposalPage` | `RepositoryIdentity`, `str` operation_id, `u64` offset, `list Record` |
+| `Record` | `u8` tag, then: 1 `envelope` (item); 2 `envelope` (attached ref); 3 `uuid` item_id, `seq` head_seq (head guard); 4 `uuid` root_item_id, `bool` require_empty_live_descendants, `list (uuid, seq)` descendants (subtree guard) |
+| `PageAck` | `u64` next_offset, `time` expires_at |
+| `SubmitRequest` | `RepositoryIdentity`, `str` operation_id, `opt u64` repository_head, `header`, `u64` guard_count, `digest` guards_digest |
+| `SubmitResult` | `u8` status, then: 0 `Receipt`; 1 `list (uuid, u64)` conflicts; 2 `u8` limit, `u64` maximum, `u64` actual |
+| `Receipt` | `str` operation_id, `digest` request_digest, `digest` commit_id, `time` accepted_at, `opt Cursor` published |
+| `HistoryRequest` | `HistoryPosition` after, `limit` |
+| `HistoryPosition` | `Cursor` completed, `opt (digest commit_id, u32 next_event_index)` pending |
+| `HistoryPage` | `HistoryPosition` after, `list Fragment`, `bool` has_more |
+| `Fragment` | `PublishedHeader`, `list Event` |
+| `PublishedHeader` | `digest` commit_id, `u64` repo_seq, `time` created_at, `digest` checkpoint, `str` author_id, `str` committer_id, `u8` flags (bit 0 `time` occurred_at, bit 1 `str` message, as in the commit header), `u32` event_count |
+| `Event` | `envelope`, `seq` item_seq or ref_seq; an item event adds `target` parent_folder_id after and `target` before it |
+| `StateRequest` | `StatePosition` after, `limit` |
+| `StatePosition` | `RepositoryIdentity`, `u64` changed_seq, `opt uuid` item_id |
+| `StatePage` | `StatePosition` after, `list StateEntry`, `list (uuid item_id, u64 changed_seq)` departed, `Cursor` through, `bool` has_more |
+| `StateEntry` | `uuid` item_id, `str` item_type, `u64` changed_seq, `seq` head_seq, `u64` ref_head_seq, `target` parent_folder_id, `opt str` name, `opt str` record_key, `target` link_folder_id, `u8` lifecycle_state (1 LIVE, 2 TRASH, 3 TOMBSTONED), `u8` sequencing_mode (1 LOCAL, 2 FEDERATED), `opt str` federation_stream_id, `content`, `opt digest` metadata_id, `opt digest` name_metadata_id, `time` created_at, `str` created_by, `time` changed_at, `str` changed_by |
+| `ItemHistoriesRequest` | `RepositoryIdentity`, `list (uuid item_id, u64 after_seq, u64 after_ref_seq)`, `limit` |
+| `ItemHistoriesPage` | `RepositoryIdentity`, `list ItemHistoryPage` |
+| `ItemHistoryPage` | `uuid` item_id, `list ItemEvent` events, `list ItemEvent` refs, `list ItemCommit` commits, `bool` has_more |
+| `ItemEvent` | `u64` repo_seq, `u32` commit_event_idx, `Event` |
+| `ItemCommit` | `u64` repo_seq, `digest` commit_id, `str` author_id, `time` occurred_at (its acceptance time when it has none), `time` created_at |
+| `CommitLogRequest` | `RepositoryIdentity`, `opt u64` before_seq, `limit` |
+| `CommitLogPage` | `list CommitSummary`, `bool` has_more |
+| `CommitSummary` | `u64` repo_seq, `digest` commit_id, `str` author_id, `time` occurred_at, `u32` event_count, `list (uuid item_id, seq item_seq, u32 commit_event_idx, str event_type)` |
+| `ObjectRequest` | `list digest`, 1 to 512 object IDs |
+| `LeaseRequest` | `list str` paths, `str` owner, `u32` ttl |
+| `Lease` | `str` token, `list LeasedPath` |
+| `LeasedPath` | `str` path, `str` owner, `i64` expires_at (Unix seconds) |
+| `Leases` | `list LeasedPath` |
+| `LeaseRenewal` | `str` token, `u32` ttl |
+| `LeaseToken` | `str` token |
+| `LeasePaths` | `list str` |
+| `Released` | `u64` released |
 
-```json
-{"status":"POLICY_LIMIT","limit":"events_per_commit","maximum":500,"actual":1200}
-```
+A `u64` sequence or count is at most 2^63 - 1. A `repo_seq` of zero is genesis;
+`after_seq`, `after_ref_seq` and a `ref_head_seq` of zero mean no events. A
+conflict's head zero means the item is absent. The policy `limit` codes are 1
+`events_per_commit`, 2 `object_bytes` and 3 `quota_bytes`.
 
-The other limit names are `object_bytes` and `quota_bytes`. Never split or rewrite
-a submitted proposal. Clone commit preflights policy before constructing a
-commit, telling the agent to commit selected paths or use `synck import`.
-Publishing an existing repository first inventories **all** offending commit
-IDs, object-size violations and quota requirements, before any event/object
-upload. History is not rewritten to fit. `ServerPolicy` supplies these checks;
-the publication caller must finish the complete inventory before network writes.
+## Admission policy
+
+`ServerPolicy` fields that are absent are unrestricted. Object and quota byte
+counts refer to stored object bytes. The authority checks quota against its
+durable usage and new, nonduplicated object bytes transactionally. Policy may
+refuse admission of valid content; it never makes accepted history invalid or
+untransferable. The reference `synck serve` advertises no limits. Limits are
+never format constants.
+
+A policy refusal (`SubmitResult` status 2) is non-retryable without changing
+the work or policy. Never split or rewrite a submitted proposal. Clone commit
+preflights policy before constructing a commit, telling the agent to commit
+selected paths or use `synck import`. Publishing an existing repository first
+inventories **all** offending commit IDs, object-size violations and quota
+requirements, before any upload. History is not rewritten to fit.
+
+## Transfer bounds
+
+A page holds at most **512 records** and **8 MiB** of encoded message. These are
+not commit limits; 8 MiB fits any format-valid event. Producers stop a page
+before either bound and bound their source queries, not just the final
+encoding. Receivers cap network bytes before decoding.
 
 ## Paged proposal upload
 
-`ProposalPage` contains `repository`, `operation_id`, zero-based record `offset`
-and `records`. Records are tagged `{kind, value}`: `item` (`EventProposal`), then
-`ref` (`RefEventProposal`), then `guard` (`ItemHead`), then optional
-`subtree_guard` (`SubtreeClosureGuard`). An upload has one ordered
-stream across all pages. Every event supplies a stable item ID. Head guards are
-unique, sorted by item ID, and assert a positive pre-commit head. There is no
-aggregate event, byte or guard-count cap. Guards are paged so they cannot become
-a hidden limit on the number of affected items.
+A proposal is one ordered record stream across all pages: item envelopes, then
+attached-ref envelopes, then head guards, then subtree guards. A page's
+`operation_id` and `offset` equal its URL's. Head guards are unique, sorted by
+item ID, and assert a pre-commit head. Subtree guards are unique and sorted by
+root ID; each binds the exact sorted non-tombstoned descendants and their heads,
+or requires that the root has no live descendants, in which case it lists none.
+There is no aggregate event, byte or guard-count cap; guards are paged so they
+are no hidden limit on the number of affected items.
 
-The client persists exact events, object bytes, object identity, operation
-ID and final metadata before reporting a saved pending change. Upload pages at
-the next acknowledged offset. The server durably installs a page before replying;
-a same-offset retry returns the original acknowledgement only for identical
-canonical records. Changed contents or gaps are rejected, never overwritten.
-A dropped reply does not justify a fresh operation ID. The authority may rebuild
-`ProposalVerifier` by replaying durable pages; it keeps only streaming digests,
-counts and the previous item/subtree guard IDs, not the whole proposal in memory.
+The client persists the exact envelopes, object bytes, operation ID and commit
+header before reporting a saved pending change. It uploads pages at the next
+acknowledged offset. The server durably installs a page before replying; a
+same-offset retry returns the original acknowledgement only for identical
+records. Changed contents or gaps are refused, never overwritten. A dropped
+reply does not justify a fresh operation ID. The authority may rebuild
+`ProposalVerifier` by replaying durable pages; it keeps only running digests,
+counts and the previous guard IDs, not the whole proposal.
 
-The final `SubmitRequest` contains:
+`SubmitRequest` ends the upload. Its `header` is the commit header, so the
+commit ID is SHA-256 of it, and its `event_count` and `events_digest` must match
+the staged envelopes. `guards_digest` is SHA-256 of the concatenated SHA-256
+digests of each guard record's encoded bytes, tag included, in stream order;
+an empty stream hashes empty bytes. `guard_count` counts both guard kinds.
+`request_digest` is SHA-256 of the encoded `SubmitRequest`. Page size and
+boundaries change none of these.
 
-```text
-repository, operation_id
-repository_head?
-metadata: {author_id, committer_id, message, occurred_at}
-event_count, events_digest
-guard_count, guards_digest
-```
+`repository_head` fences the complete state used to plan an opaque application
+command: the published repository sequence, 0 for genesis. The authority
+compares it while holding its exclusive repository write gate, and refuses it
+too while an accepted commit is not yet published; checking only the published
+maximum would miss such a phantom. Every other append writer shares that gate.
+An existing receipt for the operation is returned before this fence, so retries
+stay valid after later commits. It does not change the commit ID.
 
-`events_digest` is the existing format digest over each event's family byte and
-SHA-256 of its canonical payload, with all ordinary events before refs.
-`guards_digest` is SHA-256 of the concatenation of SHA-256 digests of each guard's
-canonical RFC 8785 JSON, in sorted order. Subtree guards follow head guards,
-are unique and sorted by root ID, and hash their complete tagged record rather
-than the untagged value. They bind the exact sorted non-tombstoned descendant
-IDs and positive heads, or an explicit empty-live requirement. Both guard kinds
-count toward `guard_count`. An empty guard stream hashes empty bytes. Legacy
-head-only requests and commit identities remain unchanged. Older readers reject
-the new record; producers require an authority supporting subtree guards. `request_digest` hashes canonical RFC 8785 JSON of the final typed request,
-with `occurred_at` in the format's one spelling.
-It binds generation, operation, metadata and both stream summaries. Page size or
-boundaries do not affect these identities.
+`validate_submit` checks the header and computes identity. The authority then
+calls `ProposalVerifier::finish` against the staged pages, proves referenced
+objects durable and performs normal Core acceptance, all in one transaction.
+Item bases, ref bases, head guards, namespace and subtree constraints remain
+mandatory. A proposal requires every content and metadata object it names:
+missing ones are `OBJECTS_MISSING`, and the authority installs uploaded metadata
+through Core's metadata API before accepting the commit that points to it. No
+event is accepted before the whole commit is.
 
-An optional `repository_head` fences the complete state used to plan an opaque
-application command. It is the non-negative published repository sequence
-(`0` for genesis), bounded by `i64::MAX`. The authority compares it while holding
-its exclusive repository write gate and also rejects any sealed accepted commit
-that has not yet been published. Checking only the published maximum would miss
-such a phantom. Every other append writer must share that gate. The check and
-append are one protected operation. An existing accepted operation receipt is
-returned before this fence, so retries remain valid after later commits. The
-field participates in `request_digest`, including device signatures over it;
-it does not change the canonical commit ID. Omission preserves old request
-bytes. Authorities may require the fence for application profiles whose opaque
-relations cannot be checked by the authority; generic public local acceptance
-keeps it optional. Older authorities reject the new field and must be upgraded
-before producers use it.
+The authority stores the request digest and receipt atomically with accepted
+history. The same operation with the same digest returns the original receipt;
+another digest is `OPERATION_REUSED`. A conflict lists item IDs and current
+heads. The server never merges or substitutes newer bases. The client keeps
+pending bytes and reconciles explicit conflicts.
 
-`validate_submit` checks only the header and computes identity. The authority
-must call `ProposalVerifier::finish` against the actual staged pages, then prove
-referenced objects durable and perform normal Core acceptance in one transaction.
-All item bases, ref bases, head guards, namespace and subtree constraints remain
-mandatory. Use checked FILE/FOLDER append paths. A digest is not a substitute for
-these checks.
-No event becomes accepted before the entire commit is accepted atomically.
+## Refusals
 
-The authority stores request digest and receipt atomically with accepted history.
-Same operation plus same digest returns the original receipt; another digest is
-operation reuse. Core uniqueness alone does not establish an identical retry.
-`SubmitResult` is `accepted`, `conflict` (item IDs/current heads, zero for absence),
-or `POLICY_LIMIT`. The server never merges or substitutes newer bases silently.
-The client preserves pending bytes and reconciles explicit conflicts.
+`SubmitResult` values, policy refusals included, are answers with status 200;
+`PUT /objects` and `POST /leases/renew` answer 204. A refused request has another
+status and a body of one `u8` code, followed by its details:
 
-## JSON shapes
-
-Every value is one JSON object with exactly the fields below, in any order; a
-receiver refuses an unknown field. A `?` marks a field whose value may be null, and
-the field is still present, except `repo_seq` in commit and event rows, which is
-omitted on an unpublished row. UUIDs are canonical lowercase strings. Digests and
-object IDs are `sha256:` plus 64 lowercase hex digits. Timestamps are RFC 3339 UTC
-with up to nine fractional digits, and a receiver compares instants. Integers are
-JSON integers.
-
-| Shape | Fields |
-| --- | --- |
-| `RepositoryIdentity` | `repo_id`, `generation` |
-| `Cursor` | `repository`, `repo_seq`, `checkpoint` |
-| `Capabilities` | `protocol_version`, `repository`, `encrypted`, `latest` (`Cursor`), `policy`, `object_packs` (absent means false), `state_read` (absent means false) |
-| `StateRequest` | `after` (`StatePosition`), `limit` |
-| `StatePosition` | `repository`, `changed_seq`, `item_id?` |
-| `StatePage` | `after`, `entries` (list of `StateEntry`), `through` (`Cursor`), `has_more` |
-| `StateEntry` | `item_id`, `item_type`, `changed_seq`, `head_seq`, `ref_head_seq`, `parent_folder_id?`, `name?`, `record_key?`, `link_folder_id?`, `lifecycle_state`, `sequencing_mode`, `federation_stream_id?`, `content` (role map of object IDs), `metadata_id?`, `name_metadata_id?`, `created_at`, `created_by`, `changed_at`, `changed_by` |
-| `ItemHistoryRequest` | `repository`, `item_id`, `after_seq`, `after_ref_seq?`, `limit` |
-| `ItemHistoryPage` | `item_id`, `events` (item events, tagged as in fragments), `refs?` (ref events), `commits?` (commit ID to `ItemHistoryCommit`), `has_more` |
-| `ItemHistoryCommit` | `author_id`, `occurred_at` |
-| `ObjectRequest` | `objects` (object IDs) |
-| `ServerPolicy` | `max_events_per_commit?`, `max_object_bytes?`, `quota_bytes?` |
-| `ItemHead` | `item_id`, `head_seq` |
-| `ProposalPage` | `repository`, `operation_id`, `offset`, `records` |
-| `PageAck` | `next_offset`, `expires_at` |
-| `CommitMetadata` | `author_id`, `committer_id`, `message?`, `occurred_at?` |
-| `SubmitRequest` | `repository`, `operation_id`, `metadata`, `event_count`, `events_digest`, `guard_count`, `guards_digest`, optional `repository_head` |
-| `Receipt` | `operation_id`, `request_digest`, `commit_id`, `accepted_at`, `published?` (`Cursor`) |
-| `HistoryRequest` | `after` (`HistoryPosition`), `limit` |
-| `HistoryPosition` | `completed` (`Cursor`), `pending?` |
-| `PendingCommit` | `commit_id`, `next_event_index` |
-| `HistoryPage` | `after`, `fragments`, `has_more` |
-| `HistoryFragment` | `header`, `events` |
-| `PublishedHeader` | `commit` (`CommitRow`), `checkpoint` |
-| `CommitRow` | `repo_id`, `commit_id`, `repo_seq`, `format_version`, `author_id`, `committer_id`, `message?`, `occurred_at?`, `created_at`, `event_count`, `events_digest` |
-| `LeaseRequest` | `paths`, `owner`, `ttl` |
-| `Lease` | `token`, `locks` (list of `LeasedPath`) |
-| `LeasedPath` | `path`, `owner`, `expires_at` (UTC Unix seconds) |
-| `Leases` | `locks` |
-| `LeaseRenewal` | `token`, `ttl` |
-| `LeaseToken` | `token` |
-| `LeasePaths` | `paths` |
-| `Released` | `released` |
-
-`SubmitResult` is tagged by `status`. `accepted` has `receipt`. `conflict` has `items`,
-a list of `ItemHead`, where `head_seq` zero means the item is absent. `POLICY_LIMIT`
-has `limit`, `maximum` and `actual`. `limit` is `events_per_commit`, `object_bytes` or
-`quota_bytes`.
-
-An event in a fragment is tagged by `event_family`. `item` has `repo_id`, `item_id`,
-`item_seq`, `event_type`, `commit_id`, `commit_event_idx`, `repo_seq`, `payload_json`,
-`event_payload_digest`, `created_at`, `parent_folder_id?` and
-`parent_folder_id_before?`. `ref` has `repo_id`, `owner_item_id`, `ref_seq`,
-`event_type`, `commit_id`, `commit_event_idx`, `repo_seq`, `payload_json`,
-`event_payload_digest` and `created_at`. A `payload_json` is one JSON string whose
-UTF-8 encoding is the event's exact canonical bytes, as in a history bundle. It is a
-string and not a nested object so that a JSON parser cannot change those bytes.
-
-A proposal record is `{"kind": "item" | "ref" | "guard" | "subtree_guard", "value": ...}`. An `item`
-value is an event envelope with its `item_id`, a `ref` value is a ref envelope, and a
-`guard` value is an `ItemHead`. A `subtree_guard` value has `root_item_id`,
-`expected_non_tombstoned_descendants` (sorted `[item_id, head_seq]` pairs),
-and `require_empty_live_descendants`. The empty-live mode cannot list descendants.
-Authorities pass these exact authenticated guards to checked Core acceptance;
-missing, moved-in, moved-out, or changed descendants reject the whole proposal.
-
-## HTTP refusals
-
-`SubmitResult` values, `POLICY_LIMIT` included, are answers with status 200. Both
-`PUT /objects` routes answer 204. A refused request has another status and the body
-`{"status": CODE}`; a client acts on the code:
-
-| HTTP | `status` | Meaning and remedy |
+| HTTP | Code | Meaning and remedy |
 | --- | --- | --- |
-| 400 | `INVALID` | Malformed request, page or object, or different contents at an installed page offset |
-| 401 | `UNAUTHENTICATED` | No valid credential |
-| 403 | `FORBIDDEN` | The credential may only read |
-| 404 | `NOT_FOUND` | No such route, no such repository for this credential, or no receipt |
-| 404 | `OBJECT_MISSING` | The object is not stored |
-| 409 | `CHECKPOINT` | The history request's cursor is not on this history |
-| 409 | `LOCKED` | Another lease holds a path; the body's `path` and `owner` name it |
-| 409 | `LOCK_LOST` | A presented lease token is expired, released or replaced, or does not cover a path written |
-| 409 | `GENERATION` | The repository's generation is not the request's; reconcile first |
-| 409 | `OPERATION_REUSED` | The operation ID was submitted with another request digest |
-| 409 | `OBJECTS_MISSING` | The submission names content that is not stored; the body's `objects` lists it. Upload it and submit again |
-| 410 | `UPLOAD_EXPIRED` | No live upload for the operation; upload its pages again from offset 0 |
-| 503 | `SERVER_OVERLOADED` | Retry later |
+| 400 | 1 `INVALID` | Malformed request, page or object, or different records at an installed page offset |
+| 401 | 2 `UNAUTHENTICATED` | No valid credential |
+| 403 | 3 `FORBIDDEN` | The credential may not do this |
+| 404 | 4 `NOT_FOUND` | No such route, repository for this credential, or receipt |
+| 404 | 5 `OBJECT_MISSING` | A requested object is not stored |
+| 409 | 6 `CHECKPOINT` | The request's cursor is not on this history |
+| 409 | 7 `LOCKED` | Another lease holds a path; `str` path, `str` owner follow |
+| 409 | 8 `LOCK_LOST` | A presented lease token is expired, released or replaced, or does not cover a path written |
+| 409 | 9 `GENERATION` | The repository's generation is not the request's; reconcile first |
+| 409 | 10 `OPERATION_REUSED` | The operation ID was submitted with another request digest |
+| 409 | 11 `OBJECTS_MISSING` | The proposal names objects that are not stored; `list digest` follows. Upload them and submit again |
+| 410 | 12 `UPLOAD_EXPIRED` | No live upload for the operation; upload its pages again from offset 0 |
+| 503 | 13 `SERVER_OVERLOADED` | Retry later |
 
 ## Expiry, receipts and restart
 
-A staging session has an explicit server-issued `expires_at`. Every page and
-final submission must arrive before that deadline; `ProposalVerifier` refuses
-expired sessions. Do not silently extend expiry on rejected requests. Expired
-**unaccepted** page rows and their staging files are deleted by the authority's
-cleanup job, excluding in-flight acceptance under the same transactional fence.
-Page deletion must not delete canonical history or referenced objects.
+A staging session has a server-issued `expires_at`. Every page and the final
+submission must arrive before it; `ProposalVerifier` refuses expired sessions.
+Rejected requests do not extend it. The authority's cleanup deletes expired
+**unaccepted** pages and their staging files, excluding in-flight acceptance
+under the same transactional fence. Cleanup never deletes history or referenced
+objects.
 
-After staging expiry the client can reupload the same pending stream and
-operation ID. The server checks an accepted receipt before treating staging as
-missing/expired. Accepted receipts are not upload leftovers and remain durable
-for the promised retry-recovery lifetime. Expiry never changes an accepted result.
-Generation changes require reconciliation before pending uploads resume.
+After staging expiry the client can upload the same stream again under the same
+operation ID. The server checks for a receipt before treating staging as
+expired. Receipts are not upload leftovers: the authority keeps each one, with
+its operation ID, at least 90 days after acceptance, the retry-recovery
+lifetime. Expiry never changes an accepted result. A generation change requires
+reconciliation before pending uploads resume.
 
-`Receipt` contains `operation_id`, `request_digest`, `commit_id`, `accepted_at`
-and nullable `published` cursor. Durable acceptance can precede asynchronous
-sequence/checkpoint publication. Release acceptance locks before waiting for the
-sequencer; a failed wait is not failed acceptance. Validate recovered receipts
-against the exact pending request using `Receipt::validate_for`.
+A receipt's `published` cursor is absent while the commit awaits its sequence
+and checkpoint: durable acceptance can precede publication. Release acceptance
+locks before waiting for the sequencer; a failed wait is not failed acceptance.
+Validate a recovered receipt against the exact pending request with
+`Receipt::validate_for`.
 
 ## History continuation and atomic installation
 
-`HistoryRequest` contains `after: HistoryPosition` and an event `limit` from 1 to
-512. `HistoryPosition` contains `completed: Cursor` and optional
-`pending: {commit_id, next_event_index}`. A pending offset is positive and counts
-both item and ref events. The completed cursor never advances inside a commit.
+A `HistoryRequest` reads after a position: a completed cursor and, inside a
+commit, the commit ID and the next event index. A pending index is positive and
+counts item and ref events. The completed cursor never advances inside a commit.
 
-A `HistoryPage` contains the exact requested `after`, ordered `fragments` and
-`has_more`. Each `HistoryFragment` has its own `header` (`CommitRow` and resulting
-checkpoint) and ordered `events`, empty only for a commit with no events.
-Continuations repeat the identical
-header. The first fragment may continue the pending commit, followed by any
-number of complete commits and at most one incomplete final fragment. A page
-may also contain only a portion of the pending commit. Never begin another
-commit before finishing the current one, or split one commit into multiple
-fragments within the same page.
+A `HistoryPage` repeats the requested `after`, then ordered fragments and
+`has_more`. Each fragment has its commit's published header and its events in
+commit order: the first fragment's begin at the pending index, every other one's
+at zero. A fragment is empty only for a commit with no events. Continuations
+repeat the identical header. The first fragment may continue the pending commit,
+followed by any number of complete commits and at most one incomplete final
+fragment. A page may also hold only a portion of the pending commit. Never begin
+another commit before finishing the current one, or split one commit into
+several fragments in one page.
 
-The **sum** of events across fragments must not exceed 512, with a fragment of no
-events counting as one, and the entire
-serialized page, including every header, must fit 8 MiB. The server packs commits
-until the requested event limit or byte bound is reached; it does not stop just
-because a commit ended. An empty fragment list is allowed only at a complete
-cursor with `has_more=false`. An incomplete final fragment requires
-`has_more=true`. Concurrent later publication never changes an already published
-prefix.
+The events of all fragments together are at most the request's limit, a
+fragment of no events counting as one, and the page fits 8 MiB. The server packs
+commits until a bound is reached; it does not stop because a commit ended. An
+empty fragment list is allowed only at a complete cursor with `has_more` false.
+An incomplete final fragment requires `has_more` true. Later publication never
+changes a published prefix.
 
 `HistoryVerifier` checks exact positions, unchanged continuation headers,
-canonical payloads and format limits, event indexes/families/digests, and each
-commit ID and checkpoint in order. A failed page leaves all verifier state
-unchanged, including when an earlier fragment in that page was valid. `push`
-returns the **last completed cursor in the page**, or `None` if no commit
-completed. That cursor covers all completed commits even when a trailing
-fragment is incomplete; the pending offset remains private. A full commit has
-no transfer-size limit; `verify_published_commit` also accepts any format-valid
-event count.
+strict envelopes, item and ref sequences, format limits, each checkpoint as its
+header arrives, and each commit ID once the commit's last event has. A failed page leaves all verifier state unchanged, even
+when an earlier fragment in it was valid. `push` returns the **last completed
+cursor in the page**, or none if no commit completed; the pending index stays
+private. A commit has no transfer-size limit.
 
-Clients durably stage incomplete commits privately. After restart rebuild the
+Clients stage incomplete commits privately. After restart they rebuild the
 verifier from the last installed complete cursor and replay the staged prefix
-before resuming the next event offset. Semantic Core replay, namespace checks,
-projections, accepted history and the new complete cursor install atomically.
-Never expose a partial commit, promote a pending offset to an accepted cursor,
-or trust an unverified persisted hash accumulator. Failure leaves previously
-accepted state and unsent local work intact.
+before resuming at the next index. Semantic replay, namespace checks,
+projections, history and the new complete cursor install atomically. Never
+expose a partial commit, promote a pending index to a cursor, or trust an
+unverified persisted hash state. Failure leaves accepted state and unsent local
+work intact.
+
+History rows name metadata by ID only. A client fetches each metadata object it
+lacks through `POST /objects` and installs it through Core's metadata API before
+replaying the commit.
 
 ## State read
 
 A client that does not keep the full history follows the repository's current
 structural state instead of replaying it, as IMAP clients follow a mailbox.
 History stays authoritative and complete on the authority; the state read is a
-view of it. The reference `synck serve` does not offer it; the SynckHub Personal
-service does.
+view of it.
 
 `POST /state` is a changes feed over items. Each `StateEntry` is one item's
 structural state after its last **published** event, item or ref: the fields of
 `vcs_items` except `name_key`, which a client derives from `name`, the role map
-of its current content (`{}` when none, under the format's content rules), the
+of its current content (empty when none, under the format's content rules), the
 ID of the metadata object of its latest two-segment item event that has one
 (`metadata_id`; a subitem event's metadata is not the item's, format.md,
 Metadata payloads), and the ID of the metadata object of the event that last set
-its name (`name_metadata_id`, null for a record or a naming event without
+its name (`name_metadata_id`, absent for a record or a naming event without
 metadata). `changed_seq` is the `repo_seq` of the commit holding that event;
-`changed_at` is that commit's `occurred_at`, or its `created_at` when it has
-none, and `changed_by` its `author_id`.
-Accepted but unpublished events are never served; the entry still shows the
-published state.
+`changed_at` is that commit's `occurred_at`, or its acceptance time when it has
+none, and `changed_by` its `author_id`. Accepted but unpublished events are
+never served.
 
 Entries are ordered by `(changed_seq, item_id)`. A request returns the entries
 strictly after its position: `changed_seq` greater than the position's, or equal
-with a larger `item_id`. Bootstrap starts at `changed_seq` 0 and a null
-`item_id`. A page holds at most 512 entries and 8 MiB of serialized JSON. The
-client resumes from its last entry. An item that changes while a client pages
-moves to a later `changed_seq` and is returned again, so no item is skipped.
+with a larger item ID. Bootstrap starts at `changed_seq` 0 and no item ID. A page
+holds at most `limit` entries and 8 MiB. The client resumes from its last entry.
+An item that changes while a client pages moves to a later `changed_seq` and is
+returned again, so no item is skipped.
 
 `through` is the published cursor the page was read at. When a page has
-`has_more=false`, the client holds every item's state at `through`: its state map
-equals the structural state that replaying history to `through` would give.
-Tombstoned and trashed items are entries like any other, so deletions arrive in
-the feed. An item never leaves the feed. This version serves credentials that
-read the whole repository or, as below, limited subtrees.
+`has_more` false, the client holds every item's state at `through`: its state
+map equals the structural state replaying history to `through` gives. Tombstoned
+and trashed items are entries like any other, so deletions arrive in the feed.
+An item never leaves the feed.
 
-An authority may limit a credential to subtrees: it then serves only the
-entries of items inside them, and a `departed` list of `StateDeparture
-{item_id, changed_seq}`, each an item that left them in the commit at
-`changed_seq`. The item's descendants left with it. Departures share the
-entries' order and position: a page holds every entry and departure in its
-range, and the client resumes from the later of its last entry and its last
-departure. A client drops a departed item and its descendants, unless a later
-entry brings the item back. A departure of an item the client never held is
-ignored. `departed` is absent when empty, and a credential that reads the whole
-repository never receives it.
+An authority may limit a credential to subtrees: it then serves only the entries
+of items inside them, and in `departed` each item that left them, with the
+`changed_seq` of the commit it left in. The item's descendants left with it.
+Departures share the entries' order and position: a page holds every entry and
+departure in its range, and the client resumes from the later of its last entry
+and its last departure. A client drops a departed item and its descendants,
+unless a later entry brings the item back, and ignores a departure of an item it
+never held. A credential that reads the whole repository receives no
+departures.
 
 A client keeps, per item, the highest `head_seq` it has accepted and treats an
-entry with a lower one as an integrity failure, not a retryable error.
-The authority cannot forge objects: their frames bind repository, item, role and
-epoch. It can withhold, as with history (see Trust model). A client that also
-replays history can compare the state digest of its state map at `through` with
-the digest of replayed history; a mismatch is an integrity failure.
+entry with a lower one as an integrity failure, not a retryable error. The
+authority cannot forge objects: their frames bind repository, item, role and
+epoch. It can withhold, as with history. A client that also replays history can
+compare the state digest of its state map at `through` with the digest of
+replayed history; a mismatch is an integrity failure.
 
 In an encrypted repository `name` is the name's tag; the display name is in the
-object `name_metadata_id` names. A client that needs every name offline fetches
-those metadata objects through the object routes as entries arrive. In an
-encrypted repository every metadata-bearing item event holds the item's complete
-metadata (format.md, Complete maps), so `metadata_id` alone is the item's current
-metadata. A family whose presentation needs subitems or older metadata reads the
-item's history.
+object `name_metadata_id` names. Every metadata-bearing item event holds the
+item's complete metadata (format.md, Metadata payloads), so `metadata_id` alone is
+the item's current metadata. A family whose presentation needs subitems or
+older metadata reads the item's history.
 
-`POST /items/history` returns one item's published events with `item_seq`
-greater than `after_seq`, ascending, in the same event shape as history
-fragments. `refs` holds the published ref events the item owns with `ref_seq`
-greater than `after_ref_seq` (default 0), ascending, tagged `ref`. `commits`
-maps the commit of every row in the page to `{author_id, occurred_at}`, where
-`occurred_at` is the commit's `created_at` when it has none. A page holds at
-most `limit` (1 to 512) rows of both lists together and 8 MiB; `has_more` is
-true while either list has more, and the client resumes from the last
-`item_seq` and `ref_seq` it received. It serves version views and families that
-walk back metadata, without the commit log. It does not replace `/history` for
-a client that keeps the full copy.
-
-`POST /items/histories` reads several items' histories in one request.
-`ItemHistoriesRequest` has `repository`, `items`, 1 to 512 `{item_id, after_seq,
-after_ref_seq}` with distinct item IDs, and `limit` (1 to 512).
-`ItemHistoriesPage.pages` answers a prefix of `items`, in their order, with the
-`ItemHistoryPage` that `/items/history` gives for each; every page but the last
-has `has_more=false`. The rows of all pages together are at most `limit`, an
-item with no rows counting as one, and the whole page at most 8 MiB. The client
-asks again for the items not answered and, when the last page has `has_more`,
-for that item after its last rows. An item the credential cannot read refuses
-the whole request, as it refuses `/items/history`.
+`POST /items/histories` reads the published history of 1 to 512 distinct items.
+For each item it returns the item events with `item_seq` above `after_seq`,
+ascending, and the attached-ref events the item owns with `ref_seq` above
+`after_ref_seq`, ascending, each with its commit's `repo_seq`. `commits` lists
+the commit of every row in the page once, by ascending `repo_seq`: its ID,
+author, `occurred_at` or else acceptance time, and acceptance time. The pages answer a prefix of the requested
+items, in order; every page but the last has `has_more` false. The rows of all
+pages together are at most `limit`, an item with no rows counting as one, and
+the message fits 8 MiB. The client asks again for the items not answered and,
+when the last page has `has_more`, for that item after its last rows. An item the
+credential cannot read refuses the whole request.
 
 `POST /commits` lists published commits newest first, for a client without the
-full copy, such as an Activity view. `CommitLogRequest` has `repository`,
-`before_seq`, null for the newest, and `limit` (1 to 512). A `CommitSummary` has
-the commit's `repo_seq`, `commit_id`, `author_id`, `occurred_at` (its
-`created_at` when it has none) and `event_count`, its item and ref events, and
-`events`, its first 32 item events in commit order, each `{item_id, item_seq,
-commit_event_idx, event_type}`. `CommitLogPage.commits` holds commits with
-`repo_seq` below `before_seq`, descending, at most `limit` and 8 MiB; `has_more`
-is true while older commits remain, and the client resumes before the last
-`repo_seq`. Payloads, ref events and messages are not served; `/items/history`
-has an item's events. A credential limited to subtrees is refused (403): the
-commit log is the whole repository.
+full copy, such as an Activity view. `before_seq` absent reads from the newest.
+A `CommitSummary` has the commit's `repo_seq`, ID, author, `occurred_at` (its
+acceptance time when it has none), `event_count` of item and ref events, and its
+first 32 item events in commit order. A page holds commits below `before_seq`,
+descending, at most `limit` and 8 MiB; `has_more` is true while older commits
+remain, and the client resumes before the last `repo_seq`. Envelopes, ref events
+and messages are not served. A credential limited to subtrees is refused
+(`FORBIDDEN`): the commit log is the whole repository.
 
-A client writes as before, with `base_seq` from its state map; a stale base is
-`conflict` and the client rereads that item.
+A client writes as before, with `base_seq` from its state map; a stale base is a
+conflict and the client rereads that item.
 
 ## Objects, encryption and bulk import
 
-Objects transfer as `application/octet-stream` with their exact stored bytes.
-Validate the digest and, where the role selects a frame, the frame, before
-immutable installation. Missing is different from
-empty. Thin replicas may install verified envelopes without every content body;
-new content-bearing acceptance requires referenced objects durable. Encryption,
+Objects move in packs. A pack is a sequence of entries, each the object ID's 32
+digest bytes, the object's size as a `u64`, then its exact stored bytes; the
+body ends after the last entry. `PUT /objects` takes 1 to 512 entries, verifies
+each against its ID and, where its use selects a frame, its frame, and installs
+them only when all are valid. `POST /objects` answers a pack of the requested
+objects in request order, ending after the entry that brings it to **64 MiB**;
+the client asks again for the rest. One object that is not stored refuses the
+whole request with `OBJECT_MISSING`. Uploads aim for the same 64 MiB; neither
+bound limits an object's size. Missing is different from empty.
+
+Thin replicas may install verified envelopes without every content body; new
+content-bearing acceptance requires referenced objects durable. Encryption,
 keys and signatures belong to the product profile, not a competing sync format.
 
-Large imports follow the existing SynckHub client-side job model: a durable,
-disk-backed inventory before upload, folders first, then independently atomic
-batches sized from advertised policy. Each batch has stable item IDs and an
-operation ID. Independent batches run in parallel after parent
-prerequisites are durable. Reconcile exact receipts before advancing progress.
-Transport paging does not split a pre-existing commit: the importer deliberately
-constructs new bounded commits from the inventory. This preserves the model for
-two million files without loading the inventory into memory or altering history.
+Large imports follow the client-side job model: a durable, disk-backed inventory
+before upload, folders first, then independently atomic batches sized from
+advertised policy. Each batch has stable item IDs and an operation ID.
+Independent batches run in parallel after parent prerequisites are durable.
+Reconcile exact receipts before advancing progress. Transport paging does not
+split an existing commit: the importer constructs new bounded commits from the
+inventory, so two million files need neither the inventory in memory nor
+altered history.
 
 Store each file's object ID in the import state database. In an unencrypted
-repository a file's ID is its plain SHA-256, so `adopt-existing` can recompute it
-and needs no upload for bytes the authority already holds. In an encrypted
+repository a file's ID is its plain SHA-256, so `adopt-existing` can recompute
+it and needs no upload for bytes the authority already holds. In an encrypted
 repository each upload is a new object, and lost state means uploading again. Do
 not infer ownership of a same-name remote file or overwrite unrelated work.
 
@@ -526,20 +449,17 @@ uses these routes; see `docs/local-repository.md` ("HTTPS clones").
 
 ## Evidence
 
-[The small vector](vectors/sync.json) preserves the initial commit ID while
-specifying the paged final request. [The 10,001-event vector](vectors/sync-large.json)
-contains an explicit deterministic ASCII event-generation recipe and independently
-computed hashes, a 16 KiB message and a 256-byte operation ID.
+[The small vector](vectors/sync.json) gives one proposal, its pages, its
+`SubmitRequest` bytes, request digest and commit ID. [The 10,001-event
+vector](vectors/sync-large.json) contains a deterministic event-generation
+recipe and independently computed hashes, a 16 KiB message and a 256-byte
+operation ID. [The wire vector](vectors/sync-wire.json) gives the bytes of one
+value of each shape and bytes a receiver must refuse. [The packed-history
+vectors](vectors/sync-history.json) specify 128 small commits in one page and a
+page that continues one commit, completes intervening commits, and starts
+another.
+
 `cargo test --locked -p synck-sync --test protocol` checks these vectors, upload
-expiry, page ordering, retries, partial-history restart, tampering, exact receipt
-binding and separate policy refusals. These are shared-library checks, not a
-claim of a deployed service or completed clone/import executor.
-
-[The wire vector](vectors/sync-wire.json) gives one value of each shape above,
-values a receiver must refuse, and one proposal with two head guards.
-
-[The packed-history vectors](vectors/sync-history.json) independently specify
-128 small commits transferred in one page and a page that continues one commit,
-completes intervening commits, and starts another. Protocol tests verify their
-checkpoint chains, whole-page limits, rollback on late corruption, and restart
-from the last completed cursor with only the trailing prefix staged.
+expiry, page ordering, retries, partial-history restart, tampering, exact
+receipt binding and policy refusals. These are library checks, not a claim of a
+deployed service.

@@ -52,14 +52,14 @@ async fn capabilities_need_a_granted_token_and_revocation_applies_at_once() {
     let router = synck_local::server::router(Arc::new(server));
 
     let uri = format!(
-        "/v1/repositories/{}/sync/capabilities",
+        "/v2/repositories/{}/sync/capabilities",
         personal_id.as_str()
     );
     let (status, body) = get(&router, &uri, Some(&laptop)).await;
     assert_eq!(status, StatusCode::OK);
-    let capabilities: Capabilities = serde_json::from_slice(&body).unwrap();
+    let capabilities: Capabilities = synck_sync::decode(&body).unwrap();
     capabilities.validate().unwrap();
-    assert_eq!(capabilities.repository.repo_id, personal_id);
+    assert_eq!(capabilities.latest.repository.repo_id, personal_id);
     assert_eq!(capabilities.latest.repo_seq, 1);
 
     assert_eq!(get(&router, &uri, None).await.0, StatusCode::UNAUTHORIZED);
@@ -70,13 +70,13 @@ async fn capabilities_need_a_granted_token_and_revocation_applies_at_once() {
         get(&router, &uri, Some(&forged)).await.0,
         StatusCode::UNAUTHORIZED
     );
-    let work_uri = format!("/v1/repositories/{}/sync/capabilities", work_id.as_str());
+    let work_uri = format!("/v2/repositories/{}/sync/capabilities", work_id.as_str());
     assert_eq!(
         get(&router, &work_uri, Some(&laptop)).await.0,
         StatusCode::NOT_FOUND
     );
     assert_eq!(
-        get(&router, "/v1/unknown", Some(&laptop)).await.0,
+        get(&router, "/v2/unknown", Some(&laptop)).await.0,
         StatusCode::NOT_FOUND
     );
 

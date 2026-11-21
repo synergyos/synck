@@ -1,5 +1,5 @@
 -- Core SQLite database: UTF-8, PRAGMA application_id = 1398361675 (0x53594E4B),
--- PRAGMA user_version = 7, PRAGMA journal_mode = WAL. See format.md.
+-- PRAGMA user_version = 8, PRAGMA journal_mode = WAL. See format.md.
 CREATE TABLE vcs_metadata_objects (
     repo_id TEXT NOT NULL,
     object_id BLOB NOT NULL CHECK (length(object_id) = 32),
@@ -36,25 +36,20 @@ CREATE TABLE vcs_commits (
     commit_id BLOB,
     repo_seq INTEGER,
     operation_id TEXT,
-    format_version INTEGER NOT NULL CHECK (format_version = 6),
     author_id TEXT NOT NULL,
     committer_id TEXT NOT NULL,
     message TEXT,
     occurred_at TEXT,
     created_at TEXT NOT NULL,
     event_count INTEGER,
-    events_digest BLOB,
+    checkpoint BLOB,
     PRIMARY KEY (repo_id, commit_pk),
     UNIQUE (repo_id, commit_id),
     CHECK (repo_seq IS NULL OR repo_seq >= 1),
     CHECK (operation_id IS NULL OR trim(operation_id) <> ''),
     CHECK (commit_id IS NULL OR length(commit_id) = 32),
-    CHECK (events_digest IS NULL OR length(events_digest) = 32),
-    CHECK (
-        (commit_id IS NULL AND events_digest IS NULL AND event_count IS NULL)
-        OR
-        (commit_id IS NOT NULL AND events_digest IS NOT NULL AND event_count IS NOT NULL AND event_count >= 0)
-    )
+    CHECK ((commit_id IS NULL) = (event_count IS NULL) AND (event_count IS NULL OR event_count >= 0)),
+    CHECK (checkpoint IS NULL OR (repo_seq IS NOT NULL AND length(checkpoint) = 32))
 ) STRICT;
 
 CREATE TABLE vcs_repo_activity_heads (
@@ -112,7 +107,6 @@ CREATE TABLE "vcs_events" (
     item_seq INTEGER NOT NULL CHECK (item_seq >= 1),
     event_type TEXT NOT NULL,
     payload BLOB NOT NULL,
-    event_payload_digest BLOB NOT NULL CHECK (length(event_payload_digest) = 32),
     created_at TEXT NOT NULL,
     parent_folder_id TEXT,
     parent_folder_id_before TEXT,
@@ -129,7 +123,6 @@ CREATE TABLE vcs_ref_events (
     ref_seq INTEGER NOT NULL CHECK (ref_seq >= 1),
     event_type TEXT NOT NULL CHECK (trim(event_type) <> ''),
     payload BLOB NOT NULL,
-    event_payload_digest BLOB NOT NULL CHECK (length(event_payload_digest) = 32),
     created_at TEXT NOT NULL,
     PRIMARY KEY (repo_id, owner_item_id, ref_seq),
     UNIQUE (repo_id, commit_pk, commit_event_idx),
@@ -142,13 +135,4 @@ ON vcs_ref_events (repo_id, owner_item_id, event_type, ref_seq DESC);
 CREATE TABLE vcs_history_generations (
     repo_id TEXT PRIMARY KEY,
     generation TEXT NOT NULL
-) STRICT;
-
-CREATE TABLE vcs_checkpoints (
-    repo_id TEXT NOT NULL,
-    repo_seq INTEGER NOT NULL CHECK (repo_seq >= 1),
-    commit_id BLOB NOT NULL CHECK (length(commit_id) = 32),
-    checkpoint BLOB NOT NULL CHECK (length(checkpoint) = 32),
-    PRIMARY KEY (repo_id, repo_seq),
-    FOREIGN KEY (repo_id, commit_id) REFERENCES vcs_commits (repo_id, commit_id)
 ) STRICT;

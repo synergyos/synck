@@ -119,7 +119,7 @@ same files meanwhile, `push` puts the held changes back in the working files,
 merged, and stops with `CONFLICT`: resolve, commit and push again.
 
 An agent on another machine clones from a [sync server](sync-server.md) the same
-way: `SYNCK_TOKEN=TOKEN synck clone https://HOST/v1/repositories/REPO_ID DIR
+way: `SYNCK_TOKEN=TOKEN synck clone https://HOST/v2/repositories/REPO_ID DIR
 --author AGENT`. Commits, `pull`, `push` and `lock` then go through the server;
 a commit made while it cannot be reached is held and listed by `status`, and
 `push` sends it. See [HTTPS clones](local-repository.md#https-clones-a-sync-server-as-the-origin).

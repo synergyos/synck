@@ -61,11 +61,11 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 impl IntoResponse for Error {
     fn into_response(self) -> Response {
-        use synck_sync::ProtocolError;
-        let (status, code) = match &self {
-            Self::Unauthenticated => (StatusCode::UNAUTHORIZED, "UNAUTHENTICATED"),
-            Self::NotFound => (StatusCode::NOT_FOUND, "NOT_FOUND"),
-            Self::Forbidden => (StatusCode::FORBIDDEN, "FORBIDDEN"),
+        use synck_sync::{ProtocolError, Refusal};
+        let refusal = match self {
+            Self::Unauthenticated => Refusal::Unauthenticated,
+            Self::NotFound => Refusal::NotFound,
+            Self::Forbidden => Refusal::Forbidden,
             Self::Invalid(_)
             | Self::Repository(crate::LocalError::Invalid(_))
             // Core refused the proposal itself; storage failures stay internal.
@@ -78,31 +78,31 @@ impl IntoResponse for Error {
                 ProtocolError::Invalid(_)
                 | ProtocolError::Limit(_)
                 | ProtocolError::Core(_),
-            ) => (StatusCode::BAD_REQUEST, "INVALID"),
-            Self::Protocol(ProtocolError::Checkpoint) => (StatusCode::CONFLICT, "CHECKPOINT"),
-            Self::Repository(crate::LocalError::Locked { .. }) => (StatusCode::CONFLICT, "LOCKED"),
-            Self::Repository(crate::LocalError::LockLost) => (StatusCode::CONFLICT, "LOCK_LOST"),
-            Self::Protocol(ProtocolError::UploadExpired) => (StatusCode::GONE, "UPLOAD_EXPIRED"),
-            Self::Protocol(ProtocolError::Generation) => (StatusCode::CONFLICT, "GENERATION"),
-            Self::OperationReused => (StatusCode::CONFLICT, "OPERATION_REUSED"),
-            Self::ObjectsMissing(_) => (StatusCode::CONFLICT, "OBJECTS_MISSING"),
-            Self::ObjectMissing => (StatusCode::NOT_FOUND, "OBJECT_MISSING"),
-            Self::Overloaded => (StatusCode::SERVICE_UNAVAILABLE, "SERVER_OVERLOADED"),
-            _ => {
-                eprintln!("synck serve: {self}");
-                (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL")
-            }
-        };
-        let body = match &self {
-            Self::ObjectsMissing(objects) => {
-                serde_json::json!({ "status": code, "objects": objects })
-            }
+            ) => Refusal::Invalid,
+            Self::Protocol(ProtocolError::Checkpoint) => Refusal::Checkpoint,
             Self::Repository(crate::LocalError::Locked { path, owner }) => {
-                serde_json::json!({ "status": code, "path": path, "owner": owner })
+                Refusal::Locked { path, owner }
             }
-            _ => serde_json::json!({ "status": code }),
+            Self::Repository(crate::LocalError::LockLost) => Refusal::LockLost,
+            Self::Protocol(ProtocolError::UploadExpired) => Refusal::UploadExpired,
+            Self::Protocol(ProtocolError::Generation) => Refusal::Generation,
+            Self::OperationReused => Refusal::OperationReused,
+            Self::ObjectsMissing(objects) => Refusal::ObjectsMissing(objects),
+            Self::ObjectMissing => Refusal::ObjectMissing,
+            Self::Overloaded => Refusal::ServerOverloaded,
+            other => {
+                eprintln!("synck serve: {other}");
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            }
         };
-        let mut response = (status, axum::Json(body)).into_response();
+        let status = StatusCode::from_u16(refusal.http_status()).expect("refusal status");
+        let body = synck_sync::encode(&refusal).expect("refusals encode");
+        let mut response = (
+            status,
+            [(header::CONTENT_TYPE, "application/octet-stream")],
+            body,
+        )
+            .into_response();
         if status == StatusCode::UNAUTHORIZED {
             response
                 .headers_mut()

@@ -435,8 +435,7 @@ impl Repo {
             validate_event_for_item(item_id, item.item_type.as_str(), ev)?;
             self.require_metadata_form(ev.set_metadata.as_ref())?;
             self.require_name_form(ev)?;
-            let event_hash = compute_sha256_digest_bytes(&payload);
-            digest.push(COMMIT_EVENT_FAMILY_ITEM, &event_hash);
+            digest.push(&payload);
             let transition = &placement.transitions[idx];
             event_rows.push(EventInsertRow {
                 repo_id: repo_id.clone(),
@@ -451,7 +450,6 @@ impl Repo {
                     .and_then(|value| value.payload())
                     .cloned(),
                 payload,
-                event_payload_digest: event_hash,
                 created_at: header.created_at,
                 parent_folder_id: transition.parent_folder_id_after.clone(),
                 parent_folder_id_before: transition.parent_folder_id_before.clone(),
@@ -460,8 +458,7 @@ impl Repo {
         let mut ref_rows = Vec::with_capacity(ref_events.len());
         for (idx, (event, payload)) in ref_events.iter().zip(payloads).enumerate() {
             self.require_metadata_form(event.set_metadata.as_ref())?;
-            let event_hash = compute_sha256_digest_bytes(&payload);
-            digest.push(COMMIT_EVENT_FAMILY_REF, &event_hash);
+            digest.push(&payload);
             ref_rows.push(RefEventInsertRow {
                 repo_id: repo_id.clone(),
                 commit_pk: commit_pk.clone(),
@@ -475,7 +472,6 @@ impl Repo {
                     .and_then(|value| value.payload())
                     .cloned(),
                 payload,
-                event_payload_digest: event_hash,
                 created_at: header.created_at,
             });
         }
@@ -494,14 +490,12 @@ impl Repo {
                 commit_pk,
                 repo_seq: None,
                 operation_id: header.operation_id.map(str::to_string),
-                format_version: COMMIT_FORMAT_VERSION,
                 author_id: header.author_id.to_string(),
                 committer_id: header.committer_id.to_string(),
                 message: header.message.map(str::to_string),
                 occurred_at: header.occurred_at,
                 created_at: header.created_at,
                 commit_id,
-                events_digest,
                 event_count: stored_count(event_count)?,
             },
             event_rows,
@@ -521,14 +515,12 @@ pub(super) async fn insert_sealed_commit<T: StorageTxn + ?Sized>(
             &commit.commit_pk,
             commit.repo_seq,
             commit.operation_id.as_deref(),
-            commit.format_version,
             &commit.author_id,
             &commit.committer_id,
             commit.message.as_deref(),
             commit.occurred_at,
             commit.created_at,
             &commit.commit_id,
-            &commit.events_digest,
             commit.event_count,
         )
         .await;

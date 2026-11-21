@@ -1,13 +1,11 @@
-//! Storage-independent canonical NDJSON bundle records and validation.
+//! Storage-independent NDJSON bundle records and validation.
 //!
 //! The source schema in a header is provenance, not a target schema instruction.
 //! Only the current bundle encoding is accepted.
 use crate::errors::CoreError;
 use crate::limits::{MAX_BUNDLE_RECORD_BYTES, MAX_EVENT_PAYLOAD_BYTES};
 use crate::types::{
-    COMMIT_FORMAT_VERSION, EventProposal, RefEventProposal, RepoId, Sha256Digest,
-    canonical_event_proposal_bytes, canonical_ref_event_proposal_bytes,
-    compute_sha256_digest_bytes, sha256_digest_to_digest_bytes,
+    RepoId, Sha256Digest, decode_event_proposal, decode_ref_event_proposal,
     sha256_prefixed_hex_from_digest_bytes,
 };
 use chrono::{DateTime, Utc};
@@ -36,7 +34,7 @@ impl std::fmt::Display for ImportFailure {
 pub const SCHEMA_META_SUBSYSTEM_VCS: &str = "synck_vcs_pg";
 pub const SCHEMA_META_SUBSYSTEM_SQLITE: &str = "synck_vcs_sqlite";
 
-pub const BUNDLE_FORMAT_VERSION: u32 = 5;
+pub const BUNDLE_FORMAT_VERSION: u32 = 6;
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -56,7 +54,6 @@ pub struct BundleHeaderRecord {
     pub encrypted: bool,
     pub exported_at: String,
     pub schema: BundleSchema,
-    pub commit_format_version: i32,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -68,14 +65,12 @@ pub struct BundleCommitRecord {
     pub checkpoint: Sha256Digest,
     pub repo_seq: i64,
     pub operation_id: Option<String>,
-    pub format_version: i32,
     pub author_id: String,
     pub committer_id: String,
     pub message: Option<String>,
     pub occurred_at: Option<String>,
     pub created_at: String,
     pub event_count: i32,
-    pub events_digest: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -89,8 +84,7 @@ pub struct BundleEventRecord {
     pub item_id: String,
     pub item_seq: i64,
     pub event_type: String,
-    pub payload_json: String,
-    pub event_payload_digest: String,
+    pub payload_hex: String,
     pub created_at: String,
     pub parent_folder_id: Option<String>,
     pub parent_folder_id_before: Option<String>,
@@ -107,8 +101,7 @@ pub struct BundleRefEventRecord {
     pub owner_item_id: String,
     pub ref_seq: i64,
     pub event_type: String,
-    pub payload_json: String,
-    pub event_payload_digest: String,
+    pub payload_hex: String,
     pub created_at: String,
 }
 
@@ -415,12 +408,6 @@ fn decode_header(line: &str) -> Result<BundleHeader, String> {
             header.bundle_format_version
         ));
     }
-    if header.commit_format_version != COMMIT_FORMAT_VERSION {
-        return Err(format!(
-            "unsupported commit_format_version: {}",
-            header.commit_format_version
-        ));
-    }
     let generation =
         uuid::Uuid::parse_str(&header.history_generation).map_err(|e| e.to_string())?;
     if generation.get_version_num() != 7 || generation.to_string() != header.history_generation {
@@ -436,7 +423,7 @@ fn decode_header(line: &str) -> Result<BundleHeader, String> {
         ));
     }
     if header.schema.subsystem == SCHEMA_META_SUBSYSTEM_SQLITE
-        && header.schema.schema_id != "core-v7"
+        && header.schema.schema_id != "core-v8"
     {
         return Err("unsupported SQLite source schema provenance".into());
     }
@@ -492,57 +479,32 @@ pub fn bounded_commit_payload_bytes(previous: usize, event: usize) -> Result<usi
         .ok_or_else(|| "commit payload exceeds supported canonical byte limit".into())
 }
 
-pub fn validate_bundle_event_payload_json_and_digest(
-    payload_json: &str,
-    event_payload_digest: &str,
-) -> Result<[u8; 32], String> {
-    let payload_bytes = payload_json.as_bytes();
-
-    let parsed_ev: EventProposal =
-        serde_json::from_str(payload_json).map_err(|e| format!("invalid payload_json: {e}"))?;
-    let canonical = canonical_event_proposal_bytes(&parsed_ev)
-        .map_err(|e| format!("payload_json does not canonicalize: {e}"))?;
-    if canonical != payload_bytes {
-        return Err("payload_json is not canonical EventProposal bytes".to_string());
-    }
-
-    let event_hash = compute_sha256_digest_bytes(payload_bytes);
-    let expected_event_digest = Sha256Digest::parse_stored(event_payload_digest)?;
-    if sha256_digest_to_digest_bytes(&expected_event_digest) != event_hash {
-        return Err("event_payload_digest mismatch".to_string());
-    }
-
-    Ok(event_hash)
+/// The exact envelope a `payload_hex` spells: lowercase hexadecimal of bytes
+/// that decode strictly as an item envelope.
+pub fn bundle_event_payload(payload_hex: &str) -> Result<Vec<u8>, String> {
+    let bytes = lower_hex(payload_hex)?;
+    decode_event_proposal(&bytes).map_err(|error| error.to_string())?;
+    Ok(bytes)
 }
 
-pub fn validate_bundle_ref_event_payload_json_and_digest(
-    payload_json: &str,
-    event_payload_digest: &str,
-) -> Result<[u8; 32], String> {
-    let payload_bytes = payload_json.as_bytes();
-    let proposal: RefEventProposal =
-        serde_json::from_str(payload_json).map_err(|e| format!("invalid payload_json: {e}"))?;
-    let canonical = canonical_ref_event_proposal_bytes(&proposal)
-        .map_err(|e| format!("payload_json does not canonicalize: {e}"))?;
-    if canonical != payload_bytes {
-        return Err("payload_json is not canonical RefEventProposal bytes".to_string());
+/// As [`bundle_event_payload`], for an attached-ref envelope.
+pub fn bundle_ref_event_payload(payload_hex: &str) -> Result<Vec<u8>, String> {
+    let bytes = lower_hex(payload_hex)?;
+    decode_ref_event_proposal(&bytes).map_err(|error| error.to_string())?;
+    Ok(bytes)
+}
+
+fn lower_hex(text: &str) -> Result<Vec<u8>, String> {
+    if text.bytes().any(|byte| byte.is_ascii_uppercase()) {
+        return Err("payload_hex must be lowercase".to_string());
     }
-    let event_hash = compute_sha256_digest_bytes(payload_bytes);
-    let expected_event_digest = Sha256Digest::parse_stored(event_payload_digest)?;
-    if sha256_digest_to_digest_bytes(&expected_event_digest) != event_hash {
-        return Err("event_payload_digest mismatch".to_string());
-    }
-    Ok(event_hash)
+    hex::decode(text).map_err(|error| format!("invalid payload_hex: {error}"))
 }
 
 #[cfg(test)]
 mod bundle_tests {
     use super::*;
-    use crate::types::{
-        EventContent, EventProposal, ItemId, canonical_event_proposal_bytes,
-        compute_sha256_digest_bytes, sha256_digest_from_digest_bytes,
-    };
-    use uuid::Uuid;
+    use crate::types::{EventProposal, ItemId, canonical_event_proposal_bytes};
 
     fn commit_json() -> serde_json::Value {
         serde_json::json!({
@@ -551,14 +513,12 @@ mod bundle_tests {
             "checkpoint": format!("sha256:{}", "c".repeat(64)),
             "operation_id": null,
             "repo_seq": 1,
-            "format_version": COMMIT_FORMAT_VERSION,
             "author_id": "author",
             "committer_id": "author",
             "message": null,
             "occurred_at": null,
             "created_at": "2026-08-22T00:00:00Z",
-            "event_count": 1,
-            "events_digest": format!("sha256:{}", "b".repeat(64))
+            "event_count": 1
         })
     }
 
@@ -614,243 +574,19 @@ mod bundle_tests {
     }
 
     #[test]
-    fn a_bundle_event_digest_is_lowercase() {
-        let item_id = crate::types::ItemId::new();
+    fn a_payload_hex_is_lowercase_and_one_whole_envelope() {
         let event = EventProposal::from_fields(serde_json::json!({
-            "item_id": item_id, "event_type": "ITEM::NOTE", "base_seq": 1
+            "item_id": ItemId::new(), "event_type": "ITEM::NOTE", "base_seq": 1
         }))
         .unwrap();
         let payload = canonical_event_proposal_bytes(&event).unwrap();
-        let digest = crate::types::sha256_prefixed_hex_from_digest_bytes(
-            compute_sha256_digest_bytes(&payload),
+        assert_eq!(
+            bundle_event_payload(&hex::encode(&payload)).unwrap(),
+            payload
         );
-        let payload = std::str::from_utf8(&payload).unwrap();
-        assert!(validate_bundle_event_payload_json_and_digest(payload, &digest).is_ok());
-        let upper = format!("sha256:{}", digest[7..].to_uppercase());
-        assert!(validate_bundle_event_payload_json_and_digest(payload, &upper).is_err());
-    }
-
-    #[test]
-    fn non_canonical_payload_json_is_detected_by_roundtrip() {
-        let item_id = crate::types::ItemId::new();
-        let payload_json = format!(
-            r#"{{"event_type":"ITEM::NOTE","item_id":"{}","base_seq":1}}"#,
-            item_id.as_str()
-        );
-
-        let parsed_ev: EventProposal = serde_json::from_str(&payload_json).expect("parse payload");
-        let canonical = canonical_event_proposal_bytes(&parsed_ev).expect("canonicalize");
-        assert_ne!(canonical, payload_json.as_bytes());
-    }
-
-    #[test]
-    fn canonical_payload_json_digest_matches() {
-        let item_id = crate::types::ItemId::new();
-        let ev = EventProposal {
-            set_link: None,
-            merged_from: None,
-            item_id: Some(item_id),
-            event_type: "ITEM::NOTE".to_string(),
-            set_metadata: None,
-            set_content: None,
-            create_item: None,
-            set_parent: None,
-            set_name: None,
-            set_tombstoned: None,
-            set_in_trash: None,
-            set_is_federated: None,
-            set_federation_stream_id: None,
-            base_seq: Some(1),
-        };
-
-        let bytes = canonical_event_proposal_bytes(&ev).expect("canonical bytes");
-        let hash = compute_sha256_digest_bytes(&bytes);
-        let digest = Sha256Digest::parse(crate::types::sha256_prefixed_hex_from_digest_bytes(hash))
-            .expect("sha256 digest parse");
-        assert_eq!(sha256_digest_to_digest_bytes(&digest), hash);
-    }
-
-    #[test]
-    fn bundle_event_payload_validation_is_strict_and_idempotent() {
-        #[derive(Clone)]
-        struct XorShift64 {
-            state: u64,
-        }
-
-        impl XorShift64 {
-            fn new(seed: u64) -> Self {
-                let seed = if seed == 0 {
-                    0x9e37_79b9_7f4a_7c15
-                } else {
-                    seed
-                };
-                Self { state: seed }
-            }
-
-            fn next_u64(&mut self) -> u64 {
-                let mut x = self.state;
-                x ^= x << 13;
-                x ^= x >> 7;
-                x ^= x << 17;
-                self.state = x;
-                x
-            }
-
-            fn next_bool(&mut self) -> bool {
-                (self.next_u64() & 1) == 1
-            }
-
-            fn gen_usize(&mut self, max_exclusive: usize) -> usize {
-                if max_exclusive == 0 {
-                    return 0;
-                }
-                (self.next_u64() as usize) % max_exclusive
-            }
-        }
-
-        fn gen_uuid_v7(rng: &mut XorShift64) -> Uuid {
-            let mut bytes = [0u8; 16];
-            bytes[..8].copy_from_slice(&rng.next_u64().to_be_bytes());
-            bytes[8..].copy_from_slice(&rng.next_u64().to_be_bytes());
-            bytes[6] = (bytes[6] & 0x0f) | 0x70;
-            bytes[8] = (bytes[8] & 0x3f) | 0x80;
-            Uuid::from_bytes(bytes)
-        }
-
-        fn gen_item_id(rng: &mut XorShift64) -> ItemId {
-            ItemId::parse(gen_uuid_v7(rng).to_string()).expect("generated ItemId must be UUIDv7")
-        }
-
-        fn gen_string(rng: &mut XorShift64, max_len: usize) -> String {
-            const UNICODE: &[char] = &['é', 'ß', '中', 'Ω', 'λ', 'Ж', 'א', 'م'];
-            let len = rng.gen_usize(max_len + 1);
-            let mut s = String::with_capacity(len);
-            for _ in 0..len {
-                let bucket = rng.gen_usize(6);
-                let ch = match bucket {
-                    0 => (b'a' + (rng.gen_usize(26) as u8)) as char,
-                    1 => (b'A' + (rng.gen_usize(26) as u8)) as char,
-                    2 => (b'0' + (rng.gen_usize(10) as u8)) as char,
-                    3 => match rng.gen_usize(8) {
-                        0 => ' ',
-                        1 => '\n',
-                        2 => '\t',
-                        3 => '\r',
-                        4 => '"',
-                        5 => '\\',
-                        6 => '/',
-                        _ => '\u{0001}',
-                    },
-                    4 => UNICODE[rng.gen_usize(UNICODE.len())],
-                    _ => '-',
-                };
-                s.push(ch);
-            }
-            s
-        }
-
-        fn gen_event_proposal(rng: &mut XorShift64) -> EventProposal {
-            EventProposal {
-                set_link: None,
-                merged_from: None,
-                item_id: Some(gen_item_id(rng)),
-                event_type: "ITEM::NOTE".to_string(),
-                set_metadata: if rng.next_bool() {
-                    Some(
-                        crate::metadata::MetadataRef::new(serde_json::json!({
-                            "k": gen_string(rng, 16),
-                            "n": (rng.next_u64() % 1_000_000) as i64
-                        }))
-                        .unwrap(),
-                    )
-                } else {
-                    None
-                },
-                set_content: if rng.next_bool() {
-                    Some(EventContent::bytes(crate::types::ObjectId::from_digest(
-                        [rng.next_u64() as u8; 32],
-                    )))
-                } else {
-                    None
-                },
-                create_item: None,
-                set_parent: match rng.gen_usize(3) {
-                    0 => None,
-                    1 => Some(None),
-                    _ => Some(Some(gen_item_id(rng))),
-                },
-                set_name: if rng.next_bool() {
-                    Some(gen_string(rng, 32))
-                } else {
-                    None
-                },
-                set_tombstoned: None,
-                set_in_trash: None,
-                set_is_federated: None,
-                set_federation_stream_id: None,
-                base_seq: if rng.next_bool() {
-                    Some((rng.next_u64() % 10_000) as i64)
-                } else {
-                    None
-                },
-            }
-        }
-
-        let iters: usize = std::env::var("SYNCK_VCS_FUZZ_ITERS")
-            .ok()
-            .and_then(|v| v.parse::<usize>().ok())
-            .filter(|v| *v > 0)
-            .unwrap_or(300);
-
-        let mut rng = XorShift64::new(0x6275_6e64_6c65_2d31);
-        for _ in 0..iters {
-            let ev = gen_event_proposal(&mut rng);
-
-            let canonical_bytes = canonical_event_proposal_bytes(&ev).expect("canonical bytes");
-            let canonical_json = String::from_utf8(canonical_bytes.clone()).expect("utf8");
-
-            let digest_bytes = compute_sha256_digest_bytes(&canonical_bytes);
-            let digest = sha256_digest_from_digest_bytes(&digest_bytes)
-                .expect("digest must parse from bytes");
-
-            let validated = match validate_bundle_event_payload_json_and_digest(
-                &canonical_json,
-                digest.as_str(),
-            ) {
-                Ok(v) => v,
-                Err(e) => {
-                    let parsed: EventProposal =
-                        serde_json::from_str(&canonical_json).expect("parse canonical");
-                    let recanon = canonical_event_proposal_bytes(&parsed).expect("re-canonicalize");
-                    let recanon_json = String::from_utf8(recanon).expect("utf8");
-                    panic!(
-                        "canonical payload must validate: {e}\norig={canonical_json}\nrecanon={recanon_json}"
-                    );
-                }
-            };
-            assert_eq!(validated, digest_bytes);
-
-            let non_canonical = serde_json::to_string(&ev).expect("serde json");
-            assert!(
-                validate_bundle_event_payload_json_and_digest(&non_canonical, digest.as_str())
-                    .is_err(),
-                "non-canonical JSON must be rejected"
-            );
-
-            let with_ws = format!("  {canonical_json}\n");
-            assert!(
-                validate_bundle_event_payload_json_and_digest(&with_ws, digest.as_str()).is_err(),
-                "whitespace-variant JSON must be rejected"
-            );
-
-            let mut bad = digest.as_str().to_string();
-            let last = bad.pop().expect("non-empty digest");
-            bad.push(if last == '0' { '1' } else { '0' });
-            assert!(
-                validate_bundle_event_payload_json_and_digest(&canonical_json, &bad).is_err(),
-                "mismatched digest must be rejected"
-            );
-        }
+        assert!(bundle_event_payload(&hex::encode_upper(&payload)).is_err());
+        assert!(bundle_event_payload(&hex::encode([&payload[..], &[0]].concat())).is_err());
+        assert!(bundle_ref_event_payload(&hex::encode(&payload)).is_err());
     }
 
     #[test]
@@ -861,7 +597,6 @@ mod bundle_tests {
             "repo_id": "01890c6c-1111-7777-8888-aaaaaaaaaaaa",
             "exported_at": "2025-01-01T00:00:00Z",
             "schema": { "subsystem": "synck_vcs_pg", "schema_id": "v1" },
-            "commit_format_version": 2,
             "extra": true
         }"#;
 

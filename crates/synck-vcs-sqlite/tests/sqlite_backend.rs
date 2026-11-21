@@ -13,10 +13,9 @@ use synck_vcs::state::{
 };
 use synck_vcs::storage::{Storage, StorageBackend};
 use synck_vcs::types::{
-    COMMIT_FORMAT_VERSION, CommitEventRow, CommitId, CommitProposal, CreateItem, EventProposal,
-    FederatedDomainProposal, FederatedProposal, ItemCursor, ItemId, ItemRevision, ItemRow,
-    LifecycleState, RefEventProposal, RepoEventCursor, RepoId, SequencingMode, SubtreeClosureGuard,
-    commit_id_to_digest_bytes,
+    CommitEventRow, CommitId, CommitProposal, CreateItem, EventProposal, FederatedDomainProposal,
+    FederatedProposal, ItemCursor, ItemId, ItemRevision, ItemRow, LifecycleState, RefEventProposal,
+    RepoEventCursor, RepoId, SequencingMode, SubtreeClosureGuard, commit_id_to_digest_bytes,
 };
 use synck_vcs_sqlite::{SqliteStorage, format_timestamp, parse_timestamp};
 
@@ -300,12 +299,10 @@ async fn ref_ledger_has_independent_cas_and_order() {
         .unwrap()
         .unwrap();
     assert_eq!((item.head_seq, item.ref_head_seq), (1, 1));
-    let stored = repo
-        .get_commit(repo_id.clone(), first.commit_id.clone())
+    repo.get_commit(repo_id.clone(), first.commit_id.clone())
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(stored.format_version, COMMIT_FORMAT_VERSION);
 
     let stale = repo
         .append_with_refs(
@@ -785,7 +782,7 @@ async fn schema_init_is_idempotent_and_rejects_unknown_version() {
         )
         .unwrap();
     assert_eq!(strict, 1);
-    conn.pragma_update(None, "user_version", 8).unwrap();
+    conn.pragma_update(None, "user_version", 9).unwrap();
     drop(conn);
 
     let error = storage.init_schema().await.unwrap_err();
@@ -794,7 +791,7 @@ async fn schema_init_is_idempotent_and_rejects_unknown_version() {
 
 #[tokio::test]
 async fn old_schema_versions_are_rejected_without_mutation() {
-    for version in 1..7 {
+    for version in 1..8 {
         let (_directory, storage) = backend();
         storage.init_schema().await.unwrap();
         let connection = storage.open_writable().unwrap();
@@ -2444,7 +2441,11 @@ async fn checkpoint_publication_is_atomic_and_does_not_gate_acceptance() {
         )
         .unwrap();
     let checkpoints: i64 = connection
-        .query_row("SELECT count(*) FROM vcs_checkpoints", [], |row| row.get(0))
+        .query_row(
+            "SELECT count(*) FROM vcs_commits WHERE checkpoint IS NOT NULL",
+            [],
+            |row| row.get(0),
+        )
         .unwrap();
     assert_eq!((published, checkpoints), (0, 0));
     connection

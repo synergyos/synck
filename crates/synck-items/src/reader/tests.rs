@@ -593,12 +593,10 @@ fn owner_refs_keep_uuid_identity_and_independent_positions() {
     );
     let version_id = Uuid::now_v7();
     let reference = synck_file_folder::file_versions::automatic_initial_ref_event(
-        &synck_vcs::types::RepoId::new(),
         &owner,
         &version_id.to_string(),
         0,
         2,
-        1,
     )
     .unwrap();
     assert!(reference.set_content.is_none());
@@ -616,7 +614,7 @@ fn owner_refs_keep_uuid_identity_and_independent_positions() {
     let update: synck_vcs::types::RefEventProposal =
         synck_vcs::types::RefEventProposal::from_fields(json!({
             "owner_item_id":owner,"event_type":"FILE_VERSION::SET_DESCRIPTION","base_ref_seq":1,
-            "set_metadata":{"file_item_id":owner,"version_id":version_id,"description":"Reviewed"}
+            "set_metadata":{"version_id":version_id,"description":"Reviewed"}
         }))
         .unwrap();
     reader
@@ -644,7 +642,7 @@ fn owner_refs_keep_uuid_identity_and_independent_positions() {
     );
     let retarget = synck_vcs::types::RefEventProposal::from_fields(json!({
         "owner_item_id":owner,"event_type":"FILE_VERSION::SET_REVISION","base_ref_seq":2,
-        "set_metadata":{"file_item_id":owner,"version_id":version_id,"source_item_seq":3}
+        "set_metadata":{"version_id":version_id,"source_item_seq":3}
     }))
     .unwrap();
     reader
@@ -718,12 +716,10 @@ fn reader_cache_restores_private_maps_and_continues_both_ledgers() {
     );
     let mut restored = ItemReader::from_cache(id.clone(), &file.export_cache().unwrap()).unwrap();
     let reference = synck_file_folder::file_versions::automatic_initial_ref_event(
-        &RepoId::new(),
         &id,
         &Uuid::now_v7().to_string(),
         0,
         2,
-        1,
     )
     .unwrap();
     for reader in [&mut file, &mut restored] {

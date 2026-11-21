@@ -1,4 +1,4 @@
-//! HTTPS clones: a held clone whose origin is a protocol-1 sync server
+//! HTTPS clones: a held clone whose origin is a protocol 2 sync server
 //! (`docs/spec/protocol.md`).
 //!
 //! The clone keeps its own history and content store. `pull` verifies the
@@ -13,14 +13,12 @@ use std::io::{Read, Write as _};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use serde::Serialize;
-use serde::de::DeserializeOwned;
 use synck_sync::{
     Capabilities, CommitMetadata, Cursor, HistoryPage, HistoryRequest, HistoryVerifier, Lease,
     LeasePaths, LeaseRenewal, LeaseRequest, LeaseToken, Leases, MAX_PACK_OBJECTS, MAX_PAGE_BYTES,
     MAX_PAGE_RECORDS, ObjectRequest, PACK_BYTES, PACK_HEADER_BYTES, PageAck, ProposalPage,
-    ProposalRecord, ProposalVerifier, Receipt, Released, RepositoryIdentity, SubmitRequest,
-    SubmitResult,
+    ProposalRecord, ProposalVerifier, Receipt, Refusal, Released, RepositoryIdentity,
+    SubmitRequest, SubmitResult, Wire,
 };
 use synck_vcs::config::CoreConfig;
 use synck_vcs::metadata::Metadata;
@@ -48,8 +46,8 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(300);
 /// Room for a page's envelope around its records.
 const PAGE_RECORD_BYTES: usize = MAX_PAGE_BYTES - 64 * 1024;
-/// Refusals and small replies; history pages are bounded by the protocol.
-const MAX_REPLY_BYTES: u64 = 2 * MAX_PAGE_BYTES as u64;
+/// Every reply but an object pack is a message the protocol bounds.
+const MAX_REPLY_BYTES: u64 = MAX_PAGE_BYTES as u64;
 
 fn refused(status: &str) -> LocalError {
     LocalError::Server {
@@ -65,7 +63,7 @@ fn integrity(error: impl std::fmt::Display) -> LocalError {
     LocalError::Integrity(format!("sync server: {error}"))
 }
 
-/// `https://HOST/v1/repositories/REPO_ID`, or `http://` to a loopback host.
+/// `https://HOST/v2/repositories/REPO_ID`, or `http://` to a loopback host.
 /// Returns the URL without a trailing slash and the repository ID it names.
 pub(crate) fn parse_url(url: &str) -> Result<(String, RepoId)> {
     let invalid = |reason: &str| {
@@ -79,7 +77,7 @@ pub(crate) fn parse_url(url: &str) -> Result<(String, RepoId)> {
     match uri.scheme_str() {
         Some("https") => {}
         Some("http") if matches!(host, "localhost" | "127.0.0.1" | "[::1]") => {}
-        Some("http") => return Err(invalid("protocol 1 needs https except to this machine")),
+        Some("http") => return Err(invalid("protocol 2 needs https except to this machine")),
         _ => return Err(invalid("it is not https")),
     }
     if uri
@@ -93,9 +91,9 @@ pub(crate) fn parse_url(url: &str) -> Result<(String, RepoId)> {
     }
     let repo_id = uri
         .path()
-        .strip_prefix("/v1/repositories/")
+        .strip_prefix("/v2/repositories/")
         .filter(|id| !id.contains('/'))
-        .ok_or_else(|| invalid("its path is not /v1/repositories/REPO_ID"))?;
+        .ok_or_else(|| invalid("its path is not /v2/repositories/REPO_ID"))?;
     let repo_id = RepoId::parse(repo_id).map_err(|_| invalid("its repository ID is not valid"))?;
     Ok((url.to_string(), repo_id))
 }
@@ -105,8 +103,6 @@ pub(crate) struct Remote {
     agent: ureq::Agent,
     sync: String,
     authorization: String,
-    /// The server's `object_packs` capability, once asked.
-    packs: std::sync::OnceLock<bool>,
 }
 
 /// An object pack read from staged files, one open at a time.
@@ -127,7 +123,7 @@ impl Read for PackReader<'_> {
             let Some((id, path, size)) = self.objects.next() else {
                 return Ok(0);
             };
-            let mut header = id.as_str().as_bytes().to_vec();
+            let mut header = id.as_bytes().to_vec();
             header.extend(size.to_be_bytes());
             let file = std::fs::File::open(path)?.take(*size);
             self.current = Some(Box::new(std::io::Cursor::new(header).chain(file)));
@@ -159,7 +155,6 @@ impl Remote {
             agent,
             sync: format!("{url}/sync"),
             authorization: format!("Bearer {}", token.trim()),
-            packs: std::sync::OnceLock::new(),
         })
     }
 
@@ -178,19 +173,19 @@ impl Remote {
     fn post(
         &self,
         path: &str,
-        body: &impl Serialize,
+        body: &impl Wire,
         lock_tokens: &[String],
     ) -> Result<Response<ureq::Body>> {
         let mut request = self
             .agent
             .post(self.url(path))
             .header("authorization", &self.authorization)
-            .header("content-type", "application/json");
+            .header("content-type", "application/octet-stream");
         for token in lock_tokens {
             request = request.header(LOCK_TOKEN, token);
         }
         request
-            .send(&serde_json::to_vec(body)?[..])
+            .send(&synck_sync::encode(body).map_err(integrity)?[..])
             .map_err(unreachable)
     }
 
@@ -202,13 +197,13 @@ impl Remote {
             .map_err(unreachable)
     }
 
-    /// A success's JSON, or the refusal as an error.
-    fn json<T: DeserializeOwned>(response: Response<ureq::Body>) -> Result<T> {
+    /// A success's message, or the refusal as an error.
+    fn message<T: Wire>(response: Response<ureq::Body>) -> Result<T> {
         let (status, body) = Self::read(response)?;
         if !status.is_success() {
             return Err(Self::refusal(status, &body));
         }
-        serde_json::from_slice(&body).map_err(integrity)
+        synck_sync::decode(&body).map_err(integrity)
     }
 
     fn read(response: Response<ureq::Body>) -> Result<(StatusCode, Vec<u8>)> {
@@ -222,44 +217,28 @@ impl Remote {
         Ok((status, body))
     }
 
-    fn status(body: &[u8]) -> Option<serde_json::Value> {
-        let value: serde_json::Value = serde_json::from_slice(body).ok()?;
-        value["status"].is_string().then_some(value)
+    /// A refused request's body, if it is one.
+    fn refused_with(body: &[u8]) -> Option<Refusal> {
+        synck_sync::decode(body).ok()
     }
 
     fn refusal(status: StatusCode, body: &[u8]) -> LocalError {
-        let Some(value) = Self::status(body) else {
-            return refused(&status.to_string());
-        };
-        match value["status"].as_str() {
-            Some("LOCKED") => LocalError::Locked {
-                path: value["path"].as_str().unwrap_or_default().to_string(),
-                owner: value["owner"].as_str().unwrap_or_default().to_string(),
-            },
-            Some("LOCK_LOST") => LocalError::LockLost,
-            Some(code) => refused(code),
+        match Self::refused_with(body) {
+            Some(Refusal::Locked { path, owner }) => LocalError::Locked { path, owner },
+            Some(Refusal::LockLost) => LocalError::LockLost,
+            Some(refusal) => refused(refusal.name()),
             None => refused(&status.to_string()),
         }
     }
 
     pub(crate) fn capabilities(&self) -> Result<Capabilities> {
-        let capabilities: Capabilities = Self::json(self.get("capabilities")?)?;
+        let capabilities: Capabilities = Self::message(self.get("capabilities")?)?;
         capabilities.validate().map_err(integrity)?;
-        let _ = self.packs.set(capabilities.object_packs);
         Ok(capabilities)
     }
 
-    /// The server takes and serves object packs; otherwise each object
-    /// travels in a request of its own.
-    fn packs(&self) -> Result<bool> {
-        match self.packs.get() {
-            Some(packs) => Ok(*packs),
-            None => Ok(self.capabilities()?.object_packs),
-        }
-    }
-
     fn history(&self, request: &HistoryRequest) -> Result<HistoryPage> {
-        Self::json(self.post("history", request, &[])?)
+        Self::message(self.post("history", request, &[])?)
     }
 
     fn receipt(&self, operation_id: &str) -> Result<Option<Receipt>> {
@@ -267,24 +246,21 @@ impl Remote {
         if response.status() == StatusCode::NOT_FOUND {
             return Ok(None);
         }
-        Self::json(response).map(Some)
+        Self::message(response).map(Some)
     }
 
     fn put_page(&self, page: &ProposalPage) -> Result<Option<PageAck>> {
-        let body = serde_json::to_vec(page)?;
+        let body = synck_sync::encode(page).map_err(integrity)?;
         let response = self.put(
             &format!("uploads/{}/pages/{}", page.operation_id, page.offset),
             ureq::SendBody::from_reader(&mut &body[..]),
         )?;
         let (status, body) = Self::read(response)?;
         if status.is_success() {
-            return serde_json::from_slice(&body).map(Some).map_err(integrity);
+            return synck_sync::decode(&body).map(Some).map_err(integrity);
         }
-        match Self::status(&body)
-            .and_then(|value| value["status"].as_str().map(str::to_string))
-            .as_deref()
-        {
-            Some("UPLOAD_EXPIRED") => Ok(None),
+        match Self::refused_with(&body) {
+            Some(Refusal::UploadExpired) => Ok(None),
             _ => Err(Self::refusal(status, &body)),
         }
     }
@@ -292,33 +268,15 @@ impl Remote {
     fn submit(&self, request: &SubmitRequest, lock_tokens: &[String]) -> Result<Submitted> {
         let (status, body) = Self::read(self.post("proposals", request, lock_tokens)?)?;
         if status.is_success() {
-            return serde_json::from_slice(&body)
+            return synck_sync::decode(&body)
                 .map(Submitted::Result)
                 .map_err(integrity);
         }
-        let value = Self::status(&body);
-        match value.as_ref().and_then(|value| value["status"].as_str()) {
-            Some("UPLOAD_EXPIRED") => Ok(Submitted::Expired),
-            Some("OBJECTS_MISSING") => {
-                let objects = serde_json::from_value(value.expect("a status")["objects"].take())
-                    .map_err(integrity)?;
-                Ok(Submitted::Missing(objects))
-            }
+        match Self::refused_with(&body) {
+            Some(Refusal::UploadExpired) => Ok(Submitted::Expired),
+            Some(Refusal::ObjectsMissing(objects)) => Ok(Submitted::Missing(objects)),
             _ => Err(Self::refusal(status, &body)),
         }
-    }
-
-    fn put_object(&self, id: &ObjectId, source: &Path) -> Result<()> {
-        let mut file = std::fs::File::open(source).at("open", source)?;
-        let response = self.put(
-            &format!("objects/{}", id.as_str()),
-            ureq::SendBody::from_reader(&mut file),
-        )?;
-        let (status, body) = Self::read(response)?;
-        if !status.is_success() {
-            return Err(Self::refusal(status, &body));
-        }
-        Ok(())
     }
 
     /// Upload one object pack of staged files.
@@ -367,7 +325,7 @@ impl Remote {
                 let id = request
                     .objects
                     .get(received)
-                    .filter(|expected| expected.as_str().as_bytes() == id)
+                    .filter(|expected| expected.as_bytes() == id)
                     .ok_or_else(|| integrity("an object pack holds an object not asked for"))?;
                 let mut object =
                     (&mut reader).take(u64::from_be_bytes(size.try_into().expect("eight bytes")));
@@ -385,35 +343,12 @@ impl Remote {
         Ok(())
     }
 
-    /// A metadata object's bytes, which the caller checks against its ID.
-    fn get_metadata(&self, id: &ObjectId) -> Result<Vec<u8>> {
-        let (status, body) = Self::read(self.get(&format!("objects/{}", id.as_str()))?)?;
-        if !status.is_success() {
-            return Err(Self::refusal(status, &body));
-        }
-        Ok(body)
-    }
-
-    /// Hand an object's bytes to `each`, which checks them against its ID.
-    fn get_object(
-        &self,
-        id: &ObjectId,
-        each: impl FnOnce(&mut dyn Read) -> Result<()>,
-    ) -> Result<()> {
-        let response = self.get(&format!("objects/{}", id.as_str()))?;
-        if !response.status().is_success() {
-            let (status, body) = Self::read(response)?;
-            return Err(Self::refusal(status, &body));
-        }
-        each(&mut response.into_body().into_reader())
-    }
-
     fn leases(&self) -> Result<Leases> {
-        Self::json(self.get("leases")?)
+        Self::message(self.get("leases")?)
     }
 
     fn reserve(&self, request: &LeaseRequest) -> Result<Lease> {
-        Self::json(self.post("leases", request, &[])?)
+        Self::message(self.post("leases", request, &[])?)
     }
 
     fn renew(&self, renewal: &LeaseRenewal) -> Result<()> {
@@ -425,11 +360,11 @@ impl Remote {
     }
 
     fn release(&self, token: &LeaseToken) -> Result<Released> {
-        Self::json(self.post("leases/release", token, &[])?)
+        Self::message(self.post("leases/release", token, &[])?)
     }
 
     fn break_paths(&self, paths: &LeasePaths) -> Result<Released> {
-        Self::json(self.post("leases/break", paths, &[])?)
+        Self::message(self.post("leases/break", paths, &[])?)
     }
 }
 
@@ -503,13 +438,7 @@ impl Store<'_> {
             let _ = std::fs::remove_file(&path);
             result
         };
-        if remote.packs()? {
-            return remote.get_objects(ids, store);
-        }
-        for id in ids {
-            remote.get_object(id, |bytes| store(id, bytes))?;
-        }
-        Ok(())
+        remote.get_objects(ids, store)
     }
 
     /// Write `id`'s exact bytes to a staging file. Metadata lives in history,
@@ -544,9 +473,8 @@ impl Store<'_> {
     }
 
     /// Upload `ids` in packs of at most `MAX_PACK_OBJECTS` and about
-    /// `PACK_BYTES`, or one by one to a server without packs.
+    /// `PACK_BYTES`.
     fn upload(&self, remote: &Remote, ids: &[ObjectId]) -> Result<()> {
-        let packs = remote.packs()?;
         let metadata = self
             .storage
             .metadata_objects(self.repo_id, ids)
@@ -559,13 +487,10 @@ impl Store<'_> {
                 pack.push((id.clone(), path, size));
                 bytes += size;
                 let last = index + 1 == ids.len();
-                if !packs {
-                    remote.put_object(id, &pack[0].1)?;
-                } else if pack.len() == MAX_PACK_OBJECTS || bytes >= PACK_BYTES || last {
-                    remote.put_objects(&pack)?;
-                } else {
+                if pack.len() < MAX_PACK_OBJECTS && bytes < PACK_BYTES && !last {
                     continue;
                 }
+                remote.put_objects(&pack)?;
                 for (_, path, _) in pack.drain(..) {
                     let _ = std::fs::remove_file(path);
                 }
@@ -602,7 +527,7 @@ impl Store<'_> {
             downloaded.push((id.clone(), bytes));
             Ok(())
         };
-        if !missing.is_empty() && remote.packs()? {
+        if !missing.is_empty() {
             let missing: Vec<ObjectId> = missing.iter().cloned().collect();
             remote.get_objects(&missing, |id, bytes| {
                 let mut buffer = Vec::new();
@@ -612,10 +537,6 @@ impl Store<'_> {
                     .map_err(|error| LocalError::Unreachable(error.to_string()))?;
                 keep(id, buffer)
             })?;
-        } else {
-            for id in &missing {
-                keep(id, remote.get_metadata(id)?)?;
-            }
         }
         for id in ids.into_iter().filter(|id| !missing.contains(id)) {
             let metadata = self
@@ -788,7 +709,7 @@ pub async fn clone_remote(
     let include = crate::checkout::normalize_paths(include)?;
     let remote = Remote::new(&url, token)?;
     let capabilities = remote.capabilities()?;
-    if capabilities.repository.repo_id != repo_id {
+    if capabilities.latest.repository.repo_id != repo_id {
         return Err(integrity("the server answered for another repository"));
     }
     if capabilities.encrypted {
@@ -831,7 +752,7 @@ async fn make_clone(
     include: Vec<String>,
     hold: bool,
 ) -> Result<Repository> {
-    let repo_id = capabilities.repository.repo_id.clone();
+    let repo_id = capabilities.latest.repository.repo_id.clone();
     let storage_mode = StorageMode::default();
     std::fs::create_dir(metadata).at("create clone metadata", metadata)?;
     for name in ["objects", "tmp"] {
@@ -858,7 +779,9 @@ async fn make_clone(
     let mut held = Held {
         origin_seq: 0,
         pushed_seq: 0,
-        remote: Some(Cursor::genesis(capabilities.repository, false).map_err(integrity)?),
+        remote: Some(
+            Cursor::genesis(capabilities.latest.repository.clone(), false).map_err(integrity)?,
+        ),
     };
     if store.fetch(remote, &mut held).await?.is_err() {
         return Err(integrity("the server's history does not replay"));
@@ -926,7 +849,7 @@ fn proposal_pages(
         Ok(())
     };
     for record in records {
-        let size = serde_json::to_vec(record)?.len() + 1;
+        let size = synck_sync::encode(record).map_err(integrity)?.len();
         if !page.is_empty() && (page.len() == MAX_PAGE_RECORDS || bytes + size > PAGE_RECORD_BYTES)
         {
             finish(std::mem::take(&mut page), &mut verifier)?;
@@ -1020,7 +943,7 @@ impl Repository {
             return Ok(PushOutcome::default());
         }
         let remote = self.remote_client()?;
-        let repository = remote.capabilities()?.repository;
+        let repository = remote.capabilities()?.latest.repository;
         for commit_id in &pushed {
             let commit_id = CommitId::parse(commit_id)
                 .map_err(|error| LocalError::Integrity(error.to_string()))?;
@@ -1135,7 +1058,7 @@ impl Repository {
         let lease = self.remote_client()?.reserve(&LeaseRequest {
             paths,
             owner: owner.to_string(),
-            ttl,
+            ttl: lease_ttl(ttl)?,
         })?;
         Ok(AgentLease {
             token: lease.token,
@@ -1146,7 +1069,7 @@ impl Repository {
     pub(crate) fn remote_renew(&self, token: &str, ttl: u64) -> Result<()> {
         self.remote_client()?.renew(&LeaseRenewal {
             token: token.to_string(),
-            ttl,
+            ttl: lease_ttl(ttl)?,
         })
     }
 
@@ -1173,4 +1096,8 @@ fn agent_lock(leased: synck_sync::LeasedPath) -> AgentLock {
         owner: leased.owner,
         expires_at: leased.expires_at,
     }
+}
+
+fn lease_ttl(ttl: u64) -> Result<u32> {
+    u32::try_from(ttl).map_err(|_| LocalError::Invalid(format!("lease ttl {ttl} is too long")))
 }

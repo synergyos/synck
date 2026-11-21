@@ -1,14 +1,30 @@
 {
-  "description": "One JSON value for each protocol shape. A `valid` value parses and serializes to the same JSON value; an `invalid` value is refused. `guarded` is one proposal with two head guards.",
+  "description": "One value of each protocol 2 shape: `valid` gives its readable JSON `value` and its exact `bytes_hex`, which decode to that value; `invalid` gives bytes a receiver refuses. `guarded` is one proposal with two head guards and a subtree guard.",
   "valid": [
     {
-      "type": "Capabilities",
+      "type": "RepositoryIdentity",
       "value": {
-        "protocol_version": 1,
+        "repo_id": "019a2900-0000-7000-8000-000000000001",
+        "generation": "019a2900-0000-7000-8000-000000000002"
+      },
+      "bytes_hex": "019a2900000070008000000000000001019a2900000070008000000000000002"
+    },
+    {
+      "type": "Cursor",
+      "value": {
         "repository": {
           "repo_id": "019a2900-0000-7000-8000-000000000001",
           "generation": "019a2900-0000-7000-8000-000000000002"
         },
+        "repo_seq": 1,
+        "checkpoint": "sha256:36d53f07f35128f2fb99de29939c32b68589e027fc7c58c0fe2de9a48dda2f2f"
+      },
+      "bytes_hex": "019a2900000070008000000000000001019a2900000070008000000000000002000000000000000136d53f07f35128f2fb99de29939c32b68589e027fc7c58c0fe2de9a48dda2f2f"
+    },
+    {
+      "type": "Capabilities",
+      "value": {
+        "protocol_version": 2,
         "encrypted": false,
         "latest": {
           "repository": {
@@ -16,15 +32,24 @@
             "generation": "019a2900-0000-7000-8000-000000000002"
           },
           "repo_seq": 1,
-          "checkpoint": "sha256:478e37b1379863936ab4c26caf7417b693d61e9bd7b66966eb55aaaa1202fa02"
+          "checkpoint": "sha256:36d53f07f35128f2fb99de29939c32b68589e027fc7c58c0fe2de9a48dda2f2f"
         },
         "policy": {
           "max_events_per_commit": 500,
           "max_object_bytes": null,
           "quota_bytes": null
-        },
-        "object_packs": true
-      }
+        }
+      },
+      "bytes_hex": "000200019a2900000070008000000000000001019a2900000070008000000000000002000000000000000136d53f07f35128f2fb99de29939c32b68589e027fc7c58c0fe2de9a48dda2f2f0100000000000001f40000"
+    },
+    {
+      "type": "ServerPolicy",
+      "value": {
+        "max_events_per_commit": 500,
+        "max_object_bytes": null,
+        "quota_bytes": null
+      },
+      "bytes_hex": "0100000000000001f40000"
     },
     {
       "type": "ProposalPage",
@@ -67,16 +92,96 @@
               "item_id": "019a2900-0000-7000-8000-000000000101",
               "head_seq": 7
             }
+          },
+          {
+            "kind": "subtree_guard",
+            "value": {
+              "root_item_id": "019a2900-0000-7000-8000-000000000100",
+              "require_empty_live_descendants": false,
+              "descendants": [
+                {
+                  "item_id": "019a2900-0000-7000-8000-000000000101",
+                  "head_seq": 7
+                }
+              ]
+            }
           }
         ]
-      }
+      },
+      "bytes_hex": "019a2900000070008000000000000001019a2900000070008000000000000002000a6f703a677561726465640000000000000000000000050100000036010010464f4c4445523a3a5345545f4e414d45019a290000007000800000000000010000220000000000000003000772656e616d6564020000005302001746494c455f56455253494f4e3a3a544f4d4253544f4e45019a29000000700080000000000001010000000000000002014d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d03019a2900000070008000000000000100000000000000000303019a2900000070008000000000000101000000000000000704019a29000000700080000000000001000000000001019a29000000700080000000000001010000000000000007"
+    },
+    {
+      "type": "Record",
+      "value": {
+        "kind": "item",
+        "value": {
+          "item_id": "019a2900-0000-7000-8000-000000000100",
+          "base_seq": 3,
+          "event_type": "FOLDER::SET_NAME",
+          "set_name": "renamed"
+        }
+      },
+      "bytes_hex": "0100000036010010464f4c4445523a3a5345545f4e414d45019a290000007000800000000000010000220000000000000003000772656e616d6564"
+    },
+    {
+      "type": "Record",
+      "value": {
+        "kind": "ref",
+        "value": {
+          "owner_item_id": "019a2900-0000-7000-8000-000000000101",
+          "event_type": "FILE_VERSION::TOMBSTONE",
+          "metadata_id": "sha256:4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d",
+          "base_ref_seq": 2
+        }
+      },
+      "bytes_hex": "020000005302001746494c455f56455253494f4e3a3a544f4d4253544f4e45019a29000000700080000000000001010000000000000002014d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d"
+    },
+    {
+      "type": "Record",
+      "value": {
+        "kind": "guard",
+        "value": {
+          "item_id": "019a2900-0000-7000-8000-000000000100",
+          "head_seq": 3
+        }
+      },
+      "bytes_hex": "03019a29000000700080000000000001000000000000000003"
+    },
+    {
+      "type": "Record",
+      "value": {
+        "kind": "guard",
+        "value": {
+          "item_id": "019a2900-0000-7000-8000-000000000101",
+          "head_seq": 7
+        }
+      },
+      "bytes_hex": "03019a29000000700080000000000001010000000000000007"
+    },
+    {
+      "type": "Record",
+      "value": {
+        "kind": "subtree_guard",
+        "value": {
+          "root_item_id": "019a2900-0000-7000-8000-000000000100",
+          "require_empty_live_descendants": false,
+          "descendants": [
+            {
+              "item_id": "019a2900-0000-7000-8000-000000000101",
+              "head_seq": 7
+            }
+          ]
+        }
+      },
+      "bytes_hex": "04019a29000000700080000000000001000000000001019a29000000700080000000000001010000000000000007"
     },
     {
       "type": "PageAck",
       "value": {
-        "next_offset": 4,
+        "next_offset": 5,
         "expires_at": "2026-10-28T00:00:00.123456789Z"
-      }
+      },
+      "bytes_hex": "0000000000000005000000006ae13b00075bcd15"
     },
     {
       "type": "SubmitRequest",
@@ -86,17 +191,19 @@
           "generation": "019a2900-0000-7000-8000-000000000002"
         },
         "operation_id": "op:guarded",
-        "metadata": {
+        "repository_head": 0,
+        "header": {
           "author_id": "owner",
           "committer_id": "device",
+          "occurred_at": "2026-10-28T09:00:00.000000000Z",
           "message": "Tidy",
-          "occurred_at": "2026-10-28T09:00:00.000000000Z"
+          "event_count": 2,
+          "events_digest": "sha256:20c1b88e4d8252a2bdc1be8cb214204a712456a75ce803fd86c21c1d48e20d4f"
         },
-        "event_count": 2,
-        "events_digest": "sha256:344bdf25c487db429c8087b8b6180752f55e6a65015dd1bf9e80a45ac06ffaf0",
-        "guard_count": 2,
-        "guards_digest": "sha256:20f93dcf864e11ec972e66ec4d4f1ab8f69511665357bcdb6b10f7792e56c5fb"
-      }
+        "guard_count": 3,
+        "guards_digest": "sha256:c1a2f599ddbebeeaefaf05e66495282f135e0de1adb3bbee1f2b1106dd2b96dd"
+      },
+      "bytes_hex": "019a2900000070008000000000000001019a2900000070008000000000000002000a6f703a67756172646564010000000000000000000000470300056f776e6572000664657669636503000000006ae1b990000000000004546964790000000220c1b88e4d8252a2bdc1be8cb214204a712456a75ce803fd86c21c1d48e20d4f0000000000000003c1a2f599ddbebeeaefaf05e66495282f135e0de1adb3bbee1f2b1106dd2b96dd"
     },
     {
       "type": "SubmitResult",
@@ -104,8 +211,8 @@
         "status": "accepted",
         "receipt": {
           "operation_id": "op:guarded",
-          "request_digest": "sha256:aa8c92b30169bb089bbff8f3a7c05e7c94d2fedb05b0363bb3dc0f305b3bdd00",
-          "commit_id": "sha256:582a3af82f1f5108c49d7b3ab9f99a74872cc741e27847764a65d10473076571",
+          "request_digest": "sha256:e0153dd468d78e2561c2655d049805dab0d9b9f83198c96d3865911f1f1c017f",
+          "commit_id": "sha256:32ae357f4e3c537b60ff742bb2f7f70659ead04eaec13f0eeae912246355a503",
           "accepted_at": "2026-10-28T00:00:00.123456789Z",
           "published": {
             "repository": {
@@ -113,10 +220,11 @@
               "generation": "019a2900-0000-7000-8000-000000000002"
             },
             "repo_seq": 1,
-            "checkpoint": "sha256:478e37b1379863936ab4c26caf7417b693d61e9bd7b66966eb55aaaa1202fa02"
+            "checkpoint": "sha256:36d53f07f35128f2fb99de29939c32b68589e027fc7c58c0fe2de9a48dda2f2f"
           }
         }
-      }
+      },
+      "bytes_hex": "00000a6f703a67756172646564e0153dd468d78e2561c2655d049805dab0d9b9f83198c96d3865911f1f1c017f32ae357f4e3c537b60ff742bb2f7f70659ead04eaec13f0eeae912246355a503000000006ae13b00075bcd1501019a2900000070008000000000000001019a2900000070008000000000000002000000000000000136d53f07f35128f2fb99de29939c32b68589e027fc7c58c0fe2de9a48dda2f2f"
     },
     {
       "type": "SubmitResult",
@@ -132,7 +240,8 @@
             "head_seq": 0
           }
         ]
-      }
+      },
+      "bytes_hex": "0100000002019a29000000700080000000000001000000000000000005019a29000000700080000000000001010000000000000000"
     },
     {
       "type": "SubmitResult",
@@ -141,17 +250,37 @@
         "limit": "events_per_commit",
         "maximum": 500,
         "actual": 1200
-      }
+      },
+      "bytes_hex": "020100000000000001f400000000000004b0"
     },
     {
       "type": "Receipt",
       "value": {
         "operation_id": "op:guarded",
-        "request_digest": "sha256:aa8c92b30169bb089bbff8f3a7c05e7c94d2fedb05b0363bb3dc0f305b3bdd00",
-        "commit_id": "sha256:582a3af82f1f5108c49d7b3ab9f99a74872cc741e27847764a65d10473076571",
+        "request_digest": "sha256:e0153dd468d78e2561c2655d049805dab0d9b9f83198c96d3865911f1f1c017f",
+        "commit_id": "sha256:32ae357f4e3c537b60ff742bb2f7f70659ead04eaec13f0eeae912246355a503",
+        "accepted_at": "2026-10-28T00:00:00.123456789Z",
+        "published": {
+          "repository": {
+            "repo_id": "019a2900-0000-7000-8000-000000000001",
+            "generation": "019a2900-0000-7000-8000-000000000002"
+          },
+          "repo_seq": 1,
+          "checkpoint": "sha256:36d53f07f35128f2fb99de29939c32b68589e027fc7c58c0fe2de9a48dda2f2f"
+        }
+      },
+      "bytes_hex": "000a6f703a67756172646564e0153dd468d78e2561c2655d049805dab0d9b9f83198c96d3865911f1f1c017f32ae357f4e3c537b60ff742bb2f7f70659ead04eaec13f0eeae912246355a503000000006ae13b00075bcd1501019a2900000070008000000000000001019a2900000070008000000000000002000000000000000136d53f07f35128f2fb99de29939c32b68589e027fc7c58c0fe2de9a48dda2f2f"
+    },
+    {
+      "type": "Receipt",
+      "value": {
+        "operation_id": "op:guarded",
+        "request_digest": "sha256:e0153dd468d78e2561c2655d049805dab0d9b9f83198c96d3865911f1f1c017f",
+        "commit_id": "sha256:32ae357f4e3c537b60ff742bb2f7f70659ead04eaec13f0eeae912246355a503",
         "accepted_at": "2026-10-28T00:00:00.123456789Z",
         "published": null
-      }
+      },
+      "bytes_hex": "000a6f703a67756172646564e0153dd468d78e2561c2655d049805dab0d9b9f83198c96d3865911f1f1c017f32ae357f4e3c537b60ff742bb2f7f70659ead04eaec13f0eeae912246355a503000000006ae13b00075bcd1500"
     },
     {
       "type": "HistoryRequest",
@@ -163,12 +292,13 @@
               "generation": "019a2900-0000-7000-8000-000000000002"
             },
             "repo_seq": 0,
-            "checkpoint": "sha256:84d3cd883cefdbec1867e506ea6ec1f046fdec7590c85c0cafa9baaae37c25b2"
+            "checkpoint": "sha256:41b8062cc2b709a382a0f3a92425d653305f5f6d68b0ef634bd7c4db877067cb"
           },
           "pending": null
         },
         "limit": 512
-      }
+      },
+      "bytes_hex": "019a2900000070008000000000000001019a2900000070008000000000000002000000000000000041b8062cc2b709a382a0f3a92425d653305f5f6d68b0ef634bd7c4db877067cb000200"
     },
     {
       "type": "HistoryRequest",
@@ -180,15 +310,34 @@
               "generation": "019a2900-0000-7000-8000-000000000002"
             },
             "repo_seq": 0,
-            "checkpoint": "sha256:84d3cd883cefdbec1867e506ea6ec1f046fdec7590c85c0cafa9baaae37c25b2"
+            "checkpoint": "sha256:41b8062cc2b709a382a0f3a92425d653305f5f6d68b0ef634bd7c4db877067cb"
           },
           "pending": {
-            "commit_id": "sha256:582a3af82f1f5108c49d7b3ab9f99a74872cc741e27847764a65d10473076571",
+            "commit_id": "sha256:32ae357f4e3c537b60ff742bb2f7f70659ead04eaec13f0eeae912246355a503",
             "next_event_index": 1
           }
         },
         "limit": 1
-      }
+      },
+      "bytes_hex": "019a2900000070008000000000000001019a2900000070008000000000000002000000000000000041b8062cc2b709a382a0f3a92425d653305f5f6d68b0ef634bd7c4db877067cb0132ae357f4e3c537b60ff742bb2f7f70659ead04eaec13f0eeae912246355a503000000010001"
+    },
+    {
+      "type": "HistoryPosition",
+      "value": {
+        "completed": {
+          "repository": {
+            "repo_id": "019a2900-0000-7000-8000-000000000001",
+            "generation": "019a2900-0000-7000-8000-000000000002"
+          },
+          "repo_seq": 0,
+          "checkpoint": "sha256:41b8062cc2b709a382a0f3a92425d653305f5f6d68b0ef634bd7c4db877067cb"
+        },
+        "pending": {
+          "commit_id": "sha256:32ae357f4e3c537b60ff742bb2f7f70659ead04eaec13f0eeae912246355a503",
+          "next_event_index": 1
+        }
+      },
+      "bytes_hex": "019a2900000070008000000000000001019a2900000070008000000000000002000000000000000041b8062cc2b709a382a0f3a92425d653305f5f6d68b0ef634bd7c4db877067cb0132ae357f4e3c537b60ff742bb2f7f70659ead04eaec13f0eeae912246355a50300000001"
     },
     {
       "type": "HistoryPage",
@@ -200,378 +349,849 @@
               "generation": "019a2900-0000-7000-8000-000000000002"
             },
             "repo_seq": 0,
-            "checkpoint": "sha256:84d3cd883cefdbec1867e506ea6ec1f046fdec7590c85c0cafa9baaae37c25b2"
+            "checkpoint": "sha256:41b8062cc2b709a382a0f3a92425d653305f5f6d68b0ef634bd7c4db877067cb"
           },
           "pending": null
         },
         "fragments": [
           {
             "header": {
-              "commit": {
-                "repo_id": "019a2900-0000-7000-8000-000000000001",
-                "commit_id": "sha256:582a3af82f1f5108c49d7b3ab9f99a74872cc741e27847764a65d10473076571",
-                "repo_seq": 1,
-                "format_version": 6,
-                "author_id": "owner",
-                "committer_id": "device",
-                "message": "Tidy",
-                "occurred_at": "2026-10-28T09:00:00.000000000Z",
-                "created_at": "2026-10-28T00:00:00.123456789Z",
-                "event_count": 2,
-                "events_digest": "sha256:344bdf25c487db429c8087b8b6180752f55e6a65015dd1bf9e80a45ac06ffaf0"
-              },
-              "checkpoint": "sha256:478e37b1379863936ab4c26caf7417b693d61e9bd7b66966eb55aaaa1202fa02"
+              "commit_id": "sha256:32ae357f4e3c537b60ff742bb2f7f70659ead04eaec13f0eeae912246355a503",
+              "repo_seq": 1,
+              "created_at": "2026-10-28T00:00:00.123456789Z",
+              "checkpoint": "sha256:36d53f07f35128f2fb99de29939c32b68589e027fc7c58c0fe2de9a48dda2f2f",
+              "author_id": "owner",
+              "committer_id": "device",
+              "occurred_at": "2026-10-28T09:00:00.000000000Z",
+              "message": "Tidy",
+              "event_count": 2
             },
             "events": [
               {
-                "event_family": "item",
-                "repo_id": "019a2900-0000-7000-8000-000000000001",
-                "item_id": "019a2900-0000-7000-8000-000000000100",
+                "envelope": {
+                  "item_id": "019a2900-0000-7000-8000-000000000100",
+                  "base_seq": 3,
+                  "event_type": "FOLDER::SET_NAME",
+                  "set_name": "renamed"
+                },
                 "item_seq": 4,
-                "event_type": "FOLDER::SET_NAME",
-                "commit_id": "sha256:582a3af82f1f5108c49d7b3ab9f99a74872cc741e27847764a65d10473076571",
-                "commit_event_idx": 0,
-                "repo_seq": 1,
-                "payload_json": "{\"base_seq\":3,\"event_type\":\"FOLDER::SET_NAME\",\"item_id\":\"019a2900-0000-7000-8000-000000000100\",\"set_name\":\"renamed\"}",
-                "event_payload_digest": "sha256:1fac6dfb2945977ff23aaa7f73609f759b1cea63bca57c6913a037770cc74130",
-                "created_at": "2026-10-28T00:00:00.123456789Z",
-                "parent_folder_id": null,
+                "parent_folder_id": "019a2900-0000-7000-8000-000000000102",
                 "parent_folder_id_before": null
               },
               {
-                "event_family": "ref",
-                "repo_id": "019a2900-0000-7000-8000-000000000001",
-                "owner_item_id": "019a2900-0000-7000-8000-000000000101",
-                "ref_seq": 3,
-                "event_type": "FILE_VERSION::TOMBSTONE",
-                "commit_id": "sha256:582a3af82f1f5108c49d7b3ab9f99a74872cc741e27847764a65d10473076571",
-                "commit_event_idx": 1,
-                "repo_seq": 1,
-                "payload_json": "{\"base_ref_seq\":2,\"event_type\":\"FILE_VERSION::TOMBSTONE\",\"metadata_id\":\"sha256:4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d\",\"owner_item_id\":\"019a2900-0000-7000-8000-000000000101\"}",
-                "event_payload_digest": "sha256:223ac216c72aef6d9c28fe3be6dfaca83331bd2a701e5ced9114eae1eca5e0f6",
-                "created_at": "2026-10-28T00:00:00.123456789Z"
+                "envelope": {
+                  "owner_item_id": "019a2900-0000-7000-8000-000000000101",
+                  "event_type": "FILE_VERSION::TOMBSTONE",
+                  "metadata_id": "sha256:4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d",
+                  "base_ref_seq": 2
+                },
+                "ref_seq": 3
               }
             ]
           }
         ],
         "has_more": false
-      }
+      },
+      "bytes_hex": "019a2900000070008000000000000001019a2900000070008000000000000002000000000000000041b8062cc2b709a382a0f3a92425d653305f5f6d68b0ef634bd7c4db877067cb000000000132ae357f4e3c537b60ff742bb2f7f70659ead04eaec13f0eeae912246355a5030000000000000001000000006ae13b00075bcd1536d53f07f35128f2fb99de29939c32b68589e027fc7c58c0fe2de9a48dda2f2f00056f776e6572000664657669636503000000006ae1b99000000000000454696479000000020000000200000036010010464f4c4445523a3a5345545f4e414d45019a290000007000800000000000010000220000000000000003000772656e616d6564000000000000000401019a2900000070008000000000000102000000005302001746494c455f56455253494f4e3a3a544f4d4253544f4e45019a29000000700080000000000001010000000000000002014d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d000000000000000300"
+    },
+    {
+      "type": "Fragment",
+      "value": {
+        "header": {
+          "commit_id": "sha256:32ae357f4e3c537b60ff742bb2f7f70659ead04eaec13f0eeae912246355a503",
+          "repo_seq": 1,
+          "created_at": "2026-10-28T00:00:00.123456789Z",
+          "checkpoint": "sha256:36d53f07f35128f2fb99de29939c32b68589e027fc7c58c0fe2de9a48dda2f2f",
+          "author_id": "owner",
+          "committer_id": "device",
+          "occurred_at": "2026-10-28T09:00:00.000000000Z",
+          "message": "Tidy",
+          "event_count": 2
+        },
+        "events": [
+          {
+            "envelope": {
+              "item_id": "019a2900-0000-7000-8000-000000000100",
+              "base_seq": 3,
+              "event_type": "FOLDER::SET_NAME",
+              "set_name": "renamed"
+            },
+            "item_seq": 4,
+            "parent_folder_id": "019a2900-0000-7000-8000-000000000102",
+            "parent_folder_id_before": null
+          },
+          {
+            "envelope": {
+              "owner_item_id": "019a2900-0000-7000-8000-000000000101",
+              "event_type": "FILE_VERSION::TOMBSTONE",
+              "metadata_id": "sha256:4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d",
+              "base_ref_seq": 2
+            },
+            "ref_seq": 3
+          }
+        ]
+      },
+      "bytes_hex": "32ae357f4e3c537b60ff742bb2f7f70659ead04eaec13f0eeae912246355a5030000000000000001000000006ae13b00075bcd1536d53f07f35128f2fb99de29939c32b68589e027fc7c58c0fe2de9a48dda2f2f00056f776e6572000664657669636503000000006ae1b99000000000000454696479000000020000000200000036010010464f4c4445523a3a5345545f4e414d45019a290000007000800000000000010000220000000000000003000772656e616d6564000000000000000401019a2900000070008000000000000102000000005302001746494c455f56455253494f4e3a3a544f4d4253544f4e45019a29000000700080000000000001010000000000000002014d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d0000000000000003"
+    },
+    {
+      "type": "PublishedHeader",
+      "value": {
+        "commit_id": "sha256:32ae357f4e3c537b60ff742bb2f7f70659ead04eaec13f0eeae912246355a503",
+        "repo_seq": 1,
+        "created_at": "2026-10-28T00:00:00.123456789Z",
+        "checkpoint": "sha256:36d53f07f35128f2fb99de29939c32b68589e027fc7c58c0fe2de9a48dda2f2f",
+        "author_id": "owner",
+        "committer_id": "device",
+        "occurred_at": "2026-10-28T09:00:00.000000000Z",
+        "message": "Tidy",
+        "event_count": 2
+      },
+      "bytes_hex": "32ae357f4e3c537b60ff742bb2f7f70659ead04eaec13f0eeae912246355a5030000000000000001000000006ae13b00075bcd1536d53f07f35128f2fb99de29939c32b68589e027fc7c58c0fe2de9a48dda2f2f00056f776e6572000664657669636503000000006ae1b9900000000000045469647900000002"
+    },
+    {
+      "type": "PublishedHeader",
+      "value": {
+        "commit_id": "sha256:32ae357f4e3c537b60ff742bb2f7f70659ead04eaec13f0eeae912246355a503",
+        "repo_seq": 1,
+        "created_at": "2026-10-28T00:00:00.123456789Z",
+        "checkpoint": "sha256:36d53f07f35128f2fb99de29939c32b68589e027fc7c58c0fe2de9a48dda2f2f",
+        "author_id": "owner",
+        "committer_id": "device",
+        "occurred_at": null,
+        "message": null,
+        "event_count": 2
+      },
+      "bytes_hex": "32ae357f4e3c537b60ff742bb2f7f70659ead04eaec13f0eeae912246355a5030000000000000001000000006ae13b00075bcd1536d53f07f35128f2fb99de29939c32b68589e027fc7c58c0fe2de9a48dda2f2f00056f776e657200066465766963650000000002"
+    },
+    {
+      "type": "Event",
+      "value": {
+        "envelope": {
+          "item_id": "019a2900-0000-7000-8000-000000000100",
+          "base_seq": 3,
+          "event_type": "FOLDER::SET_NAME",
+          "set_name": "renamed"
+        },
+        "item_seq": 4,
+        "parent_folder_id": "019a2900-0000-7000-8000-000000000102",
+        "parent_folder_id_before": null
+      },
+      "bytes_hex": "00000036010010464f4c4445523a3a5345545f4e414d45019a290000007000800000000000010000220000000000000003000772656e616d6564000000000000000401019a290000007000800000000000010200"
+    },
+    {
+      "type": "Event",
+      "value": {
+        "envelope": {
+          "owner_item_id": "019a2900-0000-7000-8000-000000000101",
+          "event_type": "FILE_VERSION::TOMBSTONE",
+          "metadata_id": "sha256:4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d",
+          "base_ref_seq": 2
+        },
+        "ref_seq": 3
+      },
+      "bytes_hex": "0000005302001746494c455f56455253494f4e3a3a544f4d4253544f4e45019a29000000700080000000000001010000000000000002014d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d0000000000000003"
+    },
+    {
+      "type": "StateRequest",
+      "value": {
+        "after": {
+          "repository": {
+            "repo_id": "019a2900-0000-7000-8000-000000000001",
+            "generation": "019a2900-0000-7000-8000-000000000002"
+          },
+          "changed_seq": 0,
+          "item_id": null
+        },
+        "limit": 512
+      },
+      "bytes_hex": "019a2900000070008000000000000001019a29000000700080000000000000020000000000000000000200"
+    },
+    {
+      "type": "StatePosition",
+      "value": {
+        "repository": {
+          "repo_id": "019a2900-0000-7000-8000-000000000001",
+          "generation": "019a2900-0000-7000-8000-000000000002"
+        },
+        "changed_seq": 1,
+        "item_id": "019a2900-0000-7000-8000-000000000101"
+      },
+      "bytes_hex": "019a2900000070008000000000000001019a2900000070008000000000000002000000000000000101019a2900000070008000000000000101"
+    },
+    {
+      "type": "StatePage",
+      "value": {
+        "after": {
+          "repository": {
+            "repo_id": "019a2900-0000-7000-8000-000000000001",
+            "generation": "019a2900-0000-7000-8000-000000000002"
+          },
+          "changed_seq": 0,
+          "item_id": null
+        },
+        "entries": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000101",
+            "item_type": "FILE",
+            "changed_seq": 1,
+            "head_seq": 7,
+            "ref_head_seq": 3,
+            "parent_folder_id": "019a2900-0000-7000-8000-000000000100",
+            "name": "a.txt",
+            "record_key": null,
+            "link_folder_id": null,
+            "lifecycle_state": "LIVE",
+            "sequencing_mode": "LOCAL",
+            "federation_stream_id": null,
+            "content": {
+              "bytes": "sha256:abababababababababababababababababababababababababababababababab"
+            },
+            "metadata_id": "sha256:5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e",
+            "name_metadata_id": null,
+            "created_at": "2026-10-28T00:00:00.123456789Z",
+            "created_by": "owner",
+            "changed_at": "2026-10-28T09:00:00.000000000Z",
+            "changed_by": "owner"
+          }
+        ],
+        "departed": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000104",
+            "changed_seq": 1
+          }
+        ],
+        "through": {
+          "repository": {
+            "repo_id": "019a2900-0000-7000-8000-000000000001",
+            "generation": "019a2900-0000-7000-8000-000000000002"
+          },
+          "repo_seq": 1,
+          "checkpoint": "sha256:36d53f07f35128f2fb99de29939c32b68589e027fc7c58c0fe2de9a48dda2f2f"
+        },
+        "has_more": false
+      },
+      "bytes_hex": "019a2900000070008000000000000001019a290000007000800000000000000200000000000000000000000001019a2900000070008000000000000101000446494c4500000000000000010000000000000007000000000000000301019a2900000070008000000000000100010005612e74787400000101000100056279746573abababababababababababababababababababababababababababababababab015e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e00000000006ae13b00075bcd1500056f776e6572000000006ae1b9900000000000056f776e657200000001019a29000000700080000000000001040000000000000001019a2900000070008000000000000001019a2900000070008000000000000002000000000000000136d53f07f35128f2fb99de29939c32b68589e027fc7c58c0fe2de9a48dda2f2f00"
+    },
+    {
+      "type": "StateEntry",
+      "value": {
+        "item_id": "019a2900-0000-7000-8000-000000000101",
+        "item_type": "FILE",
+        "changed_seq": 1,
+        "head_seq": 7,
+        "ref_head_seq": 3,
+        "parent_folder_id": "019a2900-0000-7000-8000-000000000100",
+        "name": "a.txt",
+        "record_key": null,
+        "link_folder_id": null,
+        "lifecycle_state": "LIVE",
+        "sequencing_mode": "LOCAL",
+        "federation_stream_id": null,
+        "content": {
+          "bytes": "sha256:abababababababababababababababababababababababababababababababab"
+        },
+        "metadata_id": "sha256:5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e",
+        "name_metadata_id": null,
+        "created_at": "2026-10-28T00:00:00.123456789Z",
+        "created_by": "owner",
+        "changed_at": "2026-10-28T09:00:00.000000000Z",
+        "changed_by": "owner"
+      },
+      "bytes_hex": "019a2900000070008000000000000101000446494c4500000000000000010000000000000007000000000000000301019a2900000070008000000000000100010005612e74787400000101000100056279746573abababababababababababababababababababababababababababababababab015e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e00000000006ae13b00075bcd1500056f776e6572000000006ae1b9900000000000056f776e6572"
+    },
+    {
+      "type": "StateEntry",
+      "value": {
+        "item_id": "019a2900-0000-7000-8000-000000000103",
+        "item_type": "CHAT",
+        "changed_seq": 1,
+        "head_seq": 2,
+        "ref_head_seq": 0,
+        "parent_folder_id": null,
+        "name": null,
+        "record_key": "direct:abababababababababababababababababababababababababababababababab",
+        "link_folder_id": null,
+        "lifecycle_state": "TRASH",
+        "sequencing_mode": "FEDERATED",
+        "federation_stream_id": "stream-1",
+        "content": {
+          "body": "sha256:6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f",
+          "attachment": "sha256:7070707070707070707070707070707070707070707070707070707070707070"
+        },
+        "metadata_id": "sha256:5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e",
+        "name_metadata_id": "sha256:7171717171717171717171717171717171717171717171717171717171717171",
+        "created_at": "2026-10-28T00:00:00.123456789Z",
+        "created_by": "owner",
+        "changed_at": "2026-10-28T09:00:00.000000000Z",
+        "changed_by": "owner"
+      },
+      "bytes_hex": "019a290000007000800000000000010300044348415400000000000000010000000000000002000000000000000000000100476469726563743a6162616261626162616261626162616261626162616261626162616261626162616261626162616261626162616261626162616261626162616261626162616200020201000873747265616d2d3102000a6174746163686d656e7470707070707070707070707070707070707070707070707070707070707070700004626f64796f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f015e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e017171717171717171717171717171717171717171717171717171717171717171000000006ae13b00075bcd1500056f776e6572000000006ae1b9900000000000056f776e6572"
+    },
+    {
+      "type": "ItemHistoriesRequest",
+      "value": {
+        "repository": {
+          "repo_id": "019a2900-0000-7000-8000-000000000001",
+          "generation": "019a2900-0000-7000-8000-000000000002"
+        },
+        "items": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000100",
+            "after_seq": 3,
+            "after_ref_seq": 0
+          },
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000101",
+            "after_seq": 7,
+            "after_ref_seq": 2
+          }
+        ],
+        "limit": 512
+      },
+      "bytes_hex": "019a2900000070008000000000000001019a290000007000800000000000000200000002019a290000007000800000000000010000000000000000030000000000000000019a2900000070008000000000000101000000000000000700000000000000020200"
+    },
+    {
+      "type": "ItemHistoriesPage",
+      "value": {
+        "repository": {
+          "repo_id": "019a2900-0000-7000-8000-000000000001",
+          "generation": "019a2900-0000-7000-8000-000000000002"
+        },
+        "pages": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000100",
+            "events": [
+              {
+                "repo_seq": 1,
+                "commit_event_idx": 0,
+                "event": {
+                  "envelope": {
+                    "item_id": "019a2900-0000-7000-8000-000000000100",
+                    "base_seq": 3,
+                    "event_type": "FOLDER::SET_NAME",
+                    "set_name": "renamed"
+                  },
+                  "item_seq": 4,
+                  "parent_folder_id": "019a2900-0000-7000-8000-000000000102",
+                  "parent_folder_id_before": null
+                }
+              }
+            ],
+            "refs": [],
+            "commits": [
+              {
+                "repo_seq": 1,
+                "commit_id": "sha256:32ae357f4e3c537b60ff742bb2f7f70659ead04eaec13f0eeae912246355a503",
+                "author_id": "owner",
+                "occurred_at": "2026-10-28T09:00:00.000000000Z",
+                "created_at": "2026-10-28T00:00:00.123456789Z"
+              }
+            ],
+            "has_more": false
+          },
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000101",
+            "events": [],
+            "refs": [
+              {
+                "repo_seq": 1,
+                "commit_event_idx": 1,
+                "event": {
+                  "envelope": {
+                    "owner_item_id": "019a2900-0000-7000-8000-000000000101",
+                    "event_type": "FILE_VERSION::TOMBSTONE",
+                    "metadata_id": "sha256:4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d",
+                    "base_ref_seq": 2
+                  },
+                  "ref_seq": 3
+                }
+              }
+            ],
+            "commits": [
+              {
+                "repo_seq": 1,
+                "commit_id": "sha256:32ae357f4e3c537b60ff742bb2f7f70659ead04eaec13f0eeae912246355a503",
+                "author_id": "owner",
+                "occurred_at": "2026-10-28T09:00:00.000000000Z",
+                "created_at": "2026-10-28T00:00:00.123456789Z"
+              }
+            ],
+            "has_more": false
+          }
+        ]
+      },
+      "bytes_hex": "019a2900000070008000000000000001019a290000007000800000000000000200000002019a29000000700080000000000001000000000100000000000000010000000000000036010010464f4c4445523a3a5345545f4e414d45019a290000007000800000000000010000220000000000000003000772656e616d6564000000000000000401019a2900000070008000000000000102000000000000000001000000000000000132ae357f4e3c537b60ff742bb2f7f70659ead04eaec13f0eeae912246355a50300056f776e6572000000006ae1b99000000000000000006ae13b00075bcd1500019a290000007000800000000000010100000000000000010000000000000001000000010000005302001746494c455f56455253494f4e3a3a544f4d4253544f4e45019a29000000700080000000000001010000000000000002014d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d000000000000000300000001000000000000000132ae357f4e3c537b60ff742bb2f7f70659ead04eaec13f0eeae912246355a50300056f776e6572000000006ae1b99000000000000000006ae13b00075bcd1500"
+    },
+    {
+      "type": "ItemHistoryPage",
+      "value": {
+        "item_id": "019a2900-0000-7000-8000-000000000100",
+        "events": [
+          {
+            "repo_seq": 1,
+            "commit_event_idx": 0,
+            "event": {
+              "envelope": {
+                "item_id": "019a2900-0000-7000-8000-000000000100",
+                "base_seq": 3,
+                "event_type": "FOLDER::SET_NAME",
+                "set_name": "renamed"
+              },
+              "item_seq": 4,
+              "parent_folder_id": "019a2900-0000-7000-8000-000000000102",
+              "parent_folder_id_before": null
+            }
+          }
+        ],
+        "refs": [],
+        "commits": [
+          {
+            "repo_seq": 1,
+            "commit_id": "sha256:32ae357f4e3c537b60ff742bb2f7f70659ead04eaec13f0eeae912246355a503",
+            "author_id": "owner",
+            "occurred_at": "2026-10-28T09:00:00.000000000Z",
+            "created_at": "2026-10-28T00:00:00.123456789Z"
+          }
+        ],
+        "has_more": false
+      },
+      "bytes_hex": "019a29000000700080000000000001000000000100000000000000010000000000000036010010464f4c4445523a3a5345545f4e414d45019a290000007000800000000000010000220000000000000003000772656e616d6564000000000000000401019a2900000070008000000000000102000000000000000001000000000000000132ae357f4e3c537b60ff742bb2f7f70659ead04eaec13f0eeae912246355a50300056f776e6572000000006ae1b99000000000000000006ae13b00075bcd1500"
+    },
+    {
+      "type": "ItemEvent",
+      "value": {
+        "repo_seq": 1,
+        "commit_event_idx": 0,
+        "event": {
+          "envelope": {
+            "item_id": "019a2900-0000-7000-8000-000000000100",
+            "base_seq": 3,
+            "event_type": "FOLDER::SET_NAME",
+            "set_name": "renamed"
+          },
+          "item_seq": 4,
+          "parent_folder_id": "019a2900-0000-7000-8000-000000000102",
+          "parent_folder_id_before": null
+        }
+      },
+      "bytes_hex": "00000000000000010000000000000036010010464f4c4445523a3a5345545f4e414d45019a290000007000800000000000010000220000000000000003000772656e616d6564000000000000000401019a290000007000800000000000010200"
+    },
+    {
+      "type": "ItemCommit",
+      "value": {
+        "repo_seq": 1,
+        "commit_id": "sha256:32ae357f4e3c537b60ff742bb2f7f70659ead04eaec13f0eeae912246355a503",
+        "author_id": "owner",
+        "occurred_at": "2026-10-28T09:00:00.000000000Z",
+        "created_at": "2026-10-28T00:00:00.123456789Z"
+      },
+      "bytes_hex": "000000000000000132ae357f4e3c537b60ff742bb2f7f70659ead04eaec13f0eeae912246355a50300056f776e6572000000006ae1b99000000000000000006ae13b00075bcd15"
+    },
+    {
+      "type": "CommitLogRequest",
+      "value": {
+        "repository": {
+          "repo_id": "019a2900-0000-7000-8000-000000000001",
+          "generation": "019a2900-0000-7000-8000-000000000002"
+        },
+        "before_seq": null,
+        "limit": 50
+      },
+      "bytes_hex": "019a2900000070008000000000000001019a2900000070008000000000000002000032"
+    },
+    {
+      "type": "CommitLogRequest",
+      "value": {
+        "repository": {
+          "repo_id": "019a2900-0000-7000-8000-000000000001",
+          "generation": "019a2900-0000-7000-8000-000000000002"
+        },
+        "before_seq": 2,
+        "limit": 50
+      },
+      "bytes_hex": "019a2900000070008000000000000001019a29000000700080000000000000020100000000000000020032"
+    },
+    {
+      "type": "CommitLogPage",
+      "value": {
+        "commits": [
+          {
+            "repo_seq": 1,
+            "commit_id": "sha256:32ae357f4e3c537b60ff742bb2f7f70659ead04eaec13f0eeae912246355a503",
+            "author_id": "owner",
+            "occurred_at": "2026-10-28T09:00:00.000000000Z",
+            "event_count": 2,
+            "events": [
+              {
+                "item_id": "019a2900-0000-7000-8000-000000000100",
+                "item_seq": 4,
+                "commit_event_idx": 0,
+                "event_type": "FOLDER::SET_NAME"
+              }
+            ]
+          }
+        ],
+        "has_more": false
+      },
+      "bytes_hex": "00000001000000000000000132ae357f4e3c537b60ff742bb2f7f70659ead04eaec13f0eeae912246355a50300056f776e6572000000006ae1b990000000000000000200000001019a29000000700080000000000001000000000000000004000000000010464f4c4445523a3a5345545f4e414d4500"
+    },
+    {
+      "type": "CommitSummary",
+      "value": {
+        "repo_seq": 1,
+        "commit_id": "sha256:32ae357f4e3c537b60ff742bb2f7f70659ead04eaec13f0eeae912246355a503",
+        "author_id": "owner",
+        "occurred_at": "2026-10-28T09:00:00.000000000Z",
+        "event_count": 2,
+        "events": [
+          {
+            "item_id": "019a2900-0000-7000-8000-000000000100",
+            "item_seq": 4,
+            "commit_event_idx": 0,
+            "event_type": "FOLDER::SET_NAME"
+          }
+        ]
+      },
+      "bytes_hex": "000000000000000132ae357f4e3c537b60ff742bb2f7f70659ead04eaec13f0eeae912246355a50300056f776e6572000000006ae1b990000000000000000200000001019a29000000700080000000000001000000000000000004000000000010464f4c4445523a3a5345545f4e414d45"
+    },
+    {
+      "type": "ObjectRequest",
+      "value": [
+        "sha256:2c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c525434806",
+        "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      ],
+      "bytes_hex": "000000022c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c525434806e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "type": "LeaseRequest",
+      "value": {
+        "paths": [
+          "docs/notes.txt"
+        ],
+        "owner": "agent-1",
+        "ttl": 600
+      },
+      "bytes_hex": "00000001000e646f63732f6e6f7465732e74787400076167656e742d3100000258"
+    },
+    {
+      "type": "Lease",
+      "value": {
+        "token": "lease-token-1",
+        "paths": [
+          {
+            "path": "docs/notes.txt",
+            "owner": "agent-1",
+            "expires_at": 1793145600
+          }
+        ]
+      },
+      "bytes_hex": "000d6c656173652d746f6b656e2d3100000001000e646f63732f6e6f7465732e74787400076167656e742d31000000006ae13b00"
+    },
+    {
+      "type": "LeasedPath",
+      "value": {
+        "path": "docs/notes.txt",
+        "owner": "agent-1",
+        "expires_at": 1793145600
+      },
+      "bytes_hex": "000e646f63732f6e6f7465732e74787400076167656e742d31000000006ae13b00"
+    },
+    {
+      "type": "Leases",
+      "value": [
+        {
+          "path": "docs/notes.txt",
+          "owner": "agent-1",
+          "expires_at": 1793145600
+        }
+      ],
+      "bytes_hex": "00000001000e646f63732f6e6f7465732e74787400076167656e742d31000000006ae13b00"
+    },
+    {
+      "type": "LeaseRenewal",
+      "value": {
+        "token": "lease-token-1",
+        "ttl": 600
+      },
+      "bytes_hex": "000d6c656173652d746f6b656e2d3100000258"
+    },
+    {
+      "type": "LeaseToken",
+      "value": {
+        "token": "lease-token-1"
+      },
+      "bytes_hex": "000d6c656173652d746f6b656e2d31"
+    },
+    {
+      "type": "LeasePaths",
+      "value": [
+        "docs"
+      ],
+      "bytes_hex": "000000010004646f6373"
+    },
+    {
+      "type": "Released",
+      "value": {
+        "released": 1
+      },
+      "bytes_hex": "0000000000000001"
+    },
+    {
+      "type": "Refusal",
+      "value": {
+        "code": "INVALID"
+      },
+      "bytes_hex": "01"
+    },
+    {
+      "type": "Refusal",
+      "value": {
+        "code": "LOCKED",
+        "path": "docs/notes.txt",
+        "owner": "agent-1"
+      },
+      "bytes_hex": "07000e646f63732f6e6f7465732e74787400076167656e742d31"
+    },
+    {
+      "type": "Refusal",
+      "value": {
+        "code": "OBJECTS_MISSING",
+        "objects": [
+          "sha256:2c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c525434806"
+        ]
+      },
+      "bytes_hex": "0b000000012c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c525434806"
+    },
+    {
+      "type": "ObjectPack",
+      "value": [
+        {
+          "object_id": "sha256:2c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c525434806",
+          "bytes_hex": "6f6e650a"
+        },
+        {
+          "object_id": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes_hex": ""
+        }
+      ],
+      "bytes_hex": "2c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c52543480600000000000000046f6e650ae3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b8550000000000000000"
     }
   ],
   "invalid": [
     {
       "type": "Capabilities",
-      "value": {
-        "protocol_version": 2,
-        "repository": {
-          "repo_id": "019a2900-0000-7000-8000-000000000001",
-          "generation": "019a2900-0000-7000-8000-000000000002"
-        },
-        "encrypted": false,
-        "latest": {
-          "repository": {
-            "repo_id": "019a2900-0000-7000-8000-000000000001",
-            "generation": "019a2900-0000-7000-8000-000000000002"
-          },
-          "repo_seq": 1,
-          "checkpoint": "sha256:478e37b1379863936ab4c26caf7417b693d61e9bd7b66966eb55aaaa1202fa02"
-        },
-        "policy": {
-          "max_events_per_commit": 500,
-          "max_object_bytes": null,
-          "quota_bytes": null
-        }
-      },
-      "reason": "another protocol version"
+      "bytes_hex": "000200019a2900000070008000000000000001019a2900000070008000000000000002000000000000000136d53f07f35128f2fb99de29939c32b68589e027fc7c58c0fe2de9a48dda2f2f0100000000000001f4000000",
+      "reason": "trailing byte"
     },
     {
       "type": "Capabilities",
-      "value": {
-        "protocol_version": 1,
-        "repository": {
-          "repo_id": "019a2900-0000-7000-8000-000000000001",
-          "generation": "019a2900-0000-7000-8000-000000000002"
-        },
-        "encrypted": false,
-        "latest": {
-          "repository": {
-            "repo_id": "019a2900-0000-7000-8000-000000000001",
-            "generation": "019a2900-0000-7000-8000-000000000002"
-          },
-          "repo_seq": 1,
-          "checkpoint": "sha256:478e37b1379863936ab4c26caf7417b693d61e9bd7b66966eb55aaaa1202fa02"
-        },
-        "policy": {
-          "max_events_per_commit": 500,
-          "max_object_bytes": null,
-          "quota_bytes": null
-        },
-        "extension": true
-      },
-      "reason": "unknown field"
+      "bytes_hex": "000100019a2900000070008000000000000001019a2900000070008000000000000002000000000000000136d53f07f35128f2fb99de29939c32b68589e027fc7c58c0fe2de9a48dda2f2f0100000000000001f40000",
+      "reason": "protocol version 1"
     },
     {
-      "type": "ProposalPage",
-      "value": {
-        "repository": {
-          "repo_id": "019a2900-0000-7000-8000-000000000001",
-          "generation": "019a2900-0000-7000-8000-000000000002"
-        },
-        "operation_id": "op:guarded",
-        "offset": 0,
-        "records": [
-          {
-            "kind": "note",
-            "value": {}
-          }
-        ]
-      },
-      "reason": "unknown record kind"
+      "type": "Capabilities",
+      "bytes_hex": "000202019a2900000070008000000000000001019a2900000070008000000000000002000000000000000136d53f07f35128f2fb99de29939c32b68589e027fc7c58c0fe2de9a48dda2f2f0100000000000001f40000",
+      "reason": "bool value 2"
     },
     {
-      "type": "ProposalPage",
-      "value": {
-        "repository": {
-          "repo_id": "019a2900-0000-7000-8000-000000000001",
-          "generation": "019a2900-0000-7000-8000-000000000002"
-        },
-        "operation_id": "op:guarded",
-        "offset": 0,
-        "records": [
-          {
-            "kind": "guard",
-            "value": {
-              "item_id": "019a2900-0000-7000-8000-000000000100",
-              "head_seq": 3,
-              "note": "x"
-            }
-          }
-        ]
-      },
-      "reason": "unknown field in a guard"
+      "type": "ServerPolicy",
+      "bytes_hex": "0200000000000001f40000",
+      "reason": "opt tag 2"
+    },
+    {
+      "type": "RepositoryIdentity",
+      "bytes_hex": "019a2900000040008000000000000001019a2900000070008000000000000002",
+      "reason": "repository ID is a UUIDv4"
+    },
+    {
+      "type": "Cursor",
+      "bytes_hex": "019a2900000070008000000000000001019a2900000070008000000000000002000000000000000136d53f07f35128f2fb99de29939c32b68589e027fc7c58c0fe2de9a48dda2f",
+      "reason": "truncated"
+    },
+    {
+      "type": "Record",
+      "bytes_hex": "0000000036010010464f4c4445523a3a5345545f4e414d45019a290000007000800000000000010000220000000000000003000772656e616d6564",
+      "reason": "record tag 0"
+    },
+    {
+      "type": "Record",
+      "bytes_hex": "0500000036010010464f4c4445523a3a5345545f4e414d45019a290000007000800000000000010000220000000000000003000772656e616d6564",
+      "reason": "record tag 5"
+    },
+    {
+      "type": "Record",
+      "bytes_hex": "010000005302001746494c455f56455253494f4e3a3a544f4d4253544f4e45019a29000000700080000000000001010000000000000002014d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d",
+      "reason": "tag 1 holds an attached-ref envelope"
+    },
+    {
+      "type": "Record",
+      "bytes_hex": "0200000036010010464f4c4445523a3a5345545f4e414d45019a290000007000800000000000010000220000000000000003000772656e616d6564",
+      "reason": "tag 2 holds an item envelope"
+    },
+    {
+      "type": "Record",
+      "bytes_hex": "0100000037010010464f4c4445523a3a5345545f4e414d45019a290000007000800000000000010000220000000000000003000772656e616d656400",
+      "reason": "envelope with a trailing byte"
+    },
+    {
+      "type": "Record",
+      "bytes_hex": "0100000036030010464f4c4445523a3a5345545f4e414d45019a290000007000800000000000010000220000000000000003000772656e616d6564",
+      "reason": "envelope with kind byte 3"
+    },
+    {
+      "type": "Record",
+      "bytes_hex": "0100000036010010464f4c4445523a3a5345545f4e414d45019a290000007000800000000000010010220000000000000003000772656e616d6564",
+      "reason": "envelope with flag bit 12"
+    },
+    {
+      "type": "Record",
+      "bytes_hex": "0100000037010010464f4c4445523a3a5345545f4e414d45019a290000007000800000000000010000220000000000000003000772656e616d6564",
+      "reason": "blob runs past the end"
+    },
+    {
+      "type": "Record",
+      "bytes_hex": "03019a29000000700080000000000001000000000000000000",
+      "reason": "head guard with seq 0"
+    },
+    {
+      "type": "Record",
+      "bytes_hex": "04019a29000000700080000000000001000200000000",
+      "reason": "subtree guard with bool 2"
     },
     {
       "type": "PageAck",
-      "value": {
-        "next_offset": 4,
-        "expires_at": "2026-10-28T00:00:00.123456789Z",
-        "extension": 1
-      },
-      "reason": "unknown field"
+      "bytes_hex": "8000000000000000000000006ae13b00075bcd15",
+      "reason": "next_offset 2^63"
+    },
+    {
+      "type": "PageAck",
+      "bytes_hex": "0000000000000005000000006ae13b003b9aca00",
+      "reason": "nanoseconds 10^9"
     },
     {
       "type": "SubmitRequest",
-      "value": {
-        "repository": {
-          "repo_id": "019a2900-0000-7000-8000-000000000001",
-          "generation": "019a2900-0000-7000-8000-000000000002"
-        },
-        "operation_id": "op:guarded",
-        "metadata": {
-          "author_id": "owner",
-          "committer_id": "device",
-          "message": "Tidy",
-          "occurred_at": "2026-10-28T09:00:00.000000000Z"
-        },
-        "event_count": 2,
-        "events_digest": "sha256:344bdf25c487db429c8087b8b6180752f55e6a65015dd1bf9e80a45ac06ffaf0",
-        "guard_count": 2,
-        "guards_digest": "sha256:20f93dcf864e11ec972e66ec4d4f1ab8f69511665357bcdb6b10f7792e56c5fb",
-        "extension": true
-      },
-      "reason": "unknown field"
+      "bytes_hex": "019a2900000070008000000000000001019a290000007000800000000000000200096f703a006775617264010000000000000000000000470300056f776e6572000664657669636503000000006ae1b990000000000004546964790000000220c1b88e4d8252a2bdc1be8cb214204a712456a75ce803fd86c21c1d48e20d4f0000000000000003c1a2f599ddbebeeaefaf05e66495282f135e0de1adb3bbee1f2b1106dd2b96dd",
+      "reason": "operation ID holds U+0000"
+    },
+    {
+      "type": "SubmitRequest",
+      "bytes_hex": "019a2900000070008000000000000001019a2900000070008000000000000002000a6f703a67756172646564010000000000000000000000470300056f776e6572000664657669636507000000006ae1b990000000000004546964790000000220c1b88e4d8252a2bdc1be8cb214204a712456a75ce803fd86c21c1d48e20d4f0000000000000003c1a2f599ddbebeeaefaf05e66495282f135e0de1adb3bbee1f2b1106dd2b96dd",
+      "reason": "header flag bit 2"
     },
     {
       "type": "SubmitResult",
-      "value": {
-        "status": "maybe"
-      },
-      "reason": "unknown status"
+      "bytes_hex": "03",
+      "reason": "status 3"
     },
     {
       "type": "SubmitResult",
-      "value": {
-        "status": "POLICY_LIMIT",
-        "limit": "events_per_commit",
-        "maximum": 500,
-        "actual": 1200,
-        "extension": 1
-      },
-      "reason": "unknown field"
+      "bytes_hex": "020400000000000001f400000000000004b0",
+      "reason": "policy limit code 4"
+    },
+    {
+      "type": "SubmitResult",
+      "bytes_hex": "020000000000000001f400000000000004b0",
+      "reason": "policy limit code 0"
     },
     {
       "type": "HistoryRequest",
-      "value": {
-        "after": {
-          "completed": {
-            "repository": {
-              "repo_id": "019a2900-0000-7000-8000-000000000001",
-              "generation": "019a2900-0000-7000-8000-000000000002"
-            },
-            "repo_seq": 0,
-            "checkpoint": "sha256:84d3cd883cefdbec1867e506ea6ec1f046fdec7590c85c0cafa9baaae37c25b2"
-          },
-          "pending": null
-        },
-        "limit": 0
-      },
-      "reason": "limit below one"
+      "bytes_hex": "019a2900000070008000000000000001019a2900000070008000000000000002000000000000000041b8062cc2b709a382a0f3a92425d653305f5f6d68b0ef634bd7c4db877067cb000000",
+      "reason": "limit 0"
     },
     {
       "type": "HistoryRequest",
-      "value": {
-        "after": {
-          "completed": {
-            "repository": {
-              "repo_id": "019a2900-0000-7000-8000-000000000001",
-              "generation": "019a2900-0000-7000-8000-000000000002"
-            },
-            "repo_seq": 0,
-            "checkpoint": "sha256:84d3cd883cefdbec1867e506ea6ec1f046fdec7590c85c0cafa9baaae37c25b2"
-          },
-          "pending": null
-        },
-        "limit": 513
-      },
-      "reason": "limit above a page"
+      "bytes_hex": "019a2900000070008000000000000001019a2900000070008000000000000002000000000000000041b8062cc2b709a382a0f3a92425d653305f5f6d68b0ef634bd7c4db877067cb000201",
+      "reason": "limit 513"
     },
     {
-      "type": "HistoryPage",
-      "value": {
-        "after": {
-          "completed": {
-            "repository": {
-              "repo_id": "019a2900-0000-7000-8000-000000000001",
-              "generation": "019a2900-0000-7000-8000-000000000002"
-            },
-            "repo_seq": 0,
-            "checkpoint": "sha256:84d3cd883cefdbec1867e506ea6ec1f046fdec7590c85c0cafa9baaae37c25b2"
-          },
-          "pending": null
-        },
-        "has_more": false,
-        "fragments": [
-          {
-            "header": {
-              "commit": {
-                "repo_id": "019a2900-0000-7000-8000-000000000001",
-                "commit_id": "sha256:582a3af82f1f5108c49d7b3ab9f99a74872cc741e27847764a65d10473076571",
-                "repo_seq": 1,
-                "format_version": 6,
-                "author_id": "owner",
-                "committer_id": "device",
-                "message": "Tidy",
-                "occurred_at": "2026-10-28T09:00:00.000000000Z",
-                "created_at": "2026-10-28T00:00:00.123456789Z",
-                "event_count": 2,
-                "events_digest": "sha256:344bdf25c487db429c8087b8b6180752f55e6a65015dd1bf9e80a45ac06ffaf0"
-              },
-              "checkpoint": "sha256:478e37b1379863936ab4c26caf7417b693d61e9bd7b66966eb55aaaa1202fa02"
-            },
-            "events": [
-              {
-                "event_family": "item",
-                "repo_id": "019a2900-0000-7000-8000-000000000001",
-                "item_id": "019a2900-0000-7000-8000-000000000100",
-                "item_seq": 4,
-                "event_type": "FOLDER::SET_NAME",
-                "commit_id": "sha256:582a3af82f1f5108c49d7b3ab9f99a74872cc741e27847764a65d10473076571",
-                "commit_event_idx": 0,
-                "repo_seq": 1,
-                "payload_json": "{\"base_seq\":3,\"event_type\":\"FOLDER::SET_NAME\",\"item_id\":\"019a2900-0000-7000-8000-000000000100\",\"set_name\":\"renamed\"}",
-                "event_payload_digest": "sha256:1fac6dfb2945977ff23aaa7f73609f759b1cea63bca57c6913a037770cc74130",
-                "created_at": "2026-10-28T00:00:00.123456789Z",
-                "parent_folder_id": null,
-                "parent_folder_id_before": null,
-                "extension": 1
-              },
-              {
-                "event_family": "ref",
-                "repo_id": "019a2900-0000-7000-8000-000000000001",
-                "owner_item_id": "019a2900-0000-7000-8000-000000000101",
-                "ref_seq": 3,
-                "event_type": "FILE_VERSION::TOMBSTONE",
-                "commit_id": "sha256:582a3af82f1f5108c49d7b3ab9f99a74872cc741e27847764a65d10473076571",
-                "commit_event_idx": 1,
-                "repo_seq": 1,
-                "payload_json": "{\"base_ref_seq\":2,\"event_type\":\"FILE_VERSION::TOMBSTONE\",\"metadata_id\":\"sha256:4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d\",\"owner_item_id\":\"019a2900-0000-7000-8000-000000000101\"}",
-                "event_payload_digest": "sha256:223ac216c72aef6d9c28fe3be6dfaca83331bd2a701e5ced9114eae1eca5e0f6",
-                "created_at": "2026-10-28T00:00:00.123456789Z"
-              }
-            ]
-          }
-        ]
-      },
-      "reason": "unknown field in an event row"
+      "type": "HistoryPosition",
+      "bytes_hex": "019a2900000070008000000000000001019a2900000070008000000000000002000000000000000041b8062cc2b709a382a0f3a92425d653305f5f6d68b0ef634bd7c4db877067cb0132ae357f4e3c537b60ff742bb2f7f70659ead04eaec13f0eeae912246355a50300000000",
+      "reason": "pending event index 0"
     },
     {
-      "type": "HistoryPage",
-      "value": {
-        "after": {
-          "completed": {
-            "repository": {
-              "repo_id": "019a2900-0000-7000-8000-000000000001",
-              "generation": "019a2900-0000-7000-8000-000000000002"
-            },
-            "repo_seq": 0,
-            "checkpoint": "sha256:84d3cd883cefdbec1867e506ea6ec1f046fdec7590c85c0cafa9baaae37c25b2"
-          },
-          "pending": null
-        },
-        "has_more": false,
-        "fragments": [
-          {
-            "header": {
-              "commit": {
-                "repo_id": "019a2900-0000-7000-8000-000000000001",
-                "commit_id": "sha256:582a3af82f1f5108c49d7b3ab9f99a74872cc741e27847764a65d10473076571",
-                "repo_seq": 1,
-                "format_version": 6,
-                "author_id": "owner",
-                "committer_id": "device",
-                "message": "Tidy",
-                "occurred_at": "2026-10-28T09:00:00.000000000Z",
-                "created_at": "2026-10-28T00:00:00.123456789Z",
-                "event_count": 2,
-                "events_digest": "sha256:344bdf25c487db429c8087b8b6180752f55e6a65015dd1bf9e80a45ac06ffaf0",
-                "extension": 1
-              },
-              "checkpoint": "sha256:478e37b1379863936ab4c26caf7417b693d61e9bd7b66966eb55aaaa1202fa02"
-            },
-            "events": [
-              {
-                "event_family": "item",
-                "repo_id": "019a2900-0000-7000-8000-000000000001",
-                "item_id": "019a2900-0000-7000-8000-000000000100",
-                "item_seq": 4,
-                "event_type": "FOLDER::SET_NAME",
-                "commit_id": "sha256:582a3af82f1f5108c49d7b3ab9f99a74872cc741e27847764a65d10473076571",
-                "commit_event_idx": 0,
-                "repo_seq": 1,
-                "payload_json": "{\"base_seq\":3,\"event_type\":\"FOLDER::SET_NAME\",\"item_id\":\"019a2900-0000-7000-8000-000000000100\",\"set_name\":\"renamed\"}",
-                "event_payload_digest": "sha256:1fac6dfb2945977ff23aaa7f73609f759b1cea63bca57c6913a037770cc74130",
-                "created_at": "2026-10-28T00:00:00.123456789Z",
-                "parent_folder_id": null,
-                "parent_folder_id_before": null
-              },
-              {
-                "event_family": "ref",
-                "repo_id": "019a2900-0000-7000-8000-000000000001",
-                "owner_item_id": "019a2900-0000-7000-8000-000000000101",
-                "ref_seq": 3,
-                "event_type": "FILE_VERSION::TOMBSTONE",
-                "commit_id": "sha256:582a3af82f1f5108c49d7b3ab9f99a74872cc741e27847764a65d10473076571",
-                "commit_event_idx": 1,
-                "repo_seq": 1,
-                "payload_json": "{\"base_ref_seq\":2,\"event_type\":\"FILE_VERSION::TOMBSTONE\",\"metadata_id\":\"sha256:4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d\",\"owner_item_id\":\"019a2900-0000-7000-8000-000000000101\"}",
-                "event_payload_digest": "sha256:223ac216c72aef6d9c28fe3be6dfaca83331bd2a701e5ced9114eae1eca5e0f6",
-                "created_at": "2026-10-28T00:00:00.123456789Z"
-              }
-            ]
-          }
-        ]
-      },
-      "reason": "unknown field in a commit row"
+      "type": "PublishedHeader",
+      "bytes_hex": "32ae357f4e3c537b60ff742bb2f7f70659ead04eaec13f0eeae912246355a5030000000000000001000000006ae13b00075bcd1536d53f07f35128f2fb99de29939c32b68589e027fc7c58c0fe2de9a48dda2f2f00056f776e6572000664657669636507000000006ae1b9900000000000045469647900000002",
+      "reason": "flag bit 2"
+    },
+    {
+      "type": "Event",
+      "bytes_hex": "00000036010010464f4c4445523a3a5345545f4e414d45019a290000007000800000000000010000220000000000000003000772656e616d6564000000000000000402019a290000007000800000000000010200",
+      "reason": "target tag 2"
+    },
+    {
+      "type": "Event",
+      "bytes_hex": "00000036010010464f4c4445523a3a5345545f4e414d45019a290000007000800000000000010000220000000000000003000772656e616d6564000000000000000401019a2900000070008000000000000102",
+      "reason": "item event without its before"
+    },
+    {
+      "type": "StateEntry",
+      "bytes_hex": "019a2900000070008000000000000101000446494c4500000000000000010000000000000007000000000000000301019a2900000070008000000000000100010005612e74787400000101000200056279746573abababababababababababababababababababababababababababababababab000a6174746163686d656e74abababababababababababababababababababababababababababababababab015e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e00000000006ae13b00075bcd1500056f776e6572000000006ae1b9900000000000056f776e6572",
+      "reason": "content roles out of order"
+    },
+    {
+      "type": "StateEntry",
+      "bytes_hex": "019a2900000070008000000000000101000446494c4500000000000000010000000000000007000000000000000301019a2900000070008000000000000100010005612e74787400000401000100056279746573abababababababababababababababababababababababababababababababab015e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e00000000006ae13b00075bcd1500056f776e6572000000006ae1b9900000000000056f776e6572",
+      "reason": "lifecycle state 4"
+    },
+    {
+      "type": "StateEntry",
+      "bytes_hex": "019a2900000070008000000000000101000446494c4500000000000000010000000000000007000000000000000301019a2900000070008000000000000100010005612e74787400000001000100056279746573abababababababababababababababababababababababababababababababab015e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e00000000006ae13b00075bcd1500056f776e6572000000006ae1b9900000000000056f776e6572",
+      "reason": "lifecycle state 0"
+    },
+    {
+      "type": "StateEntry",
+      "bytes_hex": "019a2900000070008000000000000101000446494c4500000000000000010000000000000007000000000000000301019a2900000070008000000000000100010005612e74787400000103000100056279746573abababababababababababababababababababababababababababababababab015e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e00000000006ae13b00075bcd1500056f776e6572000000006ae1b9900000000000056f776e6572",
+      "reason": "sequencing mode 3"
+    },
+    {
+      "type": "ObjectRequest",
+      "bytes_hex": "00000000",
+      "reason": "no object IDs"
+    },
+    {
+      "type": "ObjectRequest",
+      "bytes_hex": "000002012c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c5254348062c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c525434806",
+      "reason": "513 object IDs"
+    },
+    {
+      "type": "ItemHistoriesRequest",
+      "bytes_hex": "019a2900000070008000000000000001019a2900000070008000000000000002000000000200",
+      "reason": "no items"
+    },
+    {
+      "type": "Leases",
+      "bytes_hex": "00000002000e646f63732f6e6f7465732e74787400076167656e742d31000000006ae13b00",
+      "reason": "list count past the end"
+    },
+    {
+      "type": "Refusal",
+      "bytes_hex": "00",
+      "reason": "refusal code 0"
+    },
+    {
+      "type": "Refusal",
+      "bytes_hex": "0e",
+      "reason": "refusal code 14"
+    },
+    {
+      "type": "Refusal",
+      "bytes_hex": "0100",
+      "reason": "trailing byte"
+    },
+    {
+      "type": "ObjectPack",
+      "bytes_hex": "",
+      "reason": "no objects"
+    },
+    {
+      "type": "ObjectPack",
+      "bytes_hex": "2c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c52543480600000000000000056f6e650a",
+      "reason": "size runs past the end"
+    },
+    {
+      "type": "ObjectPack",
+      "bytes_hex": "2c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c525434806000000000000000474776f0a",
+      "reason": "bytes do not match the ID"
     }
   ],
   "guarded": {
@@ -581,16 +1201,17 @@
         "generation": "019a2900-0000-7000-8000-000000000002"
       },
       "operation_id": "op:guarded",
-      "metadata": {
+      "repository_head": 0,
+      "header": {
         "author_id": "owner",
         "committer_id": "device",
+        "occurred_at": "2026-10-28T09:00:00.000000000Z",
         "message": "Tidy",
-        "occurred_at": "2026-10-28T09:00:00.000000000Z"
+        "event_count": 2,
+        "events_digest": "sha256:20c1b88e4d8252a2bdc1be8cb214204a712456a75ce803fd86c21c1d48e20d4f"
       },
-      "event_count": 2,
-      "events_digest": "sha256:344bdf25c487db429c8087b8b6180752f55e6a65015dd1bf9e80a45ac06ffaf0",
-      "guard_count": 2,
-      "guards_digest": "sha256:20f93dcf864e11ec972e66ec4d4f1ab8f69511665357bcdb6b10f7792e56c5fb"
+      "guard_count": 3,
+      "guards_digest": "sha256:c1a2f599ddbebeeaefaf05e66495282f135e0de1adb3bbee1f2b1106dd2b96dd"
     },
     "records": [
       {
@@ -624,13 +1245,35 @@
           "item_id": "019a2900-0000-7000-8000-000000000101",
           "head_seq": 7
         }
+      },
+      {
+        "kind": "subtree_guard",
+        "value": {
+          "root_item_id": "019a2900-0000-7000-8000-000000000100",
+          "require_empty_live_descendants": false,
+          "descendants": [
+            {
+              "item_id": "019a2900-0000-7000-8000-000000000101",
+              "head_seq": 7
+            }
+          ]
+        }
       }
     ],
-    "canonical_events": [
-      "{\"base_seq\":3,\"event_type\":\"FOLDER::SET_NAME\",\"item_id\":\"019a2900-0000-7000-8000-000000000100\",\"set_name\":\"renamed\"}",
-      "{\"base_ref_seq\":2,\"event_type\":\"FILE_VERSION::TOMBSTONE\",\"metadata_id\":\"sha256:4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d\",\"owner_item_id\":\"019a2900-0000-7000-8000-000000000101\"}"
+    "envelopes_hex": [
+      "010010464f4c4445523a3a5345545f4e414d45019a290000007000800000000000010000220000000000000003000772656e616d6564",
+      "02001746494c455f56455253494f4e3a3a544f4d4253544f4e45019a29000000700080000000000001010000000000000002014d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d"
     ],
-    "commit_id": "sha256:582a3af82f1f5108c49d7b3ab9f99a74872cc741e27847764a65d10473076571",
-    "request_digest": "sha256:aa8c92b30169bb089bbff8f3a7c05e7c94d2fedb05b0363bb3dc0f305b3bdd00"
+    "records_hex": [
+      "0100000036010010464f4c4445523a3a5345545f4e414d45019a290000007000800000000000010000220000000000000003000772656e616d6564",
+      "020000005302001746494c455f56455253494f4e3a3a544f4d4253544f4e45019a29000000700080000000000001010000000000000002014d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d",
+      "03019a29000000700080000000000001000000000000000003",
+      "03019a29000000700080000000000001010000000000000007",
+      "04019a29000000700080000000000001000000000001019a29000000700080000000000001010000000000000007"
+    ],
+    "guards_digest": "sha256:c1a2f599ddbebeeaefaf05e66495282f135e0de1adb3bbee1f2b1106dd2b96dd",
+    "commit_id": "sha256:32ae357f4e3c537b60ff742bb2f7f70659ead04eaec13f0eeae912246355a503",
+    "request_hex": "019a2900000070008000000000000001019a2900000070008000000000000002000a6f703a67756172646564010000000000000000000000470300056f776e6572000664657669636503000000006ae1b990000000000004546964790000000220c1b88e4d8252a2bdc1be8cb214204a712456a75ce803fd86c21c1d48e20d4f0000000000000003c1a2f599ddbebeeaefaf05e66495282f135e0de1adb3bbee1f2b1106dd2b96dd",
+    "request_digest": "sha256:e0153dd468d78e2561c2655d049805dab0d9b9f83198c96d3865911f1f1c017f"
   }
 }

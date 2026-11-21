@@ -16,8 +16,7 @@ use async_trait::async_trait;
 use crate::errors::StorageError;
 use crate::types::{
     CommitEventRow, CommitId, CommitPk, CommitRow, EventInsertRow, EventRow, ItemCursor, ItemId,
-    ItemRow, LifecycleState, RefEventInsertRow, RefEventRow, RepoEventCursor, RepoId, Sha256Digest,
-    Timestamp,
+    ItemRow, LifecycleState, RefEventInsertRow, RefEventRow, RepoEventCursor, RepoId, Timestamp,
 };
 
 /// Fully materialized sealed commit row ready for persistence.
@@ -29,14 +28,12 @@ pub struct SealedCommitInsert {
     pub commit_pk: CommitPk,
     pub repo_seq: Option<i64>,
     pub operation_id: Option<String>,
-    pub format_version: i32,
     pub author_id: String,
     pub committer_id: String,
     pub message: Option<String>,
     pub occurred_at: Option<Timestamp>,
     pub created_at: Timestamp,
     pub commit_id: CommitId,
-    pub events_digest: Sha256Digest,
     pub event_count: i32,
 }
 
@@ -234,7 +231,7 @@ pub trait StorageTxn: Send {
 
     /// Insert an unsealed commit header row.
     ///
-    /// The commit starts with `commit_id`/`events_digest`/`event_count` unset
+    /// The commit starts with `commit_id`/`event_count` unset
     /// and is sealed via `seal_commit()`.
     async fn start_commit(
         &mut self,
@@ -242,7 +239,6 @@ pub trait StorageTxn: Send {
         commit_pk: &CommitPk,
         repo_seq: Option<i64>,
         operation_id: Option<&str>,
-        format_version: i32,
         author_id: &str,
         committer_id: &str,
         message: Option<&str>,
@@ -260,14 +256,12 @@ pub trait StorageTxn: Send {
         commit_pk: &CommitPk,
         repo_seq: Option<i64>,
         operation_id: Option<&str>,
-        format_version: i32,
         author_id: &str,
         committer_id: &str,
         message: Option<&str>,
         occurred_at: Option<Timestamp>,
         created_at: Timestamp,
         commit_id: &CommitId,
-        events_digest: &Sha256Digest,
         event_count: i32,
     ) -> Result<(), StorageError> {
         self.start_commit(
@@ -275,7 +269,6 @@ pub trait StorageTxn: Send {
             commit_pk,
             repo_seq,
             operation_id,
-            format_version,
             author_id,
             committer_id,
             message,
@@ -283,7 +276,7 @@ pub trait StorageTxn: Send {
             created_at,
         )
         .await?;
-        self.seal_commit(repo_id, commit_pk, commit_id, events_digest, event_count)
+        self.seal_commit(repo_id, commit_pk, commit_id, event_count)
             .await
     }
 
@@ -303,14 +296,12 @@ pub trait StorageTxn: Send {
                 &commit.commit_pk,
                 commit.repo_seq,
                 commit.operation_id.as_deref(),
-                commit.format_version,
                 &commit.author_id,
                 &commit.committer_id,
                 commit.message.as_deref(),
                 commit.occurred_at,
                 commit.created_at,
                 &commit.commit_id,
-                &commit.events_digest,
                 commit.event_count,
             )
             .await?;
@@ -344,13 +335,12 @@ pub trait StorageTxn: Send {
         Ok(())
     }
 
-    /// Seal a commit by setting its content-addressed id and digest metadata.
+    /// Seal a commit by setting its commit ID and event count.
     async fn seal_commit(
         &mut self,
         repo_id: &RepoId,
         commit_pk: &CommitPk,
         commit_id: &CommitId,
-        events_digest: &Sha256Digest,
         event_count: i32,
     ) -> Result<(), StorageError>;
 

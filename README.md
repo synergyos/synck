@@ -89,7 +89,7 @@ $ synck serve token add ~/synck-state --name laptop --access write --repository 
 $ synck serve ~/synck-state --listen 127.0.0.1:8740 ~/Documents/personal
 ```
 
-On another machine, `SYNCK_TOKEN=… synck clone https://sync.example.com/v1/repositories/REPO_ID notes --author Alex`
+On another machine, `SYNCK_TOKEN=… synck clone https://sync.example.com/v2/repositories/REPO_ID notes --author Alex`
 makes a clone that commits, pulls and pushes through the server and keeps
 working offline. Caddy in front provides TLS ([`deploy/Caddyfile`](deploy/Caddyfile));
 see [the sync server](docs/sync-server.md).
@@ -195,7 +195,8 @@ services and the user interface belong to the application that embeds it.
 
 ## Status and compatibility
 
-Synck 0.4.0 uses repository format 7, as 0.2.0 and 0.3.0 do. Before 1.0, each release
+Synck 0.4.0 uses repository format 7, as 0.2.0 and 0.3.0 do; development builds
+after it use format 8. Before 1.0, each release
 reads only its own format and refuses other formats without modifying them.
 There are no compatibility readers or automatic migrations. The Rust API can
 also change; repositories made by untagged development builds are disposable.

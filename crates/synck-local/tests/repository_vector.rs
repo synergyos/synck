@@ -26,7 +26,7 @@ fn build(root: &Path) {
     let database = rusqlite::Connection::open(control.join("repository.sqlite3")).unwrap();
     database
         .execute_batch(
-            "PRAGMA application_id = 1398361675; PRAGMA user_version = 7; PRAGMA journal_mode = WAL;",
+            "PRAGMA application_id = 1398361675; PRAGMA user_version = 8; PRAGMA journal_mode = WAL;",
         )
         .unwrap();
     database.execute_batch(SCHEMA).unwrap();

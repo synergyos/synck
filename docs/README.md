@@ -23,7 +23,7 @@ Core is storage-adapter-independent. The included `synck-vcs-sqlite` adapter
 and `synck-local` distribution use SQLite; the complete local repository layout
 is specified here without constraining other engine adapters.
 
-The [standalone format-7 specification](spec/format.md), its SQL schemas and
+The [standalone format-8 specification](spec/format.md), its SQL schemas and
 language-neutral vectors are the authoritative persisted-format contract.
 Typed readers cover FILE/FOLDER, CHAT and EMAIL; unsupported families remain
 structurally verifiable. The [central synchronization protocol](spec/protocol.md)

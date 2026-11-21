@@ -13,12 +13,9 @@ const UTF8_CODEC: u8 = 1;
 
 pub const ENCRYPTED_PREFIX: &[u8; 16] = b"SYNCK_ENCRYPTED\0";
 const ENCRYPTED_AAD_PREFIX: &[u8; 18] = b"synck-encrypted-v1";
-pub const SCHEME_XCHACHA20_POLY1305: u16 = 1;
-/// Scheme 1's cipher over [`SEGMENT_BYTES`] segments, for objects read or
-/// written in pieces.
+/// XChaCha20-Poly1305 over [`SEGMENT_BYTES`] segments, the only scheme.
 pub const SCHEME_XCHACHA20_POLY1305_SEGMENTS: u16 = 2;
 pub const SEGMENT_BYTES: usize = 65_536;
-const XCHACHA_NONCE_BYTES: usize = 24;
 const SEGMENT_NONCE_BYTES: usize = 19;
 const POLY1305_TAG_BYTES: usize = 16;
 const FRAME_HEADER_BYTES: usize = ENCRYPTED_PREFIX.len() + 2 + 8;
@@ -72,8 +69,6 @@ pub enum ObjectError {
     Framing,
     #[error("unsupported object codec")]
     Codec,
-    #[error("unsupported encryption scheme")]
-    Scheme,
     #[error("object digest mismatch")]
     Digest,
     #[error("object is not valid UTF-8")]
@@ -94,41 +89,30 @@ pub fn verify_stored(id: &ObjectId, form: Form, stored: &[u8]) -> Result<(), Obj
     }
 }
 
-/// Check an encrypted frame without any key. An unknown scheme is unreadable,
-/// not corrupt: its nonce and tag belong to the scheme.
+/// Check an encrypted frame without any key.
 pub fn verify_encrypted_frame(stored: &[u8]) -> Result<(), ObjectError> {
     frame_check(stored, stored.len() as u64)
 }
 
 /// The key-free check from an object's first bytes and its total length,
-/// which is all any scheme's frame rule reads.
+/// which is all the frame rule reads.
 fn frame_check(start: &[u8], length: u64) -> Result<(), ObjectError> {
-    match frame_scheme(start)? {
-        SCHEME_XCHACHA20_POLY1305 => {
-            if length < (FRAME_HEADER_BYTES + XCHACHA_NONCE_BYTES + POLY1305_TAG_BYTES) as u64 {
-                return Err(ObjectError::Framing);
-            }
-            Ok(())
-        }
-        SCHEME_XCHACHA20_POLY1305_SEGMENTS => {
-            let ciphertext = length
-                .checked_sub((FRAME_HEADER_BYTES + SEGMENT_NONCE_BYTES) as u64)
-                .ok_or(ObjectError::Framing)?;
-            segmented_plaintext_len(ciphertext).map(|_| ())
-        }
-        _ => Ok(()),
-    }
+    frame_scheme(start)?;
+    let ciphertext = length
+        .checked_sub((FRAME_HEADER_BYTES + SEGMENT_NONCE_BYTES) as u64)
+        .ok_or(ObjectError::Framing)?;
+    segmented_plaintext_len(ciphertext).map(|_| ())
 }
 
-/// The scheme in a frame's header; scheme 0 and a missing header are invalid.
+/// The scheme in a frame's header, which must be scheme 2.
 fn frame_scheme(start: &[u8]) -> Result<u16, ObjectError> {
     let rest = start
         .strip_prefix(ENCRYPTED_PREFIX.as_slice())
         .filter(|rest| rest.len() >= 10)
         .ok_or(ObjectError::Framing)?;
     match u16::from_be_bytes([rest[0], rest[1]]) {
-        0 => Err(ObjectError::Framing),
-        scheme => Ok(scheme),
+        SCHEME_XCHACHA20_POLY1305_SEGMENTS => Ok(SCHEME_XCHACHA20_POLY1305_SEGMENTS),
+        _ => Err(ObjectError::Framing),
     }
 }
 
@@ -270,7 +254,7 @@ impl<W: std::io::Write> std::io::Write for VerifyingWriter<W> {
 }
 
 /// The parts of an encrypted object. A verifier needs no key to check them; a
-/// reader with no key for a scheme or epoch reports the content as unavailable.
+/// reader with no key for an epoch reports the content as unavailable.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EncryptedFrame<'a> {
     pub scheme: u16,
@@ -282,11 +266,7 @@ pub struct EncryptedFrame<'a> {
 impl<'a> EncryptedFrame<'a> {
     pub fn parse(stored: &'a [u8]) -> Result<Self, ObjectError> {
         let scheme = frame_scheme(stored)?;
-        let nonce_bytes = match scheme {
-            SCHEME_XCHACHA20_POLY1305 => XCHACHA_NONCE_BYTES,
-            SCHEME_XCHACHA20_POLY1305_SEGMENTS => SEGMENT_NONCE_BYTES,
-            _ => return Err(ObjectError::Scheme),
-        };
+        let nonce_bytes = SEGMENT_NONCE_BYTES;
         frame_check(stored, stored.len() as u64)?;
         let rest = &stored[ENCRYPTED_PREFIX.len() + 2..];
         let (key_epoch, rest) = rest.split_at(8);
@@ -300,7 +280,7 @@ impl<'a> EncryptedFrame<'a> {
     }
 }
 
-/// The associated data of schemes 1 and 2: an object is valid at only one place.
+/// The associated data of a segment: an object is valid at only one place.
 pub fn encrypted_aad(
     scheme: u16,
     key_epoch: u64,

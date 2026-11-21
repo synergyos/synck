@@ -157,12 +157,12 @@ enum Command {
         #[arg(long)]
         repo_id: String,
     },
-    /// Serve repositories to other devices and agents over protocol 1.
+    /// Serve repositories to other devices and agents over protocol 2.
     ///
     /// `synck serve init STATE` makes a state root, `synck serve token add`
     /// prints a token for a device or agent, and `synck serve STATE --listen
     /// 127.0.0.1:8740 REPOSITORY...` serves. Clients run `synck clone
-    /// https://HOST/v1/repositories/REPO_ID`. Caddy in front provides TLS:
+    /// https://HOST/v2/repositories/REPO_ID`. Caddy in front provides TLS:
     /// see deploy/Caddyfile and docs/sync-server.md.
     Serve(serve_cli::ServeArgs),
     /// Explain local Synck workflows.
@@ -195,7 +195,7 @@ enum Command {
     /// commits. It needs `--author`.
     Clone {
         /// Repository directory on a local disk, or a sync server's
-        /// https://HOST/v1/repositories/REPO_ID with the token in SYNCK_TOKEN
+        /// https://HOST/v2/repositories/REPO_ID with the token in SYNCK_TOKEN
         /// (http:// only to this machine).
         origin: PathBuf,
         /// New or empty directory for the working tree.
@@ -313,6 +313,13 @@ enum Command {
         /// Show exact authoritative events instead of semantic change rows.
         #[arg(long)]
         events: bool,
+    },
+    /// Print one event's exact envelope in hexadecimal and its decoded form.
+    CatEvent {
+        /// HEAD, HEAD~N, a sequence number or a full commit ID.
+        revision: String,
+        /// The event's index in its commit, from 0.
+        index: i32,
     },
     /// Follow one live item across its committed history.
     History { path: PathBuf },
@@ -1580,6 +1587,27 @@ async fn run_checkout(
                 } else {
                     print_history_commit(&commit, align_change_markers);
                 }
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        .await,
+        Command::CatEvent { revision, index } => async {
+            let (envelope, event) = repository
+                .cat_event(&revision, index)
+                .await
+                .map_err(|error| (error, false))?;
+            if json {
+                println!(
+                    "{}",
+                    json!({
+                        "schema_version": cli_json::SCHEMA_VERSION,
+                        "envelope_hex": hex::encode(&envelope),
+                        "event": event,
+                    })
+                );
+            } else {
+                println!("{}", hex::encode(&envelope));
+                println!("{event:#}");
             }
             Ok(ExitCode::SUCCESS)
         }

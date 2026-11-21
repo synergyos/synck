@@ -1,26 +1,26 @@
 {
-  "protocol_version": 1,
+  "protocol_version": 2,
   "request": {
     "repository": {
       "repo_id": "019a2900-0000-7000-8000-000000000001",
       "generation": "019a2900-0000-7000-8000-000000000002"
     },
     "operation_id": "op:1",
-    "metadata": {
+    "repository_head": null,
+    "header": {
       "author_id": "owner",
       "committer_id": "device",
+      "occurred_at": null,
       "message": null,
-      "occurred_at": null
+      "event_count": 1,
+      "events_digest": "sha256:cdec4f0d28eb2fa78ec2ef96ad1dc7d07d8f13c0621c3f96ee83c75bc76156fb"
     },
-    "event_count": 1,
-    "events_digest": "sha256:92d4e0a0f654bd0a61f961702d813101de9999edd9cdfa6b861144f6e07e1f4a",
     "guard_count": 0,
     "guards_digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
   },
-  "events_digest": "sha256:92d4e0a0f654bd0a61f961702d813101de9999edd9cdfa6b861144f6e07e1f4a",
-  "commit_id": "sha256:85a5555c657f229515ec37dab0ea8fd37ba53385d4af18400c4197d8e983c2d3",
-  "request_digest": "sha256:66be6274b55e124f51a3a1e81ad69c9e1b2abb4804269fff083df8e46580058f",
-  "canonical_event_utf8": "{\"create_item\":{\"item_type\":\"FILE\",\"name\":\"hello.txt\"},\"event_type\":\"FILE::CREATE\",\"item_id\":\"019a2900-0000-7000-8000-000000000003\",\"set_content\":{\"bytes\":\"sha256:abababababababababababababababababababababababababababababababab\"}}",
+  "events_digest": "sha256:cdec4f0d28eb2fa78ec2ef96ad1dc7d07d8f13c0621c3f96ee83c75bc76156fb",
+  "commit_id": "sha256:2078f6b3db0396042f6a664032064e3727c77cb4c6a8a3957220126cde88fbcb",
+  "request_digest": "sha256:ab5c33c52b3cd69bdbc9f6a837d1f8684b827616668d86a45d341e405a9c8d02",
   "records": [
     {
       "kind": "item",
@@ -34,7 +34,11 @@
         "set_content": {
           "bytes": "sha256:abababababababababababababababababababababababababababababababab"
         }
-      }
+      },
+      "envelope_hex": "01000c46494c453a3a435245415445019a2900000070008000000000000003000900000446494c45000968656c6c6f2e7478740100056279746573abababababababababababababababababababababababababababababababab"
     }
-  ]
+  ],
+  "header_hex": "0300056f776e657200066465766963650000000001cdec4f0d28eb2fa78ec2ef96ad1dc7d07d8f13c0621c3f96ee83c75bc76156fb",
+  "request_hex": "019a2900000070008000000000000001019a290000007000800000000000000200046f703a3100000000350300056f776e657200066465766963650000000001cdec4f0d28eb2fa78ec2ef96ad1dc7d07d8f13c0621c3f96ee83c75bc76156fb0000000000000000e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "page_hex": "019a2900000070008000000000000001019a290000007000800000000000000200046f703a31000000000000000000000001010000005b01000c46494c453a3a435245415445019a2900000070008000000000000003000900000446494c45000968656c6c6f2e7478740100056279746573abababababababababababababababababababababababababababababababab"
 }

@@ -62,7 +62,7 @@ mod tests {
     fn resolving_a_body_preserves_envelope_and_exact_bytes() {
         let body = " \0🦀\r\n";
         let object = Object::new(body.as_bytes()).unwrap();
-        let mut event = EventProposal::from_fields(serde_json::json!({"event_type":"CHAT::MESSAGE::CREATE", "set_content":EventContent::body(object.id())})).unwrap();
+        let mut event = EventProposal::from_fields(serde_json::json!({"item_id":synck_vcs::types::ItemId::new(),"event_type":"CHAT::MESSAGE::CREATE","base_seq":1,"set_content":EventContent::body(object.id())})).unwrap();
         let before = canonical_event_proposal_bytes(&event).unwrap();
         restore(
             std::slice::from_mut(&mut event),

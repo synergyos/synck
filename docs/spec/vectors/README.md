@@ -10,17 +10,17 @@ synthetic, and an example ID never means the object exists.
 | `name-tags.json` | Tagged names in encrypted repositories | `key_hex`; `tags`: `name`, `tag` (null when the name is invalid); `histories`: replay cases as in `records.json`, each with `encrypted` |
 | `json.json` | Hashed JSON | List: `text`, `valid` |
 | `objects.json` | PLAIN and SALTED objects | List: `form`, `bytes_hex`, `payload_hex`, `id`, `valid` |
-| `encrypted.json` | The encrypted frame and associated data | List: `frame_valid` needs no key; `opens` needs `key_hex` |
+| `encrypted.json` | The encrypted frame (scheme 2) and associated data, and rejected frames such as scheme 1 | List: `frame_valid` needs no key; `opens` needs `key_hex` |
 | `encrypted-segments.json` | Scheme 2 objects too large for hex, and its length rule | `objects`: `plaintext_length`, `stored_length`, `id` of the plaintext described by `plaintext`; `lengths`: `ciphertext_length`, `frame_valid`, `plaintext_length` |
 | `metadata.json` | One metadata payload | `value`, `canonical_json`, `payload_hex`, `id` |
-| `events.json` | Canonical envelopes, event digests and commit hashes | List: `event`, `canonical_event`, `event_digest`, `commit`, `commit_id` |
-| `commits.json` | Commit identity | List: `header`, `events`, `canonical`, `commit_id` |
+| `events.json` | Envelope bytes, event digests and commit IDs, and rejected encodings | `valid`: `event`, `envelope_hex`, `event_digest`, `commit`, `header_hex`, `commit_id`; `invalid`: `name`, `envelope_hex` |
+| `commits.json` | Commit identity | List: `header`, `events` (`event`, `envelope_hex`, `digest`), `header_hex`, `commit_id` |
 | `checkpoints.json` | The genesis value and checkpoint chain | `genesis` and `steps`, including an invalid sequence gap |
 | `records.json` | Replay | List of commit sequences; see below |
 | `bundle.json` | The end record and acceptance times | `genesis`, and `cases` with `bundle` and `valid` |
-| `file-version.json` | FILE revision labels | `metadata`, `event`, `canonical_event`, `event_digest`; `with_source_commit` repeats them for a revision in an earlier commit |
-| `sync.json`, `sync-history.json`, `sync-large.json` | The sync protocol | Requests, records and digests |
-| `sync-wire.json` | The protocol's JSON shapes and head guards | `valid` and `invalid` lists of `type` and `value`, and `guarded` |
+| `file-version.json` | FILE revision labels | `metadata`, `metadata_payload_hex`, `event`, `envelope_hex`, `event_digest`; `with_description` repeats them for a later revision with a description |
+| `sync.json`, `sync-history.json`, `sync-large.json` | The sync protocol | Requests, records, their bytes and digests |
+| `sync-wire.json` | The protocol's binary shapes and guards | `valid`: `type`, `value`, `bytes_hex`; `invalid`: `type`, `bytes_hex`, `reason`; and `guarded` |
 | `repository/` | A whole repository | See below |
 
 `valid` means the input is accepted by the rule that file tests, which is not always
@@ -47,8 +47,8 @@ A complete repository, as text. To build it:
 
 `expected.json` gives each commit's ID, checkpoint and state digest, the live files
 and their object IDs, and the folders. The history covers a tree item in a folder, a
-new revision, a label in the same commit as its revision, a label naming an earlier
-commit, a move, a linked record and a file in the trash.
+new revision, a label in the same commit as its revision, a label of a revision made
+in an earlier commit, a move, a linked record and a file in the trash.
 
 ## Regenerating
 

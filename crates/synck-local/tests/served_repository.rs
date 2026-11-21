@@ -11,7 +11,7 @@ async fn served_repository_reports_published_head_while_the_repository_is_locked
     let capabilities = served.capabilities().unwrap();
     capabilities.validate().unwrap();
     assert_eq!(served.repository_id(), &repo_id);
-    assert_eq!(capabilities.repository.repo_id, repo_id);
+    assert_eq!(capabilities.latest.repository.repo_id, repo_id);
     assert_eq!(capabilities.latest.repo_seq, 1);
     assert!(!capabilities.encrypted);
     drop(locked);

@@ -6,7 +6,7 @@ use crate::errors::CoreError;
 use crate::types::{CommitId, RepoId, commit_id_to_digest_bytes};
 
 /// The repository format hashed into the genesis value.
-pub const REPOSITORY_FORMAT: u32 = 7;
+pub const REPOSITORY_FORMAT: u32 = 8;
 
 /// The predecessor of the first checkpoint, not a stored checkpoint itself.
 /// It names one history of one repository, so no chain validates anywhere else.

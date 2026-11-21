@@ -2,15 +2,13 @@ use std::{collections::BTreeMap, fs};
 
 use cap_std::{ambient_authority, fs::Dir};
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
 use synck_file_folder::{
     CurrentItem, ImmutableItemKind, IntentProposal, project_proposal_events,
     validate_and_materialize,
 };
 use synck_vcs::types::{
-    COMMIT_FORMAT_VERSION, CommitId, CommitRow, EventProposal, EventRow, ItemId, RepoId,
-    Sha256Digest, canonical_commit_bytes_for_hash, canonical_event_proposal_bytes,
-    compute_commit_id, compute_sha256_digest_bytes, sha256_prefixed_hex_from_digest_bytes,
+    CommitId, CommitRow, EventProposal, EventRow, EventsDigest, ItemId, RepoId,
+    canonical_commit_bytes_for_hash, canonical_event_proposal_bytes, compute_commit_id,
 };
 
 use super::{
@@ -51,8 +49,8 @@ fn canonical_events(events: &[EventProposal]) -> Vec<serde_json::Value> {
     events
         .iter()
         .map(|event| {
-            let mut value: serde_json::Value =
-                serde_json::from_slice(&canonical_event_proposal_bytes(event).unwrap()).unwrap();
+            canonical_event_proposal_bytes(event).unwrap();
+            let mut value = serde_json::to_value(event).unwrap();
             if let Some(metadata) = event.set_metadata.as_ref().and_then(|m| m.value()) {
                 let object = value.as_object_mut().unwrap();
                 object.remove("metadata_id");
@@ -72,7 +70,7 @@ fn accepted_rows(
     let created_at = "2026-08-20T12:00:00Z".parse().unwrap();
     let mut next_item_seq = BTreeMap::new();
     let mut rows = Vec::with_capacity(events.len());
-    let mut aggregate_digest = Sha256::new();
+    let mut aggregate_digest = EventsDigest::default();
     for (index, event) in events.iter().enumerate() {
         let item_id = event.item_id.clone().unwrap();
         let item_seq = next_item_seq.entry(item_id.clone()).or_insert_with(|| {
@@ -82,9 +80,7 @@ fn accepted_rows(
                 .map_or_else(|| current.get(&item_id).unwrap().head_seq + 1, |_| 1)
         });
         let payload = canonical_event_proposal_bytes(event).unwrap();
-        let digest = compute_sha256_digest_bytes(&payload);
-        aggregate_digest.update([synck_vcs::types::COMMIT_EVENT_FAMILY_ITEM]);
-        aggregate_digest.update(digest);
+        aggregate_digest.push(&payload);
         rows.push(EventRow {
             metadata: event
                 .set_metadata
@@ -99,20 +95,13 @@ fn accepted_rows(
             commit_event_idx: index as i32,
             repo_seq: Some(1),
             payload,
-            event_payload_digest: Sha256Digest::parse(sha256_prefixed_hex_from_digest_bytes(
-                digest,
-            ))
-            .unwrap(),
             created_at,
             parent_folder_id: None,
             parent_folder_id_before: None,
         });
         *item_seq += 1;
     }
-    let events_digest = Sha256Digest::parse(sha256_prefixed_hex_from_digest_bytes(
-        aggregate_digest.finalize().into(),
-    ))
-    .unwrap();
+    let events_digest = aggregate_digest.finish(Some(1));
     let commit_id = compute_commit_id(
         &canonical_commit_bytes_for_hash(
             &"test".to_string(),
@@ -132,14 +121,12 @@ fn accepted_rows(
             repo_id: repo_id.clone(),
             commit_id,
             repo_seq: Some(1),
-            format_version: COMMIT_FORMAT_VERSION,
             author_id: "test".to_string(),
             committer_id: "test".to_string(),
             message: message.map(str::to_string),
             occurred_at: None,
             created_at,
             event_count: events.len() as i32,
-            events_digest,
         },
         rows,
     )
@@ -841,12 +828,7 @@ async fn item_history_rejects_target_event_corruption_after_projection() {
         .history(root, std::path::Path::new("document.bin"))
         .await
         .unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("historical event payload digest disagrees"),
-        "{error}"
-    );
+    assert!(error.to_string().contains("invalid encoding"), "{error}");
 }
 
 #[tokio::test]

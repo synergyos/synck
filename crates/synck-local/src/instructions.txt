@@ -8,7 +8,7 @@ CREATE AND COMMIT
 
     synck init [DIR] --author "<author>"
 
-Init creates a format-7 CHUNKED repository with an independent local checkout.
+Init creates a format-8 CHUNKED repository with an independent local checkout.
 It creates or preserves .synckignore and commits only that file. Existing files
 remain uncommitted. Defaults ignore OS/editor junk and unambiguous caches, not
 ordinary target/, dist/ or build/ folders. Hidden files default to ignore. To
@@ -62,7 +62,7 @@ bytes for 90 days, labelled w1, w2, ...:
 info and status say origin or clone of <origin>.
 
 Clone from another machine's sync server with a token from its owner:
-    SYNCK_TOKEN=<token> synck clone https://<host>/v1/repositories/<repo-id> <directory> --author <name>
+    SYNCK_TOKEN=<token> synck clone https://<host>/v2/repositories/<repo-id> <directory> --author <name>
 It works like a local clone, against its own copy of the history: commit sends
 each commit at once, or holds it when the server cannot be reached (status lists
 it; push sends it later). pull, push and lock use the server.

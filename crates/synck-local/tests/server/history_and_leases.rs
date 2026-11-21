@@ -2,16 +2,19 @@ use std::sync::Arc;
 
 use axum::Router;
 use axum::http::{Method, StatusCode};
-use serde_json::Value;
 use synck_local::server::Server;
 use synck_local::server::tokens::{self, Access};
 use synck_sync::{
     Capabilities, Cursor, HistoryPage, HistoryPosition, HistoryRequest, HistoryVerifier, Lease,
-    Leases, ProposalRecord, Released, RepositoryIdentity, SubmitResult,
+    LeasePaths, LeaseRenewal, LeaseRequest, LeaseToken, Leases, ProposalRecord, Refusal, Released,
+    RepositoryIdentity, SubmitResult, Wire, decode,
 };
 use synck_vcs::types::RepoId;
 
-use super::common::{create_file, metadata_object, object_id, send, send_with, status_of, upload};
+use super::common::{
+    create_file, metadata_object, object_id, pack, refusal, send, send_with, submit_result, upload,
+    wire,
+};
 
 struct Fixture {
     _parent: tempfile::TempDir,
@@ -32,7 +35,7 @@ async fn fixture() -> Fixture {
     let writer = tokens::add(&state, "laptop", Access::Write, &[repo_id.clone()]).unwrap();
     let reader = tokens::add(&state, "phone", Access::Read, &[repo_id.clone()]).unwrap();
     let router = synck_local::server::router(Arc::new(Server::open(&state, &[root]).unwrap()));
-    let sync = format!("/v1/repositories/{}/sync", repo_id.as_str());
+    let sync = format!("/v2/repositories/{}/sync", repo_id.as_str());
     let (_, body) = send(
         &router,
         Method::GET,
@@ -41,7 +44,7 @@ async fn fixture() -> Fixture {
         vec![],
     )
     .await;
-    let capabilities = serde_json::from_slice(&body).unwrap();
+    let capabilities = decode(&body).unwrap();
     Fixture {
         _parent: parent,
         router,
@@ -55,7 +58,7 @@ async fn fixture() -> Fixture {
 
 impl Fixture {
     fn repository(&self) -> &RepositoryIdentity {
-        &self.capabilities.repository
+        &self.capabilities.latest.repository
     }
 
     /// Upload and submit one new file at the top level.
@@ -66,22 +69,13 @@ impl Fixture {
         lock_tokens: &[&str],
     ) -> (StatusCode, Vec<u8>) {
         let (_, event) = create_file(&self.repo_id, name, name.as_bytes());
-        let object = format!(
-            "{}/objects/{}",
-            self.sync,
-            object_id(name.as_bytes()).as_str()
-        );
-        send(
-            &self.router,
-            Method::PUT,
-            &object,
-            &self.writer,
-            name.as_bytes().to_vec(),
-        )
-        .await;
         let (metadata_id, metadata) = metadata_object(&event);
-        let object = format!("{}/objects/{}", self.sync, metadata_id.as_str());
-        send(&self.router, Method::PUT, &object, &self.writer, metadata).await;
+        let objects = pack(&[
+            (object_id(name.as_bytes()), name.as_bytes()),
+            (metadata_id, &metadata),
+        ]);
+        let uri = format!("{}/objects", self.sync);
+        send(&self.router, Method::PUT, &uri, &self.writer, objects).await;
         let (pages, request) = upload(
             self.repository(),
             operation_id,
@@ -93,7 +87,7 @@ impl Fixture {
             Method::PUT,
             &page_uri,
             &self.writer,
-            serde_json::to_vec(&pages[0]).unwrap(),
+            wire(&pages[0]),
         )
         .await;
         let headers: Vec<(&str, &str)> = lock_tokens
@@ -107,26 +101,14 @@ impl Fixture {
             &uri,
             &self.writer,
             &headers,
-            serde_json::to_vec(&request).unwrap(),
+            wire(&request),
         )
         .await
     }
 
-    async fn post<T: serde::Serialize>(
-        &self,
-        suffix: &str,
-        token: &str,
-        value: &T,
-    ) -> (StatusCode, Vec<u8>) {
+    async fn post<T: Wire>(&self, suffix: &str, token: &str, value: &T) -> (StatusCode, Vec<u8>) {
         let uri = format!("{}/{suffix}", self.sync);
-        send(
-            &self.router,
-            Method::POST,
-            &uri,
-            token,
-            serde_json::to_vec(value).unwrap(),
-        )
-        .await
+        send(&self.router, Method::POST, &uri, token, wire(value)).await
     }
 }
 
@@ -157,9 +139,7 @@ async fn history_pages_verify_from_genesis_to_the_published_head() {
         vec![],
     )
     .await;
-    let latest = serde_json::from_slice::<Capabilities>(&body)
-        .unwrap()
-        .latest;
+    let latest = decode::<Capabilities>(&body).unwrap().latest;
     assert_eq!(latest.repo_seq, 3);
     let genesis = Cursor::genesis(fixture.repository().clone(), false).unwrap();
 
@@ -172,7 +152,7 @@ async fn history_pages_verify_from_genesis_to_the_published_head() {
         )
         .await;
     assert_eq!(status, StatusCode::OK);
-    let page: HistoryPage = serde_json::from_slice(&body).unwrap();
+    let page: HistoryPage = decode(&body).unwrap();
     assert!(!page.has_more);
     let mut verifier = HistoryVerifier::new(genesis.clone()).unwrap();
     assert_eq!(verifier.push(&page).unwrap(), Some(latest.clone()));
@@ -186,7 +166,7 @@ async fn history_pages_verify_from_genesis_to_the_published_head() {
             limit: 1,
         };
         let (_, body) = fixture.post("history", &fixture.reader, &request).await;
-        let page: HistoryPage = serde_json::from_slice(&body).unwrap();
+        let page: HistoryPage = decode(&body).unwrap();
         verifier.push(&page).unwrap();
         pages += 1;
         if !page.has_more {
@@ -202,22 +182,26 @@ async fn history_pages_verify_from_genesis_to_the_published_head() {
         .post("history", &fixture.reader, &history_request(forked, 512))
         .await;
     assert_eq!(
-        (status, status_of(&body).as_str()),
-        (StatusCode::CONFLICT, "CHECKPOINT")
+        (status, refusal(&body)),
+        (StatusCode::CONFLICT, Refusal::Checkpoint)
     );
 }
 
 #[tokio::test]
 async fn leases_fence_remote_commits_until_released() {
     let fixture = fixture().await;
-    let request = serde_json::json!({ "paths": ["a.txt", "docs"], "owner": "agent-a", "ttl": 600 });
+    let request = LeaseRequest {
+        paths: vec!["a.txt".into(), "docs".into()],
+        owner: "agent-a".into(),
+        ttl: 600,
+    };
     assert_eq!(
         fixture.post("leases", &fixture.reader, &request).await.0,
         StatusCode::FORBIDDEN
     );
     let (status, body) = fixture.post("leases", &fixture.writer, &request).await;
     assert_eq!(status, StatusCode::OK);
-    let lease: Lease = serde_json::from_slice(&body).unwrap();
+    let lease: Lease = decode(&body).unwrap();
     assert_eq!(lease.locks.len(), 2);
 
     let (_, body) = send(
@@ -228,37 +212,42 @@ async fn leases_fence_remote_commits_until_released() {
         vec![],
     )
     .await;
-    let listed: Leases = serde_json::from_slice(&body).unwrap();
+    let listed: Leases = decode(&body).unwrap();
     assert_eq!(listed.locks, lease.locks);
-    assert!(!String::from_utf8_lossy(&body).contains(&lease.token));
-
-    let other = serde_json::json!({ "paths": ["docs/notes.txt"], "owner": "agent-b", "ttl": 600 });
-    let (status, body) = fixture.post("leases", &fixture.writer, &other).await;
-    let refused: Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(
-        (
-            status,
-            refused["status"].as_str(),
-            refused["owner"].as_str()
-        ),
-        (StatusCode::CONFLICT, Some("LOCKED"), Some("agent-a"))
+    assert!(
+        !body
+            .windows(lease.token.len())
+            .any(|bytes| bytes == lease.token.as_bytes())
     );
+
+    let other = LeaseRequest {
+        paths: vec!["docs/notes.txt".into()],
+        owner: "agent-b".into(),
+        ttl: 600,
+    };
+    let (status, body) = fixture.post("leases", &fixture.writer, &other).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    let Refusal::Locked { owner, .. } = refusal(&body) else {
+        panic!("not LOCKED");
+    };
+    assert_eq!(owner, "agent-a");
 
     // A commit to a reserved path needs the lease's token; others are free.
     let (status, body) = fixture.create("op-1", "a.txt", &[]).await;
-    assert_eq!(
-        (status, status_of(&body).as_str()),
-        (StatusCode::CONFLICT, "LOCKED")
-    );
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(matches!(refusal(&body), Refusal::Locked { .. }));
     assert_eq!(fixture.create("op-2", "b.txt", &[]).await.0, StatusCode::OK);
     let (status, body) = fixture.create("op-3", "a.txt", &[&lease.token]).await;
     assert_eq!(status, StatusCode::OK);
     assert!(matches!(
-        serde_json::from_slice(&body).unwrap(),
+        submit_result(&body),
         SubmitResult::Accepted { .. }
     ));
 
-    let renewal = serde_json::json!({ "token": lease.token, "ttl": 60 });
+    let renewal = LeaseRenewal {
+        token: lease.token.clone(),
+        ttl: 60,
+    };
     assert_eq!(
         fixture
             .post("leases/renew", &fixture.writer, &renewal)
@@ -266,45 +255,40 @@ async fn leases_fence_remote_commits_until_released() {
             .0,
         StatusCode::NO_CONTENT
     );
-    let token = serde_json::json!({ "token": lease.token });
+    let token = LeaseToken {
+        token: lease.token.clone(),
+    };
     let (_, body) = fixture
         .post("leases/release", &fixture.writer, &token)
         .await;
-    assert_eq!(
-        serde_json::from_slice::<Released>(&body).unwrap().released,
-        2
-    );
+    assert_eq!(decode::<Released>(&body).unwrap().released, 2);
     let (_, body) = fixture
         .post("leases/release", &fixture.writer, &token)
         .await;
-    assert_eq!(
-        serde_json::from_slice::<Released>(&body).unwrap().released,
-        0
-    );
+    assert_eq!(decode::<Released>(&body).unwrap().released, 0);
     let (status, body) = fixture
         .post("leases/renew", &fixture.writer, &renewal)
         .await;
     assert_eq!(
-        (status, status_of(&body).as_str()),
-        (StatusCode::CONFLICT, "LOCK_LOST")
+        (status, refusal(&body)),
+        (StatusCode::CONFLICT, Refusal::LockLost)
     );
     let (status, body) = fixture.create("op-4", "c.txt", &[&lease.token]).await;
     assert_eq!(
-        (status, status_of(&body).as_str()),
-        (StatusCode::CONFLICT, "LOCK_LOST")
+        (status, refusal(&body)),
+        (StatusCode::CONFLICT, Refusal::LockLost)
     );
 
     let (_, body) = fixture.post("leases", &fixture.writer, &other).await;
-    serde_json::from_slice::<Lease>(&body).unwrap();
+    decode::<Lease>(&body).unwrap();
     let (_, body) = fixture
         .post(
             "leases/break",
             &fixture.writer,
-            &serde_json::json!({ "paths": ["docs"] }),
+            &LeasePaths {
+                paths: vec!["docs".into()],
+            },
         )
         .await;
-    assert_eq!(
-        serde_json::from_slice::<Released>(&body).unwrap().released,
-        1
-    );
+    assert_eq!(decode::<Released>(&body).unwrap().released, 1);
 }

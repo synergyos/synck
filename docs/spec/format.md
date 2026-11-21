@@ -1,10 +1,10 @@
-# Synck 0.2 repository format
+# Synck repository format 8
 
-This is the authoritative format-7 specification. A 0.2 reader accepts only
-this repository format, commit format 6 and history bundle format 5. Schema
-versions are independent of release numbers. There are no older-format readers
-or migrations. The normative SQL and JSON vectors linked here are part of this
-specification; no Rust source is needed to interpret a repository.
+This is the authoritative format-8 specification. A reader accepts only this
+repository format and history bundle format 6. Schema versions are independent
+of release numbers. There are no older-format readers or migrations. The
+normative SQL and JSON vectors linked here are part of this specification; no
+Rust source is needed to interpret a repository.
 
 Only bytes are specified: what a repository, an event, an object and a bundle
 contain, and what makes them valid. Commands, caches, checkouts and recovery belong
@@ -15,7 +15,7 @@ present-tense rule is as binding as one spelled MUST.
 ## Core and item families
 
 The core is everything a reader needs without knowing any item type: this
-container, canonical JSON, event envelopes, tree and record rules, objects,
+container, the binary encoding, event envelopes, tree and record rules, objects,
 commits and checkpoints. After 1.0 it changes only with a new repository format.
 
 Item families define event types, metadata keys and content roles. Each family
@@ -29,10 +29,10 @@ backfill events behind.
 
 ## Fixed validity limits
 
-These limits belong to format 7, not to a writer configuration or a hosted
+These limits belong to format 8, not to a writer configuration or a hosted
 service. Every writer, reader, replay/import path and `fsck` enforces them.
-Lengths are UTF-8 bytes (not characters); event size is its exact canonical
-JSON payload, including escaping.
+Lengths are UTF-8 bytes (not characters); event size is its exact encoded
+envelope.
 
 | Field | Maximum |
 | --- | ---: |
@@ -44,14 +44,16 @@ JSON payload, including escaping.
 | One record key | 256 bytes |
 | One item type | 64 bytes |
 | One event type | 128 bytes |
-| Hashed JSON nesting | 64 levels |
+| Metadata JSON nesting | 64 levels |
 
 Author and committer IDs are nonempty. A stored operation ID is null or
 nonblank UTF-8, and nonblank means at least one code point that is not Unicode
 White_Space. The schema's `trim()` check is a weaker backstop, not the rule. A
 commit submitted through the [protocol](protocol.md) requires one; a local commit
 may store null. Preserve its exact bytes, including whitespace; do not trim or
-derive a different retry identity. A message is null or nonempty; an empty message
+derive a different retry identity. An operation ID is retry identity, not
+history: no hash covers it. A store keeps it at least 90 days after acceptance
+and may then clear it to null. A message is null or nonempty; an empty message
 is rejected. Name normalization and forbidden-character rules below still apply.
 
 There is **no per-commit event-count or aggregate byte admission limit**. Counts
@@ -78,7 +80,7 @@ outside the format contributes to any hash, and verification neither requires no
 trusts it. Treat repository paths as untrusted; do not follow object or database
 symlinks outside the repository.
 
-Configuration is an object with required `format_version: 7`, `repo_id`,
+Configuration is an object with required `format_version: 8`, `repo_id`,
 `authority` (`LOCAL`, `FOLLOWER`, or `INDEPENDENT_LOCAL`), optional
 `storage_mode` (`WHOLE_FILE`, the default, or `CHUNKED`), `author` (string, required
 unless `authority` is `FOLLOWER`), optional `encrypted` (boolean, default false),
@@ -130,9 +132,9 @@ A held or HTTPS clone's `withdrawn.json`, present once a pull withdrew a held
 commit, is `{"next": n, "saves": [...]}`: `next` is the number the next
 withdrawn save is labelled with (`w<n>`), and each save is `{label, commit_id,
 metadata, saved_at, withdrawn_at, records, metadata_objects, changes, files}`.
-`metadata` is the commit's author, committer, message and origin time, and
-`records` its item and ref events, both as a protocol-1 proposal carries them,
-so the events and header hash to `commit_id` as any commit's do.
+`metadata` is an object of the commit's `author_id`, `committer_id`, `message`
+and `occurred_at`, and `records` its item and ref envelopes, each in lowercase
+hexadecimal, so the events and header hash to `commit_id` as any commit's do.
 `metadata_objects` maps each metadata ID the events name to its stored bytes in
 lowercase hexadecimal. `changes` and `files` are what `show` listed and the
 paths, object IDs and sizes of the file contents the commit saved. A save is
@@ -146,31 +148,32 @@ writes too: a copy activated to succeed a source that has retired. Neither is a
 synchronization or distributed fencing protocol.
 
 Repository IDs, item IDs, physical `commit_pk` IDs, history generations and FILE
-version IDs are UUIDv7, stored in lowercase hyphenated form. Commit IDs, object IDs, event digests and checkpoints are
-`sha256:` plus 64 lowercase hexadecimal digits in JSON, and raw 32-byte digests
-in SQLite BLOB columns. They are distinct domains despite sharing spelling.
-Authors and committers are application identity strings, not UUIDs. A federation
-domain ID is a nonempty string, opaque to the format.
+version IDs are UUIDv7. Commit IDs, object IDs, event digests and checkpoints are
+SHA-256 digests; they are distinct domains despite sharing a type. Encoded history
+holds raw bytes: 16 for a UUID, 32 for a digest. Text, such as JSON files,
+bundles and SQLite TEXT columns, spells a UUID in lowercase hyphenated form and a
+digest as `sha256:` plus 64 lowercase hexadecimal digits; SQLite BLOB columns hold
+the raw 32 bytes. Authors and committers are application identity strings, not
+UUIDs. A federation domain ID is a nonempty string, opaque to the format.
 
-Sequences are positive signed 64-bit integers in SQLite; ref bases also allow
-zero. In hashed JSON they stop at 2^53 - 1, like every number. Event indexes start
-at zero and event counts are not negative; both fit signed 32-bit storage/API integers.
-There is no smaller policy cap.
+Sequences are positive signed 64-bit integers; ref bases also allow zero. Event
+indexes start at zero and event counts are not negative; both fit signed 32-bit
+storage/API integers. There is no smaller policy cap.
 
-Time strings are RFC 3339 UTC, with years 0000 through 9999. A writer uses one
-spelling: nine fractional digits and `Z`. A reader compares instants, not spellings,
-and decodes acceptance time to seconds and nanoseconds for checkpoint hashing. The
-commit's `occurred_at` is hashed, so there only the writer's spelling is valid.
+A time is a signed 64-bit count of seconds since the Unix epoch and a nanosecond
+fraction below 10^9, for UTC years 0000 through 9999. Leap seconds are not
+representable. Text spells a time in RFC 3339 UTC with nine fractional digits and
+`Z`; a reader of text compares instants, not spellings.
 
 ## Canonical JSON
 
-Hashed JSON is RFC 8785 JCS, encoded as UTF-8: no whitespace, object keys sorted
-by UTF-16 code units, minimal prescribed string escapes, and no duplicate keys
-or invalid Unicode. Strings are not normalized by JCS. Name normalization is a
-separate admission rule.
+Metadata objects hold JSON, and nothing else in history does. That JSON is RFC
+8785 JCS, encoded as UTF-8: no whitespace, object keys sorted by UTF-16 code
+units, minimal prescribed string escapes, and no duplicate keys or invalid
+Unicode. Strings are not normalized by JCS.
 
-Hashed JSON is a strict subset of RFC 8785, so that no implementation has to
-serialize floating-point numbers identically:
+It is a strict subset of RFC 8785, so that no implementation has to serialize
+floating-point numbers identically:
 
 - A number is an integer from -(2^53 - 1) to 2^53 - 1, in plain decimal. Fractions,
   exponents and negative zero are rejected. A decimal value is a string.
@@ -181,49 +184,81 @@ serialize floating-point numbers identically:
 
 `vectors/json.json` lists accepted and rejected texts.
 
-For stored events, parse the strict shape below, serialize that shape canonically,
-and require equality with the stored bytes. Unknown fields, explicit nulls where
-an optional field must be omitted, noncanonical IDs and alternative spellings
-cannot be silently removed or normalized before verifying their hash. Hashes
-are SHA-256 without any extra delimiter or newline except where explicitly framed.
+## Binary encoding
+
+Envelopes and commit headers are binary. Each has one encoding: decoding is
+verification, and an implementation needs no serializer to compare bytes. A
+decoder rejects trailing bytes, a wrong kind byte, unknown flag bits, and any
+value the field's rule forbids; it never normalizes. Hashes are SHA-256 over the
+exact bytes, with no extra delimiter.
+
+| Type | Bytes |
+| --- | --- |
+| `u8`, `u16`, `u32`, `u64`, `i64` | Fixed width, big-endian; `i64` is two's complement |
+| `uuid` | 16 raw bytes, a UUIDv7: version 7 and the RFC 9562 variant bits `10` |
+| `digest` | 32 raw bytes |
+| `str` | `u16` byte length, then that many bytes of valid UTF-8 without U+0000 |
+| `bool` | `u8` 0 or 1; any other value is invalid |
+| `seq` | `u64` from 1 to 2^63 - 1 |
+| `time` | `i64` seconds and `u32` nanoseconds below 10^9, within years 0000 through 9999 |
+| `target` | `u8` 0 for none (the root, or no link), or 1 followed by a `uuid` |
+| `source` | `uuid` item ID, then `seq` item sequence |
+| `content` | `u8` role count, 0 to 32, then each role as `str` and `digest`, roles in strictly increasing byte order |
+
+Optional fields are named by a flags field, and appear after it in the order of
+its bits, from bit 0 up. A field is present exactly when its bit is set.
 
 ## Event envelopes
 
-Every accepted item envelope is a JSON object with required `item_id` and
-`event_type`. These are the only optional fields:
+An item envelope is:
 
-| Field | Meaning |
+| Part | Encoding |
 | --- | --- |
-| `create_item` | Creates a tree item or a record; see below |
-| `base_seq` | The item's positive head sequence before this commit; absent for an item created by this commit |
-| `metadata_id` | ID of the event's erasable metadata object |
-| `set_content` | Complete role map described below |
-| `set_parent` | Folder UUIDv7, or explicit null to move to root; absence leaves the parent unchanged |
-| `set_name` | New portable name |
-| `set_link` | Folder UUIDv7, or explicit null to clear the link; absence leaves it unchanged |
-| `merged_from` | Source revision this event takes in; see Item sources |
-| `set_in_trash` | Boolean; true enters TRASH, false restores LIVE |
-| `set_tombstoned` | Boolean; true permanently enters TOMBSTONED |
-| `set_is_federated` | Boolean mode transition |
-| `set_federation_stream_id` | Nonempty federation stream string |
+| Kind | `u8` 1 |
+| `event_type` | `str` |
+| `item_id` | `uuid` |
+| Fields | `u16` flags, then the fields below that are present |
 
-`create_item` has one of two forms, and the form is the item's class:
+| Bit | Field | Encoding and meaning |
+| --- | --- | --- |
+| 0 | `create_item` | Creates a tree item or a record; see below |
+| 1 | `base_seq` | `seq`: the item's head before this commit; absent for an item created by this commit |
+| 2 | `metadata_id` | `digest`: ID of the event's erasable metadata object |
+| 3 | `set_content` | `content`: complete role map, described below |
+| 4 | `set_parent` | `target`: the new parent folder, or the root |
+| 5 | `set_name` | `str`: new portable name |
+| 6 | `set_link` | `target`: the new link folder, or none to clear it |
+| 7 | `merged_from` | `source`: the revision this event takes in; see Item sources |
+| 8 | `set_in_trash` | `bool`: true enters TRASH, false restores LIVE |
+| 9 | `set_tombstoned` | No bytes: permanently enters TOMBSTONED |
+| 10 | `set_is_federated` | `bool`: mode transition |
+| 11 | `set_federation_stream_id` | `str`, nonempty: federation stream |
 
-| Class | Form |
-| --- | --- |
-| Tree item | `{ "item_type": string, "name": string, "parent_folder_id"?: UUIDv7, "derived_from"?: source }`; omitted parent means root |
-| Record | `{ "item_type": string, "key"?: string, "link"?: UUIDv7, "derived_from"?: source }` |
+Bits 12 to 15 are zero. `create_item` is a `u8` of flags, the `item_type` as `str`,
+then its fields, and its form is the item's class:
 
-All other absent optional values are omitted, not null. Nested `create_item`
-also rejects unknown fields. Inline metadata, inline content, parent commit IDs
+| Class | Flags | Fields in order |
+| --- | --- | --- |
+| Tree item | bit 0 clear; bit 1 parent; bit 3 source | `name` (`str`), parent folder (`uuid`), `derived_from` (`source`) |
+| Record | bit 0 set; bit 1 link; bit 2 key; bit 3 source | link folder (`uuid`), `key` (`str`), `derived_from` (`source`) |
+
+Bit 2 is clear for a tree item, bits 4 to 7 are clear for both, and only the
+fields whose bits are set appear, in the order of the table. A tree item without
+a parent is created at the root. Inline metadata, inline content, parent commit IDs
 and repository sequences do not occur in envelopes. Metadata belongs to the
 event; families define how successive metadata payloads affect presentation.
 Missing metadata cannot block structural replay of names, parents or lifecycle.
 
-An attached-ref envelope has required `owner_item_id`, `event_type`,
-`base_ref_seq`, and optional `metadata_id` and `set_content`. No other fields
-are valid. Refs cannot change an owner's structure. Their ledger starts at one
-and is independent of item sequence; an initial ref base is zero.
+An attached-ref envelope is the `u8` kind 2, `event_type` (`str`),
+`owner_item_id` (`uuid`), `base_ref_seq` (`u64` up to 2^63 - 1, zero for a new
+ledger), and a `u8` of flags: bit 0 `metadata_id` (`digest`), bit 1 `set_content`
+(`content`), the other bits clear. Refs cannot change an owner's structure. Their
+ledger starts at one and is independent of item sequence.
+
+An event's digest is SHA-256 of its envelope. `vectors/events.json` gives
+envelopes, their bytes and digests, and rejected encodings. `synck cat-event`
+prints an envelope as JSON for people; that JSON is not an encoding of the
+format.
 
 ### Item and event types
 
@@ -253,7 +288,7 @@ type, and never on an `ITEM::` event.
 | `SET_CONTENT` | All with content | `set_content`, and metadata where the family requires it |
 | `TRASH` | All | `set_in_trash: true` |
 | `RESTORE` | All | `set_in_trash: false` |
-| `TOMBSTONE` | All | `set_tombstoned: true` |
+| `TOMBSTONE` | All | `set_tombstoned` |
 | `FEDERATE` | All but FOLDER and LOCAL_COMPANION | `set_is_federated`, and `set_federation_stream_id` when true |
 
 ### Structural replay
@@ -291,18 +326,18 @@ the FILE revision labels are admission rules.
 snapshot. On a longer event type, such as `EMAIL::ATTACHMENT::CREATE`, it adds its
 objects to closure and leaves the snapshot unchanged, because a subitem is not the
 item. A `FILE::CREATE`, and any two-segment event with `set_content` on a FILE, must
-hold exactly `bytes`; `{}` is invalid there. A FOLDER has no content.
+hold exactly `bytes`; an empty map is invalid there. A FOLDER has no content.
 
 #### Lifecycle
 
-| Before | `set_in_trash: true` | `set_in_trash: false` | `set_tombstoned: true` |
+| Before | `set_in_trash: true` | `set_in_trash: false` | `set_tombstoned` |
 | --- | --- | --- | --- |
 | LIVE | TRASH | no change | TOMBSTONED |
 | TRASH | no change | LIVE | TOMBSTONED |
 | TOMBSTONED | invalid | invalid | invalid |
 
 A repeated trash or restore changes nothing, so a retried history stays valid.
-`set_tombstoned: false` is invalid. Tombstoning is terminal: the item receives no
+Tombstoning is terminal: the item receives no
 more item or ref events, in that commit or later. It keeps its name, parent, link and
 content. Trash is reversible and retains history.
 
@@ -310,7 +345,7 @@ content. Trash is reversible and retains history.
 
 Parents, sibling names, keys and links are checked at the end of each commit, on the
 state after all its events. So a child may precede its parent in one commit, and a
-name swap is legal. A parent must exist in this repository and be a FOLDER; root is null, and
+name swap is legal. A parent must exist in this repository and be a FOLDER, or be the root, and
 parent cycles are forbidden. Live tree-item siblings have distinct name keys. A
 [tagged name](#tagged-names) is its own name key, so replay needs no key and no
 configuration.
@@ -363,8 +398,7 @@ repository; an encrypted one holds [tagged names](#tagged-names).
 
 A record is not on disk. It has no parent and no name, and its identity is its
 item ID. A title is family metadata: erasable, encrypted where the repository is,
-and free to repeat. The core rejects `parent_folder_id` in a record's
-`create_item` and `set_name` or `set_parent` on a record. Records never compete
+and free to repeat. The core rejects `set_name` or `set_parent` on a record. Records never compete
 with tree items, or with each other, for a name. Relations such as task to list
 or event to calendar are family metadata.
 
@@ -411,7 +445,7 @@ following a federation domain it has no link.
 An item can name a revision of another item as its source. `create_item.derived_from`
 says the item began as that revision, as a duplicate does. `merged_from` on a later
 event says the item took that revision in. Both are a source: exactly
-`{ "item_id": UUIDv7, "item_seq": positive integer }`. Any item type may have them,
+an item ID and a positive item sequence. Any item type may have them,
 and they are part of the event, so they are hashed and never change. These are replay
 rules:
 
@@ -502,7 +536,7 @@ Every code point in a name must be assigned in Unicode 18.0.0, meaning its
 General_Category is not `Cn`. Private-use code points are assigned; noncharacters
 are not. A later Unicode release could give an unassigned code point a
 decomposition or a case folding, and implementations with different tables would
-then disagree on validity. Format 7 therefore pins its Unicode version, and a
+then disagree on validity. Format 8 therefore pins its Unicode version, and a
 newer version of Unicode is adopted only by a new repository format.
 
 Windows device stems are forbidden, ignoring the case of ASCII letters only,
@@ -606,7 +640,7 @@ The checkpoint is SHA-256 over the concatenation, without separators, of:
 1. The 19 ASCII bytes `synck-checkpoint-v1`.
 2. The preceding checkpoint's raw 32 bytes, or the genesis value for the first commit.
 3. The positive repository sequence as an unsigned 64-bit big-endian integer.
-4. The commit ID's raw 32 digest bytes, without its `sha256:` prefix.
+4. The commit ID's raw 32 bytes.
 5. The acceptance timestamp's Unix seconds as a signed 64-bit big-endian integer.
 6. Its nanosecond fraction as an unsigned 32-bit big-endian integer, below 10^9.
 
@@ -615,7 +649,7 @@ The genesis value is SHA-256 over the concatenation of:
 1. The 16 ASCII bytes `synck-genesis-v1`.
 2. The repository ID's raw 16 bytes.
 3. The history generation's raw 16 bytes.
-4. The repository format, 7, as an unsigned 32-bit big-endian integer.
+4. The repository format, 8, as an unsigned 32-bit big-endian integer.
 5. One byte: 1 for an encrypted repository, otherwise 0.
 
 Every checkpoint therefore belongs to one history of one repository. History from
@@ -654,8 +688,8 @@ with `nextval()` or its equivalent in the acceptance transaction. SQLite uses
 `BEGIN IMMEDIATE` to serialize its writers; acceptance itself does not access
 the activity head or checkpoints.
 
-SQLite publishes `vcs_checkpoints(repo_id, repo_seq, commit_id, checkpoint)`
-with raw 32-byte digest values. `vcs_history_generations(repo_id, generation)`
+SQLite stores each published commit's checkpoint, as raw 32 bytes, in its
+`vcs_commits` row, with its `repo_seq`. `vcs_history_generations(repo_id, generation)`
 holds a UUIDv7 identifying this history generation. Copies preserve that value.
 A future administrative rewrite must replace the generation, validate its new
 history and rebuild checkpoints before publishing the replacement atomically.
@@ -762,16 +796,20 @@ object is the concatenation of:
 5. The scheme's ciphertext, extending to the end of the object.
 
 No salt is needed: the random nonce makes each object unique and its ID
-unguessable. Schemes are versioned apart from the core. A new scheme needs no core
-change, and an old scheme stays readable for ever, because history is permanent.
-Scheme 0 is invalid. A verifier checks IDs and frames without any key. A reader
-with no key for a scheme or epoch reports the content as unavailable, not corrupt.
+unguessable. Scheme 2 is the only scheme; schemes 0 and 1 are invalid. A new
+scheme needs a new repository format. A verifier checks IDs and frames without
+any key. A reader with no key for an epoch reports the content as unavailable, not
+corrupt.
 
-Scheme 1 is XChaCha20-Poly1305 (`draft-irtf-cfrg-xchacha-03`: HChaCha20 over the
-ChaCha20-Poly1305 of RFC 8439), with a 24-byte random nonce and a 16-byte tag at the
-end of the ciphertext. Its plaintext is what the SALTED or PLAIN form would
-hold after its header: file bytes, UTF-8 text or canonical JSON. Its associated
-data is the concatenation of:
+Scheme 2 is XChaCha20-Poly1305 (`draft-irtf-cfrg-xchacha-03`: HChaCha20 over the
+ChaCha20-Poly1305 of RFC 8439) in segments, so a reader holds one segment, not the
+whole object. Its nonce is 19 random bytes. Its plaintext is what the SALTED or
+PLAIN form would hold after its header: file bytes, UTF-8 text or canonical JSON.
+The plaintext is cut into segments of 65,536 bytes, except the last, which holds 1
+to 65,536; an empty plaintext is one empty last segment. Each segment is sealed
+with a 24-byte nonce made of the stored 19 bytes, the segment's index from zero as
+a `u32`, and one byte that is 1 for the last segment and 0 otherwise, and adds a
+16-byte tag. Every segment's associated data is the concatenation of:
 
 1. The 18 ASCII bytes `synck-encrypted-v1`.
 2. The scheme, as in the frame.
@@ -782,26 +820,15 @@ data is the concatenation of:
    uses the role `metadata`, which is reserved: no `set_content` map may use it.
 
 An object is therefore valid at only one place: it cannot move to another
-repository, item, role or epoch. Deduplication does not apply.
+repository, item, role or epoch. Deduplication does not apply. A reader releases a
+segment's plaintext only after its tag verifies, and has the whole plaintext only
+after the last segment verifies; the index and the last flag refuse reordered,
+dropped, truncated or extended segments.
 
-Scheme 2 is XChaCha20-Poly1305 in segments, for objects written or read in pieces,
-such as large file bytes: a reader holds one segment, not the whole object. Its
-nonce is 19 random bytes. Its ciphertext is a sequence of segments, each sealed
-with scheme 1's cipher and associated data (with scheme 2 in it), and the 24-byte
-nonce made of the stored 19 bytes, the segment's index from zero as an unsigned
-32-bit big-endian integer, and one byte that is 1 for the last segment and 0
-otherwise. Every segment holds 65,536 plaintext bytes except the last, which
-holds 1 to 65,536; an empty plaintext is one empty last segment. Each segment
-adds a 16-byte tag. A reader releases a segment's plaintext only after its tag
-verifies, and has the whole plaintext only after the last segment verifies; the
-index and the last flag refuse reordered, dropped, truncated or extended
-segments.
-
-A verifier checks a scheme 2 frame from its header and total length alone. Let
-`n` be the ciphertext's length and `r` its remainder modulo 65,552. The frame is
-valid when `n` is at least 16, `r` is 0 or at least 17, and `r` is 16 only when `n`
-is 16. The plaintext is `n - 16 * ceil(n / 65,552)` bytes. Writers may use either
-scheme for any object; readers support both.
+A verifier checks a frame from its header and total length alone. Let `n` be the
+ciphertext's length and `r` its remainder modulo 65,552. The frame is valid when
+`n` is at least 16, `r` is 0 or at least 17, and `r` is 16 only when `n` is 16. The
+plaintext is `n - 16 * ceil(n / 65,552)` bytes.
 
 Key epoch 1 is the first repository key. Key epoch 0 means the object does not use
 a repository key: its item has a `sealed_key` role, whose bytes are a sealed key
@@ -812,12 +839,12 @@ rotation and sealing belong to the product's key specification, not to this form
 
 An encrypted repository exposes item IDs, types, tree-item [tags](#tagged-names) and parents,
 record keys and links, item sources, lifecycle, operation IDs, federation stream IDs, times,
-actors, order, object IDs and exact sizes, since a scheme 1 object is 66 bytes longer
-than its plaintext and a scheme 2 object 45 bytes plus 16 per segment. Operation IDs and stream IDs must hold no content. A commit
+actors, order, object IDs and exact sizes, since an object is 45 bytes plus 16 per
+segment longer than its plaintext. Operation IDs and stream IDs must hold no content. A commit
 message in an encrypted repository must be null. `vectors/encrypted.json` fixes the
 frame, associated data and ciphertext, and lists rejected variants. It gives two
 verdicts: `frame_valid` needs no key, and `opens` needs one.
-`vectors/encrypted-segments.json` adds scheme 2 objects of several segments and the
+`vectors/encrypted-segments.json` adds objects of several segments and the
 length rule.
 
 ### Object use
@@ -837,43 +864,20 @@ outside the hashed JSON rule are rejected. A verifier cannot check the JSON of a
 encrypted payload without its key. A writer uses a fresh salt even for identical JSON.
 `vectors/metadata.json` fixes the JSON, stored bytes and digest independently.
 
-A key's current value is found by walking back from the item's latest payload, among
-the events a family names for it: the first payload holding the key wins. An erased
-payload stops the walk and the key is unavailable, never an older value.
-
 An event with exactly two segments carries item metadata; a longer event type,
 such as `EMAIL::ATTACHMENT::SET_METADATA`, carries its subitem's, as with
-[content](#content). Item metadata is a key patch. A key written as null is
-stored as null and folding keeps it, so a reader asking whether a key is set
-treats null as unset.
+[content](#content).
 
-**Complete maps.** A writer to a repository whose readers take the
-[state read](protocol.md#state-read) as their source of truth, which is every
-encrypted repository, writes the item's complete current metadata on every
-two-segment event that carries metadata: every key the item holds after the
-event, and null for each key the event removes. A key removed by an earlier
-event is absent. Folding such payloads as patches gives the latest one, except
-that a key removed earlier stays null rather than absent; either way it is
-unset, so a reader of the latest item payload alone holds every set key. A
-writer whose authority folds metadata itself, as an unencrypted authority can,
-may write patches.
-
-A rename changes no key but the name; metadata changes go through
-`SET_METADATA`. In a complete-map history `SET_NAME`'s map therefore equals the
-item's metadata after the event, and a reader may fold it or skip it with the
-same result.
-
-Which form a history holds is a property of its repository: an encrypted
-repository holds complete maps, an unencrypted one patches. Readers fold them
-differently. In a complete-map history every two-segment event folds into the
-item's metadata, and an erased payload clears every key. In a patch history only
-`CREATE` and `SET_METADATA` fold, and an erased one of those clears every key;
-any other event's payload, erased or not, leaves the other keys alone, and
-`FILE::SET_CONTENT` sets only `content`, or removes it when erased. Events that
-carry no metadata, such as `SET_PARENT` or `TRASH`, leave the latest payload
-current.
-A subitem edit whose metadata is erased no longer names its target, so a reader cannot
-hide the value it replaced.
+Every item metadata payload is the item's complete map: every key the item holds
+after the event. A key the event removes is absent, never null. An item's current
+metadata is the payload of its latest event that has one; events without metadata,
+such as `SET_PARENT` or `TRASH`, leave it current. An erased latest payload makes
+every key unavailable, never an older value. A reader therefore needs one payload,
+not the history, and there is one rule for every repository, encrypted or not.
+A family may name keys that only its `CREATE` holds; see [EMAIL](#email-provider-profile-and-titles).
+A subitem's metadata follows the same rule within its own events. A subitem edit
+whose metadata is erased no longer names its target, so a reader cannot hide the
+value it replaced.
 
 SQLite stores available payloads in
 `vcs_metadata_objects(repo_id TEXT, object_id BLOB, payload BLOB)`, with the first
@@ -883,29 +887,23 @@ an event depend on object presence. Missing payloads return “not present”; p
 payloads with invalid framing, codec, JSON or digest are corrupt. Verification
 does not repair them. Re-inserting the same ID is idempotent only for exact bytes.
 
-Bundle format 5 permits `metadata` records immediately after its header and
+Bundle format 6 permits `metadata` records immediately after its header and
 before history. Each has exactly `type` (`metadata`), `object_id` (canonical
 `sha256:` spelling), and `payload_hex` (lowercase hexadecimal of the whole stored
 object). Duplicate IDs and metadata records after history are rejected. Import
 validates the payload and installs it in the same transaction as history; an
 invalid record rolls back both. Complete SQLite copies preserve these rows.
-Item and ref envelopes use the optional `metadata_id` field, containing the
-canonical object ID string. Inline `set_metadata` is rejected on the wire.
-Acceptance installs supplied metadata bytes in the same transaction as the
+Item and ref envelopes name metadata only by `metadata_id`. Acceptance installs supplied metadata bytes in the same transaction as the
 event. Readers may resolve the ID to verified bytes without changing the
 envelope or its digest. Missing bytes leave the ID intact and are explicitly
 reported as absent; typed interpretation requiring those fields cannot proceed.
-`vectors/events.json` defines canonical envelopes, event digests, tagged event
-sequences and commit hashes, including envelopes with metadata references.
-
 ## Content roles and closure
 
-`set_content`, when present, is a complete map from role names to canonical
-object ID strings. It contains at most 32 distinct roles. Each role matches
-`[a-z][a-z0-9_]{0,31}`; duplicate names, invalid IDs, null values and nested values
-are rejected. An omitted field leaves the previous content snapshot unchanged, and
-an empty map clears it, under the [content rules](#content) of replay. Inline text
-and JSON are not event content.
+`set_content`, when present, is a complete map from role names to object IDs. It
+contains at most 32 distinct roles. Each role matches `[a-z][a-z0-9_]{0,31}`. An
+absent field leaves the previous content snapshot unchanged, and an empty map
+clears it, under the [content rules](#content) of replay. Inline text is not event
+content.
 
 FILE content uses exactly `bytes`; CHAT message content uses `body`. EMAIL uses
 `source` and optionally `provider`; EMAIL attachments use `source`. Their metadata contains descriptors, never object references. Unknown
@@ -947,7 +945,13 @@ Version 1 of the EMAIL family is exactly `EMAIL::CREATE`, `SET_TITLE`, `SET_LINK
 `EMAIL::ATTACHMENT::CREATE`, `SET_METADATA`, `TRASH`, `RESTORE` and `TOMBSTONE`. There
 is no `EMAIL::SET_CONTENT`, because a message never changes.
 
-The `EMAIL::CREATE` metadata payload holds a `mailcal` object, and optionally `title`:
+An email never changes, so its facts are written once. The `EMAIL::CREATE`
+metadata payload holds a `mailcal` object, which only `EMAIL::CREATE` holds and no
+later event repeats, and optionally `title`. The email's other metadata, today
+only `title`, is a complete map in each later `SET_TITLE` or `SET_METADATA`, as for
+any item; a reader takes `mailcal` from `CREATE` and the rest from the latest
+payload. A derived object, such as a repaired rendering, is a content role, never
+a copy of the facts.
 
 | `mailcal` key | Value |
 | --- | --- |
@@ -978,8 +982,8 @@ the EMAIL owner as `item_id`. Their metadata has a `meta` object: `filename`,
 `{"kind": "html_data_image", "version": 1}` for an image taken from the HTML body.
 They are family subrecords within that item's ledger, not folder children.
 
-An email's title is the last `title` string in its `EMAIL::CREATE` or
-`EMAIL::SET_TITLE` metadata, and a reader shows it exactly as stored. With none, a
+An email's title is the `title` in its current metadata, and a reader shows it
+exactly as stored. With none, a
 reader shows the subject, or `(no subject)` when it is missing, and may show the
 email's date before it. That date is display only and is never stored, so a
 viewer's setting and time zone apply to it. A title is nonempty, and two emails
@@ -1011,24 +1015,22 @@ definitions and stay outside history.
 
 Named versions are `FILE_VERSION::*` events in a FILE's independent ref ledger.
 There are no version-set items, synthetic item identities or item-ledger version
-subitems. A ref's `set_content` must be absent. Its metadata contains
-`file_item_id` (equal to its envelope owner) and a UUIDv7 `version_id`. The rules
-in this section are admission rules, checked only where the metadata is readable.
+subitems. A ref's `set_content` must be absent. Its metadata holds a UUIDv7
+`version_id`, and never repeats a fact its envelope or commit holds: the owner is
+the FILE, and the commit has the operation ID. The rules in this section are
+admission rules, checked only where the metadata is readable.
 
-`CREATE` adds `operation_id` (a nonempty string unique in the repository),
-`source_item_seq` (the positive sequence of a FILE content revision), `kind`
-(`MAJOR` or `MINOR`), `label_source` (`INTERNAL` or `EXTERNAL`), signed integer
-`order_key`, and optional string/null `description`. Optional `source_commit_id`
-and `source_commit_event_idx` must each agree with the referenced revision. A
-revision in the same commit has no `source_commit_id`, because a commit cannot name
-itself. The revision must precede the ref in accepted order, including within one
-commit.
-Only one live label may reference any given revision of a FILE.
+`CREATE` adds `source_item_seq` (the positive sequence of a FILE content
+revision), `kind` (`MAJOR` or `MINOR`), `label_source` (`INTERNAL` or `EXTERNAL`),
+signed integer `order_key`, and optional string/null `description`. The revision
+must precede the ref in accepted order, including within one commit; its commit
+and event index are the revision's own, so the label never stores them. Only one
+live label may reference any given revision of a FILE.
 
 `SET_DESCRIPTION`, `SET_KIND`, `SET_LABEL_SOURCE` and `SET_ORDER` change their
-named field. `SET_REVISION` requires a new `source_item_seq` and may include
-matching commit coordinates and a description. `TOMBSTONE` permanently removes
-the label from the live set. Mutations require an existing live version.
+named field. `SET_REVISION` requires a new `source_item_seq` and may include a
+description. `TOMBSTONE` permanently removes the label from the live set.
+Mutations require an existing live version.
 All events in one commit use the ref head before that commit as `base_ref_seq`.
 Content ID and size are read from the referenced FILE event, never stored again
 in the label. Erasing that content therefore affects the revision and its label
@@ -1047,27 +1049,30 @@ Storage integers still bound representable commits.
 
 ## Commit identity
 
-Commit format 6 is the only accepted encoding. The canonical header is RFC 8785
-JSON with exactly these fields (including explicit nulls for absent values):
-`object_type` (`vcs_commit`), `format_version` (6), `author_id`, `committer_id`,
-`occurred_at`, `message`, `event_count`, and `events_digest`.
-The optional origin timestamp is UTC RFC 3339 with exactly nine fractional digits
-and `Z`; leap seconds are rejected. The event count is the number of item and attached-reference
-events combined. The commit ID is SHA-256 of these canonical UTF-8 bytes,
-represented as `sha256:` followed by 64 lowercase hexadecimal digits.
+A commit header is:
+
+| Part | Encoding |
+| --- | --- |
+| Kind | `u8` 3 |
+| `author_id` | `str` |
+| `committer_id` | `str` |
+| Fields | `u8` flags: bit 0 `occurred_at` (`time`), bit 1 `message` (`str`); the other bits clear |
+| `event_count` | `u32`: item and attached-ref events combined |
+| `events_digest` | `digest` |
+
+The commit ID is SHA-256 of the header. `occurred_at` is the author's time, when
+the writer has one.
+
+Each event digest is SHA-256 of its envelope. `events_digest` is SHA-256 of the
+event digests concatenated in commit-event-index order. Item events precede
+attached-ref events, and indexes are contiguous from zero across both; an
+envelope's kind byte tells them apart.
 
 A writer never adds a commit with no events, which is an admission rule. A reader
 accepts one, because converting history can leave a commit whose position has to
 stay. Such a commit changes no state. With no events to tell it from another, its
-`events_digest` is SHA-256 of its `repo_seq` as eight big-endian bytes, so two of
-them never share a commit ID.
-
-Each event digest is SHA-256 of its canonical envelope bytes. The aggregate
-`events_digest` hashes the concatenation, in commit-event-index order, of one
-family byte followed by the raw 32-byte event digest. The family byte is 0 for
-an item event and 1 for an attached-reference event. Item events precede attached
-reference events, and indexes are contiguous from zero across both families.
-Every commit uses this framing, including commits with no references.
+`events_digest` is SHA-256 of its `repo_seq` as a `u64`, so two of them never share
+a commit ID; eight bytes are never a run of 32-byte digests.
 
 Repository ID, repository sequence, acceptance timestamp, operation ID, and the
 physical commit-row surrogate do not participate in commit identity. There is
@@ -1080,7 +1085,7 @@ and mixed commits, distinct committer identity and nanosecond timestamps.
 
 ## History bundle boundary
 
-The NDJSON history bundle accepts version 5 only, with commit format 6. Its header
+The NDJSON history bundle accepts version 6 only. Its header
 carries `history_generation`, a canonical UUIDv7, alongside `repo_id`, `encrypted`,
 export time and source-schema provenance. Each commit record carries its `checkpoint` as a
 `sha256:` digest; it has no parent-commit field. `operation_id` is a required key
@@ -1096,7 +1101,7 @@ all data required for reconstruction must accompany it for that purpose.
 ## SQLite schema version policy
 
 Core SQLite is UTF-8, with `PRAGMA application_id = 0x53594E4B` (1398361675),
-`PRAGMA user_version = 7` and `PRAGMA journal_mode = WAL`. All three persist in the
+`PRAGMA user_version = 8` and `PRAGMA journal_mode = WAL`. All three persist in the
 file, and a read-only reader cannot set them, so a new database sets them. A reader
 refuses any other schema version and leaves it unchanged. There are no migrations.
 
@@ -1146,12 +1151,14 @@ repository has its `vcs_history_generations` row, and a `vcs_repo_activity_heads
 row with `next_repo_seq` 1.
 
 - `vcs_commits` contains accepted commit headers. `commit_pk` is only a physical
-  join key. A durable accepted commit has non-null `commit_id`, `events_digest`
-  and `event_count`; the nullable fields allow transaction-local construction,
-  not incomplete durable commits. `repo_seq` remains null until publication.
-- `vcs_events` and `vcs_ref_events` contain canonical envelope bytes in `payload`,
-  with their raw SHA-256 in `event_payload_digest`. Row identity, event type and
-  accepted sequence must agree with the envelope and its replay. `created_at`
+  join key. A durable accepted commit has non-null `commit_id` and `event_count`;
+  the nullable fields allow transaction-local construction, not incomplete
+  durable commits. `events_digest` is not stored; a reader computes it from the
+  events. `repo_seq` and `checkpoint` are null until publication, and set
+  together.
+- `vcs_events` and `vcs_ref_events` contain envelope bytes in `payload`. No
+  digest is stored; a reader computes it. Row identity, event type and accepted
+  sequence must agree with the envelope and its replay. `created_at`
   equals the owning commit's acceptance time. `parent_folder_id` records the
   parent after the event. `parent_folder_id_before` records the old parent only
   when the envelope contains `set_parent`; otherwise it is null. For creation
@@ -1172,8 +1179,7 @@ row with `next_repo_seq` 1.
   finalize` verifies the published checkpoint chain and recomputes this derived
   counter transactionally before publishing pending commits with their original
   IDs. It never renumbers published commits. `updated_at` is operational allocation
-  time. `vcs_checkpoints` has exactly one matching row per published commit and
-  none for unpublished commits. `vcs_history_generations` has one generation.
+  time. `vcs_history_generations` has one generation.
 - `vcs_metadata_objects` stores available metadata objects. Absence is
   allowed; every present object must validate even if currently unreferenced.
 - `vcs_federation_domains` records the accepted federation-domain cursor;
@@ -1230,8 +1236,10 @@ bytes and hence object IDs. Re-encoding chunks is allowed; replacing salts is no
 
 ## Bundle record details
 
-A bundle is UTF-8 newline-delimited JSON. Outer records need not use JCS; embedded
-`payload_json` strings must contain exact canonical envelope bytes. A nonempty
+A bundle is UTF-8 newline-delimited JSON. Records need not use JCS. A
+`payload_hex` is the lowercase hexadecimal of an envelope's exact bytes, and a
+commit's `commit_id` must equal the hash of the header its fields and events
+encode. A nonempty
 header comes first, followed by zero or more metadata records, then
 commit/event groups, then item-head records, then federation-domain records, then
 exactly one end record. That section order is fixed. Within the metadata, item and
@@ -1245,11 +1253,11 @@ All records contain `type`. Other fields are:
 
 | Type | Fields |
 | --- | --- |
-| `synck_vcs_bundle_header` | `bundle_format_version: 5`, `repo_id`, `history_generation`, `encrypted`, `exported_at`, `schema: {subsystem, schema_id}`, `commit_format_version: 6` |
+| `synck_vcs_bundle_header` | `bundle_format_version: 6`, `repo_id`, `history_generation`, `encrypted`, `exported_at`, `schema: {subsystem, schema_id}` |
 | `metadata` | `object_id`, `payload_hex` |
-| `commit` | `commit_id`, `checkpoint`, `repo_seq`, `operation_id`, `format_version: 6`, `author_id`, `committer_id`, `message`, `occurred_at`, `created_at`, `event_count`, `events_digest` |
-| `event` | `commit_id`, `repo_seq`, `commit_event_idx`, `item_id`, `item_seq`, `event_type`, `payload_json`, `event_payload_digest`, `created_at`, `parent_folder_id`, `parent_folder_id_before` |
-| `ref_event` | `commit_id`, `repo_seq`, `commit_event_idx`, `owner_item_id`, `ref_seq`, `event_type`, `payload_json`, `event_payload_digest`, `created_at` |
+| `commit` | `commit_id`, `checkpoint`, `repo_seq`, `operation_id`, `author_id`, `committer_id`, `message`, `occurred_at`, `created_at`, `event_count` |
+| `event` | `commit_id`, `repo_seq`, `commit_event_idx`, `item_id`, `item_seq`, `event_type`, `payload_hex`, `created_at`, `parent_folder_id`, `parent_folder_id_before` |
+| `ref_event` | `commit_id`, `repo_seq`, `commit_event_idx`, `owner_item_id`, `ref_seq`, `event_type`, `payload_hex`, `created_at` |
 | `item` | `item_id`, `item_type`, `parent_folder_id`, `name`, `name_key`, `record_key`, `link_folder_id`, `head_seq`, `ref_head_seq`, `lifecycle_state`, `created_at`, `created_by`, `sequencing_mode`, `federation_stream_id` |
 | `federation_domain` | `domain_id`, `last_domain_seq`, `created_at`, `updated_at` |
 | `synck_vcs_bundle_end` | `record_count`, `checkpoint`, `digest` |
@@ -1261,9 +1269,10 @@ the item's first commit, and a reader takes them from that commit. A record is a
 Optional commit message, author time, operation IDs, parents, names, keys, links, sources
 and stream IDs are JSON null when absent. `ref_head_seq` may be omitted when zero.
 Digest fields use prefixed hexadecimal spelling, except `payload_hex`, which
-is unprefixed lower hex of the complete metadata frame. `schema` is source
+is unprefixed lower hex of an envelope or of a complete metadata frame. Times
+are text. `schema` is source
 provenance, not a schema instruction: a reader records it and does not act on it.
-The vectors name `subsystem: "synck_vcs_sqlite", schema_id: "core-v7"`.
+The vectors name `subsystem: "synck_vcs_sqlite", schema_id: "core-v8"`.
 
 The end record is how a reader knows it has the whole bundle, as a Git packfile
 has a count and a trailer. `record_count` is the number of records before it,
@@ -1290,10 +1299,10 @@ its bundle is still a valid bundle.
 1. Check format/configuration, database identities and schema structure; select
    a consistent database snapshot. Distinguish accepted unpublished work from
    a complete published snapshot before claiming a terminal checkpoint.
-2. Parse every stored event/ref envelope with the strict shape and JCS rules;
-   require exact canonical bytes and recompute its SHA-256. Match its row fields.
+2. Decode every stored event/ref envelope strictly and compute its SHA-256.
+   Match its row fields.
 3. For each commit, check contiguous combined indexes, item-before-ref ordering,
-   exact event count, tagged aggregate digest and canonical header hash.
+   exact event count, the events digest and the header hash.
    Reject duplicate commit IDs, operation IDs or publication positions.
 4. Replay structure and item/ref bases, including final namespace uniqueness,
    record classes, key uniqueness, link rules, parent acyclicity and terminal

@@ -9,7 +9,7 @@ use crate::repo::Repo;
 use crate::transition::{ItemState, apply_event};
 use crate::types::{
     CommitEventRow, CommitRow, EventRow, LifecycleState, RefEventRow, RepoEventCursor, RepoId,
-    SequencingMode, sha256_digest_to_digest_bytes,
+    SequencingMode, compute_sha256_digest_bytes,
 };
 
 use super::{
@@ -270,13 +270,11 @@ async fn project_commit_inner<S: StateProjectorStore>(
     let verify_commit = VerifyCommit {
         commit_id: Some(commit.commit_id.clone()),
         repo_seq: commit.repo_seq,
-        format_version: commit.format_version,
         committer_id: commit.committer_id.clone(),
         occurred_at: commit.occurred_at,
         author_id: commit.author_id.clone(),
         message: commit.message.clone(),
         event_count: Some(commit.event_count),
-        events_digest: Some(commit.events_digest.clone()),
     };
     let mut prior_seq = (previous.repo_seq != 0).then_some(previous.repo_seq);
     let mut validator = CommitEnvelopeValidator::begin(&verify_commit, &mut prior_seq);
@@ -430,7 +428,6 @@ async fn apply_projected_event<S: StateProjectorStore>(
         item_seq: event.item_seq,
         event_type: event.event_type.clone(),
         payload: event.payload.clone(),
-        event_payload_digest: sha256_digest_to_digest_bytes(&event.event_payload_digest).to_vec(),
         parent_folder_id: event.parent_folder_id.clone(),
         parent_folder_id_before: event.parent_folder_id_before.clone(),
     };
@@ -480,7 +477,7 @@ async fn apply_projected_event<S: StateProjectorStore>(
         let content = if proposal.replaces_content() {
             Some(ContentPointer {
                 item_seq: event.item_seq,
-                event_digest: sha256_digest_to_digest_bytes(&event.event_payload_digest),
+                event_digest: compute_sha256_digest_bytes(&event.payload),
             })
         } else {
             staged
@@ -585,7 +582,6 @@ async fn apply_projected_ref_event<S: StateProjectorStore>(
         ref_seq: event.ref_seq,
         event_type: event.event_type,
         payload: event.payload,
-        event_payload_digest: sha256_digest_to_digest_bytes(&event.event_payload_digest).to_vec(),
     };
     if validator.validate_ref_event(&verify_event, owner).is_some() {
         current.ref_head_seq = event.ref_seq;
@@ -809,9 +805,8 @@ mod tests {
         StateRootId, StateVerificationBatch,
     };
     use crate::types::{
-        COMMIT_FORMAT_VERSION, CreateItem, EventProposal, ItemId, RepoId, SequencingMode,
-        Sha256Digest, canonical_commit_bytes_for_hash, canonical_event_proposal_bytes,
-        compute_commit_id, compute_sha256_digest_bytes, sha256_prefixed_hex_from_digest_bytes,
+        CreateItem, EventProposal, EventsDigest, ItemId, RepoId, SequencingMode,
+        canonical_commit_bytes_for_hash, canonical_event_proposal_bytes, compute_commit_id,
     };
 
     fn item(head_seq: i64) -> ItemValue {
@@ -1222,11 +1217,9 @@ mod tests {
             base_seq: None,
         };
         let payload = canonical_event_proposal_bytes(&proposal).unwrap();
-        let payload_digest = compute_sha256_digest_bytes(&payload);
-        let events_digest = Sha256Digest::parse(sha256_prefixed_hex_from_digest_bytes(
-            compute_sha256_digest_bytes(&[&[0u8][..], &payload_digest[..]].concat()),
-        ))
-        .unwrap();
+        let mut digest = EventsDigest::default();
+        digest.push(&payload);
+        let events_digest = digest.finish(Some(1));
         let author = "alice".to_string();
         let commit_bytes =
             canonical_commit_bytes_for_hash(&author, &author, None, None, 1, &events_digest)
@@ -1237,14 +1230,12 @@ mod tests {
             repo_id: repo_id.clone(),
             commit_id: commit_id.clone(),
             repo_seq: Some(1),
-            format_version: COMMIT_FORMAT_VERSION,
             author_id: author.clone(),
             committer_id: author,
             message: None,
             occurred_at: None,
             created_at,
             event_count: 1,
-            events_digest,
         };
         let event = EventRow {
             metadata: proposal
@@ -1260,10 +1251,6 @@ mod tests {
             commit_event_idx: 0,
             repo_seq: Some(1),
             payload,
-            event_payload_digest: Sha256Digest::parse(sha256_prefixed_hex_from_digest_bytes(
-                payload_digest,
-            ))
-            .unwrap(),
             created_at,
             parent_folder_id: None,
             parent_folder_id_before: None,

@@ -23,12 +23,11 @@ use synck_vcs::state::{
     StateTree, item_namespace,
 };
 use synck_vcs::types::{
-    COMMIT_EVENT_FAMILY_ITEM, COMMIT_EVENT_FAMILY_REF, CommitEventRow, CommitId, CommitProposal,
-    CommitRow, EventProposal, EventRow, EventsDigest, ItemId, ItemRevision, LifecycleState,
-    ObjectId, RefEventProposal, RepoEventCursor, RepoId, SubtreeClosureGuard,
-    canonical_commit_bytes_for_hash, canonical_event_proposal_bytes,
-    canonical_ref_event_proposal_bytes, compute_commit_id, compute_sha256_digest_bytes,
-    sha256_digest_to_digest_bytes, sha256_prefixed_hex_from_digest_bytes,
+    CommitEventRow, CommitId, CommitProposal, CommitRow, EventProposal, EventRow, EventsDigest,
+    ItemId, ItemRevision, LifecycleState, ObjectId, RefEventProposal, RepoEventCursor, RepoId,
+    SubtreeClosureGuard, canonical_commit_bytes_for_hash, canonical_event_proposal_bytes,
+    compute_commit_id, compute_sha256_digest_bytes, decode_event_proposal,
+    decode_ref_event_proposal,
 };
 use uuid::Uuid;
 
@@ -557,19 +556,8 @@ fn parse_event(event: &synck_vcs::types::EventRow) -> Result<EventProposal> {
 }
 
 fn validate_historical_item_event(event: &EventRow, item_id: &ItemId) -> Result<EventProposal> {
-    if compute_sha256_digest_bytes(&event.payload)
-        != sha256_digest_to_digest_bytes(&event.event_payload_digest)
-    {
-        return Err(LocalError::Integrity(format!(
-            "historical event payload digest disagrees for {item_id} at item sequence {}",
-            event.item_seq
-        )));
-    }
     let proposal = parse_event(event)?;
-    if canonical_event_proposal_bytes(&proposal)? != event.payload
-        || proposal.item_id.as_ref() != Some(item_id)
-        || proposal.event_type != event.event_type
-    {
+    if proposal.item_id.as_ref() != Some(item_id) || proposal.event_type != event.event_type {
         return Err(LocalError::Integrity(format!(
             "historical event identity disagrees for {item_id} at item sequence {}",
             event.item_seq

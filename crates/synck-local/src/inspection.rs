@@ -508,7 +508,6 @@ impl Repository {
                     author: commit.author_id,
                     message: commit.message,
                     event_count: checked_commit_event_count(commit.event_count, &commit.commit_id)?,
-                    events_digest: commit.events_digest.to_string(),
                 })
             })
             .collect::<Result<Vec<_>>>()?;

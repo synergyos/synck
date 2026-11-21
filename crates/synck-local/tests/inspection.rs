@@ -211,7 +211,7 @@ async fn inspection_reports_repository_and_tracked_items() {
 
     let info = repository.info();
     assert_eq!(info.root, root.canonicalize().unwrap());
-    assert_eq!(info.format_version, 7);
+    assert_eq!(info.format_version, 8);
     assert_eq!(info.repo_id, expected_repo_id.as_str());
     assert_eq!(info.author, "author@example.test");
 
@@ -553,7 +553,7 @@ async fn repository_discovery_rejects_an_old_format() {
     init(root, "author").await.unwrap();
     let config_path = root.join(".synck/config.json");
     let config = fs::read_to_string(&config_path).unwrap();
-    let old = config.replace("\"format_version\":7", "\"format_version\":2");
+    let old = config.replace("\"format_version\":8", "\"format_version\":2");
     assert_ne!(old, config);
     fs::write(&config_path, old).unwrap();
 
@@ -561,7 +561,7 @@ async fn repository_discovery_rejects_an_old_format() {
         Ok(_) => panic!("repository discovery accepted format 2"),
         Err(error) => error,
     };
-    assert!(error.to_string().contains("format-7"));
+    assert!(error.to_string().contains("format-8"));
 }
 
 #[tokio::test]

@@ -349,7 +349,7 @@ impl Repository {
             || config.author.is_empty()
         {
             return Err(LocalError::Invalid(
-                "expected a complete format-7 repository with an independent checkout".into(),
+                "expected a complete format-8 repository with an independent checkout".into(),
             ));
         }
 

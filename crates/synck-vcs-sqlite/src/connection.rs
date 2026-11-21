@@ -3,6 +3,7 @@
 use std::path::Path;
 
 use rusqlite::config::DbConfig;
+use rusqlite::functions::FunctionFlags;
 use rusqlite::{Connection, OpenFlags};
 
 /// Open a database with the settings every connection needs.
@@ -15,8 +16,24 @@ use rusqlite::{Connection, OpenFlags};
 /// until it is compared with the expected one, and that comparison already reads
 /// the file. Defensive mode refuses schema and page writes, an untrusted schema
 /// cannot call functions with side effects, and corrupt pages fail early.
+///
+/// `synck_metadata_id(payload)` is the raw metadata ID an envelope names, or
+/// NULL, so SQL joins metadata without knowing the envelope encoding.
 pub fn open_connection(path: impl AsRef<Path>, flags: OpenFlags) -> rusqlite::Result<Connection> {
     let connection = Connection::open_with_flags(path, flags)?;
+    connection.create_scalar_function(
+        "synck_metadata_id",
+        1,
+        FunctionFlags::SQLITE_UTF8
+            | FunctionFlags::SQLITE_DETERMINISTIC
+            | FunctionFlags::SQLITE_INNOCUOUS,
+        |context| {
+            let payload = context.get_raw(0).as_blob()?;
+            synck_vcs::codec::envelope_metadata_id(payload)
+                .map(|id| id.map(|id| id.as_bytes().to_vec()))
+                .map_err(|error| rusqlite::Error::UserFunctionError(error.into()))
+        },
+    )?;
     connection.pragma_update(None, "fullfsync", true)?;
     connection.pragma_update(None, "checkpoint_fullfsync", true)?;
     connection.set_db_config(DbConfig::SQLITE_DBCONFIG_DEFENSIVE, true)?;

@@ -197,7 +197,7 @@ mod tests {
             },
             Intent::TrashAttachment(2),
             Intent::RestoreAttachment(2),
-            Intent::SetMetadata(json!({"note":"retained"})),
+            Intent::SetMetadata(json!({"note":"replaced"})),
             Intent::SetTitle("Renamed".into()),
             Intent::SetLink(Some(ItemId::new())),
             Intent::Trash,
@@ -225,7 +225,8 @@ mod tests {
             state.projection.metadata_json["mailcal"]["subject"],
             "Subject"
         );
-        assert_eq!(state.projection.metadata_json["note"], "retained");
+        // SET_TITLE's complete map replaced the earlier SET_METADATA map.
+        assert_eq!(state.projection.metadata_json.get("note"), None);
         assert!(state.projection.parent_folder_id.is_some());
         assert!(matches!(
             state.subitems[0].lifecycle,

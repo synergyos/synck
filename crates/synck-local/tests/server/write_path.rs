@@ -3,15 +3,17 @@ use std::sync::Arc;
 
 use axum::Router;
 use axum::http::{Method, StatusCode};
-use serde_json::Value;
 use synck_local::server::Server;
 use synck_local::server::tokens::{self, Access};
 use synck_sync::{
-    Capabilities, ItemHead, PageAck, ProposalPage, ProposalRecord, Receipt, SubmitResult,
+    Capabilities, ItemHead, ObjectRequest, PageAck, ProposalPage, ProposalRecord, Receipt, Refusal,
+    SubmitResult, decode,
 };
 use synck_vcs::types::ItemId;
 
-use super::common::{create_file, metadata_object, object_id, send, status_of, upload};
+use super::common::{
+    create_file, metadata_object, object_id, pack, refusal, send, submit_result, upload, wire,
+};
 
 #[tokio::test]
 async fn proposals_stage_check_objects_and_return_one_receipt() {
@@ -24,7 +26,7 @@ async fn proposals_stage_check_objects_and_return_one_receipt() {
     let reader = tokens::add(&state, "phone", Access::Read, &[repo_id.clone()]).unwrap();
     let router =
         synck_local::server::router(Arc::new(Server::open(&state, &[root.clone()]).unwrap()));
-    let sync = format!("/v1/repositories/{}/sync", repo_id.as_str());
+    let sync = format!("/v2/repositories/{}/sync", repo_id.as_str());
 
     let (_, body) = send(
         &router,
@@ -34,16 +36,14 @@ async fn proposals_stage_check_objects_and_return_one_receipt() {
         vec![],
     )
     .await;
-    let repository = serde_json::from_slice::<Capabilities>(&body)
-        .unwrap()
-        .repository;
+    let repository = decode::<Capabilities>(&body).unwrap().latest.repository;
     let (a, event) = create_file(&repo_id, "a.txt", b"hello");
     let (metadata_id, metadata) = metadata_object(&event);
-    let metadata_uri = format!("{sync}/objects/{}", metadata_id.as_str());
+    let objects = format!("{sync}/objects");
     let (pages, request) = upload(&repository, "op-1", vec![ProposalRecord::Item(event)]);
     let page_uri = format!("{sync}/uploads/op-1/pages/0");
-    let page = serde_json::to_vec(&pages[0]).unwrap();
-    let submission = serde_json::to_vec(&request).unwrap();
+    let page = wire(&pages[0]);
+    let submission = wire(&request);
 
     let (status, body) = send(
         &router,
@@ -54,8 +54,8 @@ async fn proposals_stage_check_objects_and_return_one_receipt() {
     )
     .await;
     assert_eq!(
-        (status, status_of(&body).as_str()),
-        (StatusCode::GONE, "UPLOAD_EXPIRED")
+        (status, refusal(&body)),
+        (StatusCode::GONE, Refusal::UploadExpired)
     );
     assert_eq!(
         send(&router, Method::PUT, &page_uri, &reader, page.clone())
@@ -65,19 +65,16 @@ async fn proposals_stage_check_objects_and_return_one_receipt() {
     );
     let (status, body) = send(&router, Method::PUT, &page_uri, &writer, page.clone()).await;
     assert_eq!(status, StatusCode::OK);
-    let ack: PageAck = serde_json::from_slice(&body).unwrap();
+    let ack: PageAck = decode(&body).unwrap();
     assert_eq!(ack.next_offset, 1);
     // A retry gets the same acknowledgement; other contents at that offset do not.
     let (status, body) = send(&router, Method::PUT, &page_uri, &writer, page).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(
-        serde_json::from_slice::<PageAck>(&body).unwrap().expires_at,
-        ack.expires_at
-    );
+    assert_eq!(decode::<PageAck>(&body).unwrap().expires_at, ack.expires_at);
     let (_, other) = create_file(&repo_id, "other.txt", b"hello");
     let mut changed = pages[0].clone();
     changed.records = vec![ProposalRecord::Item(other)];
-    let changed = serde_json::to_vec(&changed).unwrap();
+    let changed = wire(&changed);
     assert_eq!(
         send(&router, Method::PUT, &page_uri, &writer, changed)
             .await
@@ -94,61 +91,90 @@ async fn proposals_stage_check_objects_and_return_one_receipt() {
     )
     .await;
     assert_eq!(status, StatusCode::CONFLICT);
-    let missing: Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(missing["status"], "OBJECTS_MISSING");
-    assert_eq!(missing["objects"].as_array().unwrap().len(), 2);
-    assert!(
-        missing["objects"]
-            .as_array()
-            .unwrap()
-            .contains(&Value::from(metadata_id.as_str()))
-    );
+    let Refusal::ObjectsMissing(missing) = refusal(&body) else {
+        panic!("not OBJECTS_MISSING");
+    };
+    assert_eq!(missing.len(), 2);
+    assert!(missing.contains(&metadata_id));
     // Metadata arrives as an object and is installed when the commit is.
     assert_eq!(
         send(
             &router,
             Method::PUT,
-            &metadata_uri,
+            &objects,
             &writer,
-            metadata.clone()
+            pack(&[(metadata_id.clone(), &metadata)])
         )
         .await
         .0,
         StatusCode::NO_CONTENT
     );
 
-    let object_uri = format!("{sync}/objects/{}", object_id(b"hello").as_str());
+    let hello = object_id(b"hello");
+    for refused in [pack(&[(hello.clone(), b"other")]), Vec::new()] {
+        let (status, body) = send(&router, Method::PUT, &objects, &writer, refused).await;
+        assert_eq!(
+            (status, refusal(&body)),
+            (StatusCode::BAD_REQUEST, Refusal::Invalid)
+        );
+    }
     assert_eq!(
         send(
             &router,
             Method::PUT,
-            &object_uri,
-            &writer,
-            b"other".to_vec()
+            &objects,
+            &reader,
+            pack(&[(hello.clone(), b"hello")])
         )
         .await
         .0,
-        StatusCode::BAD_REQUEST
+        StatusCode::FORBIDDEN
     );
     assert_eq!(
         send(
             &router,
             Method::PUT,
-            &object_uri,
+            &objects,
             &writer,
-            b"hello".to_vec()
+            pack(&[(hello.clone(), b"hello")])
         )
         .await
         .0,
         StatusCode::NO_CONTENT
     );
-    let (status, body) = send(&router, Method::GET, &object_uri, &reader, vec![]).await;
-    assert_eq!((status, body.as_slice()), (StatusCode::OK, &b"hello"[..]));
-    let absent = format!("{sync}/objects/{}", object_id(b"absent").as_str());
-    let (status, body) = send(&router, Method::GET, &absent, &reader, vec![]).await;
+    let fetch = |ids: Vec<synck_vcs::types::ObjectId>| {
+        send(
+            &router,
+            Method::POST,
+            &objects,
+            &reader,
+            wire(&ObjectRequest { objects: ids }),
+        )
+    };
+    let (status, body) = fetch(vec![hello.clone()]).await;
     assert_eq!(
-        (status, status_of(&body).as_str()),
-        (StatusCode::NOT_FOUND, "OBJECT_MISSING")
+        (status, body),
+        (StatusCode::OK, pack(&[(hello.clone(), b"hello")]))
+    );
+    let (status, body) = fetch(vec![hello.clone(), object_id(b"absent")]).await;
+    assert_eq!(
+        (status, refusal(&body)),
+        (StatusCode::NOT_FOUND, Refusal::ObjectMissing)
+    );
+    // A trailing byte is refused like any malformed message.
+    let mut trailing = submission.clone();
+    trailing.push(0);
+    let (status, body) = send(
+        &router,
+        Method::POST,
+        &format!("{sync}/proposals"),
+        &writer,
+        trailing,
+    )
+    .await;
+    assert_eq!(
+        (status, refusal(&body)),
+        (StatusCode::BAD_REQUEST, Refusal::Invalid)
     );
 
     let (status, body) = send(
@@ -160,14 +186,17 @@ async fn proposals_stage_check_objects_and_return_one_receipt() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    let SubmitResult::Accepted { receipt } = serde_json::from_slice(&body).unwrap() else {
-        panic!("not accepted: {}", String::from_utf8_lossy(&body));
+    let SubmitResult::Accepted { receipt } = submit_result(&body) else {
+        panic!("not accepted");
     };
     receipt.validate_for(&request).unwrap();
     assert_eq!(receipt.published.as_ref().unwrap().repo_seq, 2);
     // Its metadata is served from history now.
-    let (status, body) = send(&router, Method::GET, &metadata_uri, &reader, vec![]).await;
-    assert_eq!((status, body), (StatusCode::OK, metadata));
+    let (status, body) = fetch(vec![metadata_id.clone()]).await;
+    assert_eq!(
+        (status, body),
+        (StatusCode::OK, pack(&[(metadata_id, &metadata)]))
+    );
     // Retried after its pages are gone, the submission gets the same receipt.
     let (_, body) = send(
         &router,
@@ -177,7 +206,7 @@ async fn proposals_stage_check_objects_and_return_one_receipt() {
         submission,
     )
     .await;
-    let SubmitResult::Accepted { receipt: again } = serde_json::from_slice(&body).unwrap() else {
+    let SubmitResult::Accepted { receipt: again } = submit_result(&body) else {
         panic!("retry not accepted");
     };
     assert_eq!(again.commit_id, receipt.commit_id);
@@ -190,7 +219,7 @@ async fn proposals_stage_check_objects_and_return_one_receipt() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    let stored: Receipt = serde_json::from_slice(&body).unwrap();
+    let stored: Receipt = decode(&body).unwrap();
     stored.validate_for(&request).unwrap();
     assert_eq!(stored.accepted_at, receipt.accepted_at);
     assert_eq!(
@@ -213,20 +242,21 @@ async fn proposals_stage_check_objects_and_return_one_receipt() {
         vec![],
     )
     .await;
-    assert_eq!(
-        serde_json::from_slice::<Capabilities>(&body)
-            .unwrap()
-            .latest
-            .repo_seq,
-        2
-    );
+    assert_eq!(decode::<Capabilities>(&body).unwrap().latest.repo_seq, 2);
 
     // A head guard that no longer holds is a conflict, never a merge.
     let (b, event) = create_file(&repo_id, "b.txt", b"hello");
     let (metadata_id, metadata) = metadata_object(&event);
-    let uri = format!("{sync}/objects/{}", metadata_id.as_str());
     assert_eq!(
-        send(&router, Method::PUT, &uri, &writer, metadata).await.0,
+        send(
+            &router,
+            Method::PUT,
+            &objects,
+            &writer,
+            pack(&[(metadata_id, &metadata)])
+        )
+        .await
+        .0,
         StatusCode::NO_CONTENT
     );
     let guard = ItemHead {
@@ -241,15 +271,9 @@ async fn proposals_stage_check_objects_and_return_one_receipt() {
     for page in &pages {
         let uri = format!("{sync}/uploads/op-2/pages/{}", page.offset);
         assert_eq!(
-            send(
-                &router,
-                Method::PUT,
-                &uri,
-                &writer,
-                serde_json::to_vec(page).unwrap()
-            )
-            .await
-            .0,
+            send(&router, Method::PUT, &uri, &writer, wire(page))
+                .await
+                .0,
             StatusCode::OK
         );
     }
@@ -258,11 +282,11 @@ async fn proposals_stage_check_objects_and_return_one_receipt() {
         Method::POST,
         &format!("{sync}/proposals"),
         &writer,
-        serde_json::to_vec(&request).unwrap(),
+        wire(&request),
     )
     .await;
-    let SubmitResult::Conflict { items } = serde_json::from_slice(&body).unwrap() else {
-        panic!("not a conflict: {}", String::from_utf8_lossy(&body));
+    let SubmitResult::Conflict { items } = submit_result(&body) else {
+        panic!("not a conflict");
     };
     let heads: BTreeMap<ItemId, i64> = items
         .into_iter()
@@ -279,7 +303,7 @@ async fn an_upload_continues_after_a_restart() {
     let root = parent.path().join("personal");
     let repo_id = synck_local::init(&root, "owner").await.unwrap();
     let writer = tokens::add(&state, "laptop", Access::Write, &[repo_id.clone()]).unwrap();
-    let sync = format!("/v1/repositories/{}/sync", repo_id.as_str());
+    let sync = format!("/v2/repositories/{}/sync", repo_id.as_str());
     let open =
         || synck_local::server::router(Arc::new(Server::open(&state, &[root.clone()]).unwrap()));
 
@@ -292,48 +316,37 @@ async fn an_upload_continues_after_a_restart() {
         vec![],
     )
     .await;
-    let repository = serde_json::from_slice::<Capabilities>(&body)
-        .unwrap()
-        .repository;
+    let repository = decode::<Capabilities>(&body).unwrap().latest.repository;
     let events = ["c.txt", "d.txt"].map(|name| create_file(&repo_id, name, b"two files").1);
-    for event in &events {
-        let (id, bytes) = metadata_object(event);
-        let uri = format!("{sync}/objects/{}", id.as_str());
-        assert_eq!(
-            send(&router, Method::PUT, &uri, &writer, bytes).await.0,
-            StatusCode::NO_CONTENT
-        );
-    }
+    let metadata = events.each_ref().map(metadata_object);
+    let objects = [
+        (metadata[0].0.clone(), metadata[0].1.as_slice()),
+        (metadata[1].0.clone(), metadata[1].1.as_slice()),
+        (object_id(b"two files"), b"two files"),
+    ];
+    assert_eq!(
+        send(
+            &router,
+            Method::PUT,
+            &format!("{sync}/objects"),
+            &writer,
+            pack(&objects)
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
     let records = events.map(ProposalRecord::Item).to_vec();
     let (pages, request) = upload(&repository, "op-1", records);
     let put = |router: Router, page: ProposalPage| {
         let uri = format!("{sync}/uploads/op-1/pages/{}", page.offset);
         let writer = writer.clone();
         async move {
-            send(
-                &router,
-                Method::PUT,
-                &uri,
-                &writer,
-                serde_json::to_vec(&page).unwrap(),
-            )
-            .await
-            .0
+            send(&router, Method::PUT, &uri, &writer, wire(&page))
+                .await
+                .0
         }
     };
-    let object_uri = format!("{sync}/objects/{}", object_id(b"two files").as_str());
-    assert_eq!(
-        send(
-            &router,
-            Method::PUT,
-            &object_uri,
-            &writer,
-            b"two files".to_vec()
-        )
-        .await
-        .0,
-        StatusCode::NO_CONTENT
-    );
     assert_eq!(put(router.clone(), pages[0].clone()).await, StatusCode::OK);
     drop(router);
 
@@ -344,12 +357,12 @@ async fn an_upload_continues_after_a_restart() {
         Method::POST,
         &format!("{sync}/proposals"),
         &writer,
-        serde_json::to_vec(&request).unwrap(),
+        wire(&request),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    assert_eq!(status, StatusCode::OK);
     assert!(matches!(
-        serde_json::from_slice(&body).unwrap(),
+        submit_result(&body),
         SubmitResult::Accepted { .. }
     ));
 }
@@ -370,23 +383,19 @@ async fn repository_head_fences_new_child_phantoms_and_replays_accepted_requests
         let (metadata_id, metadata) = metadata_object(&event);
         let (pages, mut request) = upload(repository, operation, vec![ProposalRecord::Item(event)]);
         request.repository_head = head;
-        for (id, bytes) in [
-            (metadata_id, metadata),
-            (object_id(b"body"), b"body".to_vec()),
-        ] {
-            assert_eq!(
-                send(
-                    router,
-                    Method::PUT,
-                    &format!("{sync}/objects/{id}"),
-                    writer,
-                    bytes
-                )
-                .await
-                .0,
-                StatusCode::NO_CONTENT
-            );
-        }
+        let objects = pack(&[(metadata_id, &metadata), (object_id(b"body"), b"body")]);
+        assert_eq!(
+            send(
+                router,
+                Method::PUT,
+                &format!("{sync}/objects"),
+                writer,
+                objects
+            )
+            .await
+            .0,
+            StatusCode::NO_CONTENT
+        );
         for page in pages {
             assert_eq!(
                 send(
@@ -394,7 +403,7 @@ async fn repository_head_fences_new_child_phantoms_and_replays_accepted_requests
                     Method::PUT,
                     &format!("{sync}/uploads/{operation}/pages/{}", page.offset),
                     writer,
-                    serde_json::to_vec(&page).unwrap()
+                    wire(&page)
                 )
                 .await
                 .0,
@@ -414,11 +423,11 @@ async fn repository_head_fences_new_child_phantoms_and_replays_accepted_requests
             Method::POST,
             &format!("{sync}/proposals"),
             writer,
-            serde_json::to_vec(request).unwrap(),
+            wire(request),
         )
         .await;
-        assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
-        serde_json::from_slice(&body).unwrap()
+        assert_eq!(status, StatusCode::OK);
+        submit_result(&body)
     }
     let parent = tempfile::tempdir().unwrap();
     let state = parent.path().join("state");
@@ -427,7 +436,7 @@ async fn repository_head_fences_new_child_phantoms_and_replays_accepted_requests
     let repo_id = synck_local::init(&root, "owner").await.unwrap();
     let writer = tokens::add(&state, "writer", Access::Write, &[repo_id.clone()]).unwrap();
     let router = synck_local::server::router(Arc::new(Server::open(&state, &[root]).unwrap()));
-    let sync = format!("/v1/repositories/{repo_id}/sync");
+    let sync = format!("/v2/repositories/{repo_id}/sync");
     let (_, raw) = send(
         &router,
         Method::GET,
@@ -436,12 +445,13 @@ async fn repository_head_fences_new_child_phantoms_and_replays_accepted_requests
         vec![],
     )
     .await;
-    let caps: Capabilities = serde_json::from_slice(&raw).unwrap();
+    let caps: Capabilities = decode(&raw).unwrap();
+    let repository = caps.latest.repository.clone();
     let stale = stage(
         &router,
         &sync,
         &writer,
-        &caps.repository,
+        &repository,
         "stale-absence",
         "parent-change",
         Some(caps.latest.repo_seq),
@@ -451,7 +461,7 @@ async fn repository_head_fences_new_child_phantoms_and_replays_accepted_requests
         &router,
         &sync,
         &writer,
-        &caps.repository,
+        &repository,
         "new-child",
         "child",
         None,
@@ -469,23 +479,23 @@ async fn repository_head_fences_new_child_phantoms_and_replays_accepted_requests
     ));
     let mut rebound = stale.clone();
     rebound.repository_head = Some(child_receipt.published.as_ref().unwrap().repo_seq);
+    let (status, body) = send(
+        &router,
+        Method::POST,
+        &format!("{sync}/proposals"),
+        &writer,
+        wire(&rebound),
+    )
+    .await;
     assert_eq!(
-        send(
-            &router,
-            Method::POST,
-            &format!("{sync}/proposals"),
-            &writer,
-            serde_json::to_vec(&rebound).unwrap()
-        )
-        .await
-        .0,
-        StatusCode::CONFLICT
+        (status, refusal(&body)),
+        (StatusCode::CONFLICT, Refusal::OperationReused)
     );
     let guarded = stage(
         &router,
         &sync,
         &writer,
-        &caps.repository,
+        &repository,
         "guarded",
         "guarded",
         Some(child_receipt.published.unwrap().repo_seq),
@@ -494,16 +504,7 @@ async fn repository_head_fences_new_child_phantoms_and_replays_accepted_requests
     let SubmitResult::Accepted { receipt } = submit(&router, &sync, &writer, &guarded).await else {
         panic!("guarded request rejected")
     };
-    let next = stage(
-        &router,
-        &sync,
-        &writer,
-        &caps.repository,
-        "later",
-        "later",
-        None,
-    )
-    .await;
+    let next = stage(&router, &sync, &writer, &repository, "later", "later", None).await;
     assert!(matches!(
         submit(&router, &sync, &writer, &next).await,
         SubmitResult::Accepted { .. }

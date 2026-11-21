@@ -1111,7 +1111,6 @@ fn cli_log_and_show_events_expose_complete_authoritative_rows() {
             "changes_shown",
             "changes_truncated",
             "event_count",
-            "events_digest",
             "events",
         ],
     );
@@ -1121,12 +1120,6 @@ fn cli_log_and_show_events_expose_complete_authoritative_rows() {
         ordinary_commit["changes_total"]
     );
     let events = event_commit["events"].as_array().unwrap();
-    assert!(
-        event_commit["events_digest"]
-            .as_str()
-            .unwrap()
-            .starts_with("sha256:")
-    );
     assert_eq!(
         event_commit["event_count"].as_u64().unwrap() as usize,
         events.len()
@@ -1144,7 +1137,6 @@ fn cli_log_and_show_events_expose_complete_authoritative_rows() {
                 "item_seq",
                 "event_type",
                 "payload",
-                "event_payload_digest",
                 "created_at",
                 "parent_folder_id",
                 "parent_folder_id_before",
@@ -1154,12 +1146,6 @@ fn cli_log_and_show_events_expose_complete_authoritative_rows() {
         assert_eq!(event["commit_id"], event_commit["commit_id"]);
         assert_eq!(event["repo_seq"], event_commit["repo_seq"]);
         assert_eq!(event["event_type"], event["payload"]["event_type"]);
-        assert!(
-            event["event_payload_digest"]
-                .as_str()
-                .unwrap()
-                .starts_with("sha256:")
-        );
     }
     assert!(
         events
@@ -1170,10 +1156,6 @@ fn cli_log_and_show_events_expose_complete_authoritative_rows() {
     let commit_id = event_commit["commit_id"].as_str().unwrap();
     let shown = json_stdout(root, &["show", commit_id, "--events", "--json"]);
     assert_eq!(shown["commit"]["event_count"], event_commit["event_count"]);
-    assert_eq!(
-        shown["commit"]["events_digest"],
-        event_commit["events_digest"]
-    );
     assert_eq!(shown["commit"]["events"], event_commit["events"]);
 
     let human =
@@ -1201,47 +1183,25 @@ fn cli_log_and_show_events_expose_complete_authoritative_rows() {
     assert_eq!(conflict.status.code(), Some(2));
 
     let connection = rusqlite::Connection::open(root.join(".synck/repository.sqlite3")).unwrap();
-    let (original_payload, original_digest): (Vec<u8>, Vec<u8>) = connection
-        .query_row(
-            "SELECT payload, event_payload_digest FROM vcs_events
+    // An envelope with a trailing byte has no decoding.
+    connection
+        .execute(
+            "UPDATE vcs_events SET payload = CAST(payload || x'00' AS BLOB)
              WHERE commit_pk = (SELECT commit_pk FROM vcs_commits ORDER BY repo_seq DESC LIMIT 1)
                AND commit_event_idx = 0",
             [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .unwrap();
-    let mut proposal: synck_vcs::types::EventProposal =
-        serde_json::from_slice(&original_payload).unwrap();
-    proposal.set_metadata =
-        Some(synck_vcs::metadata::MetadataRef::new(serde_json::json!({"tampered": true})).unwrap());
-    let tampered_payload = synck_vcs::types::canonical_event_proposal_bytes(&proposal).unwrap();
-    let tampered_digest = synck_vcs::types::compute_sha256_digest_bytes(&tampered_payload).to_vec();
-    connection
-        .execute(
-            "UPDATE vcs_events SET payload = ?1, event_payload_digest = ?2
-             WHERE commit_pk = (SELECT commit_pk FROM vcs_commits ORDER BY repo_seq DESC LIMIT 1)
-               AND commit_event_idx = 0",
-            rusqlite::params![tampered_payload, tampered_digest],
         )
         .unwrap();
     drop(connection);
     let tampered = synck(root, &["show", "HEAD", "--events"]);
     assert_eq!(tampered.status.code(), Some(1));
     assert!(
-        String::from_utf8_lossy(&tampered.stderr).contains("digest disagrees"),
+        String::from_utf8_lossy(&tampered.stderr).contains("invalid encoding"),
         "{}",
         String::from_utf8_lossy(&tampered.stderr)
     );
 
     let connection = rusqlite::Connection::open(root.join(".synck/repository.sqlite3")).unwrap();
-    connection
-        .execute(
-            "UPDATE vcs_events SET payload = ?1, event_payload_digest = ?2
-             WHERE commit_pk = (SELECT commit_pk FROM vcs_commits ORDER BY repo_seq DESC LIMIT 1)
-               AND commit_event_idx = 0",
-            rusqlite::params![original_payload, original_digest],
-        )
-        .unwrap();
     connection
         .execute(
             "DELETE FROM vcs_events
@@ -1979,13 +1939,13 @@ fn finalize_repairs_counter_and_publishes_previously_accepted_commit() {
         .unwrap();
     let checkpoint: Vec<u8> = db
         .query_row(
-            "SELECT checkpoint FROM vcs_checkpoints WHERE repo_seq=3",
+            "SELECT checkpoint FROM vcs_commits WHERE repo_seq=3",
             [],
             |r| r.get(0),
         )
         .unwrap();
     // Recreate an older writer's accepted-but-unpublished state and bad counter.
-    db.execute_batch("BEGIN IMMEDIATE; DELETE FROM vcs_checkpoints WHERE repo_seq=3; UPDATE vcs_commits SET repo_seq=NULL WHERE repo_seq=3; UPDATE vcs_repo_activity_heads SET next_repo_seq=7; COMMIT;").unwrap();
+    db.execute_batch("BEGIN IMMEDIATE; UPDATE vcs_commits SET repo_seq=NULL,checkpoint=NULL WHERE repo_seq=3; UPDATE vcs_repo_activity_heads SET next_repo_seq=7; COMMIT;").unwrap();
     fs::write(root.join("file.txt"), b"unsaved working edit").unwrap();
     assert!(!synck(root, &["fsck"]).status.success());
     for _ in 0..2 {
@@ -1998,7 +1958,7 @@ fn finalize_repairs_counter_and_publishes_previously_accepted_commit() {
     }
     let restored: (Vec<u8>, Vec<u8>) = db
         .query_row(
-            "SELECT commit_id,checkpoint FROM vcs_checkpoints WHERE repo_seq=3",
+            "SELECT commit_id,checkpoint FROM vcs_commits WHERE repo_seq=3",
             [],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
@@ -2071,8 +2031,7 @@ fn historical_state_authenticates_the_pointed_file_event() {
     let output = synck(root, &["compare", "2", "3"]);
     assert_eq!(output.status.code(), Some(1));
     assert!(
-        String::from_utf8_lossy(&output.stderr)
-            .contains("historical content event digest disagrees"),
+        String::from_utf8_lossy(&output.stderr).contains("invalid encoding"),
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
@@ -2096,7 +2055,7 @@ fn cli_repository_information_and_author_configuration() {
         ],
     );
     assert_eq!(info["schema_version"], 5);
-    assert_eq!(info["format_version"], 7);
+    assert_eq!(info["format_version"], 8);
     assert_eq!(info["author"], "author");
     assert_eq!(info["head"]["repo_seq"], 2);
     assert_keys(info.get("head").unwrap(), &["repo_seq", "commit_id"]);
@@ -3410,17 +3369,14 @@ fn fsck_reports_non_uuidv7_commit_key() {
 }
 
 #[test]
-fn fsck_reports_invalid_commit_format_despite_writer_constraints() {
+fn fsck_reports_an_event_count_outside_its_range() {
     let temporary = committed_repository();
     let connection =
         rusqlite::Connection::open(temporary.path().join(".synck/repository.sqlite3")).unwrap();
-    assert!(
-        connection
-            .execute("UPDATE vcs_commits SET format_version = 2147483648", [])
-            .is_err()
-    );
-    // Simulate damaged storage, bypassing the writer's format constraint.
-    connection.execute_batch("PRAGMA ignore_check_constraints = ON; UPDATE vcs_commits SET format_version = 2147483648;").unwrap();
+    // Simulate damaged storage: SQLite integers are 64-bit.
+    connection
+        .execute_batch("UPDATE vcs_commits SET event_count = 2147483648;")
+        .unwrap();
     drop(connection);
     assert_fsck_integrity_failure(temporary.path(), "outside the signed 32-bit range");
 }
@@ -3616,7 +3572,7 @@ fn history_readers_reject_repository_sequence_gaps() {
         .unwrap();
     let previous: Vec<u8> = db
         .query_row(
-            "SELECT checkpoint FROM vcs_checkpoints WHERE repo_seq=1",
+            "SELECT checkpoint FROM vcs_commits WHERE repo_seq=1",
             [],
             |r| r.get(0),
         )
@@ -3630,10 +3586,8 @@ fn history_readers_reject_repository_sequence_gaps() {
     )
     .unwrap();
     // Keep the digest correct: the missing position itself must be rejected.
-    db.execute("UPDATE vcs_commits SET repo_seq=3 WHERE repo_seq=2", [])
-        .unwrap();
     db.execute(
-        "UPDATE vcs_checkpoints SET repo_seq=3,checkpoint=?1 WHERE repo_seq=2",
+        "UPDATE vcs_commits SET repo_seq=3,checkpoint=?1 WHERE repo_seq=2",
         [checkpoint.as_slice()],
     )
     .unwrap();

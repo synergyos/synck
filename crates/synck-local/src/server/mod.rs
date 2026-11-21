@@ -1,4 +1,4 @@
-//! Reference Synck sync server: protocol 1 over existing repository
+//! Reference Synck sync server: protocol 2 over existing repository
 //! directories, for one owner's devices, agents and the people they give a
 //! token. No users, folder permissions, encryption or mail; those are SynckHub.
 

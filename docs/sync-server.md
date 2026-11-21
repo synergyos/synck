@@ -1,6 +1,6 @@
 # The sync server
 
-`synck serve` serves repositories over protocol 1 ([spec/protocol.md](spec/protocol.md))
+`synck serve` serves repositories over protocol 2 ([spec/protocol.md](spec/protocol.md))
 to one owner's devices and agents and to the people they give a token. It is to
 a hosted service what a plain Git server is to GitHub: no users, folder
 permissions, encryption, mail or web UI. The code is `synck_local::server`.
@@ -23,7 +23,7 @@ synck serve ~/synck-state --listen 127.0.0.1:8740 ~/Documents/personal ~/Documen
   history (not clones or followers) and routes each by its repository ID. It
   reads them without their lock, so their working trees keep working. One
   server per state root.
-- It listens on loopback only. Protocol 1 requires TLS on any network;
+- It listens on loopback only. Protocol 2 requires TLS on any network;
   Caddy on the same host terminates it ([TLS](#tls)).
 - `synck serve` has no JSON output; `--json` is refused.
 
@@ -34,7 +34,7 @@ Without Caddy, a clone on the same machine talks to the server over plain HTTP.
 from …`):
 
 ```bash
-SYNCK_TOKEN=<token> synck clone http://127.0.0.1:8740/v1/repositories/<repo_id> /tmp/laptop --author laptop
+SYNCK_TOKEN=<token> synck clone http://127.0.0.1:8740/v2/repositories/<repo_id> /tmp/laptop --author laptop
 ```
 
 `http://` is accepted only for `localhost`, `127.0.0.1` and `[::1]`, and the
@@ -93,7 +93,7 @@ it and ports 80 and 443 open:
 3. Put the host's name in `deploy/Caddyfile`, copy it to `/etc/caddy/Caddyfile`
    and run `systemctl reload caddy`.
 4. On each device: `SYNCK_TOKEN=<token> synck clone
-   https://sync.example.com/v1/repositories/<repo_id> <directory> --author
+   https://sync.example.com/v2/repositories/<repo_id> <directory> --author
    <name>`. `synck info` in a served repository prints its ID.
 
 Leave the server on `127.0.0.1`: Caddy is the only listener on the network.
@@ -134,7 +134,7 @@ Leave the server on `127.0.0.1`: Caddy is the only listener on the network.
 
 ## Clients
 
-`synck clone https://HOST/v1/repositories/REPO_ID` makes a working tree that
+`synck clone https://HOST/v2/repositories/REPO_ID` makes a working tree that
 pulls and pushes over these routes ([HTTPS clones](local-repository.md)). The
 server's own repository directory keeps working as before; its working tree
 takes in remote commits at its next `synck pull`.
@@ -156,13 +156,13 @@ takes in remote commits at its next `synck pull`.
 
 ## Responses
 
-Refusals are JSON `{"status": "..."}`, as the protocol's "HTTP refusals"
-lists. Besides those, `SERVER_OVERLOADED` (503) means no blocking-job slot
-within 5 s, or shutdown, and `INTERNAL` (500) is logged to stderr.
+Refusals are binary `Refusal` bodies, as the protocol's "Refusals" lists.
+`SERVER_OVERLOADED` (503) means no blocking-job slot within 5 s, or shutdown.
+An internal error is 500 with an empty body and is logged to stderr.
 
 ## Routes
 
-All under `/v1/repositories/{repo_id}/sync`:
+All under `/v2/repositories/{repo_id}/sync`:
 
 | Route | Token |
 | --- | --- |
@@ -170,8 +170,10 @@ All under `/v1/repositories/{repo_id}/sync`:
 | `PUT /uploads/{operation_id}/pages/{offset}` | write |
 | `POST /proposals` | write |
 | `GET /receipts/{operation_id}` | read |
-| `PUT /objects/{object_id}`, `PUT /objects` | write |
-| `GET /objects/{object_id}`, `POST /objects` | read |
+| `PUT /objects` | write |
+| `POST /objects` | read |
 | `POST /history` | read |
 | `GET /leases` | read |
 | `POST /leases`, `/leases/renew`, `/leases/release`, `/leases/break` | write |
+
+The state reads (`/state`, `/items/histories`, `/commits`) are `NOT_FOUND`.

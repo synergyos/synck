@@ -153,7 +153,6 @@ pub struct ItemReader {
     projection: Option<replica_projection::ReplicaItemProjection>,
     chat: Option<ChatDetails>,
     subitems: BTreeMap<(String, SubitemIdentity), ReadableSubitem>,
-    maps: crate::metadata::MetadataMaps,
 }
 
 fn invalid(error: impl std::fmt::Display) -> ReadError {
@@ -188,15 +187,7 @@ impl ItemReader {
             projection: None,
             chat: None,
             subitems: BTreeMap::new(),
-            maps: crate::metadata::MetadataMaps::Patch,
         }
-    }
-
-    /// Reads metadata payloads as `maps`; an encrypted repository's history
-    /// holds complete maps. A new or restored reader reads patches.
-    pub fn with_maps(mut self, maps: crate::metadata::MetadataMaps) -> Self {
-        self.maps = maps;
-        self
     }
 
     pub fn for_repository(_repo_id: RepoId, item_id: ItemId) -> Self {
@@ -326,19 +317,9 @@ impl ItemReader {
                 .as_ref()
                 .and_then(synck_vcs::metadata::MetadataRef::value)
                 .ok_or_else(|| invalid("version ref metadata missing"))?;
-            if uuid(meta, "file_item_id")?
-                != Uuid::parse_str(self.item_id.as_str()).expect("typed item ID")
-            {
-                return Err(invalid("version payload owner mismatch"));
-            }
             let id = uuid(meta, "version_id")?;
             match verb {
                 "CREATE" => {
-                    subitems::file_version_ref_required_string(
-                        meta,
-                        "operation_id",
-                        &event.event_type,
-                    )?;
                     subitems::file_version_ref_required_kind(meta, &event.event_type)?;
                     subitems::file_version_ref_required_label_source(meta, &event.event_type)?;
                     subitems::validate_file_version_ref_description(
@@ -453,7 +434,6 @@ impl ItemReader {
             event,
             context.occurred_at.unwrap_or(context.created_at),
             context.author,
-            self.maps,
         )
         .map_err(invalid)?;
         match kind.as_str() {
@@ -761,7 +741,7 @@ impl ItemReader {
             .and_then(synck_vcs::metadata::MetadataRef::value)
             .ok_or_else(|| invalid("named-version metadata missing"))?;
         let id = uuid(meta, "version_id")?;
-        let owner = uuid(meta, "file_item_id")?;
+        let owner = Uuid::parse_str(self.item_id.as_str()).expect("typed item ID");
         let key = (family.into(), SubitemIdentity::Uuid(id));
         let source = if matches!(
             event.event_type.as_str(),

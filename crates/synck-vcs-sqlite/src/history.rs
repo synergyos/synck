@@ -1,9 +1,9 @@
-//! Published history position for sync protocol 1.
+//! Published history position for sync protocol 2.
 
 use rusqlite::OptionalExtension as _;
 use synck_sync::{
     Cursor, HistoryFragment, HistoryPage, HistoryRequest, MAX_PAGE_BYTES, PublishedHeader,
-    RepositoryIdentity,
+    RepositoryIdentity, event_len, header_len,
 };
 use synck_vcs::errors::StorageError;
 use synck_vcs::storage::StorageBackend as _;
@@ -12,7 +12,7 @@ use uuid::Uuid;
 
 use crate::storage::{SqliteStorage, map_sqlite_error};
 
-/// Left for the page's `after`, field names and separators.
+/// Left for the page's `after` and list counts.
 const PAGE_RESERVE: usize = 4096;
 
 fn other(detail: impl std::fmt::Display) -> StorageError {
@@ -71,8 +71,9 @@ impl SqliteStorage {
         let conn = self.open_readonly()?;
         let row: Option<(i64, Vec<u8>)> = conn
             .query_row(
-                "SELECT repo_seq,checkpoint FROM vcs_checkpoints WHERE repo_id=?1 \
-                 AND (?2 IS NULL OR repo_seq=?2) ORDER BY repo_seq DESC LIMIT 1",
+                "SELECT repo_seq,checkpoint FROM vcs_commits WHERE repo_id=?1 \
+                 AND checkpoint IS NOT NULL AND (?2 IS NULL OR repo_seq=?2) \
+                 ORDER BY repo_seq DESC LIMIT 1",
                 rusqlite::params![identity.repo_id.as_str(), repo_seq],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
@@ -93,7 +94,7 @@ impl SqliteStorage {
     }
 
     /// One page of published history after `request.after`, packed as
-    /// protocol 1 requires; `None` when that position is not on this history.
+    /// protocol 2 requires; `None` when that position is not on this history.
     /// Published history is immutable, so the reads need no shared snapshot.
     pub async fn history_page(
         &self,
@@ -140,7 +141,7 @@ impl SqliteStorage {
                 .ok_or_else(|| other("published commit has no checkpoint"))?
                 .checkpoint;
             let header = PublishedHeader { commit, checkpoint };
-            let header_size = serde_json::to_vec(&header).map_err(other)?.len();
+            let header_size = header_len(&header).map_err(other)? + 4;
             if header_size >= bytes_left {
                 break;
             }
@@ -154,7 +155,7 @@ impl SqliteStorage {
             }
             let mut events = Vec::with_capacity(want);
             for row in rows.drain(skip..) {
-                let event_size = serde_json::to_vec(&row).map_err(other)?.len() + 1;
+                let event_size = event_len(&row);
                 if event_size > bytes_left {
                     break;
                 }

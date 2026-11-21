@@ -163,26 +163,20 @@ fn validate_physical_rows(
     drop(items);
 
     let mut commits = connection.prepare(
-        "SELECT commit_pk, format_version, event_count, occurred_at, created_at
+        "SELECT commit_pk, event_count, occurred_at, created_at
          FROM vcs_commits WHERE repo_id = ?1 ORDER BY commit_pk",
     )?;
     let rows = commits.query_map([repo_id.as_str()], |row| {
         Ok((
             row.get::<_, String>(0)?,
-            row.get::<_, i64>(1)?,
-            row.get::<_, Option<i64>>(2)?,
-            row.get::<_, Option<String>>(3)?,
-            row.get::<_, String>(4)?,
+            row.get::<_, Option<i64>>(1)?,
+            row.get::<_, Option<String>>(2)?,
+            row.get::<_, String>(3)?,
         ))
     })?;
     for row in rows {
-        let (commit_pk, format_version, event_count, occurred_at, created_at) = row?;
+        let (commit_pk, event_count, occurred_at, created_at) = row?;
         validate_commit_pk(&commit_pk, findings);
-        validate_i32(
-            format_version,
-            &format!("commit {commit_pk} format_version"),
-            findings,
-        );
         if let Some(event_count) = event_count {
             validate_i32(
                 event_count,

@@ -13,9 +13,10 @@ use chrono::{TimeDelta, Utc};
 use rusqlite::{Connection, OptionalExtension as _, params};
 use synck_sync::{
     PageAck, ProposalPage, ProposalRecord, ProposalVerifier, ProtocolError, RepositoryIdentity,
-    SubmitRequest, ValidatedProposal,
+    SubmitRequest, ValidatedProposal, Wire as _,
 };
-use synck_vcs::types::{RepoId, Sha256Digest, Timestamp, canonical_json_bytes};
+use synck_vcs::codec::Decoder;
+use synck_vcs::types::{RepoId, Sha256Digest, Timestamp};
 
 use super::state::open_existing;
 use super::{Error, Result};
@@ -31,9 +32,25 @@ pub(crate) struct Uploads {
     verifiers: Mutex<HashMap<Key, (ProposalVerifier, Timestamp)>>,
 }
 
-fn canonical(records: &[ProposalRecord]) -> Result<Vec<u8>> {
-    let value = serde_json::to_value(records).map_err(|error| Error::Invalid(error.to_string()))?;
-    Ok(canonical_json_bytes(&value).map_err(ProtocolError::from)?)
+/// A page's records as stored: each record's encoding, one after another.
+fn encoded(records: &[ProposalRecord]) -> Result<Vec<u8>> {
+    let mut out = Vec::new();
+    for record in records {
+        record.put(&mut out)?;
+    }
+    Ok(out)
+}
+
+fn decoded(bytes: &[u8]) -> Result<Vec<ProposalRecord>> {
+    let mut decoder = Decoder::new(bytes);
+    let mut records = Vec::new();
+    while !decoder.is_empty() {
+        records.push(
+            ProposalRecord::get(&mut decoder)
+                .map_err(|error| Error::State(format!("staged page: {error}")))?,
+        );
+    }
+    Ok(records)
 }
 
 fn timestamp(seconds: i64) -> Result<Timestamp> {
@@ -64,8 +81,7 @@ fn replay(
             repository: repository.clone(),
             operation_id: operation_id.to_string(),
             offset: first as u64,
-            records: serde_json::from_slice(&records)
-                .map_err(|error| Error::State(format!("staged page: {error}")))?,
+            records: decoded(&records)?,
         };
         verifier.push(&page, now)?;
         each(page.records);
@@ -91,7 +107,7 @@ impl Uploads {
         if page.repository != *repository {
             return Err(ProtocolError::Generation.into());
         }
-        let records = canonical(&page.records)?;
+        let records = encoded(&page.records)?;
         let now = Utc::now();
         let mut verifiers = self.verifiers.lock().expect("upload verifiers");
         let mut conn = open_existing(&self.state_root)?;
