@@ -54,12 +54,6 @@ CREATE TABLE vcs_commits (
     CHECK ((checkpoint IS NULL) = (commit_id IS NULL OR repo_seq IS NULL))
 ) STRICT;
 
-CREATE TABLE vcs_repo_activity_heads (
-    repo_id TEXT PRIMARY KEY,
-    next_repo_seq INTEGER NOT NULL CHECK (next_repo_seq >= 1),
-    updated_at TEXT NOT NULL
-) STRICT;
-
 CREATE TABLE vcs_federation_domains (
     repo_id TEXT NOT NULL,
     domain_id TEXT NOT NULL,

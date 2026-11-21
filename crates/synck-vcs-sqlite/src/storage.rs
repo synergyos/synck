@@ -1622,13 +1622,6 @@ impl StorageTxn for SqliteTxn {
             return Ok(0);
         }
         ensure_history_generation(self.conn()?, repo_id)?;
-        let now = format_timestamp(Utc::now());
-        self.conn()?
-            .execute(
-                "INSERT INTO vcs_repo_activity_heads (repo_id, next_repo_seq, updated_at) VALUES (?1, 1, ?2) ON CONFLICT(repo_id) DO NOTHING",
-                params![repo_id.as_str(), now],
-            )
-            .map_err(map_sqlite_error)?;
         let limit = checked_limit(limit)?;
         let mut statement = self
             .conn()?
@@ -1645,7 +1638,7 @@ impl StorageTxn for SqliteTxn {
         if commit_pks.is_empty() {
             return Ok(0);
         }
-        let next = checked_publication_counter(self.conn()?, repo_id)?;
+        let next = next_published_sequence(self.conn()?, repo_id)?;
         for (offset, commit_pk) in commit_pks.iter().enumerate() {
             let offset = i64::try_from(offset).map_err(|_| StorageError::Other {
                 detail: "sequencer offset overflow".to_string(),
@@ -1676,20 +1669,6 @@ impl StorageTxn for SqliteTxn {
                 .execute(
                     "UPDATE vcs_commits SET repo_seq = ?3, checkpoint = ?4 WHERE repo_id = ?1 AND commit_pk = ?2 AND repo_seq IS NULL",
                     params![repo_id.as_str(), commit_pk, repo_seq, digest.as_slice()],
-                )
-                .map_err(map_sqlite_error)?;
-        }
-        if !commit_pks.is_empty() {
-            let count = i64::try_from(commit_pks.len()).map_err(|_| StorageError::Other {
-                detail: "sequencer count overflow".to_string(),
-            })?;
-            let new_next = next.checked_add(count).ok_or_else(|| StorageError::Other {
-                detail: "repository sequence overflow".to_string(),
-            })?;
-            self.conn()?
-                .execute(
-                    "UPDATE vcs_repo_activity_heads SET next_repo_seq = ?2, updated_at = ?3 WHERE repo_id = ?1",
-                    params![repo_id.as_str(), new_next, now],
                 )
                 .map_err(map_sqlite_error)?;
         }
@@ -1987,8 +1966,9 @@ impl SqliteStorage {
     }
 
     /// Repair only the derived counter, after verifying published history.
-    /// Repair and sequencing use the same SQLite write exclusion.
-    pub fn repair_publication_counter(&self, repo_id: &RepoId) -> Result<(), StorageError> {
+    /// Check published history before resuming accepted writes, under the
+    /// sequencer's SQLite write exclusion.
+    pub fn check_publication(&self, repo_id: &RepoId) -> Result<(), StorageError> {
         let mut conn = self.open_writable()?;
         let txn = conn
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
@@ -1998,11 +1978,6 @@ impl SqliteStorage {
             ensure_history_generation(&txn, repo_id)?;
         }
         verify_checkpoints_in(&txn, repo_id, self.encrypted)?;
-        txn.execute(
-            "INSERT INTO vcs_repo_activity_heads (repo_id,next_repo_seq,updated_at) VALUES (?1,?2,?3)
-             ON CONFLICT(repo_id) DO UPDATE SET next_repo_seq=excluded.next_repo_seq,updated_at=excluded.updated_at",
-            params![repo_id.as_str(), next, format_timestamp(Utc::now())],
-        ).map_err(map_sqlite_error)?;
         txn.commit().map_err(map_sqlite_error)
     }
 }
@@ -2082,28 +2057,6 @@ fn next_published_sequence(conn: &Connection, repo_id: &RepoId) -> Result<i64, S
     last.checked_add(1).ok_or_else(|| StorageError::Other {
         detail: "repository sequence exhausted".into(),
     })
-}
-
-fn checked_publication_counter(conn: &Connection, repo_id: &RepoId) -> Result<i64, StorageError> {
-    let expected = next_published_sequence(conn, repo_id)?;
-    let stored: Option<i64> = conn
-        .query_row(
-            "SELECT next_repo_seq FROM vcs_repo_activity_heads WHERE repo_id=?1",
-            [repo_id.as_str()],
-            |row| row.get(0),
-        )
-        .optional()
-        .map_err(map_sqlite_error)?;
-    // A new, never-published repository has no counter yet.
-    if stored != Some(expected) && !(stored.is_none() && expected == 1) {
-        let stored = stored.map_or_else(|| "none".to_owned(), |seq| seq.to_string());
-        return Err(StorageError::Other {
-            detail: format!(
-                "integrity error: repository publication counter disagrees with history: expected {expected}, stored {stored}; run synck repository finalize"
-            ),
-        });
-    }
-    Ok(expected)
 }
 
 #[cfg(test)]

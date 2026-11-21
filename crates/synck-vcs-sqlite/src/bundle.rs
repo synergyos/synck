@@ -263,7 +263,6 @@ async fn install(
         "vcs_ref_events",
         "vcs_items",
         "vcs_federation_domains",
-        "vcs_repo_activity_heads",
     ] {
         let occupied: bool = txn
             .conn()
@@ -475,21 +474,13 @@ async fn install(
     if let Some(finding) = verifier.finish(&items).into_iter().next() {
         return Err(finding);
     }
-    let terminal_repo_seq = last_repo_seq.unwrap_or(0);
-    let next_repo_seq = terminal_repo_seq
-        .checked_add(1)
-        .ok_or("repository sequence exhausted")?;
-    txn.conn().map_err(detail)?.execute(
-        "INSERT INTO vcs_repo_activity_heads (repo_id,next_repo_seq,updated_at) VALUES (?1,?2,?3)",
-        params![repo_id.as_str(), next_repo_seq, format_timestamp(chrono::Utc::now())],
-    ).map_err(detail)?;
     Ok(BundleImportReport {
         repo_id: repo_id.clone(),
         source_schema: BundleSchema {
             subsystem: header.source_schema().subsystem.clone(),
             schema_id: header.source_schema().schema_id.clone(),
         },
-        terminal_repo_seq,
+        terminal_repo_seq: last_repo_seq.unwrap_or(0),
         commits,
         items: item_count,
     })

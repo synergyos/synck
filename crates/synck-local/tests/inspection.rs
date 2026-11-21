@@ -299,21 +299,11 @@ async fn log_pages_are_newest_first_and_use_exclusive_cursors() {
     init(root, "author").await.unwrap();
     let repository = Repository::discover(root).await.unwrap();
 
-    for (index, (message, contents)) in [
+    for (message, contents) in [
         ("one", b"one".as_slice()),
         ("two", b"two".as_slice()),
         ("three", b"three".as_slice()),
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        if index == 1 {
-            let connection =
-                rusqlite::Connection::open(root.join(".synck/repository.sqlite3")).unwrap();
-            connection
-                .execute("UPDATE vcs_repo_activity_heads SET next_repo_seq = 3", [])
-                .unwrap();
-        }
+    ] {
         fs::write(root.join("file.txt"), contents).unwrap();
         let CommitOutcome::Committed(_) = repository.commit(message).await.unwrap() else {
             panic!("test commit was unexpectedly clean");

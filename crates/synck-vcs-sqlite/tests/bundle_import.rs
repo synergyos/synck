@@ -362,14 +362,14 @@ async fn mixed_history_import_preserves_ids_ref_heads_and_next_append() {
     let imported = export_records(&target, &repo_id).await;
     assert_eq!(original, imported);
     let connection = target.open_readonly().unwrap();
-    let next: i64 = connection
+    let last: i64 = connection
         .query_row(
-            "SELECT next_repo_seq FROM vcs_repo_activity_heads WHERE repo_id=?1",
+            "SELECT max(repo_seq) FROM vcs_commits WHERE repo_id=?1",
             [repo_id.as_str()],
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(next, 3);
+    assert_eq!(last, 2);
     let ref_head: i64 = connection
         .query_row(
             "SELECT ref_head_seq FROM vcs_items WHERE repo_id=?1 AND item_type='FILE'",
@@ -521,7 +521,6 @@ async fn invalid_or_incomplete_bundle_rolls_back_and_allows_clean_retry() {
             "vcs_ref_events",
             "vcs_items",
             "vcs_federation_domains",
-            "vcs_repo_activity_heads",
         ] {
             let count: i64 = connection
                 .query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
@@ -544,137 +543,4 @@ async fn invalid_or_incomplete_bundle_rolls_back_and_allows_clean_retry() {
             2
         );
     }
-}
-
-#[tokio::test]
-async fn sequencer_rejects_gaps_without_publishing_partial_history() {
-    let (_directory, source, repo_id, _) = fixture().await;
-    let core = Repo::new(
-        Storage::new(Arc::new(source.clone())),
-        CoreConfig::default(),
-    );
-    let items = source
-        .list_items_readonly(&repo_id, None, None, 100)
-        .await
-        .unwrap();
-    let chat = items.iter().find(|item| item.item_type == "CHAT").unwrap();
-    let event = EventProposal::from_fields(json!({
-        "item_id":chat.item_id, "event_type":"CHAT::RENAME", "base_seq":chat.head_seq,
-        "set_metadata":{"title":"after-gap"}
-    }))
-    .unwrap();
-    let accepted = core
-        .append(repo_id.clone(), proposal(vec![event], "gap-retry"))
-        .await
-        .unwrap();
-    let db = source.open_writable().unwrap();
-    db.execute(
-        "UPDATE vcs_repo_activity_heads SET next_repo_seq=4 WHERE repo_id=?1",
-        [repo_id.as_str()],
-    )
-    .unwrap();
-    let error = core
-        .sequence_repo_activity(repo_id.clone(), 10)
-        .await
-        .unwrap_err();
-    assert!(error.to_string().contains("publication counter"), "{error}");
-    let (pending, checkpoints): (i64, i64) = db.query_row(
-        "SELECT (SELECT count(*) FROM vcs_commits WHERE repo_seq IS NULL), (SELECT count(*) FROM vcs_commits WHERE checkpoint IS NOT NULL)",
-        [], |row| Ok((row.get(0)?, row.get(1)?)),
-    ).unwrap();
-    assert_eq!((pending, checkpoints), (1, 2));
-    source.repair_publication_counter(&repo_id).unwrap();
-    assert_eq!(
-        core.sequence_repo_activity(repo_id.clone(), 10)
-            .await
-            .unwrap(),
-        1
-    );
-    let published = source
-        .list_commits_by_repo_seq_readonly(&repo_id, 3, None, 1)
-        .await
-        .unwrap();
-    assert_eq!(published[0].commit_id, accepted.commit_id);
-    source.verify_checkpoints(&repo_id).unwrap();
-}
-
-#[tokio::test]
-async fn sequencer_counter_mismatch_preserves_acceptance_and_repairs_from_history() {
-    let (_directory, source, repo_id, _) = fixture().await;
-    let core = Repo::new(
-        Storage::new(Arc::new(source.clone())),
-        CoreConfig::default(),
-    );
-    let db = source.open_writable().unwrap();
-    for (index, counter) in [Some(1), Some(7), None].into_iter().enumerate() {
-        if let Some(counter) = counter {
-            db.execute(
-                "UPDATE vcs_repo_activity_heads SET next_repo_seq=?1 WHERE repo_id=?2",
-                params![counter, repo_id.as_str()],
-            )
-            .unwrap();
-        } else {
-            db.execute(
-                "DELETE FROM vcs_repo_activity_heads WHERE repo_id=?1",
-                [repo_id.as_str()],
-            )
-            .unwrap();
-        }
-        let accepted = core
-            .append(
-                repo_id.clone(),
-                proposal(
-                    vec![create(&format!("NEW{index}"))],
-                    &format!("pending-{index}"),
-                ),
-            )
-            .await
-            .unwrap();
-        assert!(accepted.repo_seq.is_none());
-        let error = core
-            .sequence_repo_activity(repo_id.clone(), 10)
-            .await
-            .unwrap_err();
-        assert!(error.to_string().contains("publication counter"), "{error}");
-        assert_eq!(
-            db.query_row(
-                "SELECT count(*) FROM vcs_commits WHERE repo_seq IS NULL",
-                [],
-                |r| r.get::<_, i64>(0)
-            )
-            .unwrap(),
-            1
-        );
-        source.repair_publication_counter(&repo_id).unwrap();
-        assert_eq!(
-            core.sequence_repo_activity(repo_id.clone(), 10)
-                .await
-                .unwrap(),
-            1
-        );
-        let published = source
-            .list_commits_by_repo_seq_readonly(&repo_id, index as i64 + 3, None, 1)
-            .await
-            .unwrap();
-        assert_eq!(published[0].commit_id, accepted.commit_id);
-        source.verify_checkpoints(&repo_id).unwrap();
-    }
-    // Repair must not bless corruption in the published chain.
-    db.execute("UPDATE vcs_repo_activity_heads SET next_repo_seq=9", [])
-        .unwrap();
-    db.execute(
-        "UPDATE vcs_commits SET checkpoint=zeroblob(32) WHERE repo_seq=2",
-        [],
-    )
-    .unwrap();
-    assert!(source.repair_publication_counter(&repo_id).is_err());
-    assert_eq!(
-        db.query_row(
-            "SELECT next_repo_seq FROM vcs_repo_activity_heads",
-            [],
-            |r| r.get::<_, i64>(0)
-        )
-        .unwrap(),
-        9
-    );
 }

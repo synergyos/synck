@@ -64,22 +64,21 @@ acknowledgements and preserve the source until its replacement is verified.
 Application integrations can use direct `repository create-file`, `save-file`,
 `duplicate`, `import-email`, `create-chat` and `append-chat`; see [integration](integration.md). Recovery of an
 accepted but incompletely projected write uses `synck repository finalize PATH`.
-This explicit recovery verifies published checkpoints, repairs a missing or
-incorrect publication counter from the last published position, then publishes
-pending accepted commits and catches up projections. It preserves commit IDs
+This explicit recovery verifies published checkpoints, then publishes pending
+accepted commits and catches up projections. It preserves commit IDs
 and working-file edits; a corrupt published chain is refused. Acceptance never
 reads or locks sequencer state and never allocates `repo_seq` in its transaction.
 It succeeds independently, leaving accepted commits with `repo_seq = NULL` until
-the asynchronous sequencer publishes them. A counter mismatch stops sequencing,
-not acceptance. If the CLI's post-acceptance publication fails, it reports
+the asynchronous sequencer publishes them. A publication failure stops
+sequencing, not acceptance. If the CLI's post-acceptance publication fails, it reports
 `ACCEPTED_NEEDS_RECOVERY` with the accepted commit ID and `repository finalize`
 guidance; the nonzero command exit does not mean the commit was rejected.
 Repeating a pending write under a new operation ID risks a duplicate accepted
-action. Neither acceptance nor ordinary publication silently repairs the counter.
+action.
 
 Each implementation runs at most one sequencer transaction per repository,
-locking its activity head until the consecutive batch, checkpoints and updated
-counter commit together. A rollback leaves no gap. Row-locking backends may use
+holding its sequencer lock until the consecutive batch and its checkpoints
+commit together. A rollback leaves no gap. Row-locking backends may use
 `SKIP LOCKED` to select unsequenced commits, while retaining that repository-wide
 sequencer lock. See the [publication contract](spec/format.md).
 

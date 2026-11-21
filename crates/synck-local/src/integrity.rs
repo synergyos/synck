@@ -245,34 +245,6 @@ fn validate_physical_rows(
     }
     drop(events);
 
-    let maximum_repo_seq: Option<i64> = connection.query_row(
-        "SELECT max(repo_seq) FROM vcs_commits WHERE repo_id = ?1",
-        [repo_id.as_str()],
-        |row| row.get(0),
-    )?;
-    let activity_head: Option<(i64, String)> = connection
-        .query_row(
-            "SELECT next_repo_seq, updated_at FROM vcs_repo_activity_heads
-             WHERE repo_id = ?1",
-            [repo_id.as_str()],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .optional()?;
-    if let Some((_, updated_at)) = &activity_head {
-        validate_timestamp(updated_at, "repository activity head updated_at", findings);
-    }
-    if let Some(maximum) = maximum_repo_seq {
-        match activity_head {
-            None => findings.push(format!(
-                "repository activity head is missing after sequence {maximum}"
-            )),
-            Some((next, _)) if next <= maximum => findings.push(format!(
-                "repository activity head next sequence {next} does not follow maximum committed sequence {maximum}"
-            )),
-            Some(_) => {}
-        }
-    }
-
     Ok(())
 }
 

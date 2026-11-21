@@ -624,18 +624,18 @@ reference ledger the commit extends is already published, and fail the batch
 otherwise; it never publishes history that cannot replay.
 
 Sequencer implementations MUST serialize publication transactions per repository:
-only one such transaction may run for a repository at a time. Lock that
-repository's activity head, select committed unsequenced commits, validate the
-counter against the last published position, then assign a consecutive batch,
-publish every checkpoint and advance the counter in the same transaction. Hold
-the activity-head lock until commit or rollback. Rollback leaves no assigned
-positions, counter advancement or checkpoints, so it creates no gap. Backends
+only one such transaction may run for a repository at a time. Take that
+repository's sequencer lock, select committed unsequenced commits, then assign
+a consecutive batch after the last published position, each commit's position
+and checkpoint in one update, in the same transaction. Hold the lock until
+commit or rollback. Rollback leaves no assigned positions or checkpoints, so it
+creates no gap. The lock is the implementation's: a row lock in a server
+database, `BEGIN IMMEDIATE` in SQLite; it is not part of the format. Backends
 with row locks may select unsequenced commits using `FOR UPDATE SKIP LOCKED`;
 that does not replace the per-repository sequencer lock. Use a deterministic
 batch order (acceptance timestamp, then `commit_pk`). Never allocate `repo_seq`
-with `nextval()` or its equivalent in the acceptance transaction. SQLite uses
-`BEGIN IMMEDIATE` to serialize its writers; acceptance itself does not access
-the activity head or checkpoints.
+with `nextval()` or its equivalent in the acceptance transaction; acceptance
+itself does not access the sequencer lock or checkpoints.
 
 SQLite stores each published commit's checkpoint, as raw 32 bytes, in its
 `vcs_commits` row, with its `repo_seq`. `vcs_history_generations(repo_id, generation)`
@@ -1100,8 +1100,7 @@ foreign-key contract. All tables are STRICT. Each repository container contains
 one `repo_id`; every canonical row belongs to it. No `local_*` or state-tree
 tables belong in this database. Additional nonunique indexes are allowed, but
 additional owned tables, unique constraints, views or triggers are not. A new
-repository has its `vcs_history_generations` row, and a `vcs_repo_activity_heads`
-row with `next_repo_seq` 1.
+repository has its `vcs_history_generations` row.
 
 - `vcs_commits` contains accepted commit headers. `commit_pk` is only a physical
   join key. A durable accepted commit has non-null `commit_id` and `event_count`;
@@ -1122,17 +1121,13 @@ row with `next_repo_seq` 1.
   record key, link, lifecycle, item/ref heads, creation attribution and federation
   fields. A tree item has `name` and `name_key` and no `record_key` or
   `link_folder_id`. A record has no `name`, `name_key` or `parent_folder_id`.
-- `vcs_repo_activity_heads.next_repo_seq` is exactly one greater than the last
-  published position (1 before first publication). Acceptance never reads or
+- The next position is one greater than the last published `repo_seq` (1 before
+  first publication); no stored counter repeats it. Acceptance never reads or
   locks sequencer state and never allocates `repo_seq` in the commit transaction:
   accepted commits remain durable with `repo_seq = NULL` until asynchronous
-  publication. Only the sequencer checks the counter against published history
-  before assigning a batch. A mismatch stops publication with an integrity
-  error; it does not invalidate or reject acceptance. Explicit `repository
-  finalize` verifies the published checkpoint chain and recomputes this derived
-  counter transactionally before publishing pending commits with their original
-  IDs. It never renumbers published commits. `updated_at` is operational allocation
-  time. `vcs_history_generations` has one generation.
+  publication. Explicit `repository finalize` verifies the published checkpoint
+  chain before publishing pending commits with their original IDs. It never
+  renumbers published commits. `vcs_history_generations` has one generation.
 - `vcs_metadata_objects` stores available metadata objects. Absence is
   allowed; every present object must validate even if currently unreferenced.
 - `vcs_federation_domains` records the accepted federation-domain cursor;

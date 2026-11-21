@@ -56,7 +56,9 @@ pub enum LocalError {
     Integrity(String),
     #[error("monitor unavailable: {0}")]
     MonitorUnavailable(String),
-    #[error("commit {commit_id} was accepted; local recovery is pending: {detail}")]
+    #[error(
+        "commit {commit_id} was accepted; local recovery is pending, run synck repository finalize: {detail}"
+    )]
     AcceptedNeedsRecovery { commit_id: String, detail: String },
     #[error("FILE {item_id} content is {blob_id}, not the expected base {expected}")]
     Conflict {

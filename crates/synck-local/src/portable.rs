@@ -1881,7 +1881,6 @@ impl PortableRepository {
             "vcs_ref_events",
             "vcs_items",
             "vcs_federation_domains",
-            "vcs_repo_activity_heads",
         ] {
             let foreign: bool = connection.query_row(
                 &format!("SELECT EXISTS(SELECT 1 FROM {table} WHERE repo_id<>?1)"),
@@ -2040,16 +2039,6 @@ impl PortableRepository {
         if let Some(finding) = verifier.finish(&items).into_iter().next() {
             return Err(corrupt(finding));
         }
-        let next: i64 = connection.query_row(
-            "SELECT next_repo_seq FROM vcs_repo_activity_heads WHERE repo_id=?1",
-            [self.repo_id().as_str()],
-            |row| row.get(0),
-        )?;
-        if terminal.checked_add(1) != Some(next) {
-            return Err(corrupt(
-                "repository allocator does not follow canonical history",
-            ));
-        }
         let (objects, metadata) = self.references().await?;
         let inventory = if self.storage_mode() == StorageMode::Chunked {
             Some(self.object_store().verify_all()?)
@@ -2106,7 +2095,7 @@ impl PortableRepository {
     pub async fn finalize(&mut self) -> Result<()> {
         self.writable()?;
         self.storage
-            .repair_publication_counter(self.repo_id())
+            .check_publication(self.repo_id())
             .map_err(corrupt)?;
         self.finish_acceptance().await
     }

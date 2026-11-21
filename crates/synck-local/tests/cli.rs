@@ -1829,80 +1829,8 @@ fn historical_comparison_reads_only_changed_file_content() {
 fn numeric_repository_sequences_are_exact_revisions() {
     let temporary = committed_repository();
     let root = temporary.path();
-    let db = rusqlite::Connection::open(root.join(".synck/repository.sqlite3")).unwrap();
-    db.execute("UPDATE vcs_repo_activity_heads SET next_repo_seq = 4", [])
-        .unwrap();
-    let before: (i64, i64) = db
-        .query_row(
-            "SELECT (SELECT count(*) FROM vcs_commits), (SELECT count(*) FROM vcs_events)",
-            [],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .unwrap();
     fs::write(root.join("file.txt"), b"changed").unwrap();
-    let pending = synck(
-        root,
-        &["--json", "commit", "-m", "accepted pending publication"],
-    );
-    // Acceptance succeeded; the CLI reports the separate publication failure.
-    assert!(!pending.status.success());
-    let error: Value = serde_json::from_slice(&pending.stderr).unwrap();
-    assert_eq!(error["error"]["kind"], "ACCEPTED_NEEDS_RECOVERY");
-    let message = error["error"]["message"].as_str().unwrap();
-    assert!(
-        message.contains("publication counter") && message.contains("repository finalize"),
-        "{message}"
-    );
-    let accepted_id: Vec<u8> = db
-        .query_row(
-            "SELECT commit_id FROM vcs_commits WHERE repo_seq IS NULL",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    let accepted_id = synck_vcs::types::commit_id_from_digest_bytes(&accepted_id).unwrap();
-    assert!(message.contains(accepted_id.as_str()), "{message}");
-    let after: (i64, i64) = db
-        .query_row(
-            "SELECT (SELECT count(*) FROM vcs_commits), (SELECT count(*) FROM vcs_events)",
-            [],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .unwrap();
-    assert_eq!(after.0, before.0 + 1);
-    assert!(after.1 > before.1);
-    let repaired = synck(root, &["repository", "finalize", "."]);
-    assert!(
-        repaired.status.success(),
-        "{}",
-        String::from_utf8_lossy(&repaired.stderr)
-    );
-    let published: Vec<u8> = db
-        .query_row(
-            "SELECT commit_id FROM vcs_commits WHERE repo_seq=3",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert_eq!(
-        synck_vcs::types::commit_id_from_digest_bytes(&published).unwrap(),
-        accepted_id
-    );
-    assert_eq!(
-        db.query_row("SELECT count(*) FROM vcs_commits", [], |r| r
-            .get::<_, i64>(0))
-            .unwrap(),
-        after.0
-    );
-    assert_eq!(
-        db.query_row(
-            "SELECT next_repo_seq FROM vcs_repo_activity_heads",
-            [],
-            |r| r.get::<_, i64>(0)
-        )
-        .unwrap(),
-        4
-    );
+    assert!(synck(root, &["commit", "-m", "changed"]).status.success());
     let compared = synck(root, &["compare", "2", "3"]);
     assert!(
         compared.status.success(),
@@ -1924,7 +1852,7 @@ fn numeric_repository_sequences_are_exact_revisions() {
 }
 
 #[test]
-fn finalize_repairs_counter_and_publishes_previously_accepted_commit() {
+fn finalize_publishes_previously_accepted_commit() {
     let temporary = committed_repository();
     let root = temporary.path();
     fs::write(root.join("file.txt"), b"accepted").unwrap();
@@ -1944,8 +1872,8 @@ fn finalize_repairs_counter_and_publishes_previously_accepted_commit() {
             |r| r.get(0),
         )
         .unwrap();
-    // Recreate an older writer's accepted-but-unpublished state and bad counter.
-    db.execute_batch("BEGIN IMMEDIATE; UPDATE vcs_commits SET repo_seq=NULL,checkpoint=NULL WHERE repo_seq=3; UPDATE vcs_repo_activity_heads SET next_repo_seq=7; COMMIT;").unwrap();
+    // Recreate an interrupted writer's accepted-but-unpublished state.
+    db.execute_batch("BEGIN IMMEDIATE; UPDATE vcs_commits SET repo_seq=NULL,checkpoint=NULL WHERE repo_seq=3; COMMIT;").unwrap();
     fs::write(root.join("file.txt"), b"unsaved working edit").unwrap();
     assert!(!synck(root, &["fsck"]).status.success());
     for _ in 0..2 {
@@ -3511,54 +3439,6 @@ fn missing_state_head_discards_residual_rows_and_reprojects() {
 }
 
 #[test]
-fn fsck_reports_stale_repository_activity_head() {
-    let temporary = committed_repository();
-    let connection =
-        rusqlite::Connection::open(temporary.path().join(".synck/repository.sqlite3")).unwrap();
-    connection
-        .execute("UPDATE vcs_repo_activity_heads SET next_repo_seq = 1", [])
-        .unwrap();
-    drop(connection);
-
-    assert_fsck_integrity_failure(
-        temporary.path(),
-        "next sequence 1 does not follow maximum committed sequence 2",
-    );
-}
-
-#[test]
-fn fsck_reports_missing_repository_activity_head() {
-    let temporary = committed_repository();
-    let connection =
-        rusqlite::Connection::open(temporary.path().join(".synck/repository.sqlite3")).unwrap();
-    connection
-        .execute("DELETE FROM vcs_repo_activity_heads", [])
-        .unwrap();
-    drop(connection);
-
-    assert_fsck_integrity_failure(
-        temporary.path(),
-        "activity head is missing after sequence 2",
-    );
-}
-
-#[test]
-fn fsck_rejects_an_allocator_ahead_of_history() {
-    let temporary = committed_repository();
-    let connection =
-        rusqlite::Connection::open(temporary.path().join(".synck/repository.sqlite3")).unwrap();
-    connection
-        .execute("UPDATE vcs_repo_activity_heads SET next_repo_seq = 4", [])
-        .unwrap();
-    drop(connection);
-
-    assert_fsck_integrity_failure(
-        temporary.path(),
-        "repository allocator does not follow canonical history",
-    );
-}
-
-#[test]
 fn history_readers_reject_repository_sequence_gaps() {
     let temporary = committed_repository();
     let root = temporary.path();
@@ -3591,8 +3471,6 @@ fn history_readers_reject_repository_sequence_gaps() {
         [checkpoint.as_slice()],
     )
     .unwrap();
-    db.execute("UPDATE vcs_repo_activity_heads SET next_repo_seq=4", [])
-        .unwrap();
     drop(db);
     for args in [
         vec!["log"],
