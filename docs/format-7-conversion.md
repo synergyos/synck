@@ -40,17 +40,20 @@ it cannot read, so it refuses the first encrypted object.
   the source commit hashes to its format 7 ID, so it converts only what was
   published. The driver keeps the old-to-new commit ID map until no stored
   reference to an old ID remains.
-- Item metadata becomes complete maps. Format 7 folded patches: `CREATE` and
-  `SET_METADATA` fold, and an erased one clears every key; a record's
-  `SET_TITLE` sets `title`, and an erased one removes it. A FILE's `content`
-  is gone before this fold. A two-segment event's new map is the item's
-  folded metadata after the event plus the event's own keys, so a
-  key that did not fold stays on its event. Null values, which meant unset,
-  are dropped.
+- Item metadata becomes complete maps. Format 7 left folding to each family's
+  reader, so the driver passes a `Policy` that gives each two-segment event
+  type its fold: `Patch` overlays the item's map, `Replace` is its whole map,
+  and `Arguments` leaves it. `Policy::FORMAT_7` is the format's own rule:
+  `CREATE` and `SET_METADATA` patch and nothing else folds. A record's
+  `SET_TITLE` always sets `title` alone. An erased folding payload clears every
+  key, and an erased title removes `title`. A FILE's `content` is gone before
+  the fold. An argument, every key of an `Arguments` event and any key the
+  policy names as one, moves to the event's `revision`, and the event's new
+  map is the item's map after it. Null values, which meant unset, are dropped.
 - A FILE revision's facts move under its event's `revision`: `revision_origin`
   becomes `origin` and `provenance` stays `provenance`. Format 7 folded a
   `CREATE`'s into item state, so every later map repeated them; now no later
-  map does. They are refused on any event but `CREATE` and `SET_CONTENT`. The
+  map does. No FILE event but `CREATE` and `SET_CONTENT` names them. The
   Hub's `upload_intent_id` is a transport ID and leaves history: the converter
   lists each in `upload_intents` with its event's `repo_seq` and commit event
   index, for the driver's own upload records. `template_source`, which names

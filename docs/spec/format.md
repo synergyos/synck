@@ -433,9 +433,9 @@ Each event holds only the fields the core table gives it, with these additions:
 - `FILE::CREATE` and `FILE::SET_CONTENT` carry `set_content` with exactly `bytes`,
   whose size is the file's length. Their metadata is optional: a writer includes
   it only when the item has other keys.
-- `FILE::CREATE` and `FILE::SET_CONTENT` metadata may hold
-  [`revision`](#metadata-payloads), with optional `origin` (`LOCAL` or
-  `FEDERATED`) and optional `provenance`; any other key in it is rejected. Like
+- `FILE::CREATE` and `FILE::SET_CONTENT` metadata may hold, in its
+  [`revision`](#metadata-payloads), optional `origin` (`LOCAL` or `FEDERATED`)
+  and optional `provenance`; no other FILE event's `revision` holds either. Like
   `SET_METADATA`, both events may hold any other item key, and a complete map
   repeats them all.
 - `provenance` holds `source` and `committed_by` (nonempty strings),
@@ -831,9 +831,11 @@ not the history, and there is one rule for every repository, encrypted or not.
 A family may name keys that only its `CREATE` holds; see [EMAIL](#email-provider-profile-and-titles).
 
 One key is not item state: `revision`, an object of facts about its own event
-alone, such as where a FILE revision came from. The current metadata is the
-latest payload without `revision`, and no later payload repeats it. Only FILE
-names it, on `CREATE` and `SET_CONTENT`; elsewhere it is rejected.
+alone, such as where a FILE revision came from or the arguments of a command.
+The current metadata is the latest payload without `revision`, and no later
+payload repeats it. Any event with item metadata may hold it; a family names
+the keys it checks inside, and may hold keys it does not name. An event whose
+metadata holds only arguments still carries the complete map beside them.
 A subitem's metadata follows the same rule within its own events. A subitem edit
 whose metadata is erased no longer names its target, so a reader cannot hide the
 value it replaced.

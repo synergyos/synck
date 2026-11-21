@@ -44,6 +44,48 @@ const EMAIL_RENDERINGS: [&str; 8] = [
     "text_repair",
 ];
 
+/// How a two-segment event's format 7 metadata becomes format 8 item state.
+/// Format 7 left that to each family's reader, so the families' owner says.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Fold {
+    /// Its keys overlay the item's map; a null removes one.
+    Patch,
+    /// It is the item's whole map.
+    Replace,
+    /// Its keys describe the event alone and move to its `revision`.
+    Arguments,
+}
+
+/// The families' rules. A record's `SET_TITLE` is always the format's own: it
+/// sets `title` and nothing else.
+#[derive(Clone, Copy)]
+pub struct Policy {
+    /// The fold of a full two-segment event type.
+    pub fold: fn(&str) -> Fold,
+    /// Whether a key of a folding event describes that event alone, as an
+    /// argument does, so it moves to the event's `revision`.
+    pub argument: fn(&str, &str) -> bool,
+}
+
+impl Policy {
+    /// Format 7's own rule: CREATE and SET_METADATA overlay, nothing else is state.
+    pub const FORMAT_7: Policy = Policy {
+        fold: format_7_fold,
+        argument: no_argument,
+    };
+}
+
+fn format_7_fold(event_type: &str) -> Fold {
+    match event_type.split_once("::").map(|(_, verb)| verb) {
+        Some("CREATE" | "SET_METADATA") => Fold::Patch,
+        _ => Fold::Arguments,
+    }
+}
+
+fn no_argument(_: &str, _: &str) -> bool {
+    false
+}
+
 #[derive(Debug, thiserror::Error)]
 #[error("{0}")]
 pub struct ConvertError(pub String);
@@ -129,6 +171,7 @@ pub struct UploadIntent {
 }
 
 pub struct Converter {
+    policy: Policy,
     checkpoint: [u8; 32],
     next_repo_seq: i64,
     items: HashMap<ItemId, Item>,
@@ -142,8 +185,9 @@ pub struct Converter {
 impl Converter {
     /// Start a repository. The history generation stays; the genesis changes
     /// with the format.
-    pub fn new(repo_id: &RepoId, generation: &str) -> Result<Self, ConvertError> {
+    pub fn new(repo_id: &RepoId, generation: &str, policy: Policy) -> Result<Self, ConvertError> {
         Ok(Self {
+            policy,
             checkpoint: checkpoint::genesis(repo_id, generation, false)?,
             next_repo_seq: 1,
             items: HashMap::new(),
@@ -216,16 +260,22 @@ impl Converter {
         )?)
         .map_err(|error| fail(format!("format 7 item event: {error}")))?;
         let mut source_metadata = None;
-        let translated = translate(&mut self.items, &mut event, &source.sizes, |event| {
-            let Some(reference) = &event.set_metadata else {
-                return Ok(Patch::None);
-            };
-            source_metadata = readable(&reference.id(), source.metadata.as_deref())?;
-            Ok(match &source_metadata {
-                Some(metadata) => Patch::Value(object(metadata)?.clone()),
-                None => Patch::Erased,
-            })
-        })?;
+        let translated = translate(
+            &self.policy,
+            &mut self.items,
+            &mut event,
+            &source.sizes,
+            |event| {
+                let Some(reference) = &event.set_metadata else {
+                    return Ok(Patch::None);
+                };
+                source_metadata = readable(&reference.id(), source.metadata.as_deref())?;
+                Ok(match &source_metadata {
+                    Some(metadata) => Patch::Value(object(metadata)?.clone()),
+                    None => Patch::Erased,
+                })
+            },
+        )?;
         if let Some(upload_intent_id) = translated.upload_intent {
             self.upload_intents.push(UploadIntent {
                 repo_seq,
@@ -267,16 +317,20 @@ pub enum StreamRead {
 /// files what it returns in its own repository; there are no commit IDs or
 /// checkpoints to compute. An upload intent belongs to the proposer's Hub and
 /// is dropped.
-#[derive(Default)]
 pub struct StreamReader {
+    policy: Policy,
     items: HashMap<ItemId, Item>,
     /// EMAIL events after CREATE whose payload held `mailcal`.
     pub dropped_mailcal: u64,
 }
 
 impl StreamReader {
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(policy: Policy) -> Self {
+        Self {
+            policy,
+            items: HashMap::new(),
+            dropped_mailcal: 0,
+        }
     }
 
     pub fn read(&mut self, source: StreamEvent) -> Result<StreamRead, ConvertError> {
@@ -305,9 +359,13 @@ impl StreamReader {
         let mut event: EventProposal = serde_json::from_value(proposal)
             .map_err(|error| fail(format!("format 7 item event: {error}")))?;
         let inline = metadata.clone();
-        let translated = translate(&mut self.items, &mut event, &source.sizes, |_| {
-            Ok(metadata.map_or(Patch::None, Patch::Value))
-        })?;
+        let translated = translate(
+            &self.policy,
+            &mut self.items,
+            &mut event,
+            &source.sizes,
+            |_| Ok(metadata.map_or(Patch::None, Patch::Value)),
+        )?;
         self.dropped_mailcal += u64::from(translated.dropped_mailcal);
         event.set_metadata = match translated.metadata {
             Payload::Unchanged => inline
@@ -346,6 +404,7 @@ struct Translated {
 /// sized, its metadata as the source names it; `patch` reads that metadata
 /// only for an item-level event.
 fn translate(
+    policy: &Policy,
     items: &mut HashMap<ItemId, Item>,
     event: &mut EventProposal,
     sizes: &BTreeMap<ObjectId, u64>,
@@ -400,13 +459,41 @@ fn translate(
         file_size(&item_id, event, patch)?;
         upload_intent = file_revision(event, &verb, patch, &mut revision)?;
     }
-    item.fold(event, &verb, patch.as_ref())?;
+    let title = verb == "SET_TITLE" && item.record;
+    let fold = if title {
+        Fold::Arguments
+    } else {
+        (policy.fold)(&event.event_type)
+    };
+    // A key that is not item state is a fact about its event and moves to its
+    // `revision`, except the keys the rules below move.
+    if let Some(patch) = &mut patch {
+        let arguments: Vec<String> = patch
+            .keys()
+            .filter(|key| fold == Fold::Arguments || (policy.argument)(&event.event_type, key))
+            .filter(|key| {
+                !((title && key.as_str() == "title")
+                    || (item.item_type == "EMAIL" && key.as_str() == "mailcal")
+                    || (item.item_type == "POST" && key.as_str() == "body_markdown_blob_id"))
+            })
+            .cloned()
+            .collect();
+        for key in arguments {
+            let value = patch.remove(&key).expect("listed key");
+            if value.is_null() {
+                continue;
+            }
+            if revision.insert(key.clone(), value).is_some() {
+                return Err(fail(format!("{} names {key} twice", event.event_type)));
+            }
+        }
+    }
+    item.fold(event, fold, title, patch.as_ref())?;
     let Some(patch) = patch else {
         item.written_empty = false;
         return Ok(unchanged);
     };
     let mut map = item.metadata.clone();
-    overlay(&mut map, &patch);
     let mut dropped_mailcal = false;
     if item.item_type == "EMAIL" && verb == "CREATE" {
         email_originals(&item_id, event, &mut map, sizes)?;
@@ -436,26 +523,26 @@ fn translate(
 }
 
 impl Item {
-    /// Format 7's patch rule: CREATE and SET_METADATA fold, and an erased one
+    /// A folding event sets the map from its state keys, and an erased one
     /// clears every key; a record's SET_TITLE sets `title`, and an erased one
-    /// removes it. A FILE's new bytes set `content`, the size its bytes entry
-    /// now holds, so that key is gone before this fold.
+    /// removes it. Arguments and a FILE's size are gone before this fold.
     fn fold(
         &mut self,
         event: &EventProposal,
-        verb: &str,
+        fold: Fold,
+        title: bool,
         patch: Option<&Map<String, Value>>,
     ) -> Result<(), ConvertError> {
-        if matches!(verb, "CREATE" | "SET_METADATA") {
-            match patch {
-                Some(patch) => overlay(&mut self.metadata, patch),
-                None => self.metadata.clear(),
+        match (fold, patch) {
+            (Fold::Arguments, _) => {}
+            (Fold::Patch, Some(patch)) => overlay(&mut self.metadata, patch),
+            (Fold::Replace, Some(patch)) => {
+                self.metadata.clear();
+                overlay(&mut self.metadata, patch);
             }
+            (_, None) => self.metadata.clear(),
         }
-        if verb == "SET_TITLE"
-            && self.record
-            && event.event_type == format!("{}::SET_TITLE", self.item_type)
-        {
+        if title && event.event_type == format!("{}::SET_TITLE", self.item_type) {
             match patch {
                 Some(patch) => match patch.get("title") {
                     Some(Value::String(title)) if !title.is_empty() => {
@@ -775,8 +862,18 @@ mod tests {
     const REPO: &str = "019a2900-0000-7000-8000-000000000001";
     const GENERATION: &str = "019a2900-0000-7000-8000-000000000002";
 
+    /// Format 7's rule, and a POST's content event carries its state, as the
+    /// Hub's does.
+    const POLICY: Policy = Policy {
+        fold: |event_type| match event_type {
+            "POST::SET_CONTENT" => Fold::Patch,
+            _ => (Policy::FORMAT_7.fold)(event_type),
+        },
+        argument: |_, _| false,
+    };
+
     fn converter() -> Converter {
-        Converter::new(&RepoId::parse(REPO).unwrap(), GENERATION).unwrap()
+        Converter::new(&RepoId::parse(REPO).unwrap(), GENERATION, POLICY).unwrap()
     }
 
     /// The stored size of each object these tests name: `[n; 32]` holds n bytes.
@@ -959,7 +1056,7 @@ mod tests {
 
     /// The same history read as a stream: metadata inline, no metadata ID.
     fn stream(events: &[(Value, Option<&Metadata>)]) -> Result<Vec<EventProposal>, ConvertError> {
-        let mut reader = StreamReader::new();
+        let mut reader = StreamReader::new(POLICY);
         events
             .iter()
             .map(|(event, metadata)| {
@@ -1056,7 +1153,7 @@ mod tests {
         // A stream event names no metadata object.
         let mut named = events[0].0.clone();
         named["metadata_id"] = json!(file_create.id());
-        let error = StreamReader::new()
+        let error = StreamReader::new(POLICY)
             .read(StreamEvent {
                 kind: Kind::Item,
                 proposal: named,
@@ -1070,7 +1167,7 @@ mod tests {
 
     #[test]
     fn a_stream_label_drops_what_its_ref_holds() {
-        let read = StreamReader::new()
+        let read = StreamReader::new(POLICY)
             .read(StreamEvent {
                 kind: Kind::Ref,
                 proposal: json!({
@@ -1121,6 +1218,74 @@ mod tests {
         let converted = decode_event_proposal(&commit.payloads[0]).unwrap();
         assert!(converted.set_metadata.is_none());
         assert!(commit.metadata.is_empty());
+    }
+
+    #[test]
+    fn an_event_keeps_its_arguments_in_its_revision() {
+        let chat = "019a2900-0000-7000-8000-000000000a03";
+        let create = metadata(json!({"title": "Room", "color": "red"}));
+        let add = metadata(json!({"assistant_id": "bot", "note": null}));
+        let title = metadata(json!({"title": "Hall"}));
+        let commit = converter()
+            .convert(source(
+                1,
+                vec![
+                    (event(chat, "CHAT::CREATE", None, &create), Some(&create)),
+                    (
+                        event(chat, "CHAT::ADD_ASSISTANT", Some(1), &add),
+                        Some(&add),
+                    ),
+                    (
+                        event(chat, "CHAT::SET_TITLE", Some(2), &title),
+                        Some(&title),
+                    ),
+                ],
+            ))
+            .unwrap();
+        assert_eq!(
+            maps(&commit, &[&create, &add, &title]),
+            [
+                json!({"title": "Room", "color": "red"}),
+                // An argument describes its event, never the item.
+                json!({"title": "Room", "color": "red", "revision": {"assistant_id": "bot"}}),
+                json!({"title": "Hall", "color": "red"}),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_policy_replaces_maps_and_moves_arguments() {
+        let task = "019a2900-0000-7000-8000-000000000a04";
+        let policy = Policy {
+            fold: |event_type| match event_type {
+                "TASK::SET_METADATA" => Fold::Replace,
+                _ => (Policy::FORMAT_7.fold)(event_type),
+            },
+            argument: |event_type, key| event_type == "TASK::CREATE" && key == "template",
+        };
+        let create = metadata(json!({"title": "Plan", "due": "soon", "template": "weekly"}));
+        let edit = metadata(json!({"title": "Ship"}));
+        let commit = Converter::new(&RepoId::parse(REPO).unwrap(), GENERATION, policy)
+            .unwrap()
+            .convert(source(
+                1,
+                vec![
+                    (event(task, "TASK::CREATE", None, &create), Some(&create)),
+                    (
+                        event(task, "TASK::SET_METADATA", Some(1), &edit),
+                        Some(&edit),
+                    ),
+                ],
+            ))
+            .unwrap();
+        assert_eq!(
+            maps(&commit, &[&create, &edit]),
+            [
+                json!({"title": "Plan", "due": "soon", "revision": {"template": "weekly"}}),
+                // A replacement holds no key it does not name.
+                json!({"title": "Ship"}),
+            ]
+        );
     }
 
     #[test]

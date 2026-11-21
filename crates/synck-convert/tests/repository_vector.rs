@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use rusqlite::Connection;
-use synck_convert::{Converter, Kind, SourceCommit, SourceEvent};
+use synck_convert::{Converter, Kind, Policy, SourceCommit, SourceEvent};
 use synck_vcs::codec::envelope_metadata_id;
 use synck_vcs::types::{
     CommitId, ObjectId, RepoId, commit_id_from_digest_bytes, parse_hashed_time,
@@ -105,7 +105,8 @@ fn the_format_7_vector_converts_to_the_format_8_vector() {
             |row| row.get(0),
         )
         .unwrap();
-    let mut converter = Converter::new(&RepoId::parse(REPO).unwrap(), &generation).unwrap();
+    let mut converter =
+        Converter::new(&RepoId::parse(REPO).unwrap(), &generation, Policy::FORMAT_7).unwrap();
 
     let mut statement = source
         .prepare(

@@ -543,6 +543,22 @@ fn classify_profile_event(
     kind: FileFolderKind,
 ) -> Result<Option<EventProposal>, SemanticError> {
     let verb = proposal.event_type.as_str();
+    // A revision's `origin` and `provenance` describe new bytes.
+    if !matches!(verb, "FILE::CREATE" | "FILE::SET_CONTENT")
+        && proposal
+            .set_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("revision"))
+            .and_then(Value::as_object)
+            .is_some_and(|revision| {
+                revision.contains_key("origin") || revision.contains_key("provenance")
+            })
+    {
+        return Err(error(
+            SemanticErrorCode::MalformedProfileEvent,
+            "only a FILE content event names a revision's origin or provenance",
+        ));
+    }
     if KNOWN_ITEM_OMISSIONS.contains(&verb)
         || (kind == FileFolderKind::File && KNOWN_FILE_OMISSIONS.contains(&verb))
         || (kind == FileFolderKind::Folder && KNOWN_FOLDER_OMISSIONS.contains(&verb))
@@ -669,7 +685,8 @@ fn validate_content_event(proposal: &EventProposal) -> Result<(), SemanticError>
 
 /// The bytes entry carries the file's size. Content event metadata is
 /// optional and may hold any item key, since a complete map (format.md,
-/// Metadata payloads) repeats them all; only its `revision` facts are checked.
+/// Metadata payloads) repeats them all; only its `revision` origin and
+/// provenance are checked.
 fn validate_file_bytes(proposal: &EventProposal) -> Result<(), SemanticError> {
     let size = proposal
         .set_content
@@ -699,15 +716,6 @@ fn validate_file_bytes(proposal: &EventProposal) -> Result<(), SemanticError> {
             "revision must be an object",
         )
     })?;
-    if revision
-        .keys()
-        .any(|key| !matches!(key.as_str(), "origin" | "provenance"))
-    {
-        return Err(error(
-            SemanticErrorCode::MalformedProfileEvent,
-            "revision has an unknown field",
-        ));
-    }
     if let Some(origin) = revision.get("origin")
         && !matches!(origin.as_str(), Some("LOCAL" | "FEDERATED"))
     {
