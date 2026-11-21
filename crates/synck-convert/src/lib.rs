@@ -118,6 +118,16 @@ struct Item {
     written_empty: bool,
 }
 
+/// A Hub upload intent a FILE event named in format 7 metadata. It is a
+/// transport ID, not history, so it leaves the map; the driver keeps it in its
+/// own upload records, found by the event's position.
+#[derive(Debug, PartialEq, Eq)]
+pub struct UploadIntent {
+    pub repo_seq: i64,
+    pub commit_event_idx: usize,
+    pub upload_intent_id: String,
+}
+
 pub struct Converter {
     checkpoint: [u8; 32],
     next_repo_seq: i64,
@@ -125,6 +135,8 @@ pub struct Converter {
     /// EMAIL events after CREATE whose payload held `mailcal`. Format 8 keeps
     /// only CREATE's, so these values are not carried over.
     pub dropped_mailcal: u64,
+    /// Every upload intent dropped so far, in history order.
+    pub upload_intents: Vec<UploadIntent>,
 }
 
 impl Converter {
@@ -136,6 +148,7 @@ impl Converter {
             next_repo_seq: 1,
             items: HashMap::new(),
             dropped_mailcal: 0,
+            upload_intents: Vec::new(),
         })
     }
 
@@ -155,9 +168,9 @@ impl Converter {
         let mut digest = EventsDigest::default();
         let mut payloads = Vec::with_capacity(commit.events.len());
         let mut metadata = Vec::new();
-        for event in commit.events.iter() {
+        for (index, event) in commit.events.iter().enumerate() {
             let payload = match event.kind {
-                Kind::Item => self.item_event(event, &mut metadata)?,
+                Kind::Item => self.item_event(event, (commit.repo_seq, index), &mut metadata)?,
                 Kind::Ref => ref_event(event, &mut metadata)?,
             };
             digest.push(&payload);
@@ -193,6 +206,7 @@ impl Converter {
     fn item_event(
         &mut self,
         source: &SourceEvent,
+        (repo_seq, commit_event_idx): (i64, usize),
         written: &mut Vec<Metadata>,
     ) -> Result<Vec<u8>, ConvertError> {
         let mut event: EventProposal = serde_json::from_value(sized(&source.payload, source)?)
@@ -234,10 +248,18 @@ impl Converter {
         };
         let source_metadata = readable(&reference.id(), source.metadata.as_deref())?;
         let mut patch = source_metadata.as_ref().map(object).transpose()?.cloned();
+        let mut revision = Map::new();
         if item.item_type == "FILE"
             && let Some(patch) = &mut patch
         {
             file_size(&item_id, &event, patch)?;
+            if let Some(upload_intent_id) = file_revision(&event, &verb, patch, &mut revision)? {
+                self.upload_intents.push(UploadIntent {
+                    repo_seq,
+                    commit_event_idx,
+                    upload_intent_id,
+                });
+            }
         }
         item.fold(&event, &verb, patch.as_ref())?;
         let (Some(source_metadata), Some(patch)) = (&source_metadata, patch) else {
@@ -258,10 +280,14 @@ impl Converter {
         }
         // A FILE whose only key was its size now has no metadata to say, and
         // omitting it leaves the current map, which is empty too.
+        let empty = map.is_empty();
+        if !revision.is_empty() {
+            map.insert("revision".into(), Value::Object(revision));
+        }
         if item.item_type == "FILE" && map.is_empty() && item.written_empty {
             event.set_metadata = None;
         } else {
-            item.written_empty = map.is_empty();
+            item.written_empty = empty;
             event.set_metadata = Some(rewrite(source_metadata, map, written)?);
         }
         Ok(canonical_event_proposal_bytes(&event)?)
@@ -351,6 +377,38 @@ fn file_size(
         )));
     }
     Ok(())
+}
+
+/// Format 7 kept a FILE revision's facts in its map, so a CREATE's became item
+/// state and every later map repeated them. They move to the event's own
+/// `revision`, and the Hub's upload intent leaves history; it is returned for
+/// the driver. Only content events describe a revision.
+fn file_revision(
+    event: &EventProposal,
+    verb: &str,
+    patch: &mut Map<String, Value>,
+    revision: &mut Map<String, Value>,
+) -> Result<Option<String>, ConvertError> {
+    for (from, to) in [("revision_origin", "origin"), ("provenance", "provenance")] {
+        match patch.remove(from) {
+            None | Some(Value::Null) => {}
+            Some(value) => {
+                revision.insert(to.into(), value);
+            }
+        }
+    }
+    let intent = match patch.remove("upload_intent_id") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(intent)) => Some(intent),
+        Some(_) => return Err(fail("upload_intent_id is not a string")),
+    };
+    if (!revision.is_empty() || intent.is_some()) && !matches!(verb, "CREATE" | "SET_CONTENT") {
+        return Err(fail(format!(
+            "{} holds revision facts outside a content event",
+            event.event_type
+        )));
+    }
+    Ok(intent)
 }
 
 /// The Hub kept an email's originals only as references inside `mailcal`: the
@@ -658,7 +716,9 @@ mod tests {
     #[test]
     fn patches_become_complete_maps_and_a_rerun_gives_the_same_ids() {
         let create = metadata(json!({"color": "red", "content": {"size": 1}}));
-        let content = metadata(json!({"content": {"size": 2}, "revision_origin": "upload"}));
+        let content = metadata(json!({
+            "content": {"size": 2}, "revision_origin": "LOCAL", "upload_intent_id": "intent",
+        }));
         let edit = metadata(json!({"color": null, "tag": "x"}));
         let mut events = vec![(event(FILE, "FILE::CREATE", None, &create), Some(&create))];
         let mut written = event(FILE, "FILE::SET_CONTENT", Some(1), &content);
@@ -676,8 +736,9 @@ mod tests {
             [
                 // The size moved to the bytes entry.
                 json!({"color": "red"}),
-                // The event's own keys stay on its map.
-                json!({"color": "red", "revision_origin": "upload"}),
+                // Its revision facts describe that event alone, and the
+                // upload intent leaves history.
+                json!({"color": "red", "revision": {"origin": "LOCAL"}}),
                 json!({"tag": "x"}),
             ]
         );
@@ -694,6 +755,53 @@ mod tests {
         assert_eq!(sizes, [Some(1), Some(2), None]);
         assert_eq!(first.metadata.len(), 3);
         assert_eq!(first.commit_id, commit().commit_id);
+        let mut converter = converter();
+        converter.convert(source(1, events.clone())).unwrap();
+        assert_eq!(
+            converter.upload_intents,
+            [UploadIntent {
+                repo_seq: 1,
+                commit_event_idx: 1,
+                upload_intent_id: "intent".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_file_create_keeps_its_revision_facts_out_of_item_state() {
+        let provenance = json!({"source": "DESKTOP", "committed_by": "a", "human_editor_ids": []});
+        let create = metadata(json!({
+            "color": "red", "content": {"size": 1}, "provenance": provenance,
+        }));
+        let edit = metadata(json!({"tag": "x"}));
+        let commit = converter()
+            .convert(source(
+                1,
+                vec![
+                    (event(FILE, "FILE::CREATE", None, &create), Some(&create)),
+                    (event(FILE, "FILE::SET_METADATA", Some(1), &edit), Some(&edit)),
+                ],
+            ))
+            .unwrap();
+        assert_eq!(
+            maps(&commit, &[&create, &edit]),
+            [
+                json!({"color": "red", "revision": {"provenance": provenance}}),
+                json!({"color": "red", "tag": "x"}),
+            ]
+        );
+        let stray = metadata(json!({"revision_origin": "LOCAL"}));
+        let error = converter()
+            .convert(source(
+                1,
+                vec![
+                    (event(FILE, "FILE::CREATE", None, &create), Some(&create)),
+                    (event(FILE, "FILE::SET_METADATA", Some(1), &stray), Some(&stray)),
+                ],
+            ))
+            .err()
+            .unwrap();
+        assert!(error.0.contains("outside a content event"), "{error}");
     }
 
     #[test]

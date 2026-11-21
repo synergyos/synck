@@ -1228,13 +1228,14 @@ fn projector_preserves_metadata_identity_and_checks_named_keys() {
     ));
     content.set_metadata = Some(
         synck_vcs::metadata::MetadataRef::new(json!({
-            "upload_intent_id": "intent",
-            "revision_origin": "LOCAL",
-            "provenance": {
-                "source": "DESKTOP",
-                "committed_by": "actor",
-                "human_editor_ids": ["human"],
-                "primary_human_editor_id": "human"
+            "revision": {
+                "origin": "LOCAL",
+                "provenance": {
+                    "source": "DESKTOP",
+                    "committed_by": "actor",
+                    "human_editor_ids": ["human"],
+                    "primary_human_editor_id": "human"
+                }
             }
         }))
         .unwrap(),
@@ -1269,7 +1270,7 @@ fn projector_preserves_metadata_identity_and_checks_named_keys() {
     metadata["removed"] = Value::Null;
     content.set_metadata = Some(synck_vcs::metadata::MetadataRef::new(metadata.clone()).unwrap());
     validate_projected_proposal(None, &[content.clone()], &kinds).unwrap();
-    metadata["revision_origin"] = Value::String("ELSEWHERE".into());
+    metadata["revision"]["origin"] = Value::String("ELSEWHERE".into());
     content.set_metadata = Some(synck_vcs::metadata::MetadataRef::new(metadata).unwrap());
     assert_eq!(
         validate_projected_proposal(None, &[content], &kinds)

@@ -132,7 +132,8 @@ pub fn apply_replica_item_event(
     }
     // A longer event type carries its subitem's metadata. Every two-segment
     // payload is the item's complete map, except EMAIL's `mailcal`, which only
-    // its CREATE holds. An erased payload makes every other key unavailable.
+    // its CREATE holds, and `revision`, which describes its own FILE event
+    // only. An erased payload makes every other key unavailable.
     if proposal.event_type.matches("::").count() == 1
         && let Some(reference) = &proposal.set_metadata
     {
@@ -146,6 +147,17 @@ pub fn apply_replica_item_event(
         let keys = item.metadata_json.as_object_mut().ok_or_else(|| {
             ReplicaProjectionError::Invalid("item metadata must be an object".to_string())
         })?;
+        if keys.remove("revision").is_some()
+            && !matches!(
+                proposal.event_type.as_str(),
+                "FILE::CREATE" | "FILE::SET_CONTENT"
+            )
+        {
+            return Err(ReplicaProjectionError::Invalid(format!(
+                "{} metadata holds revision",
+                proposal.event_type
+            )));
+        }
         if let Some(mailcal) = mailcal {
             keys.insert("mailcal".to_string(), mailcal);
         }
@@ -542,7 +554,7 @@ mod tests {
             &event(serde_json::json!({
                 "item_id": file, "event_type": "FILE::SET_CONTENT", "base_seq": 2,
                 "set_content": {"bytes": {"id": ObjectId::from_digest([3; 32]), "size": 2}},
-                "set_metadata": {"color": "GREEN"}
+                "set_metadata": {"color": "GREEN", "revision": {"origin": "LOCAL"}}
             })),
             now,
             "actor",
@@ -550,6 +562,20 @@ mod tests {
         .unwrap();
         assert_eq!(written.metadata_json["color"], "GREEN");
         assert_eq!(written.size, Some(2));
+        // A revision's facts are not item state, and only content events hold them.
+        assert_eq!(written.metadata_json.get("revision"), None);
+        let stray = apply_replica_item_event(
+            Some(written),
+            file.clone(),
+            4,
+            &event(serde_json::json!({
+                "item_id": file, "event_type": "FILE::SET_METADATA", "base_seq": 3,
+                "set_metadata": {"revision": {"origin": "LOCAL"}}
+            })),
+            now,
+            "actor",
+        );
+        assert!(stray.is_err());
     }
 
     #[test]

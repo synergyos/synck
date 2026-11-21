@@ -669,7 +669,7 @@ fn validate_content_event(proposal: &EventProposal) -> Result<(), SemanticError>
 
 /// The bytes entry carries the file's size. Content event metadata is
 /// optional and may hold any item key, since a complete map (format.md,
-/// Metadata payloads) repeats them all; the keys this family names are checked.
+/// Metadata payloads) repeats them all; only its `revision` facts are checked.
 fn validate_file_bytes(proposal: &EventProposal) -> Result<(), SemanticError> {
     let size = proposal
         .set_content
@@ -690,18 +690,33 @@ fn validate_file_bytes(proposal: &EventProposal) -> Result<(), SemanticError> {
     else {
         return Ok(());
     };
-    if let Some(upload_intent_id) = metadata.get("upload_intent_id") {
-        require_nonempty_string(upload_intent_id, "upload_intent_id")?;
-    }
-    if let Some(revision_origin) = metadata.get("revision_origin")
-        && !matches!(revision_origin.as_str(), Some("LOCAL" | "FEDERATED"))
+    let Some(revision) = metadata.get("revision") else {
+        return Ok(());
+    };
+    let revision = revision.as_object().ok_or_else(|| {
+        error(
+            SemanticErrorCode::MalformedProfileEvent,
+            "revision must be an object",
+        )
+    })?;
+    if revision
+        .keys()
+        .any(|key| !matches!(key.as_str(), "origin" | "provenance"))
     {
         return Err(error(
             SemanticErrorCode::MalformedProfileEvent,
-            "revision_origin must be LOCAL or FEDERATED",
+            "revision has an unknown field",
         ));
     }
-    if let Some(provenance) = metadata.get("provenance") {
+    if let Some(origin) = revision.get("origin")
+        && !matches!(origin.as_str(), Some("LOCAL" | "FEDERATED"))
+    {
+        return Err(error(
+            SemanticErrorCode::MalformedProfileEvent,
+            "revision.origin must be LOCAL or FEDERATED",
+        ));
+    }
+    if let Some(provenance) = revision.get("provenance") {
         validate_provenance(provenance)?;
     }
     Ok(())

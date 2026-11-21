@@ -432,9 +432,11 @@ Each event holds only the fields the core table gives it, with these additions:
 - `FILE::CREATE` and `FILE::SET_CONTENT` carry `set_content` with exactly `bytes`,
   whose size is the file's length. Their metadata is optional: a writer includes
   it only when the item has other keys.
-- `FILE::SET_CONTENT` metadata may also hold `upload_intent_id` (nonempty string),
-  `revision_origin` (`LOCAL` or `FEDERATED`) and `provenance`, and, like
-  `SET_METADATA`, any other item key; a complete map repeats them all.
+- `FILE::CREATE` and `FILE::SET_CONTENT` metadata may hold
+  [`revision`](#metadata-payloads), with optional `origin` (`LOCAL` or
+  `FEDERATED`) and optional `provenance`; any other key in it is rejected. Like
+  `SET_METADATA`, both events may hold any other item key, and a complete map
+  repeats them all.
 - `provenance` holds `source` and `committed_by` (nonempty strings),
   `human_editor_ids` (array of distinct nonempty strings) and optional
   `primary_human_editor_id` (null, or a member of that array). Any other key is
@@ -826,6 +828,11 @@ such as `SET_PARENT` or `TRASH`, leave it current. An erased latest payload make
 every key unavailable, never an older value. A reader therefore needs one payload,
 not the history, and there is one rule for every repository, encrypted or not.
 A family may name keys that only its `CREATE` holds; see [EMAIL](#email-provider-profile-and-titles).
+
+One key is not item state: `revision`, an object of facts about its own event
+alone, such as where a FILE revision came from. The current metadata is the
+latest payload without `revision`, and no later payload repeats it. Only FILE
+names it, on `CREATE` and `SET_CONTENT`; elsewhere it is rejected.
 A subitem's metadata follows the same rule within its own events. A subitem edit
 whose metadata is erased no longer names its target, so a reader cannot hide the
 value it replaced.
@@ -838,7 +845,7 @@ an event depend on object presence. Missing payloads return “not present”; p
 payloads with invalid framing, codec, JSON or digest are corrupt. Verification
 does not repair them. Re-inserting the same ID is idempotent only for exact bytes.
 
-Bundle format 6 permits `metadata` records immediately after its header and
+Bundle format 7 permits `metadata` records immediately after its header and
 before history. Each has exactly `type` (`metadata`), `object_id` (canonical
 `sha256:` spelling), and `payload_hex` (lowercase hexadecimal of the whole stored
 object). Duplicate IDs and metadata records after history are rejected. Import

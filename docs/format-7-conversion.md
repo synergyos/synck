@@ -45,8 +45,16 @@ it cannot read, so it refuses the first encrypted object.
   `SET_TITLE` sets `title`, and an erased one removes it. A FILE's `content`
   is gone before this fold. A two-segment event's new map is the item's
   folded metadata after the event plus the event's own keys, so a
-  key that did not fold, such as a revision's origin, stays on its event. Null
-  values, which meant unset, are dropped.
+  key that did not fold stays on its event. Null values, which meant unset,
+  are dropped.
+- A FILE revision's facts move under its event's `revision`: `revision_origin`
+  becomes `origin` and `provenance` stays `provenance`. Format 7 folded a
+  `CREATE`'s into item state, so every later map repeated them; now no later
+  map does. They are refused on any event but `CREATE` and `SET_CONTENT`. The
+  Hub's `upload_intent_id` is a transport ID and leaves history: the converter
+  lists each in `upload_intents` with its event's `repo_seq` and commit event
+  index, for the driver's own upload records. `template_source`, which names
+  a template that may be in another repository, stays item metadata.
 - An EMAIL keeps its originals and loses its renderings. The Hub referenced
   both from `mailcal`: the original in `source.blob_id`, or for a provider
   message the raw MIME in `raw_rfc822_blob_id` (unless its provenance is
