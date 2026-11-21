@@ -86,3 +86,33 @@ are whole replacements already, keep their objects.
 
 `crates/synck-convert/tests/repository_vector.rs` converts the format 7
 repository vector into exactly the format 8 one.
+
+## Federated streams
+
+Federation wire v1 (ClearingHouse authority spec, 2.1) is the stream's
+contract, not a repository format. ClearingHouse hashes and stores wire
+payloads; each member files them into its own repository in its own form, so
+stored bytes, object IDs and commit IDs are already each member's own (encrypted
+stream mode, "Member-side filing"). Item IDs, item and ref sequences and event
+types are the wire's. A format 8 member therefore translates at its edge, and
+each Hub switches alone: ClearingHouse, its stored proposals and format 7
+members are unchanged.
+
+An item's fold state is the map of its latest `CREATE`, `SET_METADATA` or
+record `SET_TITLE`, without `revision`: what format 7 folded.
+
+- Ingest: a wire event becomes a format 8 event by the rules above, with the
+  fold state as the folded metadata. Every object it names needs its size:
+  a FILE's comes from `content.size` and must match the hydrated object;
+  any other is the hydrated object's plaintext length. The Hub hydrates every
+  blob a proposal names before applying it, so the sizes exist then.
+- Propose: a format 8 event becomes a wire event. Its metadata is the
+  difference from the fold state, with null for a removed key; a FILE's size
+  goes to `content.size`; `revision.origin` and `revision.provenance` become
+  `revision_origin` and `provenance`. An event that changes item keys on any
+  other verb is refused, because a format 7 member would not fold them.
+
+A format 8 member's proposal ingested by another format 8 member gives the
+same map: fold state plus the difference. A wire format carrying format 8
+envelopes is not planned; it would only drop this translation once every
+member of a stream is on format 8.
