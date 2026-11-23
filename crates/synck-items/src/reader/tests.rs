@@ -402,6 +402,78 @@ fn an_erased_payload_reads_as_missing_in_a_chat_and_its_subitems() {
 }
 
 #[test]
+fn a_chat_reads_its_profile_assistants_and_participants_from_its_map() {
+    let (mut reader, id) = create("CHAT");
+    let alice = "user:t1:alice";
+    let bob = "user:t1:bob";
+    for (event_type, map) in [
+        (
+            "CHAT::SET_PROFILE",
+            json!({"chat_kind": "ROOM", "room_key": "R"}),
+        ),
+        (
+            "CHAT::ADD_ASSISTANT",
+            json!({"chat_kind": "ROOM", "room_key": "R", "assistants": ["bot"],
+                   "revision": {"assistant_id": "bot"}}),
+        ),
+        (
+            "CHAT::UPSERT_USER_PARTICIPANT",
+            json!({"chat_kind": "ROOM", "room_key": "R", "assistants": ["bot"],
+                   "participants": {alice: "OWNER", bob: "MEMBER"}}),
+        ),
+        (
+            "CHAT::REMOVE_USER_PARTICIPANT",
+            json!({"chat_kind": "ROOM", "room_key": "R", "assistants": ["bot"],
+                   "participants": {alice: "OWNER"},
+                   "revision": {"tenant_id": "t1", "user_id": "bob"}}),
+        ),
+    ] {
+        apply(&mut reader, &event(&id, event_type, map, None), "alice");
+    }
+    let chat = reader.chat_details().unwrap().unwrap();
+    assert_eq!(chat.profile.as_ref().unwrap().chat_kind, "ROOM");
+    assert_eq!(chat.assistants, BTreeSet::from(["bot".to_string()]));
+    assert_eq!(
+        chat.participants,
+        BTreeMap::from([(alice.to_string(), "OWNER".to_string())])
+    );
+    // An event without metadata leaves the details as they are.
+    let mut trash = event(&id, "CHAT::TRASH", json!({}), None);
+    trash.set_metadata = None;
+    trash.set_in_trash = Some(true);
+    apply(&mut reader, &trash, "alice");
+    assert_eq!(
+        reader.chat_details().unwrap().unwrap().participants.len(),
+        1
+    );
+
+    let refused = |map: Value| {
+        let (mut reader, id) = create("CHAT");
+        reader
+            .apply(
+                &event(&id, "CHAT::UPSERT_USER_PARTICIPANT", map, None),
+                ReadContext {
+                    item_seq: 2,
+                    created_at: now(),
+                    occurred_at: None,
+                    author: "alice",
+                    committer: "alice",
+                },
+            )
+            .is_err()
+    };
+    let direct = json!({"chat_kind": "DIRECT", "human_a_principal_key": "a",
+                        "human_b_principal_key": "b", "participants": {alice: "MEMBER"}});
+    assert!(refused(direct), "only a ROOM has participants");
+    assert!(refused(json!({"participants": {"alice": "MEMBER"}})));
+    assert!(refused(json!({"participants": {alice: "ADMIN"}})));
+    let crowd: serde_json::Map<String, Value> = (0..=1000)
+        .map(|n| (format!("user:t1:u{n}"), json!("MEMBER")))
+        .collect();
+    assert!(refused(json!({"participants": crowd})));
+}
+
+#[test]
 fn only_an_erased_creation_excuses_a_mutation_of_nothing() {
     let (mut reader, id) = create("CHAT");
     let mut erased = event(&id, "CHAT::MESSAGE::SET_CONTENT", json!({}), None);
@@ -871,8 +943,8 @@ fn reader_cache_rejects_damage_wrong_identity_version_and_poison() {
     parsed["state"]["ref_seq"] = 1.into();
     assert!(ItemReader::from_cache(id.clone(), &serde_json::to_vec(&parsed).unwrap()).is_err());
     let mut parsed: Value = serde_json::from_slice(&cache).unwrap();
-    assert_eq!(parsed["version"], 6);
-    parsed["version"] = 5.into();
+    assert_eq!(parsed["version"], 7);
+    parsed["version"] = 6.into();
     assert!(ItemReader::from_cache(id.clone(), &serde_json::to_vec(&parsed).unwrap()).is_err());
     assert!(ItemReader::from_cache(id.clone(), &cache[..cache.len() / 2]).is_err());
     let bad = event(

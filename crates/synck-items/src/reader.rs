@@ -116,7 +116,67 @@ pub struct ChatDetails {
     pub title: Option<String>,
     pub profile: Option<subitems::ChatProfileEvent>,
     pub assistants: BTreeSet<String>,
-    pub participants: BTreeMap<String, subitems::ChatUserParticipantEvent>,
+    /// A ROOM's people: principal key `user:<tenant_id>:<user_id>` to role.
+    pub participants: BTreeMap<String, String>,
+}
+
+/// A chat's details from its current map (format.md, CHAT): every
+/// two-segment payload is the complete map, so nothing is replayed.
+fn chat_details(map: &Value) -> Result<ChatDetails, String> {
+    let profile = map
+        .get("chat_kind")
+        .map(|_| subitems::parse_chat_profile_event(map))
+        .transpose()?;
+    let assistants = match map.get("assistants") {
+        None => BTreeSet::new(),
+        Some(Value::Array(ids)) => ids
+            .iter()
+            .map(|id| {
+                id.as_str()
+                    .filter(|id| !id.is_empty())
+                    .map(str::to_string)
+                    .ok_or_else(|| "assistants must be nonempty strings".to_string())
+            })
+            .collect::<Result<_, _>>()?,
+        Some(_) => return Err("assistants must be an array".into()),
+    };
+    let participants = match map.get("participants") {
+        None => BTreeMap::new(),
+        Some(Value::Object(entries)) => entries
+            .iter()
+            .map(|(key, role)| {
+                let principal = key
+                    .strip_prefix("user:")
+                    .and_then(|rest| rest.split_once(':'))
+                    .is_some_and(|(tenant, user)| !tenant.is_empty() && !user.is_empty());
+                match role.as_str() {
+                    Some(role @ ("OWNER" | "MEMBER" | "VIEWER")) if principal => {
+                        Ok((key.clone(), role.to_string()))
+                    }
+                    _ => Err(format!(
+                        "participant {key} is not a principal key with a role"
+                    )),
+                }
+            })
+            .collect::<Result<_, _>>()?,
+        Some(_) => return Err("participants must be an object".into()),
+    };
+    if participants.len() > crate::chat::MAX_PARTICIPANTS {
+        return Err("a chat has more than 1000 participants".into());
+    }
+    if !participants.is_empty()
+        && profile
+            .as_ref()
+            .is_some_and(|profile| profile.chat_kind != "ROOM")
+    {
+        return Err("only a ROOM has participants".into());
+    }
+    Ok(ChatDetails {
+        title: None,
+        profile,
+        assistants,
+        participants,
+    })
 }
 
 /// Preserved supplemental application data; it is not executed by public replay.
@@ -507,40 +567,19 @@ impl ItemReader {
             return Ok(());
         }
         if kind == "CHAT" {
-            let mut chat = self.chat.clone().unwrap_or_default();
-            match event.event_type.as_str() {
-                // An erased payload reads as missing: no profile, no known change.
-                "CHAT::SET_PROFILE" if erased => chat.profile = None,
-                "CHAT::ADD_ASSISTANT"
-                | "CHAT::REMOVE_ASSISTANT"
-                | "CHAT::UPSERT_USER_PARTICIPANT"
-                | "CHAT::REMOVE_USER_PARTICIPANT"
-                    if erased => {}
-                "CHAT::SET_PROFILE" => {
-                    chat.profile = Some(subitems::parse_chat_profile_event(meta).map_err(invalid)?)
-                }
-                "CHAT::ADD_ASSISTANT" => {
-                    chat.assistants.insert(
-                        subitems::parse_chat_assistant_participant_event(meta).map_err(invalid)?,
-                    );
-                }
-                "CHAT::REMOVE_ASSISTANT" => {
-                    chat.assistants.remove(
-                        &subitems::parse_chat_assistant_participant_event(meta).map_err(invalid)?,
-                    );
-                }
-                "CHAT::UPSERT_USER_PARTICIPANT" | "CHAT::REMOVE_USER_PARTICIPANT" => {
-                    let participant =
-                        subitems::parse_chat_user_participant_event(meta).map_err(invalid)?;
-                    let key = format!("{}:{}", participant.tenant_id, participant.user_id);
-                    if event.event_type == "CHAT::REMOVE_USER_PARTICIPANT" {
-                        chat.participants.remove(&key);
-                    } else {
-                        chat.participants.insert(key, participant);
-                    }
-                }
-                _ => require_generic_owner_event(kind, event)?,
+            if !matches!(
+                event.event_type.as_str(),
+                "CHAT::SET_PROFILE"
+                    | "CHAT::ADD_ASSISTANT"
+                    | "CHAT::REMOVE_ASSISTANT"
+                    | "CHAT::UPSERT_USER_PARTICIPANT"
+                    | "CHAT::REMOVE_USER_PARTICIPANT"
+            ) {
+                require_generic_owner_event(kind, event)?;
             }
+            // An erased payload leaves an empty map: no profile, assistants
+            // or participants are known.
+            let mut chat = chat_details(&projection.metadata_json).map_err(invalid)?;
             chat.title = (!projection.name.is_empty()).then(|| projection.name.clone());
             self.chat = Some(chat);
             return Ok(());

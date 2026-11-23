@@ -2,6 +2,9 @@ use super::MutationPolicy;
 
 pub const ITEM_TYPE: &str = "CHAT";
 
+/// The most people a ROOM's `participants` holds (format.md, CHAT).
+pub const MAX_PARTICIPANTS: usize = 1000;
+
 pub fn event_policy(event_type: &str) -> Option<MutationPolicy> {
     let rest = event_type.strip_prefix("CHAT::")?;
 
