@@ -52,9 +52,24 @@ pub enum Fold {
     Patch,
     /// It is the item's whole map.
     Replace,
-    /// Its keys describe the event alone and move to its `revision`.
+    /// Its keys describe the event alone and move to its `revision`; the
+    /// event changes no state.
     Arguments,
+    /// The family's reducer computes the item's map from the event's keys as
+    /// written and the map before it. Keys [`Policy::argument`] names also
+    /// move to `revision`; the others were consumed and are not stored again.
+    Reduce,
 }
+
+/// A family's reducer: the event, its keys as written, the commit author and
+/// the item's map before the event (empty for a create). Returns the item's
+/// map after it.
+pub type Reduce = fn(
+    &EventProposal,
+    &Map<String, Value>,
+    &str,
+    &Map<String, Value>,
+) -> Result<Map<String, Value>, String>;
 
 /// The families' rules. A record's `SET_TITLE` is always the format's own: it
 /// sets `title` and nothing else.
@@ -65,6 +80,8 @@ pub struct Policy {
     /// Whether a key of a folding event describes that event alone, as an
     /// argument does, so it moves to the event's `revision`.
     pub argument: fn(&str, &str) -> bool,
+    /// The reducer of every [`Fold::Reduce`] event type.
+    pub reduce: Reduce,
 }
 
 impl Policy {
@@ -72,6 +89,7 @@ impl Policy {
     pub const FORMAT_7: Policy = Policy {
         fold: format_7_fold,
         argument: no_argument,
+        reduce: no_reduce,
     };
 }
 
@@ -84,6 +102,16 @@ fn format_7_fold(event_type: &str) -> Fold {
 
 fn no_argument(_: &str, _: &str) -> bool {
     false
+}
+
+/// For a policy without reducing event types.
+pub fn no_reduce(
+    event: &EventProposal,
+    _: &Map<String, Value>,
+    _: &str,
+    _: &Map<String, Value>,
+) -> Result<Map<String, Value>, String> {
+    Err(format!("{} has no reducer", event.event_type))
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -158,6 +186,8 @@ struct Item {
     metadata: Map<String, Value>,
     /// The item's format 8 metadata is the empty map, or it has none yet.
     written_empty: bool,
+    /// Its latest folded payload is erased, so its state is unknown.
+    erased: bool,
 }
 
 /// A Hub upload intent a FILE event named in format 7 metadata. It is a
@@ -214,7 +244,12 @@ impl Converter {
         let mut metadata = Vec::new();
         for (index, event) in commit.events.iter().enumerate() {
             let payload = match event.kind {
-                Kind::Item => self.item_event(event, (commit.repo_seq, index), &mut metadata)?,
+                Kind::Item => self.item_event(
+                    event,
+                    &commit.author_id,
+                    (commit.repo_seq, index),
+                    &mut metadata,
+                )?,
                 Kind::Ref => ref_event(event, &mut metadata)?,
             };
             digest.push(&payload);
@@ -250,6 +285,7 @@ impl Converter {
     fn item_event(
         &mut self,
         source: &SourceEvent,
+        author: &str,
         (repo_seq, commit_event_idx): (i64, usize),
         written: &mut Vec<Metadata>,
     ) -> Result<Vec<u8>, ConvertError> {
@@ -265,6 +301,7 @@ impl Converter {
             true,
             &mut self.items,
             &mut event,
+            author,
             &source.sizes,
             |event| {
                 let Some(reference) = &event.set_metadata else {
@@ -303,6 +340,8 @@ impl Converter {
 /// and the size of every object its converted content names.
 pub struct StreamEvent {
     pub kind: Kind,
+    /// The proposal's author, which a reducer may read.
+    pub author: String,
     pub proposal: Value,
     pub metadata: Option<Value>,
     pub sizes: BTreeMap<ObjectId, u64>,
@@ -331,8 +370,8 @@ impl Completer {
         }
     }
 
-    /// An existing item and its current map, or `None` when it has none to
-    /// read: none written, or its latest payload erased.
+    /// An existing item and its current map: empty when none was written,
+    /// `None` when its latest payload is erased, which a reducing event refuses.
     pub fn existing(
         &mut self,
         item_id: ItemId,
@@ -340,6 +379,7 @@ impl Completer {
         record: bool,
         current: Option<Map<String, Value>>,
     ) {
+        let erased = current.is_none();
         let metadata = current.unwrap_or_default();
         self.items.insert(
             item_id,
@@ -347,14 +387,20 @@ impl Completer {
                 item_type: item_type.to_string(),
                 record,
                 written_empty: metadata.is_empty(),
+                erased,
                 metadata,
             },
         );
     }
 
-    /// Complete one event in place, sizes in its content already. Returns the
-    /// upload intent a FILE event named, which leaves history.
-    pub fn complete(&mut self, event: &mut EventProposal) -> Result<Option<String>, ConvertError> {
+    /// Complete one event of a commit by `author` in place, sizes in its
+    /// content already. Returns the upload intent a FILE event named, which
+    /// leaves history.
+    pub fn complete(
+        &mut self,
+        event: &mut EventProposal,
+        author: &str,
+    ) -> Result<Option<String>, ConvertError> {
         if event.create_item.is_none() && event.set_metadata.is_none() {
             return Ok(None);
         }
@@ -369,6 +415,7 @@ impl Completer {
             false,
             &mut self.items,
             event,
+            author,
             &sizes,
             |event| {
                 Ok(match &event.set_metadata {
@@ -447,6 +494,7 @@ impl StreamReader {
             true,
             &mut self.items,
             &mut event,
+            &source.author,
             &source.sizes,
             |_| Ok(metadata.map_or(Patch::None, Patch::Value)),
         )?;
@@ -492,6 +540,7 @@ fn translate(
     history: bool,
     items: &mut HashMap<ItemId, Item>,
     event: &mut EventProposal,
+    author: &str,
     sizes: &BTreeMap<ObjectId, u64>,
     patch: impl FnOnce(&EventProposal) -> Result<Patch, ConvertError>,
 ) -> Result<Translated, ConvertError> {
@@ -510,6 +559,7 @@ fn translate(
             record: create.name.is_none(),
             metadata: Map::new(),
             written_empty: true,
+            erased: false,
         };
         if items.insert(item_id.clone(), item).is_some() {
             return Err(fail(format!("item {item_id} is created twice")));
@@ -550,6 +600,30 @@ fn translate(
     } else {
         (policy.fold)(&event.event_type)
     };
+    // A reducer reads the event's keys as written and the map before it; it
+    // cannot compute a state from an erased payload or an unknown one.
+    let reduced = match (fold, &patch) {
+        (Fold::Reduce, Some(arguments)) if !item.erased => {
+            let state =
+                (policy.reduce)(event, arguments, author, &item.metadata).map_err(|error| {
+                    fail(format!("{} on item {item_id}: {error}", event.event_type))
+                })?;
+            if state.contains_key("revision") {
+                return Err(fail(format!(
+                    "the reducer of {} returned a `revision`",
+                    event.event_type
+                )));
+            }
+            Some(state)
+        }
+        (Fold::Reduce, _) => {
+            return Err(fail(format!(
+                "{} on item {item_id} meets erased metadata",
+                event.event_type
+            )));
+        }
+        _ => None,
+    };
     // A key that is not item state is a fact about its event and moves to its
     // `revision`, except the keys the rules below move.
     if let Some(patch) = &mut patch {
@@ -573,7 +647,10 @@ fn translate(
             }
         }
     }
-    item.fold(event, fold, title, patch.as_ref())?;
+    match reduced {
+        Some(state) => item.metadata = state,
+        None => item.fold(event, fold, title, patch.as_ref())?,
+    }
     let Some(patch) = patch else {
         item.written_empty = false;
         return Ok(unchanged);
@@ -620,12 +697,16 @@ impl Item {
     ) -> Result<(), ConvertError> {
         match (fold, patch) {
             (Fold::Arguments, _) => {}
+            (Fold::Reduce, _) => unreachable!("a reduced event's state comes from its reducer"),
             (Fold::Patch, Some(patch)) => overlay(&mut self.metadata, patch),
             (Fold::Replace, Some(patch)) => {
                 self.metadata.clear();
                 overlay(&mut self.metadata, patch);
             }
             (_, None) => self.metadata.clear(),
+        }
+        if fold != Fold::Arguments {
+            self.erased = patch.is_none();
         }
         if title && event.event_type == format!("{}::SET_TITLE", self.item_type) {
             match patch {
@@ -959,6 +1040,7 @@ mod tests {
             _ => (Policy::FORMAT_7.fold)(event_type),
         },
         argument: |_, _| false,
+        reduce: no_reduce,
     };
 
     fn converter() -> Converter {
@@ -1153,6 +1235,7 @@ mod tests {
                 proposal.as_object_mut().unwrap().remove("metadata_id");
                 match reader.read(StreamEvent {
                     kind: Kind::Item,
+                    author: "owner".into(),
                     proposal,
                     metadata: metadata.map(|metadata| metadata.value().clone()),
                     sizes: sizes(),
@@ -1245,6 +1328,7 @@ mod tests {
         let error = StreamReader::new(POLICY)
             .read(StreamEvent {
                 kind: Kind::Item,
+                author: "owner".into(),
                 proposal: named,
                 metadata: None,
                 sizes: sizes(),
@@ -1259,6 +1343,7 @@ mod tests {
         let read = StreamReader::new(POLICY)
             .read(StreamEvent {
                 kind: Kind::Ref,
+                author: "owner".into(),
                 proposal: json!({
                     "owner_item_id": FILE, "event_type": "FILE_VERSION::CREATE",
                     "base_ref_seq": 0,
@@ -1351,6 +1436,7 @@ mod tests {
                 _ => (Policy::FORMAT_7.fold)(event_type),
             },
             argument: |event_type, key| event_type == "TASK::CREATE" && key == "template",
+            reduce: no_reduce,
         };
         let create = metadata(json!({"title": "Plan", "due": "soon", "template": "weekly"}));
         let edit = metadata(json!({"title": "Ship"}));
@@ -1375,6 +1461,113 @@ mod tests {
                 json!({"title": "Ship"}),
             ]
         );
+    }
+
+    /// A TASK's `ADD_TAG` adds its tag to `tags` and records its author; its
+    /// `note` describes the event alone.
+    const REDUCING: Policy = Policy {
+        fold: |event_type| match event_type {
+            "TASK::ADD_TAG" => Fold::Reduce,
+            _ => (Policy::FORMAT_7.fold)(event_type),
+        },
+        argument: |event_type, key| event_type == "TASK::ADD_TAG" && key == "note",
+        reduce: |_, arguments, author, previous| {
+            let tag = arguments["tag"].as_str().ok_or("no tag")?;
+            let mut map = previous.clone();
+            let tags = map
+                .entry("tags")
+                .or_insert_with(|| json!([]))
+                .as_array_mut()
+                .ok_or("tags is not a list")?;
+            tags.push(tag.into());
+            map.insert("tagged_by".into(), author.into());
+            Ok(map)
+        },
+    };
+
+    const TASK: &str = "019a2900-0000-7000-8000-000000000a04";
+
+    #[test]
+    fn a_reducer_writes_the_state_and_only_named_arguments_stay() {
+        let create = metadata(json!({"title": "Plan"}));
+        let tag = metadata(json!({"tag": "urgent", "note": "from triage"}));
+        let commit = Converter::new(&RepoId::parse(REPO).unwrap(), GENERATION, REDUCING)
+            .unwrap()
+            .convert(source(
+                1,
+                vec![
+                    (event(TASK, "TASK::CREATE", None, &create), Some(&create)),
+                    (event(TASK, "TASK::ADD_TAG", Some(1), &tag), Some(&tag)),
+                ],
+            ))
+            .unwrap();
+        assert_eq!(
+            maps(&commit, &[&create, &tag]),
+            [
+                json!({"title": "Plan"}),
+                // `tag` was consumed by the reducer and is not stored again.
+                json!({
+                    "title": "Plan", "tags": ["urgent"], "tagged_by": "owner",
+                    "revision": {"note": "from triage"},
+                }),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_reducer_refuses_erased_metadata() {
+        let create = metadata(json!({"title": "Plan"}));
+        let edit = metadata(json!({"title": "Ship"}));
+        let tag = metadata(json!({"tag": "urgent"}));
+        // The map before the event is erased.
+        let error = Converter::new(&RepoId::parse(REPO).unwrap(), GENERATION, REDUCING)
+            .unwrap()
+            .convert(source(
+                1,
+                vec![
+                    (event(TASK, "TASK::CREATE", None, &create), Some(&create)),
+                    (event(TASK, "TASK::SET_METADATA", Some(1), &edit), None),
+                    (event(TASK, "TASK::ADD_TAG", Some(2), &tag), Some(&tag)),
+                ],
+            ))
+            .err()
+            .unwrap();
+        assert!(error.0.contains("meets erased metadata"), "{error}");
+        // The event's own payload is erased.
+        let error = Converter::new(&RepoId::parse(REPO).unwrap(), GENERATION, REDUCING)
+            .unwrap()
+            .convert(source(
+                1,
+                vec![
+                    (event(TASK, "TASK::CREATE", None, &create), Some(&create)),
+                    (event(TASK, "TASK::ADD_TAG", Some(1), &tag), None),
+                ],
+            ))
+            .err()
+            .unwrap();
+        assert!(error.0.contains("meets erased metadata"), "{error}");
+        // A live write whose item's latest payload is erased.
+        let task = ItemId::parse(TASK).unwrap();
+        let mut completer = Completer::new(REDUCING);
+        completer.existing(task.clone(), "TASK", true, None);
+        let mut write = EventProposal {
+            item_id: Some(task),
+            event_type: "TASK::ADD_TAG".into(),
+            set_metadata: Some(MetadataRef::new(json!({"tag": "urgent"})).unwrap()),
+            set_content: None,
+            create_item: None,
+            set_parent: None,
+            set_name: None,
+            set_link: None,
+            merged_from: None,
+            set_tombstoned: None,
+            set_in_trash: None,
+            set_is_federated: None,
+            set_federation_stream_id: None,
+            base_seq: Some(2),
+        };
+        let error = completer.complete(&mut write, "owner").err().unwrap();
+        assert!(error.0.contains("meets erased metadata"), "{error}");
     }
 
     #[test]
@@ -1414,11 +1607,14 @@ mod tests {
             json!({"revision_origin": "LOCAL", "upload_intent_id": "u-1"}),
         );
         assert_eq!(
-            completer.complete(&mut content).unwrap().as_deref(),
+            completer
+                .complete(&mut content, "owner")
+                .unwrap()
+                .as_deref(),
             Some("u-1")
         );
         let mut edit = change("FILE::SET_METADATA", json!({"tag": null, "note": "b"}));
-        assert_eq!(completer.complete(&mut edit).unwrap(), None);
+        assert_eq!(completer.complete(&mut edit, "owner").unwrap(), None);
         let map = |event: &EventProposal| event.set_metadata.as_ref().unwrap().value().cloned();
         assert_eq!(
             map(&content),
