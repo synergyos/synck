@@ -359,8 +359,9 @@ replayed history; a mismatch is an integrity failure.
 In an encrypted repository `name` is the name's tag; the display name is in the
 object `name_metadata_id` names. Every metadata-bearing item event holds the
 item's complete metadata (format.md, Metadata payloads), so `metadata_id` alone is
-the item's current metadata. A family whose presentation needs subitems or
-older metadata reads the item's history.
+the item's current metadata. A family reads an item's history only for its
+subitems or for state at an earlier event, such as the participants a chat
+message was sent to; current state never needs it.
 
 `POST /items/histories` reads the published history of 1 to 512 distinct items.
 For each item it returns the item events with `item_seq` above `after_seq`,

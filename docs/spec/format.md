@@ -834,8 +834,9 @@ One key is not item state: `revision`, an object of facts about its own event
 alone, such as where a FILE revision came from or the arguments of a command.
 The current metadata is the latest payload without `revision`, and no later
 payload repeats it. Any event with item metadata may hold it; a family names
-the keys it checks inside, and may hold keys it does not name. An event whose
-metadata holds only arguments still carries the complete map beside them.
+the keys it checks inside, and may hold keys it does not name. The map beside
+it is the item's state after the event, whatever the event's name, and
+`revision` never holds state that outlives its event.
 A subitem's metadata follows the same rule within its own events. A subitem edit
 whose metadata is erased no longer names its target, so a reader cannot hide the
 value it replaced.
@@ -957,6 +958,33 @@ Erasing an email's metadata and source erases its subject, title and text. Its
 events stay, so the fact that it existed stays, and so does the source's PLAIN ID,
 which can confirm a guess at the whole message. Generated provider-import commit
 messages use counts and source account, never message subjects or addresses.
+
+### CHAT profile, assistants and participants
+
+A CHAT's map holds, beside `title`, these keys of the CHAT family:
+
+| Key | Value |
+| --- | --- |
+| `chat_kind` | `ROOM`, `DIRECT` or `ASSISTANT_DIRECT`; first set by `CHAT::SET_PROFILE`, never changed |
+| `human_a_principal_key`, `human_b_principal_key` | A DIRECT chat's two people, a before b; an ASSISTANT_DIRECT chat's person in a; absent in a ROOM |
+| `assistant_id` | An ASSISTANT_DIRECT chat's assistant; absent otherwise |
+| `display_subject_key`, `room_key` | String, optional; no `room_key` in a DIRECT or ASSISTANT_DIRECT chat |
+| `assistants` | Array of assistant IDs, sorted |
+| `participants` | A ROOM's people: object from a principal key `user:<tenant_id>:<user_id>` to `OWNER`, `MEMBER` or `VIEWER`, at most 1000 entries; absent in other chats |
+
+`SET_PROFILE` sets the profile keys. `ADD_ASSISTANT` and `REMOVE_ASSISTANT` add
+or remove one ID in `assistants` and name it in `revision` (`assistant_id`).
+`UPSERT_USER_PARTICIPANT` sets one entry of `participants` and
+`REMOVE_USER_PARTICIPANT` removes one; each names its person in `revision`
+(`tenant_id`, `user_id`, and the upsert's `role`). Messages, reactions,
+attachments and chat files are subitems.
+
+A ROOM's participants are who the conversation is with, as an email's
+recipients are: the people a message was sent to are the `participants` of the
+chat's map at the message's event. Who else could read the chat, through a
+folder or as an administrator, is the host's policy and is not history. A
+message older than the chat's first `participants` has no recorded recipients,
+and a reader says so rather than guess.
 
 ### FOLDER workspaces
 

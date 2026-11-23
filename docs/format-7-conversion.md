@@ -43,16 +43,20 @@ it cannot read, so it refuses the first encrypted object.
 - Item metadata becomes complete maps. Format 7 left folding to each family's
   reader, so the driver passes a `Policy` that gives each two-segment event
   type its fold: `Patch` overlays the item's map, `Replace` is its whole map,
-  and `Arguments` leaves it. `Policy::FORMAT_7` is the format's own rule:
-  `CREATE` and `SET_METADATA` patch and nothing else folds. A record's
+  `Arguments` leaves it, and `Reduce` hands the event's keys, the commit
+  author and the map before it to the family's reducer, whose result is the
+  new map; its keys the policy does not name as arguments are not stored
+  again. A reducing event whose payload or previous map is erased is
+  refused: its state cannot be computed. `Policy::FORMAT_7` is the format's
+  own rule: `CREATE` and `SET_METADATA` patch and nothing else folds. A record's
   `SET_TITLE` always sets `title` alone. An erased folding payload clears every
   key, and an erased title removes `title`. A FILE's `content` is gone before
   the fold. An argument, every key of an `Arguments` event and any key the
   policy names as one, moves to the event's `revision`, and the event's new
   map is the item's map after it. Null values, which meant unset, are dropped.
   `Completer` applies these rules to a live writer that still states changes
-  as format 7 did: the caller names each item's current map, and each event
-  comes back with its complete map. A live FILE content event may leave its
+  as format 7 did: the caller names each item's current map (none when it is
+  erased), and each event comes back with its complete map. A live FILE content event may leave its
   size to its bytes entry; history must hold it.
 - A FILE revision's facts move under its event's `revision`: `revision_origin`
   becomes `origin` and `provenance` stays `provenance`. Format 7 folded a
