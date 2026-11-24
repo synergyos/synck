@@ -460,12 +460,18 @@ enum PortableCommand {
         all: bool,
     },
     /// Make a verified copy of a repository in a new directory, as a follower.
+    ///
+    /// The source may be a sync server's repository URL, with a read token in
+    /// SYNCK_TOKEN; an encrypted repository is copied as stored, without keys.
     Import {
-        /// Repository to copy; it is never changed.
+        /// Repository directory to copy, or a sync server's
+        /// https://HOST/v2/repositories/REPO_ID (http:// only to this
+        /// machine); it is never changed.
         source: PathBuf,
         /// New directory to write; it must not exist.
         destination: PathBuf,
-        /// Storage layout of the copy; the source's own by default.
+        /// Storage layout of the copy; the source's own by default, or
+        /// WHOLE_FILE from a sync server.
         #[arg(long, value_parser = parse_storage_mode)]
         storage_mode: Option<synck_local::StorageMode>,
     },
@@ -2399,7 +2405,21 @@ async fn run_portable(command: &PortableCommand, tokens: &[String]) -> synck_loc
             destination,
             storage_mode,
         } => async {
-            if let Some(mode) = storage_mode {
+            let url = source
+                .to_str()
+                .filter(|text| text.starts_with("https://") || text.starts_with("http://"));
+            if let Some(url) = url {
+                let token = std::env::var("SYNCK_TOKEN").map_err(|_| {
+                    LocalError::Invalid("give the server token in SYNCK_TOKEN".into())
+                })?;
+                synck_local::portable::import_remote_repository(
+                    url,
+                    &token,
+                    destination,
+                    storage_mode.unwrap_or_default(),
+                )
+                .await?;
+            } else if let Some(mode) = storage_mode {
                 synck_local::portable::import_repository_with_mode(source, destination, *mode)
                     .await?;
             } else {

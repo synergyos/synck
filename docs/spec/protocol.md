@@ -403,6 +403,9 @@ bound limits an object's size. Missing is different from empty.
 Thin replicas may install verified envelopes without every content body; new
 content-bearing acceptance requires referenced objects durable. Encryption,
 keys and signatures belong to the product profile, not a competing sync format.
+An encrypted repository's history and objects travel as stored: a client
+without keys verifies envelopes, checkpoints, object IDs and encrypted frames,
+as it does any history, and can keep a complete copy it cannot read.
 
 Large imports follow the client-side job model: a durable, disk-backed inventory
 before upload, folders first, then independently atomic batches sized from

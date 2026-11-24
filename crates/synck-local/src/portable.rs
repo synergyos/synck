@@ -3014,7 +3014,7 @@ impl PortableRepository {
     }
 }
 
-enum VerifyOwned {
+pub(crate) enum VerifyOwned {
     Item(VerifyEvent),
     Ref(VerifyRefEvent),
 }
@@ -3039,7 +3039,7 @@ impl From<CommitEventRow> for VerifyOwned {
     }
 }
 impl VerifyOwned {
-    fn borrowed(&self) -> VerifyCommitEvent<'_> {
+    pub(crate) fn borrowed(&self) -> VerifyCommitEvent<'_> {
         match self {
             Self::Item(e) => VerifyCommitEvent::Item(e),
             Self::Ref(e) => VerifyCommitEvent::Ref(e),
@@ -3168,6 +3168,88 @@ pub async fn import_repository_with_mode(
     PortableRepository::open(source)?
         .archive_with_mode(destination, mode)
         .await
+}
+
+/// Verified complete copy, into an absent destination and as a follower, of
+/// the repository a sync server serves at `url`, over protocol 2. `token`
+/// reads that repository. The copy keeps the server's generation, positions,
+/// acceptance times and checkpoints. An encrypted repository is copied as
+/// stored: its keys belong to the product profile and are not copied.
+pub async fn import_remote_repository(
+    url: &str,
+    token: &str,
+    destination: &Path,
+    mode: StorageMode,
+) -> Result<()> {
+    let (_, remote, capabilities) = crate::remote::connect(url, token)?;
+    let identity = capabilities.latest.repository.clone();
+    let (parent, parent_path, name, staging) = staging(destination)?;
+    let result = async {
+        let metadata = staging.join(".synck");
+        private_directory(&metadata)?;
+        let objects = metadata.join("objects");
+        private_directory(&objects)?;
+        // Downloads stage here.
+        private_directory(&metadata.join("tmp"))?;
+        write_new(&metadata.join("lock"), &[])?;
+        let database = metadata.join("repository.sqlite3");
+        let storage = SqliteStorage::new(database.clone()).with_encrypted(capabilities.encrypted);
+        storage.init_schema().await.map_err(corrupt)?;
+        storage.create_history(&identity).map_err(corrupt)?;
+        let chunks = match mode {
+            StorageMode::Chunked => {
+                let path = metadata.join(OBJECT_STORE_FILE);
+                ChunkStore::create(&path, &identity.repo_id)?;
+                Some(ChunkStore::new(path, &identity.repo_id))
+            }
+            StorageMode::WholeFile => None,
+        };
+        crate::remote::copy_history(&remote, &capabilities, &staging, storage.clone(), chunks)
+            .await?;
+        fs::remove_dir(metadata.join("tmp")).at("remove download staging", &metadata)?;
+        storage
+            .catch_up_state_index(&identity.repo_id)
+            .await
+            .map_err(corrupt)?;
+        write_new(
+            &metadata.join("config.json"),
+            &serde_json::to_vec(&Config {
+                format_version: FORMAT_VERSION,
+                storage_mode: mode,
+                repo_id: identity.repo_id.clone(),
+                author: None,
+                authority: Authority::Follower,
+                encrypted: capabilities.encrypted,
+                checkout: None,
+            })?,
+        )?;
+        let repository = PortableRepository::open(&staging)?;
+        let report = repository.verify().await?;
+        if !report.missing_objects.is_empty() || !report.missing_metadata.is_empty() {
+            return Err(corrupt("the copy lacks objects its history names"));
+        }
+        drop(repository);
+        let connection = storage.open_writable().map_err(corrupt)?;
+        connection.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")?;
+        drop(connection);
+        sync_file(&database)?;
+        sync_directory(&objects)?;
+        sync_directory(&metadata)?;
+        sync_directory(&staging)
+    }
+    .await;
+    if let Err(error) = result {
+        let _ = remove_tree_nofollow(&staging);
+        return Err(error);
+    }
+    publish(
+        &parent,
+        &parent_path,
+        &name,
+        &staging,
+        destination,
+        "repository copy from a sync server",
+    )
 }
 
 /// Create an independent complete repository and checkout. Existing ordinary

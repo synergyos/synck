@@ -47,6 +47,26 @@ in SQLite. `archive --storage-mode WHOLE_FILE|CHUNKED` can convert the physical
 representation without changing any object ID. Never copy a live SQLite main
 file without its WAL snapshot; the CLI uses SQLite backup.
 
+### Copies from a sync server
+
+```sh
+SYNCK_TOKEN=... synck repository import https://sync.example/v2/repositories/0190... ./copy
+synck repository verify ./copy
+```
+
+`repository import` also takes a [sync server](sync-server.md) repository URL,
+with a read token in `SYNCK_TOKEN`, and makes the same follower copy over
+protocol 2. The copy keeps the server's history exactly as published: its
+generation, positions, acceptance times, checkpoints and envelopes, so its head
+checkpoint is the server's. It verifies every history page and replays every
+commit, downloads every object history names and runs `repository verify`
+before it publishes the directory. An encrypted repository is copied the same
+way: names are tags, metadata and content stay ciphertext, and frames verify
+without a key. Keys are the product profile's and are never copied, so this
+CLI can verify the copy and list its history but not read its content. A server
+that cannot serve an object history names fails the copy. Federation domain
+cursors, which protocol 2 does not carry, are not copied.
+
 ## Checkout and authority
 
 A checkout materializes FILE/FOLDER state so ordinary applications can edit it.
