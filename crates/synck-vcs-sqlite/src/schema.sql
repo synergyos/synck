@@ -65,10 +65,6 @@ CREATE TABLE vcs_federation_domains (
 CREATE UNIQUE INDEX idx_vcs_commits_repo_repo_seq
 ON vcs_commits (repo_id, repo_seq) WHERE repo_seq IS NOT NULL;
 
-CREATE INDEX idx_vcs_commits_repo_unsequenced_created_at_commit_pk
-ON vcs_commits (repo_id, created_at, commit_pk)
-WHERE repo_seq IS NULL AND commit_id IS NOT NULL;
-
 CREATE UNIQUE INDEX idx_vcs_items_unique_name_key
 ON vcs_items (repo_id, COALESCE(parent_folder_id, ''), name_key)
 WHERE lifecycle_state = 'LIVE' AND name_key IS NOT NULL;

@@ -1198,6 +1198,27 @@ async fn open_rejects_schema_drift_at_the_declared_version() {
     assert!(matches!(error, StorageError::Other { .. }));
 }
 
+/// A nonunique index is no part of the format, so a repository made when
+/// history.sql still indexed unsequenced commits opens without a migration.
+#[tokio::test]
+async fn open_accepts_an_extra_nonunique_index() {
+    let (_dir, storage) = backend();
+    storage.init_schema().await.unwrap();
+    storage
+        .open_writable()
+        .unwrap()
+        .execute_batch(
+            "CREATE INDEX idx_vcs_commits_repo_unsequenced_created_at_commit_pk \
+             ON vcs_commits (repo_id, created_at, commit_pk) \
+             WHERE repo_seq IS NULL AND commit_id IS NOT NULL",
+        )
+        .unwrap();
+
+    storage.init_schema().await.unwrap();
+    storage.open_readonly().unwrap();
+    storage.begin_txn().await.unwrap().rollback().await.unwrap();
+}
+
 #[tokio::test]
 async fn transaction_timestamp_is_cached() {
     let (_dir, storage) = backend();
