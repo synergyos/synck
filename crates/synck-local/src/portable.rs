@@ -1875,7 +1875,7 @@ impl PortableRepository {
         )?;
         if pending {
             return Err(corrupt(
-                "repository has incomplete canonical sequencing; explicit finalize is required",
+                "repository has an accepted commit with no position",
             ));
         }
         let mut expected_heads = HashMap::new();
@@ -2089,23 +2089,15 @@ impl PortableRepository {
         })
     }
 
-    /// Resume explicitly accepted local mutations after a sequencing/indexing
-    /// failure. Never called by open/read, and never allowed for followers.
+    /// Resume explicitly accepted local mutations after an indexing or
+    /// checkout failure. Never called by open/read, and never allowed for
+    /// followers.
     pub async fn finalize(&mut self) -> Result<()> {
         self.writable()?;
-        self.storage
-            .check_publication(self.repo_id())
-            .map_err(corrupt)?;
         self.finish_acceptance().await
     }
 
     async fn finish_acceptance(&mut self) -> Result<()> {
-        while self
-            .core()
-            .sequence_repo_activity(self.repo_id().clone(), PAGE)
-            .await?
-            != 0
-        {}
         self.storage
             .catch_up_state_index(self.repo_id())
             .await
@@ -3271,11 +3263,12 @@ pub async fn init_repository_with_name_repair(
         let database = metadata.join("repository.sqlite3");
         let storage = SqliteStorage::new(database.clone());
         storage.init_schema().await.map_err(corrupt)?;
-        let core = Repo::new(
-            Storage::new(Arc::new(storage.clone())),
-            CoreConfig::default(),
-        );
-        core.sequence_repo_activity(repo_id.clone(), 1).await?;
+        storage
+            .create_history(&synck_sync::RepositoryIdentity {
+                repo_id: repo_id.clone(),
+                generation: Uuid::now_v7(),
+            })
+            .map_err(corrupt)?;
         storage
             .catch_up_state_index(&repo_id)
             .await

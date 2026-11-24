@@ -1874,61 +1874,6 @@ fn numeric_repository_sequences_are_exact_revisions() {
 }
 
 #[test]
-fn finalize_publishes_previously_accepted_commit() {
-    let temporary = committed_repository();
-    let root = temporary.path();
-    fs::write(root.join("file.txt"), b"accepted").unwrap();
-    assert!(synck(root, &["commit", "-m", "accepted"]).status.success());
-    let db = rusqlite::Connection::open(root.join(".synck/repository.sqlite3")).unwrap();
-    let accepted: Vec<u8> = db
-        .query_row(
-            "SELECT commit_id FROM vcs_commits WHERE repo_seq=3",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    let checkpoint: Vec<u8> = db
-        .query_row(
-            "SELECT checkpoint FROM vcs_commits WHERE repo_seq=3",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    // Recreate an interrupted writer's accepted-but-unpublished state.
-    db.execute_batch("BEGIN IMMEDIATE; UPDATE vcs_commits SET repo_seq=NULL,checkpoint=NULL WHERE repo_seq=3; COMMIT;").unwrap();
-    fs::write(root.join("file.txt"), b"unsaved working edit").unwrap();
-    assert!(!synck(root, &["fsck"]).status.success());
-    for _ in 0..2 {
-        let finalized = synck(root, &["repository", "finalize", "."]);
-        assert!(
-            finalized.status.success(),
-            "{}",
-            String::from_utf8_lossy(&finalized.stderr)
-        );
-    }
-    let restored: (Vec<u8>, Vec<u8>) = db
-        .query_row(
-            "SELECT commit_id,checkpoint FROM vcs_commits WHERE repo_seq=3",
-            [],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .unwrap();
-    assert_eq!(restored, (accepted, checkpoint));
-    assert_eq!(
-        db.query_row("SELECT count(*) FROM vcs_commits", [], |r| r
-            .get::<_, i64>(0))
-            .unwrap(),
-        3
-    );
-    assert_eq!(
-        fs::read(root.join("file.txt")).unwrap(),
-        b"unsaved working edit"
-    );
-    assert!(synck(root, &["--json", "log"]).status.success());
-    assert!(synck(root, &["fsck"]).status.success());
-}
-
-#[test]
 fn show_and_revert_refresh_checkout_history() {
     let temporary = committed_repository();
     let root = temporary.path();

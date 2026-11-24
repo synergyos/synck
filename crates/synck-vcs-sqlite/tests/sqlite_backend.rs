@@ -13,9 +13,9 @@ use synck_vcs::state::{
 };
 use synck_vcs::storage::{Storage, StorageBackend};
 use synck_vcs::types::{
-    CommitEventRow, CommitId, CommitProposal, CreateItem, EventProposal, FederatedDomainProposal,
+    CommitEventRow, CommitProposal, CreateItem, EventProposal, FederatedDomainProposal,
     FederatedProposal, ItemCursor, ItemId, ItemRevision, ItemRow, LifecycleState, RefEventProposal,
-    RepoEventCursor, RepoId, SubtreeClosureGuard, commit_id_to_digest_bytes,
+    RepoEventCursor, RepoId, SubtreeClosureGuard,
 };
 use synck_vcs_sqlite::{SqliteStorage, format_timestamp, parse_timestamp};
 
@@ -176,9 +176,6 @@ async fn verification_state_store_replays_without_local_canonical_rows() {
         CoreConfig::default(),
     );
     repo.append(repo_id.clone(), commit(vec![create_event("verified.txt")]))
-        .await
-        .unwrap();
-    repo.sequence_repo_activity(repo_id.clone(), 1)
         .await
         .unwrap();
 
@@ -346,9 +343,6 @@ async fn ref_ledger_has_independent_cas_and_order() {
         1
     );
 
-    repo.sequence_repo_activity(repo_id.clone(), 64)
-        .await
-        .unwrap();
     let combined = repo
         .list_repo_commit_events(repo_id.clone(), None, 64)
         .await
@@ -426,9 +420,6 @@ async fn replay_reads_use_exact_operation_and_commit_bounds() {
                 events: vec![create_event("one"), create_event("two")],
             },
         )
-        .await
-        .unwrap();
-    repo.sequence_repo_activity(repo_id.clone(), 1)
         .await
         .unwrap();
 
@@ -846,9 +837,6 @@ async fn state_store_publishes_complete_roots_and_enforces_foreign_keys() {
         )
         .await
         .unwrap();
-    repo.sequence_repo_activity(repo_id.clone(), 1)
-        .await
-        .unwrap();
     let commit_id = accepted.commit_id.clone();
 
     let mut store = storage.state_index_store(repo_id.clone()).unwrap();
@@ -1003,9 +991,6 @@ async fn projector_is_commit_bounded_handles_name_swaps_and_rebuilds_identically
         )
         .await
         .unwrap();
-    repo.sequence_repo_activity(repo_id.clone(), 32)
-        .await
-        .unwrap();
     let alpha = created.created_items[0].item_id.clone();
     let beta = created.created_items[1].item_id.clone();
 
@@ -1038,9 +1023,6 @@ async fn projector_is_commit_bounded_handles_name_swaps_and_rebuilds_identically
     )
     .await
     .unwrap();
-    repo.sequence_repo_activity(repo_id.clone(), 32)
-        .await
-        .unwrap();
     repo.append(
         repo_id.clone(),
         CommitProposal {
@@ -1054,9 +1036,6 @@ async fn projector_is_commit_bounded_handles_name_swaps_and_rebuilds_identically
     )
     .await
     .unwrap();
-    repo.sequence_repo_activity(repo_id.clone(), 32)
-        .await
-        .unwrap();
 
     let mut store = storage.state_index_store(repo_id.clone()).unwrap();
     let first = catch_up_state_index_bounded(&repo, &repo_id, &mut store, None, Some(1))
@@ -1156,9 +1135,6 @@ async fn projector_rejects_a_head_that_does_not_name_its_published_root() {
     )
     .await
     .unwrap();
-    repo.sequence_repo_activity(repo_id.clone(), 32)
-        .await
-        .unwrap();
     let mut store = storage.state_index_store(repo_id.clone()).unwrap();
     catch_up_state_index(&repo, &repo_id, &mut store, None)
         .await
@@ -1371,18 +1347,6 @@ async fn repo_append_sequence_and_read_contract() {
         .await
         .unwrap();
     let item_id = accepted.created_items[0].item_id.clone();
-    assert_eq!(
-        repo.sequence_repo_activity(repo_id.clone(), 32)
-            .await
-            .unwrap(),
-        1
-    );
-    assert_eq!(
-        repo.sequence_repo_activity(repo_id.clone(), 32)
-            .await
-            .unwrap(),
-        0
-    );
 
     let item = repo
         .get_item(repo_id.clone(), item_id.clone())
@@ -2390,7 +2354,7 @@ async fn checked_subtree_guards_have_no_size_cap_and_reject_overlap() {
 }
 
 #[tokio::test]
-async fn checkpoint_publication_is_atomic_and_does_not_gate_acceptance() {
+async fn acceptance_publishes_each_commit_with_its_checkpoint() {
     let (_directory, backend) = backend();
     backend.init_schema().await.unwrap();
     let repo_id = RepoId::new();
@@ -2398,70 +2362,46 @@ async fn checkpoint_publication_is_atomic_and_does_not_gate_acceptance() {
         Storage::new(Arc::new(backend.clone())),
         CoreConfig::default(),
     );
+    assert!(backend.repository_head_matches(&repo_id, 0).unwrap());
     let first = repo
         .append(repo_id.clone(), commit(vec![create_event("first")]))
         .await
         .unwrap();
+    assert!(backend.repository_head_matches(&repo_id, 1).unwrap());
+    // A refused proposal takes no position.
+    let item_id = first.created_items[0].item_id.clone();
+    repo.append(
+        repo_id.clone(),
+        commit(vec![trash_event(item_id.clone(), 0)]),
+    )
+    .await
+    .unwrap_err();
     let second = repo
-        .append(repo_id.clone(), commit(vec![create_event("second")]))
+        .append(repo_id.clone(), commit(vec![trash_event(item_id, 1)]))
         .await
         .unwrap();
-    assert!(first.repo_seq.is_none());
-    assert!(second.repo_seq.is_none());
-    let connection = backend.open_writable().unwrap();
-    let accepted: String = connection
-        .query_row(
-            "SELECT created_at FROM vcs_commits WHERE repo_id=?1 AND commit_id=?2",
-            params![
-                repo_id.as_str(),
-                synck_vcs::types::commit_id_to_digest_bytes(&second.commit_id).as_slice()
-            ],
-            |row| row.get(0),
-        )
-        .unwrap();
-    // Force failure after the first position has been assigned inside the batch.
-    connection
-        .execute(
-            "UPDATE vcs_commits SET created_at='zzz' WHERE commit_id=?1",
-            [synck_vcs::types::commit_id_to_digest_bytes(&second.commit_id).as_slice()],
-        )
-        .unwrap();
-    assert!(
-        repo.sequence_repo_activity(repo_id.clone(), 10)
-            .await
-            .is_err()
-    );
-    let published: i64 = connection
-        .query_row(
-            "SELECT count(*) FROM vcs_commits WHERE repo_seq IS NOT NULL",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    let checkpoints: i64 = connection
-        .query_row(
-            "SELECT count(*) FROM vcs_commits WHERE checkpoint IS NOT NULL",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!((published, checkpoints), (0, 0));
-    connection
-        .execute(
-            "UPDATE vcs_commits SET created_at=?1 WHERE commit_id=?2",
-            params![
-                accepted,
-                synck_vcs::types::commit_id_to_digest_bytes(&second.commit_id).as_slice()
-            ],
-        )
-        .unwrap();
+    assert!(backend.repository_head_matches(&repo_id, 2).unwrap());
+    let published: Vec<_> = repo
+        .list_commits_by_repo_seq(repo_id.clone(), 1, None, 10)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|commit| (commit.repo_seq, commit.commit_id))
+        .collect();
     assert_eq!(
-        repo.sequence_repo_activity(repo_id.clone(), 10)
-            .await
-            .unwrap(),
-        2
+        published,
+        vec![(Some(1), first.commit_id), (Some(2), second.commit_id)]
     );
     backend.verify_checkpoints(&repo_id).unwrap();
+    let connection = backend.open_writable().unwrap();
+    let unpublished: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM vcs_commits WHERE repo_seq IS NULL OR checkpoint IS NULL",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(unpublished, 0);
     connection
         .execute(
             "UPDATE vcs_commits SET created_at='2020-01-01T00:00:00Z' WHERE repo_seq=1",
@@ -2524,106 +2464,6 @@ async fn checked_lifecycle_accepts_more_than_9999_descendants_atomically() {
         );
         assert_eq!(item.head_seq, 2);
     }
-}
-
-fn set_acceptance_time(dir: &tempfile::TempDir, commit_id: &CommitId, created_at: &str) {
-    let connection = Connection::open(dir.path().join("repository.sqlite3")).unwrap();
-    let digest = commit_id_to_digest_bytes(commit_id);
-    let commit_pk: String = connection
-        .query_row(
-            "SELECT commit_pk FROM vcs_commits WHERE commit_id = ?1",
-            [digest.as_slice()],
-            |row| row.get(0),
-        )
-        .unwrap();
-    connection
-        .execute(
-            "UPDATE vcs_commits SET created_at = ?2 WHERE commit_pk = ?1",
-            params![commit_pk, created_at],
-        )
-        .unwrap();
-}
-
-async fn published_seq(repo: &Repo, repo_id: &RepoId, commit_id: &CommitId) -> Option<i64> {
-    repo.list_commits_by_repo_seq(repo_id.clone(), 1, None, 10)
-        .await
-        .unwrap()
-        .into_iter()
-        .find(|commit| &commit.commit_id == commit_id)
-        .and_then(|commit| commit.repo_seq)
-}
-
-// A wall clock that steps backwards between two dependent acceptances must
-// not let the later commit be published first.
-#[tokio::test]
-async fn publication_follows_acceptance_when_the_clock_steps_back() {
-    let (dir, storage) = backend();
-    storage.init_schema().await.unwrap();
-    let repo_id = RepoId::new();
-    let repo = Repo::new(Storage::new(Arc::new(storage)), CoreConfig::default());
-    let first = repo
-        .append(repo_id.clone(), commit(vec![create_event("file")]))
-        .await
-        .unwrap();
-    // The clock was ahead when the first commit was accepted.
-    set_acceptance_time(&dir, &first.commit_id, "2999-01-01T00:00:00.000000000Z");
-    let item_id = first.created_items[0].item_id.clone();
-    let second = repo
-        .append(
-            repo_id.clone(),
-            commit(vec![trash_event(item_id.clone(), 1)]),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(
-        repo.sequence_repo_activity(repo_id.clone(), 32)
-            .await
-            .unwrap(),
-        2
-    );
-    assert_eq!(
-        published_seq(&repo, &repo_id, &first.commit_id).await,
-        Some(1)
-    );
-    assert_eq!(
-        published_seq(&repo, &repo_id, &second.commit_id).await,
-        Some(2)
-    );
-}
-
-// Stored acceptance times that invert a dependency (written before the
-// acceptance rule existed, or by another writer) must stop publication.
-#[tokio::test]
-async fn sequencer_refuses_a_batch_that_inverts_item_order() {
-    let (dir, storage) = backend();
-    storage.init_schema().await.unwrap();
-    let repo_id = RepoId::new();
-    let repo = Repo::new(Storage::new(Arc::new(storage)), CoreConfig::default());
-    let first = repo
-        .append(repo_id.clone(), commit(vec![create_event("file")]))
-        .await
-        .unwrap();
-    let item_id = first.created_items[0].item_id.clone();
-    let second = repo
-        .append(
-            repo_id.clone(),
-            commit(vec![trash_event(item_id.clone(), 1)]),
-        )
-        .await
-        .unwrap();
-    set_acceptance_time(&dir, &second.commit_id, "2000-01-01T00:00:00.000000000Z");
-
-    let error = repo
-        .sequence_repo_activity(repo_id.clone(), 32)
-        .await
-        .unwrap_err();
-    assert!(error.to_string().contains("publication order"), "{error}");
-    assert_eq!(published_seq(&repo, &repo_id, &first.commit_id).await, None);
-    assert_eq!(
-        published_seq(&repo, &repo_id, &second.commit_id).await,
-        None
-    );
 }
 
 fn content_event(
@@ -3071,30 +2911,4 @@ async fn filing_in_a_domain_repository_goes_through_the_domain() {
     )
     .await
     .unwrap();
-}
-
-#[tokio::test]
-async fn repository_head_excludes_accepted_unpublished_phantoms() {
-    let (_directory, backend) = backend();
-    backend.init_schema().await.unwrap();
-    let repo_id = RepoId::new();
-    let repo = Repo::new(
-        Storage::new(Arc::new(backend.clone())),
-        CoreConfig::default(),
-    );
-    assert!(backend.repository_head_matches(&repo_id, 0).unwrap());
-    repo.append(repo_id.clone(), commit(vec![create_event("first")]))
-        .await
-        .unwrap();
-    assert!(!backend.repository_head_matches(&repo_id, 0).unwrap());
-    repo.sequence_repo_activity(repo_id.clone(), 10)
-        .await
-        .unwrap();
-    assert!(backend.repository_head_matches(&repo_id, 1).unwrap());
-    repo.append(repo_id.clone(), commit(vec![create_event("new-child")]))
-        .await
-        .unwrap();
-    // The touched head did not change and publication did not run: checking
-    // MAX(repo_seq) alone would still incorrectly accept the stale cursor.
-    assert!(!backend.repository_head_matches(&repo_id, 1).unwrap());
 }

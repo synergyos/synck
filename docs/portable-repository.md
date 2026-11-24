@@ -35,8 +35,8 @@ synck repository checkout ./my-copy --author "Alex"
 ```
 
 Archive/import verifies the source, obtains a consistent SQLite backup and
-transfers all historically referenced metadata/content. Missing payloads or
-unpublished acceptance prevent claiming a complete archive. Copies preserve
+transfers all historically referenced metadata/content. Missing payloads
+prevent claiming a complete archive. Copies preserve
 repository ID, history generation, commit/event/checkpoint identities and exact
 object frames. Cache databases and working files are not copied. Destination
 publication uses a private staging directory and refuses to overwrite an
@@ -64,23 +64,15 @@ acknowledgements and preserve the source until its replacement is verified.
 Application integrations can use direct `repository create-file`, `save-file`,
 `duplicate`, `import-email`, `create-chat` and `append-chat`; see [integration](integration.md). Recovery of an
 accepted but incompletely projected write uses `synck repository finalize PATH`.
-This explicit recovery verifies published checkpoints, then publishes pending
-accepted commits and catches up projections. It preserves commit IDs
-and working-file edits; a corrupt published chain is refused. Acceptance never
-reads or locks sequencer state and never allocates `repo_seq` in its transaction.
-It succeeds independently, leaving accepted commits with `repo_seq = NULL` until
-the asynchronous sequencer publishes them. A publication failure stops
-sequencing, not acceptance. If the CLI's post-acceptance publication fails, it reports
-`ACCEPTED_NEEDS_RECOVERY` with the accepted commit ID and `repository finalize`
-guidance; the nonzero command exit does not mean the commit was rejected.
-Repeating a pending write under a new operation ID risks a duplicate accepted
-action.
-
-Each implementation runs at most one sequencer transaction per repository,
-holding its sequencer lock until the consecutive batch and its checkpoints
-commit together. A rollback leaves no gap. Row-locking backends may use
-`SKIP LOCKED` to select unsequenced commits, while retaining that repository-wide
-sequencer lock. See the [publication contract](spec/format.md).
+The transaction that accepts a commit also publishes it, with its `repo_seq` and
+checkpoint, so a repository never holds accepted, unpublished commits. This
+explicit recovery catches up the derived indexes and the checkout after an
+accepted write; it preserves commit IDs and working-file edits. If that
+post-acceptance work fails, the CLI reports `ACCEPTED_NEEDS_RECOVERY` with the
+accepted commit ID and `repository finalize` guidance; the nonzero command exit
+does not mean the commit was rejected. Repeating such a write under a new
+operation ID risks a duplicate accepted action. See the
+[publication contract](spec/format.md).
 
 ## Retention boundary
 

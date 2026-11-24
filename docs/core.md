@@ -25,17 +25,21 @@ extra descendant or changed membership rejects the proposal as stale. This query
 bound detects races; it does not impose a commit-size limit. Page limits apply to
 read requests, never to the validity of a stored commit.
 
-Acceptance and repository publication are separate. The sequencer assigns
-`repo_seq` and its checkpoint atomically after acceptance. Waiting for publication
-must not retain item/folder acceptance locks. Publication failure delays repo-wide
-visibility; it does not undo an accepted write. Per-item reads can see accepted
-unpublished work. Repository scans use published positions and event indexes.
+Publication assigns `repo_seq` and its checkpoint atomically. The SQLite adapter
+accepts in `BEGIN IMMEDIATE` transactions, which exclude every other writer, so it
+publishes each commit in the transaction that accepts it; its sequencer step
+(`sequence_repo_activity`) has nothing to do. A backend that accepts
+concurrently, such as the Hub's PostgreSQL adapter, keeps acceptance and
+publication separate: its sequencer assigns positions after acceptance, waiting
+for publication must not retain item/folder acceptance locks, and publication
+failure delays repo-wide visibility without undoing an accepted write. There,
+per-item reads can see accepted unpublished work, and a published export refuses
+a snapshot that holds unsequenced commits rather than silently omitting them.
+Repository scans use published positions and event indexes.
 
-Never allocate repository positions in independent acceptance transactions:
-transactions can finish out of order and a cursor would then skip a late commit.
-The SQLite adapter serializes publication, preserving accepted dependencies.
-A published export refuses a snapshot that holds unsequenced commits rather than
-silently omitting them; the sequencer finishes first.
+Never allocate repository positions in independent concurrent acceptance
+transactions: they can finish out of order and a cursor would then skip a late
+commit.
 A commit's hash identifies its content; its checkpoint binds its placement and
 acceptance time. The history generation distinguishes explicit replacement from
 ordinary extension. Checkpoints do not implement authentication or retention.

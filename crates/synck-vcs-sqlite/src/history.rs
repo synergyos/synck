@@ -22,6 +22,19 @@ fn other(detail: impl std::fmt::Display) -> StorageError {
 }
 
 impl SqliteStorage {
+    /// Fix the history generation of a repository with no history yet: a new
+    /// one for a new repository, its source's for a copy. Refused once the
+    /// repository has one.
+    pub fn create_history(&self, identity: &RepositoryIdentity) -> Result<(), StorageError> {
+        self.open_writable()?
+            .execute(
+                "INSERT INTO vcs_history_generations (repo_id,generation) VALUES (?1,?2)",
+                rusqlite::params![identity.repo_id.as_str(), identity.generation.to_string()],
+            )
+            .map_err(map_sqlite_error)?;
+        Ok(())
+    }
+
     /// `None` until the repository's first publication fixes its generation.
     pub fn history_identity(
         &self,

@@ -119,7 +119,7 @@ Leave the server on `127.0.0.1`: Caddy is the only listener on the network.
   recorded before acceptance, so a receipt always has its digest. Acceptance
   is `portable::ServedRepository::accept`: the repository lock (waited for, as
   a clone waits for its origin's), Core's checked FILE/FOLDER append with refs
-  and head guards, then sequencing. One submission is accepted at a time
+  and head guards, which publishes the commit. One submission is accepted at a time
   across all repositories, and the whole proposal is in memory while it is
   accepted.
 - The working tree of a served repository takes in accepted commits at its

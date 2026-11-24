@@ -113,9 +113,12 @@ pub(crate) async fn empty_history(path: PathBuf, repo_id: &RepoId) -> Result<Sql
         .init_schema()
         .await
         .map_err(|error| LocalError::Integrity(error.to_string()))?;
-    core(storage.clone())
-        .sequence_repo_activity(repo_id.clone(), 1)
-        .await?;
+    storage
+        .create_history(&synck_sync::RepositoryIdentity {
+            repo_id: repo_id.clone(),
+            generation: uuid::Uuid::now_v7(),
+        })
+        .map_err(|error| LocalError::Integrity(error.to_string()))?;
     storage
         .catch_up_state_index(repo_id)
         .await
@@ -290,7 +293,6 @@ pub(crate) async fn apply(
             commit.commit_id, accepted.commit_id
         )));
     }
-    while target.sequence_repo_activity(repo_id.clone(), PAGE).await? == PAGE {}
     Ok(Ok(()))
 }
 

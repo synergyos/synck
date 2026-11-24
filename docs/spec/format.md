@@ -582,10 +582,13 @@ are in no table. `scripts/generate_unicode_tables.py` derives the file from:
 
 ## Publication checkpoints
 
-Acceptance remains atomic per touched items and folder guards. Accepted commits
-have no repository position until the separate sequencer publishes them.
-Publication assigns the sequence and its checkpoint in the same transaction;
-waiting for publication must not hold acceptance locks.
+Acceptance remains atomic per touched items and folder guards. Publication
+assigns a commit's sequence and its checkpoint in one update. A writer that
+accepts in transactions excluding every other writer publishes each commit in
+the transaction that accepts it; SQLite's `BEGIN IMMEDIATE` is one, so a SQLite
+repository never holds an accepted, unpublished commit. A writer that accepts
+concurrently publishes afterwards, with a separate sequencer, under the rules
+below; waiting for publication must not hold acceptance locks.
 
 The checkpoint is SHA-256 over the concatenation, without separators, of:
 
@@ -617,14 +620,15 @@ by itself authenticate authority or detect the removal of an unknown suffix.
 A checkpoint is not a regulatory retention seal.
 
 Publication order must be causal: a commit is never published before a commit
-whose result it depends on. Acceptance time carries that order, so an
-acceptance timestamp MUST be later than the acceptance time of every accepted,
-unpublished commit in the repository that the accepting transaction could
-depend on, even when the wall clock stepped back (take the later of the clock
-and that time plus one nanosecond). Before assigning a position, the sequencer
-MUST verify that the commit holding the previous event of every item and
-reference ledger the commit extends is already published, and fail the batch
-otherwise; it never publishes history that cannot replay.
+whose result it depends on. Publishing at acceptance gives that order. With a
+separate sequencer, acceptance time carries it, so an acceptance timestamp MUST
+be later than the acceptance time of every accepted, unpublished commit in the
+repository that the accepting transaction could depend on, even when the wall
+clock stepped back (take the later of the clock and that time plus one
+nanosecond). Before assigning a position, the sequencer MUST verify that the
+commit holding the previous event of every item and reference ledger the commit
+extends is already published, and fail the batch otherwise; it never publishes
+history that cannot replay.
 
 Sequencer implementations MUST serialize publication transactions per repository:
 only one such transaction may run for a repository at a time. Take that
@@ -632,13 +636,13 @@ repository's sequencer lock, select committed unsequenced commits, then assign
 a consecutive batch after the last published position, each commit's position
 and checkpoint in one update, in the same transaction. Hold the lock until
 commit or rollback. Rollback leaves no assigned positions or checkpoints, so it
-creates no gap. The lock is the implementation's: a row lock in a server
-database, `BEGIN IMMEDIATE` in SQLite; it is not part of the format. Backends
+creates no gap. The lock is the implementation's, such as a row lock in a server
+database; it is not part of the format. Backends
 with row locks may select unsequenced commits using `FOR UPDATE SKIP LOCKED`;
 that does not replace the per-repository sequencer lock. Use a deterministic
-batch order (acceptance timestamp, then `commit_pk`). Never allocate `repo_seq`
-with `nextval()` or its equivalent in the acceptance transaction; acceptance
-itself does not access the sequencer lock or checkpoints.
+batch order (acceptance timestamp, then `commit_pk`). Such a writer never
+allocates `repo_seq` with `nextval()` or its equivalent in the acceptance
+transaction; its acceptance does not access the sequencer lock or checkpoints.
 
 SQLite stores each published commit's checkpoint, as raw 32 bytes, in its
 `vcs_commits` row, with its `repo_seq`. `vcs_history_generations(repo_id, generation)`
@@ -1131,35 +1135,30 @@ repository has its `vcs_history_generations` row.
   join key. A durable accepted commit has non-null `commit_id` and `event_count`;
   the nullable fields allow transaction-local construction, not incomplete
   durable commits. `events_digest` is not stored; a reader computes it from the
-  events. `repo_seq` and `checkpoint` are null until publication, and set
-  together.
+  events. `repo_seq` and `checkpoint` are set together, by the seal that
+  publishes the commit.
 - `vcs_events` and `vcs_ref_events` contain envelope bytes in `payload`. No
   digest is stored; a reader computes it. Row identity, event type and accepted
   sequence must agree with the envelope and its replay. An event's acceptance
   time is its commit's `created_at`. `parent_folder_id` records the parent
   after the event, as replay gives it; the parent before an event is that of
   the item's previous event.
-- `vcs_items` is the canonical accepted structural head, including accepted but
-  unpublished changes. Replay must reproduce its name, name key, type, parent,
+- `vcs_items` is the canonical accepted structural head. Replay must reproduce its name, name key, type, parent,
   record key, link, lifecycle, item/ref heads, creation attribution and federation
   fields. A tree item has `name` and `name_key` and no `record_key` or
   `link_folder_id`. A record has no `name`, `name_key` or `parent_folder_id`.
 - The next position is one greater than the last published `repo_seq` (1 before
-  first publication); no stored counter repeats it. Acceptance never reads or
-  locks sequencer state and never allocates `repo_seq` in the commit transaction:
-  accepted commits remain durable with `repo_seq = NULL` until asynchronous
-  publication. Explicit `repository finalize` verifies the published checkpoint
-  chain before publishing pending commits with their original IDs. It never
-  renumbers published commits. `vcs_history_generations` has one generation.
+  first publication); no stored counter repeats it. The transaction that accepts
+  a commit publishes it, so every durable commit has its `repo_seq` and
+  checkpoint. `vcs_history_generations` has one generation.
 - `vcs_metadata_objects` stores available metadata objects. Absence is
   allowed; every present object must validate even if currently unreferenced.
 - `vcs_federation_domains` records the accepted federation-domain cursor;
   `last_domain_seq` is nonnegative. Local-only repositories normally have no
   rows. Domain cursor metadata is operational provenance, not commit ancestry.
 
-A published snapshot has no unsequenced commits. A live repository can validly hold
-accepted, unsequenced commits; a copy of one is not a published snapshot until the
-sequencer has finished.
+A SQLite repository holds no unsequenced commits, so any consistent snapshot of
+it is a published snapshot.
 
 ### WHOLE_FILE storage
 
