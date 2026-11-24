@@ -3,6 +3,11 @@ use synck_file_folder::{FileFolderKind, is_profile_event_type};
 
 pub const ITEM_TYPE: &str = "FILE";
 
+/// Metadata key holding the modified date of the current content's bytes, as
+/// the uploading client saw it (RFC 3339). It belongs to one revision: a
+/// content replacement sets it from its own metadata or removes it.
+pub const SOURCE_MODIFIED_AT_KEY: &str = "source_modified_at";
+
 pub fn event_policy(event_type: &str) -> Option<MutationPolicy> {
     let rest = event_type.strip_prefix("FILE::")?;
 

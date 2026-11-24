@@ -7,6 +7,7 @@ use synck_vcs::types::{
     EventProposal, ItemId, ItemRevision, LifecycleState, ObjectId, is_record_type,
 };
 
+use crate::file::SOURCE_MODIFIED_AT_KEY;
 use crate::metadata::{
     ITEM_SUBTYPE_STANDARD, ITEM_TREE_HIDDEN_METADATA_KEY, MetadataMaps,
     item_color_metadata_from_json,
@@ -208,6 +209,17 @@ pub fn apply_replica_item_event(
             } else if metadata.is_some_and(|metadata| metadata.value().is_none()) {
                 current.remove("content");
             }
+            match metadata
+                .and_then(MetadataRef::value)
+                .and_then(|metadata| metadata.get(SOURCE_MODIFIED_AT_KEY))
+            {
+                Some(date) => {
+                    current.insert(SOURCE_MODIFIED_AT_KEY.to_string(), date.clone());
+                }
+                None => {
+                    current.remove(SOURCE_MODIFIED_AT_KEY);
+                }
+            }
         }
         item.content_blob_id = Some(blob_id.to_string());
         item.content_item_seq = Some(item_seq);
@@ -237,6 +249,14 @@ pub fn resolve_item_date(
             }
         }
         return (last_updated_at, "LAST_UPDATED_FALLBACK".to_string());
+    }
+    if item_type == crate::file::ITEM_TYPE
+        && let Some(timestamp) = metadata
+            .get(SOURCE_MODIFIED_AT_KEY)
+            .and_then(serde_json::Value::as_str)
+            .and_then(|raw| DateTime::parse_from_rfc3339(raw.trim()).ok())
+    {
+        return (timestamp.with_timezone(&Utc), "SOURCE_MODIFIED".to_string());
     }
     (last_updated_at, "LAST_UPDATED".to_string())
 }
@@ -883,5 +903,121 @@ mod tests {
         let (date, kind) = resolve_item_date("FILE", &metadata, updated);
         assert_eq!(date, updated);
         assert_eq!(kind, "LAST_UPDATED");
+    }
+
+    #[test]
+    fn file_source_date_belongs_to_its_content_revision() {
+        let item_id = ItemId::new();
+        let now: DateTime<Utc> = "2026-11-24T10:00:00Z".parse().unwrap();
+        let event =
+            |event_type: &str, metadata: serde_json::Value, content: Option<u8>| EventProposal {
+                set_link: None,
+                merged_from: None,
+                item_id: Some(item_id.clone()),
+                event_type: event_type.to_string(),
+                set_metadata: Some(synck_vcs::metadata::MetadataRef::new(metadata).unwrap()),
+                set_content: content
+                    .map(|byte| EventContent::bytes(ObjectId::from_digest([byte; 32]))),
+                create_item: (event_type == "FILE::CREATE").then(|| CreateItem {
+                    key: None,
+                    link: None,
+                    derived_from: None,
+                    item_type: "FILE".to_string(),
+                    parent_folder_id: None,
+                    name: Some("Report.docx".to_string()),
+                }),
+                set_parent: None,
+                set_name: None,
+                set_tombstoned: None,
+                set_in_trash: None,
+                set_is_federated: None,
+                set_federation_stream_id: None,
+                base_seq: None,
+            };
+        let mut seq = 0;
+        let mut apply = |current, proposal: EventProposal| {
+            seq += 1;
+            apply_replica_item_event(
+                current,
+                item_id.clone(),
+                seq,
+                &proposal,
+                now,
+                "actor",
+                MetadataMaps::Patch,
+            )
+            .expect("project")
+        };
+        let date = |item: &ReplicaItemProjection| {
+            (item.item_date_at.to_rfc3339(), item.item_date_kind.clone())
+        };
+        let old = (
+            "2019-03-04T05:06:07+00:00".to_string(),
+            "SOURCE_MODIFIED".to_string(),
+        );
+        let written = (now.to_rfc3339(), "LAST_UPDATED".to_string());
+
+        let item = apply(
+            None,
+            event(
+                "FILE::CREATE",
+                serde_json::json!({"source_modified_at": "2019-03-04T05:06:07Z"}),
+                Some(1),
+            ),
+        );
+        assert_eq!(date(&item), old);
+
+        let mut rename = event(
+            "FILE::SET_METADATA",
+            serde_json::json!({"color_metadata": "red"}),
+            None,
+        );
+        rename.set_name = Some("Renamed.docx".to_string());
+        let item = apply(Some(item), rename);
+        assert_eq!(date(&item), old);
+
+        let item = apply(
+            Some(item),
+            event("FILE::SET_CONTENT", serde_json::json!({}), Some(2)),
+        );
+        assert!(item.metadata_json.get(SOURCE_MODIFIED_AT_KEY).is_none());
+        assert_eq!(date(&item), written);
+
+        let item = apply(
+            Some(item),
+            event(
+                "FILE::SET_CONTENT",
+                serde_json::json!({"source_modified_at": "2018-01-01T00:00:00Z"}),
+                Some(3),
+            ),
+        );
+        assert_eq!(
+            date(&item),
+            (
+                "2018-01-01T00:00:00+00:00".to_string(),
+                "SOURCE_MODIFIED".to_string()
+            )
+        );
+
+        // Data converted from the old REPAIR event arrives as SET_METADATA.
+        let item = apply(
+            Some(item),
+            event(
+                "FILE::SET_METADATA",
+                serde_json::json!({"source_modified_at": "2019-03-04T05:06:07Z"}),
+                None,
+            ),
+        );
+        assert_eq!(date(&item), old);
+
+        let item = apply(
+            Some(item),
+            event(
+                "FILE::SET_METADATA",
+                serde_json::json!({"source_modified_at": "yesterday"}),
+                None,
+            ),
+        );
+        assert_eq!(date(&item), written);
     }
 }

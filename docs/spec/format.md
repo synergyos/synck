@@ -448,6 +448,9 @@ Each event holds only the fields the core table gives it, with these additions:
   as a [complete map](#metadata-payloads), the item's other keys.
 - `FILE::CREATE` and `FILE::SET_CONTENT` carry `set_content` with exactly `bytes`, and
   metadata with `content` holding exactly `size`.
+- Both may hold `source_modified_at`, the modified date of these bytes as the
+  uploading client saw it (RFC 3339). It belongs to the revision: a later
+  `SET_CONTENT` without it leaves the item with none.
 - `FILE::SET_CONTENT` metadata may also hold `upload_intent_id` (nonempty string),
   `revision_origin` (`LOCAL` or `FEDERATED`) and `provenance`, and, like
   `SET_METADATA`, any other item key; a complete map repeats them all.
@@ -869,7 +872,8 @@ differently. In a complete-map history every two-segment event folds into the
 item's metadata, and an erased payload clears every key. In a patch history only
 `CREATE` and `SET_METADATA` fold, and an erased one of those clears every key;
 any other event's payload, erased or not, leaves the other keys alone, and
-`FILE::SET_CONTENT` sets only `content`, or removes it when erased. Events that
+`FILE::SET_CONTENT` sets only `content`, or removes it when erased, and sets
+`source_modified_at` from its payload or removes it when the payload has none. Events that
 carry no metadata, such as `SET_PARENT` or `TRASH`, leave the latest payload
 current.
 A subitem edit whose metadata is erased no longer names its target, so a reader cannot
