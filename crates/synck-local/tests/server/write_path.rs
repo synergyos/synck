@@ -12,7 +12,7 @@ use synck_sync::{
 use synck_vcs::types::ItemId;
 
 use super::common::{
-    create_file, metadata_object, object_id, pack, refusal, send, submit_result, upload, wire,
+    create_file, object_id, pack, refusal, send, submit_result, upload, wire, with_metadata,
 };
 
 #[tokio::test]
@@ -37,8 +37,8 @@ async fn proposals_stage_check_objects_and_return_one_receipt() {
     )
     .await;
     let repository = decode::<Capabilities>(&body).unwrap().latest.repository;
-    let (a, event) = create_file(&repo_id, "a.txt", b"hello");
-    let (metadata_id, metadata) = metadata_object(&event);
+    let (a, mut event) = create_file(&repo_id, "a.txt", b"hello");
+    let (metadata_id, metadata) = with_metadata(&mut event);
     let objects = format!("{sync}/objects");
     let (pages, request) = upload(&repository, "op-1", vec![ProposalRecord::Item(event)]);
     let page_uri = format!("{sync}/uploads/op-1/pages/0");
@@ -246,19 +246,6 @@ async fn proposals_stage_check_objects_and_return_one_receipt() {
 
     // A head guard that no longer holds is a conflict, never a merge.
     let (b, event) = create_file(&repo_id, "b.txt", b"hello");
-    let (metadata_id, metadata) = metadata_object(&event);
-    assert_eq!(
-        send(
-            &router,
-            Method::PUT,
-            &objects,
-            &writer,
-            pack(&[(metadata_id, &metadata)])
-        )
-        .await
-        .0,
-        StatusCode::NO_CONTENT
-    );
     let guard = ItemHead {
         item_id: a.clone(),
         head_seq: 5,
@@ -318,12 +305,7 @@ async fn an_upload_continues_after_a_restart() {
     .await;
     let repository = decode::<Capabilities>(&body).unwrap().latest.repository;
     let events = ["c.txt", "d.txt"].map(|name| create_file(&repo_id, name, b"two files").1);
-    let metadata = events.each_ref().map(metadata_object);
-    let objects = [
-        (metadata[0].0.clone(), metadata[0].1.as_slice()),
-        (metadata[1].0.clone(), metadata[1].1.as_slice()),
-        (object_id(b"two files"), b"two files"),
-    ];
+    let objects = [(object_id(b"two files"), b"two files".as_slice())];
     assert_eq!(
         send(
             &router,
@@ -380,10 +362,9 @@ async fn repository_head_fences_new_child_phantoms_and_replays_accepted_requests
         head: Option<u64>,
     ) -> SubmitRequest {
         let (_, event) = create_file(&repository.repo_id, name, b"body");
-        let (metadata_id, metadata) = metadata_object(&event);
         let (pages, mut request) = upload(repository, operation, vec![ProposalRecord::Item(event)]);
         request.repository_head = head;
-        let objects = pack(&[(metadata_id, &metadata), (object_id(b"body"), b"body")]);
+        let objects = pack(&[(object_id(b"body"), b"body")]);
         assert_eq!(
             send(
                 router,

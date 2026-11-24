@@ -12,8 +12,7 @@ use synck_sync::{
 use synck_vcs::types::RepoId;
 
 use super::common::{
-    create_file, metadata_object, object_id, pack, refusal, send, send_with, submit_result, upload,
-    wire,
+    create_file, object_id, pack, refusal, send, send_with, submit_result, upload, wire,
 };
 
 struct Fixture {
@@ -69,11 +68,7 @@ impl Fixture {
         lock_tokens: &[&str],
     ) -> (StatusCode, Vec<u8>) {
         let (_, event) = create_file(&self.repo_id, name, name.as_bytes());
-        let (metadata_id, metadata) = metadata_object(&event);
-        let objects = pack(&[
-            (object_id(name.as_bytes()), name.as_bytes()),
-            (metadata_id, &metadata),
-        ]);
+        let objects = pack(&[(object_id(name.as_bytes()), name.as_bytes())]);
         let uri = format!("{}/objects", self.sync);
         send(&self.router, Method::PUT, &uri, &self.writer, objects).await;
         let (pages, request) = upload(
