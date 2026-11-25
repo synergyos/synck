@@ -9,7 +9,7 @@ use std::path::Path;
 
 mod msg_rtf;
 
-pub const IMPORTED_EMAIL_PARSER_VERSION: u32 = 16;
+pub const IMPORTED_EMAIL_PARSER_VERSION: u32 = 17;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct ImportedEmailLimits {
@@ -117,6 +117,8 @@ pub struct ImportedEmailAttachment {
 pub struct ParsedImportedEmail {
     pub format: ImportedEmailFormat,
     pub internet_message_id: Option<String>,
+    pub in_reply_to: Option<String>,
+    pub references: Vec<String>,
     pub subject: Option<String>,
     pub from: Option<ImportedEmailAddress>,
     pub sender: Option<ImportedEmailAddress>,
@@ -451,6 +453,12 @@ fn parse_eml(
             .get_first_value("Message-ID")
             .as_deref()
             .and_then(normalize_message_id),
+        in_reply_to: parsed
+            .headers
+            .get_first_value("In-Reply-To")
+            .as_deref()
+            .and_then(normalize_message_id),
+        references: message_id_list(parsed.headers.get_first_value("References").as_deref()),
         subject: clean_one_line(parsed.headers.get_first_value("Subject").as_deref()),
         from: addresses_from_header(&parsed.headers, "From")
             .into_iter()
@@ -653,8 +661,8 @@ fn parse_msg(
     limits: &ImportedEmailLimits,
 ) -> Result<ParsedImportedEmail, ImportedEmailParseError> {
     let source_digest: [u8; 32] = Sha256::digest(source.as_slice()).into();
-    let message = match cfb::CompoundFile::open(Cursor::new(source.as_slice())) {
-        Ok(compound) => {
+    let (message, mapi) = match cfb::CompoundFile::open(Cursor::new(source.as_slice())) {
+        Ok(mut compound) => {
             for (index, entry) in compound.walk().enumerate() {
                 require_limit(
                     "MSG compound entries",
@@ -667,19 +675,21 @@ fn parse_msg(
                     limits.mime_nesting.saturating_add(2),
                 )?;
             }
+            let mapi = MsgMapiIdentity::read(&mut compound, limits)?;
             drop(compound);
             let normalized_source = normalize_msg_strings(source)?;
-            outlook_from_slice(normalized_source.as_slice())
-                .map_err(ImportedEmailParseError::InvalidFormat)?
+            let message = outlook_from_slice(normalized_source.as_slice())
+                .map_err(ImportedEmailParseError::InvalidFormat)?;
+            (message, mapi)
         }
-        Err(cfb_error) if duplicate_minifat_reference(&cfb_error) => outlook_from_slice(
-            source.as_slice(),
-        )
-        .map_err(|parse_error| {
-            ImportedEmailParseError::InvalidFormat(format!(
-                "open MSG compound file failed: {cfb_error}; direct MSG parse failed: {parse_error}"
-            ))
-        })?,
+        Err(cfb_error) if duplicate_minifat_reference(&cfb_error) => {
+            let message = outlook_from_slice(source.as_slice()).map_err(|parse_error| {
+                ImportedEmailParseError::InvalidFormat(format!(
+                    "open MSG compound file failed: {cfb_error}; direct MSG parse failed: {parse_error}"
+                ))
+            })?;
+            (message, MsgMapiIdentity::default())
+        }
         Err(error) => {
             return Err(ImportedEmailParseError::InvalidFormat(format!(
                 "open MSG compound file failed: {error}"
@@ -735,16 +745,48 @@ fn parse_msg(
         .unwrap_or_default()
         .into_iter()
         .next();
-    let sender = address_from_person(&message.sender);
+    let mut sender = address_from_person(&message.sender);
+    // Exchange stores a sent item's sender as an X.500 DN; the SMTP address
+    // then lives only in the sent-representing property.
+    let representing = mapi
+        .sent_representing_smtp
+        .as_deref()
+        .and_then(normalize_smtp_address);
+    match sender.as_mut() {
+        Some(address) if address.email.is_none() => address.email = representing,
+        Some(_) => {}
+        None => {
+            sender = representing.map(|email| ImportedEmailAddress {
+                name: None,
+                email: Some(email),
+            })
+        }
+    }
     let visible_from = transport_from.or_else(|| sender.clone());
     let actual_sender = distinct_sender(visible_from.clone(), sender);
     let reply_to = transport
         .as_deref()
         .map(|headers| addresses_from_header(headers, "Reply-To"))
         .unwrap_or_else(|| addresses_from_text(message.headers.reply_to.as_str()));
+    // Sent items and drafts carry no transport headers; their identity and
+    // thread are in MAPI properties.
     let internet_message_id = nonempty(message.headers.message_id.as_str())
+        .or(mapi.message_id)
         .as_deref()
         .and_then(normalize_message_id);
+    let in_reply_to = transport
+        .as_deref()
+        .and_then(|headers| headers.get_first_value("In-Reply-To"))
+        .or(mapi.in_reply_to)
+        .as_deref()
+        .and_then(normalize_message_id);
+    let references = message_id_list(
+        transport
+            .as_deref()
+            .and_then(|headers| headers.get_first_value("References"))
+            .or(mapi.references)
+            .as_deref(),
+    );
 
     let plain_body = normalize_msg_plain_body(message.body.as_str());
     let direct_html =
@@ -877,6 +919,8 @@ fn parse_msg(
     let mut parsed = ParsedImportedEmail {
         format: ImportedEmailFormat::Msg,
         internet_message_id,
+        in_reply_to,
+        references,
         subject: clean_one_line(Some(message.subject.as_str())),
         from: visible_from,
         sender: actual_sender,
@@ -1085,6 +1129,76 @@ fn normalize_msg_strings(source: Vec<u8>) -> Result<Vec<u8>, ImportedEmailParseE
             })?;
     }
     Ok(normalized.into_inner().into_inner())
+}
+
+/// Root MAPI string properties msg_parser does not expose.
+#[derive(Default)]
+struct MsgMapiIdentity {
+    message_id: Option<String>,
+    in_reply_to: Option<String>,
+    references: Option<String>,
+    sent_representing_smtp: Option<String>,
+}
+
+impl MsgMapiIdentity {
+    fn read<F: Read + std::io::Seek>(
+        compound: &mut cfb::CompoundFile<F>,
+        limits: &ImportedEmailLimits,
+    ) -> Result<Self, ImportedEmailParseError> {
+        Ok(Self {
+            message_id: msg_root_string(compound, "1035", limits)?,
+            in_reply_to: msg_root_string(compound, "1042", limits)?,
+            references: msg_root_string(compound, "1039", limits)?,
+            sent_representing_smtp: msg_root_string(compound, "5D02", limits)?,
+        })
+    }
+}
+
+/// Reads root property `tag` as Unicode (001F) or String8 (001E). These
+/// properties are ASCII, so String8 needs no code page.
+fn msg_root_string<F: Read + std::io::Seek>(
+    compound: &mut cfb::CompoundFile<F>,
+    tag: &str,
+    limits: &ImportedEmailLimits,
+) -> Result<Option<String>, ImportedEmailParseError> {
+    for kind in ["001F", "001E"] {
+        let path = format!("/__substg1.0_{tag}{kind}");
+        if !compound.is_stream(path.as_str()) {
+            continue;
+        }
+        let mut stream = compound.open_stream(path.as_str()).map_err(|error| {
+            ImportedEmailParseError::ParseFailed(format!(
+                "read MSG property {path} failed: {error}"
+            ))
+        })?;
+        require_limit(
+            "MSG header property bytes",
+            stream.len(),
+            limits.header_bytes,
+        )?;
+        let mut bytes = Vec::new();
+        stream.read_to_end(&mut bytes).map_err(|error| {
+            ImportedEmailParseError::ParseFailed(format!(
+                "read MSG property {path} failed: {error}"
+            ))
+        })?;
+        let value = if kind == "001F" {
+            let units = bytes
+                .chunks_exact(2)
+                .map(|unit| u16::from_le_bytes([unit[0], unit[1]]))
+                .take_while(|unit| *unit != 0)
+                .collect::<Vec<_>>();
+            String::from_utf16_lossy(&units)
+        } else {
+            let end = bytes
+                .iter()
+                .position(|byte| *byte == 0)
+                .unwrap_or(bytes.len());
+            String::from_utf8_lossy(&bytes[..end]).into_owned()
+        };
+        return Ok(nonempty(value.as_str()));
+    }
+    Ok(None)
 }
 
 fn duplicate_minifat_reference(error: &std::io::Error) -> bool {
@@ -1321,6 +1435,18 @@ fn generate_rfc822(
     push_address_list_header(&mut out, "Bcc", &message.bcc)?;
     if let Some(value) = message.internet_message_id.as_deref() {
         push_header(&mut out, "Message-ID", format!("<{value}>").as_str())?;
+    }
+    if let Some(value) = message.in_reply_to.as_deref() {
+        push_header(&mut out, "In-Reply-To", format!("<{value}>").as_str())?;
+    }
+    if !message.references.is_empty() {
+        out.push("References:")?;
+        for (index, value) in message.references.iter().enumerate() {
+            out.push(if index == 0 { " <" } else { "\r\n <" })?;
+            out.push(safe_header_value(value)?)?;
+            out.push(">")?;
+        }
+        out.push("\r\n")?;
     }
     if let Some(value) = message.sent_at.as_deref() {
         let date = chrono::DateTime::parse_from_rfc3339(value)
@@ -1650,6 +1776,20 @@ pub fn rfc822_thread_headers(raw: &[u8]) -> (Option<String>, Option<String>, Vec
         .or(own.as_ref())
         .map(|id| format!("rfc822:{id}"));
     (conversation, parent, references)
+}
+
+fn message_id_list(raw: Option<&str>) -> Vec<String> {
+    let mut ids = Vec::new();
+    for id in raw
+        .unwrap_or_default()
+        .split_whitespace()
+        .filter_map(normalize_message_id)
+    {
+        if !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    ids
 }
 
 fn normalize_message_id(raw: &str) -> Option<String> {
@@ -1996,11 +2136,21 @@ mod tests {
     }
 
     fn copy_msg_fixture_to_version(source: &[u8], version: cfb::Version) -> Vec<u8> {
+        copy_msg_fixture(source, version, |_| true, &[])
+    }
+
+    fn copy_msg_fixture(
+        source: &[u8],
+        version: cfb::Version,
+        keep: impl Fn(&Path) -> bool,
+        add: &[(&str, &[u8])],
+    ) -> Vec<u8> {
         let mut input =
             cfb::CompoundFile::open(Cursor::new(source.to_vec())).expect("open MSG fixture");
         let entries = input
             .walk()
             .skip(1)
+            .filter(|entry| keep(entry.path()))
             .map(|entry| {
                 (
                     entry.path().to_path_buf(),
@@ -2035,6 +2185,13 @@ mod tests {
                     .expect("write MSG fixture stream");
             }
         }
+        for (path, bytes) in add {
+            output
+                .create_stream(path)
+                .expect("create added MSG stream")
+                .write_all(bytes)
+                .expect("write added MSG stream");
+        }
         output.into_inner().into_inner()
     }
 
@@ -2063,6 +2220,8 @@ mod tests {
         let mut parsed = ParsedImportedEmail {
             format: ImportedEmailFormat::Eml,
             internet_message_id: Some("id\0@example.test".to_string()),
+            in_reply_to: None,
+            references: Vec::new(),
             subject: Some("sub\0ject".to_string()),
             from: Some(ImportedEmailAddress {
                 name: Some("sen\0der".to_string()),
@@ -2314,6 +2473,74 @@ mod tests {
     }
 
     #[test]
+    fn sent_msg_without_transport_headers_uses_mapi_identity_and_sender() {
+        fn unicode(value: &str) -> Vec<u8> {
+            value
+                .encode_utf16()
+                .chain([0])
+                .flat_map(u16::to_le_bytes)
+                .collect()
+        }
+        let source = decode_msg_fixture(ASCII_MSG_BASE64);
+        let message_id = unicode("<Reply@Example.Test>");
+        let references = unicode("<root@example.test> <Parent@example.test>");
+        let source = copy_msg_fixture(
+            source.as_slice(),
+            cfb::Version::V3,
+            |path| {
+                let name = path.to_string_lossy();
+                // Transport headers, sender SMTP and sender email address.
+                !["007D", "5D01", "0C1F"]
+                    .iter()
+                    .any(|tag| name.starts_with(format!("/__substg1.0_{tag}").as_str()))
+            },
+            &[
+                ("/__substg1.0_1035001F", message_id.as_slice()),
+                ("/__substg1.0_1042001E", b"<Parent@example.test>\0"),
+                ("/__substg1.0_1039001F", references.as_slice()),
+                (
+                    "/__substg1.0_5D02001F",
+                    unicode("from@domain.com").as_slice(),
+                ),
+            ],
+        );
+        let parsed = parse_imported_email(
+            ImportedEmailFormat::Msg,
+            source.as_slice(),
+            &test_limits(source.len()),
+        )
+        .expect("parse sent MSG");
+
+        assert_eq!(
+            parsed.internet_message_id.as_deref(),
+            Some("reply@example.test")
+        );
+        assert_eq!(parsed.in_reply_to.as_deref(), Some("parent@example.test"));
+        assert_eq!(
+            parsed.references,
+            ["root@example.test", "parent@example.test"]
+        );
+        assert_eq!(
+            parsed
+                .from
+                .as_ref()
+                .and_then(|value| value.email.as_deref()),
+            Some("from@domain.com")
+        );
+        assert_eq!(
+            crate::imported_email::rfc822_thread_headers(&parsed.raw_rfc822),
+            (
+                Some("rfc822:root@example.test".to_string()),
+                Some("parent@example.test".to_string()),
+                vec![
+                    "root@example.test".to_string(),
+                    "parent@example.test".to_string()
+                ],
+            )
+        );
+    }
+
+    #[test]
     fn duplicate_minifat_fallback_matches_only_the_observed_cfb_error() {
         assert!(duplicate_minifat_reference(&std::io::Error::new(
             std::io::ErrorKind::InvalidData,
@@ -2370,6 +2597,8 @@ mod tests {
         let mut parsed = ParsedImportedEmail {
             format: ImportedEmailFormat::Msg,
             internet_message_id: None,
+            in_reply_to: None,
+            references: Vec::new(),
             subject: None,
             from: None,
             sender: None,
@@ -2662,9 +2891,14 @@ mod tests {
             hex_lower(&Sha256::digest(&parsed.attachments[10].bytes)),
             "a4e3abc6bf3ee4596151abb8d336f883860703e8ea297eb77181189a36813626"
         );
+        // No transport headers: the Message-ID comes from PidTagInternetMessageId.
+        assert_eq!(
+            parsed.internet_message_id.as_deref(),
+            Some("psapr02mb48375dc9668a924d7006f6ecfd6d9@psapr02mb4837.apcprd02.prod.outlook.com")
+        );
         assert_eq!(
             hex_lower(&Sha256::digest(&parsed.raw_rfc822)),
-            "1c9dd7a6962b832bef21c07fcfc4f3b0eca573a07a4007626561211de2e4ddf0"
+            "9d6d758947271dd1a470d2fcee93afbf80ee4b74211955a507ddb0285204c527"
         );
     }
 
