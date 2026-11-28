@@ -95,9 +95,6 @@ async fn fixture_with_domain(domain: bool) -> Fixture {
     )
     .await
     .unwrap();
-    core.sequence_repo_activity(repo_id.clone(), 100)
-        .await
-        .unwrap();
     let primary = b"first version\n";
     let body = Object::new("original body\0🦀".as_bytes()).unwrap();
     // Body bytes also exercise exact-object transfer.
@@ -116,9 +113,6 @@ async fn fixture_with_domain(domain: bool) -> Fixture {
     let file_event:EventProposal=EventProposal::from_fields(json!({"item_id":file,"event_type":"FILE::SET_CONTENT","base_seq":1,"set_content":EventContent::bytes(synck_vcs::types::ObjectId::parse(primary_blob.clone()).unwrap(), primary.len() as u64)})).unwrap();
     let message:EventProposal=EventProposal::from_fields(json!({"item_id":chat,"event_type":"CHAT::MESSAGE::CREATE","base_seq":1,"set_content":EventContent::body(body.id(), body.payload().len() as u64)})).unwrap();
     core.append(repo_id.clone(), proposal(vec![file_event, message]))
-        .await
-        .unwrap();
-    core.sequence_repo_activity(repo_id.clone(), 100)
         .await
         .unwrap();
     if domain {
@@ -352,7 +346,8 @@ async fn follower_activation_continuation_and_explicit_finalize_preserve_old_byt
     );
     repository.verify().await.unwrap();
     drop(repository);
-    // Simulate a crash after an accepted local commit but before derived sequencing.
+    // Simulate a crash after an accepted local commit but before its indexes
+    // caught up: acceptance published it, so history verifies.
     let storage = SqliteStorage::new(destination.join(".synck/repository.sqlite3"));
     let core = Repo::new(
         Storage::new(Arc::new(storage.clone())),
@@ -360,7 +355,7 @@ async fn follower_activation_continuation_and_explicit_finalize_preserve_old_byt
     );
     core.append(fixture.repo_id.clone(),proposal(vec![EventProposal::from_fields(json!({"item_id":fixture.chat,"event_type":"CHAT::MESSAGE::CREATE","base_seq":3,"set_content":EventContent::body(fixture.body.id(), fixture.body.payload().len() as u64)})).unwrap()])).await.unwrap();
     let mut repository = PortableRepository::open(&destination).unwrap();
-    assert!(repository.verify().await.is_err());
+    repository.verify().await.unwrap();
     repository.finalize().await.unwrap();
     repository.verify().await.unwrap();
     let mut original = Vec::new();
@@ -632,9 +627,6 @@ async fn repository_copy_includes_committed_wal_without_checkpointing_source() {
     )
     .await
     .unwrap();
-    core.sequence_repo_activity(fixture.repo_id.clone(), 100)
-        .await
-        .unwrap();
     storage
         .catch_up_state_index(&fixture.repo_id)
         .await
@@ -930,9 +922,6 @@ async fn checkout_folder_deletion_leaves_linked_records_in_place() {
     )
     .await
     .unwrap();
-    core.sequence_repo_activity(fixture.repo_id.clone(), 100)
-        .await
-        .unwrap();
     storage
         .catch_up_state_index(&fixture.repo_id)
         .await
@@ -1890,9 +1879,6 @@ async fn repeating_an_email_import_survives_its_folder_leaving() {
     )
     .await
     .unwrap();
-    core.sequence_repo_activity(fixture.repo_id.clone(), 100)
-        .await
-        .unwrap();
     let email = fixture.root.join("message.eml");
     fs::write(
         &email,
@@ -1913,9 +1899,6 @@ async fn repeating_an_email_import_survives_its_folder_leaving() {
     }))
     .unwrap();
     core.append(fixture.repo_id.clone(), proposal(vec![trash]))
-        .await
-        .unwrap();
-    core.sequence_repo_activity(fixture.repo_id.clone(), 100)
         .await
         .unwrap();
     let repeated = repository
@@ -1954,9 +1937,6 @@ async fn listing_a_folder_finds_only_what_is_filed_there() {
     )
     .await
     .unwrap();
-    core.sequence_repo_activity(fixture.repo_id.clone(), 100)
-        .await
-        .unwrap();
     let repository = PortableRepository::open(&fixture.source).unwrap();
     let listed = repository
         .list_records(Some(&filed), None, 10)

@@ -91,8 +91,8 @@ impl SqliteStorage {
     /// Compare the complete accepted repository state to a published cursor.
     ///
     /// The caller MUST hold the authority's exclusive repository write lock
-    /// through this check and append. SQLite's read alone is not a CAS. A sealed
-    /// unpublished commit invalidates the cursor even before it gets repo_seq.
+    /// through this check and append. SQLite's read alone is not a CAS. Every
+    /// accepted commit is published, so the head is the last position.
     pub fn repository_head_matches(
         &self,
         repo_id: &RepoId,
@@ -101,10 +101,13 @@ impl SqliteStorage {
         let expected = i64::try_from(expected).map_err(|_| StorageError::Other {
             detail: "repository head exceeds i64".into(),
         })?;
-        self.open_readonly()?.query_row(
-            "SELECT COALESCE((SELECT MAX(repo_seq) FROM vcs_commits WHERE repo_id=?1),0)=?2 AND NOT EXISTS(SELECT 1 FROM vcs_commits WHERE repo_id=?1 AND commit_id IS NOT NULL AND repo_seq IS NULL)",
-            rusqlite::params![repo_id.as_str(),expected], |row|row.get(0),
-        ).map_err(map_sqlite_error)
+        self.open_readonly()?
+            .query_row(
+                "SELECT COALESCE(MAX(repo_seq),0)=?2 FROM vcs_commits WHERE repo_id=?1",
+                rusqlite::params![repo_id.as_str(), expected],
+                |row| row.get(0),
+            )
+            .map_err(map_sqlite_error)
     }
 
     /// Install one already validated, sealed history commit atomically.
@@ -1280,26 +1283,10 @@ impl Drop for SqliteTxn {
 
 #[async_trait]
 impl StorageTxn for SqliteTxn {
-    async fn acceptance_timestamp(&mut self, repo_id: &RepoId) -> Result<Timestamp, StorageError> {
-        if let Some(value) = self.acceptance_timestamp {
-            return Ok(value);
-        }
-        // `BEGIN IMMEDIATE` serializes writers, so following the latest waiting
-        // commit follows every commit this one can depend on.
-        let latest: Option<String> = self
-            .conn()?
-            .query_row(
-                "SELECT max(created_at) FROM vcs_commits WHERE repo_id = ?1 AND repo_seq IS NULL AND commit_id IS NOT NULL",
-                [repo_id.as_str()],
-                |row| row.get(0),
-            )
-            .map_err(map_sqlite_error)?;
-        let mut value = Utc::now();
-        if let Some(latest) = latest {
-            value = value.max(parse_timestamp(&latest)? + chrono::Duration::nanoseconds(1));
-        }
-        self.acceptance_timestamp = Some(value);
-        Ok(value)
+    async fn acceptance_timestamp(&mut self, _repo_id: &RepoId) -> Result<Timestamp, StorageError> {
+        // No commit waits for publication here: each is published by the
+        // transaction that accepts it, so the clock alone serves.
+        Ok(*self.acceptance_timestamp.get_or_insert_with(Utc::now))
     }
 
     async fn lock_conflict_keys(&mut self, keys: &[i64]) -> Result<(), StorageError> {
@@ -1577,66 +1564,13 @@ impl StorageTxn for SqliteTxn {
         list_events_for_item(self.conn()?, repo_id, item_id, from_seq, limit)
     }
 
+    /// Nothing waits here: the transaction that accepts a commit publishes it.
     async fn sequence_repo_activity(
         &mut self,
-        repo_id: &RepoId,
-        limit: usize,
+        _repo_id: &RepoId,
+        _limit: usize,
     ) -> Result<usize, StorageError> {
-        if limit == 0 {
-            return Ok(0);
-        }
-        ensure_history_generation(self.conn()?, repo_id)?;
-        let limit = checked_limit(limit)?;
-        let mut statement = self
-            .conn()?
-            .prepare("SELECT commit_pk FROM vcs_commits WHERE repo_id = ?1 AND commit_id IS NOT NULL AND repo_seq IS NULL ORDER BY created_at, commit_pk LIMIT ?2")
-            .map_err(map_sqlite_error)?;
-        let commit_pks = statement
-            .query_map(params![repo_id.as_str(), limit], |row| {
-                row.get::<_, String>(0)
-            })
-            .map_err(map_sqlite_error)?
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(map_sqlite_error)?;
-        drop(statement);
-        if commit_pks.is_empty() {
-            return Ok(0);
-        }
-        let next = next_published_sequence(self.conn()?, repo_id)?;
-        for (offset, commit_pk) in commit_pks.iter().enumerate() {
-            let offset = i64::try_from(offset).map_err(|_| StorageError::Other {
-                detail: "sequencer offset overflow".to_string(),
-            })?;
-            let repo_seq = next
-                .checked_add(offset)
-                .ok_or_else(|| StorageError::Other {
-                    detail: "repository sequence overflow".to_string(),
-                })?;
-            ensure_bases_published(self.conn()?, repo_id, commit_pk)?;
-            let (commit, created): (Vec<u8>, String) = self
-                .conn()?
-                .query_row(
-                    "SELECT commit_id,created_at FROM vcs_commits WHERE repo_id=?1 AND commit_pk=?2",
-                    params![repo_id.as_str(), commit_pk],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
-                .map_err(map_sqlite_error)?;
-            let digest = checkpoint_at(
-                self.conn()?,
-                repo_id,
-                repo_seq,
-                &commit,
-                &created,
-                self.encrypted,
-            )?;
-            self.conn()?
-                .execute(
-                    "UPDATE vcs_commits SET repo_seq = ?3, checkpoint = ?4 WHERE repo_id = ?1 AND commit_pk = ?2 AND repo_seq IS NULL",
-                    params![repo_id.as_str(), commit_pk, repo_seq, digest.as_slice()],
-                )
-                .map_err(map_sqlite_error)?;
-        }
-        Ok(commit_pks.len())
+        Ok(0)
     }
 
     async fn start_commit(
@@ -1733,28 +1667,31 @@ impl StorageTxn for SqliteTxn {
                 detail: format!("missing commit during seal: {commit_pk}"),
             })?;
         let commit = commit_id_to_digest_bytes(commit_id).to_vec();
-        // A commit sequenced at start is published by its seal.
-        let digest = position
-            .map(|position| {
-                checkpoint_at(
-                    self.conn()?,
-                    repo_id,
-                    position,
-                    &commit,
-                    &created,
-                    self.encrypted,
-                )
-            })
-            .transpose()?;
+        // `BEGIN IMMEDIATE` already excludes every other writer, so the seal
+        // publishes: an installed commit at the position it came with, an
+        // accepted one at the next.
+        let position = match position {
+            Some(position) => position,
+            None => next_published_sequence(self.conn()?, repo_id)?,
+        };
+        let digest = checkpoint_at(
+            self.conn()?,
+            repo_id,
+            position,
+            &commit,
+            &created,
+            self.encrypted,
+        )?;
         self.conn()?
             .execute(
-                "UPDATE vcs_commits SET commit_id = ?3, event_count = ?4, checkpoint = ?5 WHERE repo_id = ?1 AND commit_pk = ?2",
+                "UPDATE vcs_commits SET commit_id = ?3, event_count = ?4, repo_seq = ?5, checkpoint = ?6 WHERE repo_id = ?1 AND commit_pk = ?2",
                 params![
                     repo_id.as_str(),
                     commit_pk.as_str(),
                     commit,
                     event_count,
-                    digest.as_ref().map(|digest| digest.as_slice()),
+                    position,
+                    digest.as_slice(),
                 ],
             )
             .map_err(map_sqlite_error)?;
@@ -1841,43 +1778,6 @@ fn ensure_history_generation(conn: &Connection, repo_id: &RepoId) -> Result<(), 
     Ok(())
 }
 
-/// Called only inside the transaction which assigns or imports the position.
-/// Refuse to publish a commit before the commit holding the previous event of
-/// any item or reference ledger it extends. Acceptance times normally make this
-/// impossible; stored times that invert a dependency must stop publication
-/// rather than produce history that cannot replay.
-fn ensure_bases_published(
-    conn: &Connection,
-    repo_id: &RepoId,
-    commit_pk: &str,
-) -> Result<(), StorageError> {
-    let inverted = conn
-        .query_row(
-            "SELECT 1 FROM vcs_events e
-             JOIN vcs_events p ON p.repo_id = e.repo_id AND p.item_id = e.item_id AND p.item_seq = e.item_seq - 1
-             JOIN vcs_commits c ON c.repo_id = p.repo_id AND c.commit_pk = p.commit_pk
-             WHERE e.repo_id = ?1 AND e.commit_pk = ?2 AND c.commit_pk <> e.commit_pk AND c.repo_seq IS NULL
-             UNION ALL
-             SELECT 1 FROM vcs_ref_events e
-             JOIN vcs_ref_events p ON p.repo_id = e.repo_id AND p.owner_item_id = e.owner_item_id AND p.ref_seq = e.ref_seq - 1
-             JOIN vcs_commits c ON c.repo_id = p.repo_id AND c.commit_pk = p.commit_pk
-             WHERE e.repo_id = ?1 AND e.commit_pk = ?2 AND c.commit_pk <> e.commit_pk AND c.repo_seq IS NULL
-             LIMIT 1",
-            params![repo_id.as_str(), commit_pk],
-            |_| Ok(()),
-        )
-        .optional()
-        .map_err(map_sqlite_error)?;
-    if inverted.is_some() {
-        return Err(StorageError::Other {
-            detail: format!(
-                "publication order would place commit {commit_pk} before a commit it builds on"
-            ),
-        });
-    }
-    Ok(())
-}
-
 /// The checkpoint of the commit published at `position`, chained to the
 /// previous published one.
 fn checkpoint_at(
@@ -1919,27 +1819,10 @@ fn checkpoint_at(
 
 impl SqliteStorage {
     /// Verify publication independently from historical-state caches.
-    /// Unsequenced accepted commits intentionally have no checkpoint.
     pub fn verify_checkpoints(&self, repo_id: &RepoId) -> Result<(), StorageError> {
         let conn = self.open_readonly()?;
         conn.execute_batch("BEGIN").map_err(map_sqlite_error)?;
         verify_checkpoints_in(&conn, repo_id, self.encrypted)
-    }
-
-    /// Repair only the derived counter, after verifying published history.
-    /// Check published history before resuming accepted writes, under the
-    /// sequencer's SQLite write exclusion.
-    pub fn check_publication(&self, repo_id: &RepoId) -> Result<(), StorageError> {
-        let mut conn = self.open_writable()?;
-        let txn = conn
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-            .map_err(map_sqlite_error)?;
-        let next = next_published_sequence(&txn, repo_id)?;
-        if next == 1 {
-            ensure_history_generation(&txn, repo_id)?;
-        }
-        verify_checkpoints_in(&txn, repo_id, self.encrypted)?;
-        txn.commit().map_err(map_sqlite_error)
     }
 }
 

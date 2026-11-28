@@ -13,6 +13,7 @@ use synck_sync::{
     CommitMetadata, ProposalPage, ProposalRecord, ProposalVerifier, Refusal, RepositoryIdentity,
     SubmitRequest, SubmitResult, Wire,
 };
+use synck_vcs::metadata::MetadataRef;
 use synck_vcs::types::{EventProposal, ItemId, ObjectId, RepoId};
 use tower::ServiceExt as _;
 
@@ -105,10 +106,15 @@ pub fn create_file(repo_id: &RepoId, name: &str, bytes: &[u8]) -> (ItemId, Event
     (item_id, event)
 }
 
-/// The metadata object an event names, which a client uploads like content.
-pub fn metadata_object(event: &EventProposal) -> (ObjectId, Vec<u8>) {
-    let metadata = event.set_metadata.as_ref().unwrap().payload().unwrap();
-    (metadata.id(), metadata.payload().to_vec())
+/// Give a file an item key, so its event carries a metadata object, which a
+/// client uploads like content. A format 8 FILE event carries metadata only
+/// when the item has keys besides its content.
+pub fn with_metadata(event: &mut EventProposal) -> (ObjectId, Vec<u8>) {
+    let metadata = MetadataRef::new(serde_json::json!({"note": "from a client"})).unwrap();
+    let object = metadata.payload().unwrap();
+    let found = (object.id(), object.payload().to_vec());
+    event.set_metadata = Some(metadata);
+    found
 }
 
 pub fn object_id(bytes: &[u8]) -> ObjectId {

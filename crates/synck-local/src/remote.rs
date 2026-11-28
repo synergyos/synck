@@ -8,7 +8,7 @@
 //! retry after a lost receipt finds the accepted commit. The token lives in
 //! `.synck/remote-token`; it never appears in a URL.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io::{Read, Write as _};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -23,8 +23,12 @@ use synck_sync::{
 use synck_vcs::config::CoreConfig;
 use synck_vcs::metadata::Metadata;
 use synck_vcs::repo::Repo;
-use synck_vcs::storage::Storage;
-use synck_vcs::types::{CommitEventRow, CommitId, CommitRow, ItemId, ObjectId, RepoId};
+use synck_vcs::storage::{SealedCommitInsert, Storage, StorageBackend as _};
+use synck_vcs::types::{
+    CommitEventRow, CommitId, CommitPk, CommitRow, EventInsertRow, ItemId, ItemRow, ObjectId,
+    RefEventInsertRow, RepoId, Sha256Digest,
+};
+use synck_vcs::verify::{SemanticVerifier, VerifyCommit};
 use synck_vcs_sqlite::SqliteStorage;
 use ureq::http::{Response, StatusCode, Uri};
 use ureq::tls::{RootCerts, TlsConfig};
@@ -35,6 +39,7 @@ use crate::commands::{
     write_held,
 };
 use crate::error::{IoContext, LocalError, Result};
+use crate::portable::VerifyOwned;
 use crate::repository::{Config, Repository};
 use crate::{AgentLease, AgentLock};
 
@@ -554,6 +559,35 @@ impl Store<'_> {
         Ok(found)
     }
 
+    /// Download the content objects `events` name that this store lacks,
+    /// durably, and return each event's metadata object ID. Rows on the wire
+    /// carry metadata by ID only.
+    fn take_content(
+        &self,
+        remote: &Remote,
+        events: &[CommitEventRow],
+    ) -> Result<Vec<Option<ObjectId>>> {
+        let mut references = Vec::with_capacity(events.len());
+        let mut missing = BTreeSet::new();
+        for row in events {
+            let found = synck_items::references::commit_event_references(row).map_err(integrity)?;
+            for id in found.objects {
+                if !self.has_object(&id)? {
+                    missing.insert(id);
+                }
+            }
+            references.push(found.metadata);
+        }
+        if !missing.is_empty() {
+            self.download(remote, &missing.into_iter().collect::<Vec<_>>())?;
+            match &self.chunks {
+                Some(chunks) => chunks.checkpoint()?,
+                None => crate::repository::sync_directory(&self.metadata().join("objects"))?,
+            }
+        }
+        Ok(references)
+    }
+
     /// Install one verified server commit unless it is here already.
     async fn install(
         &self,
@@ -569,22 +603,7 @@ impl Store<'_> {
         {
             return Ok(Ok(()));
         }
-        // Rows on the wire carry metadata by ID only.
-        let mut references = Vec::with_capacity(events.len());
-        let mut missing = BTreeSet::new();
-        for row in &events {
-            let found = synck_items::references::commit_event_references(row).map_err(integrity)?;
-            for id in found.objects {
-                if !self.has_object(&id)? {
-                    missing.insert(id);
-                }
-            }
-            references.push(found.metadata);
-        }
-        let downloaded = !missing.is_empty();
-        if downloaded {
-            self.download(remote, &missing.into_iter().collect::<Vec<_>>())?;
-        }
+        let references = self.take_content(remote, &events)?;
         let metadata =
             self.metadata_objects(remote, references.iter().flatten().cloned().collect())?;
         for (row, id) in events.iter_mut().zip(&references) {
@@ -594,14 +613,108 @@ impl Store<'_> {
                 CommitEventRow::Ref(row) => row.metadata = metadata,
             }
         }
-        if downloaded {
-            match &self.chunks {
-                Some(chunks) => chunks.checkpoint()?,
-                None => crate::repository::sync_directory(&self.metadata().join("objects"))?,
-            }
-        }
         let (proposal, ref_events) = proposal_from_rows(commit, events)?;
         apply(self.core, self.repo_id, commit, proposal, ref_events).await
+    }
+
+    /// Install one verified server commit as the server published it, at its
+    /// position with its acceptance time, after `replay` has checked it as
+    /// repository verification does. Its objects are stored as they arrive,
+    /// in either form: this needs no key.
+    async fn copy_commit(
+        &self,
+        remote: &Remote,
+        commit: CommitRow,
+        events: Vec<CommitEventRow>,
+        replay: &mut SemanticVerifier,
+    ) -> Result<()> {
+        let references = self.take_content(remote, &events)?;
+        let missing = self
+            .storage
+            .missing_metadata(self.repo_id, references.into_iter().flatten())
+            .map_err(integrity)?;
+        if !missing.is_empty() {
+            let mut downloaded = Vec::with_capacity(missing.len());
+            remote.get_objects(&missing, |id, bytes| {
+                let mut buffer = Vec::new();
+                bytes
+                    .take(MAX_REPLY_BYTES)
+                    .read_to_end(&mut buffer)
+                    .map_err(|error| LocalError::Unreachable(error.to_string()))?;
+                downloaded.push((id.clone(), buffer));
+                Ok(())
+            })?;
+            self.storage
+                .put_metadata_objects(self.repo_id, &downloaded)
+                .map_err(integrity)?;
+        }
+        let events: Vec<VerifyOwned> = events.into_iter().map(VerifyOwned::from).collect();
+        let findings = replay.verify_commit_events(
+            &VerifyCommit {
+                commit_id: Some(commit.commit_id.clone()),
+                repo_seq: commit.repo_seq,
+                committer_id: commit.committer_id.clone(),
+                occurred_at: commit.occurred_at,
+                author_id: commit.author_id.clone(),
+                message: commit.message.clone(),
+                event_count: Some(commit.event_count),
+            },
+            events.iter().map(VerifyOwned::borrowed),
+        );
+        if let Some(finding) = findings.into_iter().next() {
+            return Err(integrity(finding));
+        }
+        let commit_pk = CommitPk::new();
+        let mut parents = replay.event_parents().iter().cloned();
+        let (mut item_rows, mut ref_rows) = (Vec::new(), Vec::new());
+        for event in events {
+            match event {
+                VerifyOwned::Item(event) => item_rows.push(EventInsertRow {
+                    repo_id: self.repo_id.clone(),
+                    commit_pk: commit_pk.clone(),
+                    commit_event_idx: event.commit_event_idx,
+                    item_id: event.item_id,
+                    item_seq: event.item_seq,
+                    event_type: event.event_type,
+                    payload: event.payload,
+                    metadata: None,
+                    parent_folder_id: parents
+                        .next()
+                        .expect("replay gives each item event a parent"),
+                }),
+                VerifyOwned::Ref(event) => ref_rows.push(RefEventInsertRow {
+                    repo_id: self.repo_id.clone(),
+                    commit_pk: commit_pk.clone(),
+                    commit_event_idx: event.commit_event_idx,
+                    owner_item_id: event.owner_item_id,
+                    ref_seq: event.ref_seq,
+                    event_type: event.event_type,
+                    payload: event.payload,
+                    metadata: None,
+                }),
+            }
+        }
+        self.storage
+            .install_sealed_history_commit(
+                self.repo_id,
+                &SealedCommitInsert {
+                    commit_pk,
+                    repo_seq: commit.repo_seq,
+                    operation_id: None,
+                    author_id: commit.author_id,
+                    committer_id: commit.committer_id,
+                    message: commit.message,
+                    occurred_at: commit.occurred_at,
+                    created_at: commit.created_at,
+                    commit_id: commit.commit_id,
+                    event_count: commit.event_count,
+                },
+                &item_rows,
+                &ref_rows,
+            )
+            .await
+            .map_err(integrity)?;
+        Ok(())
     }
 
     /// Take in the server's commits after `held.remote`, in order and with
@@ -626,22 +739,113 @@ impl Store<'_> {
             .as_ref()
             .map(ChunkStore::open_readonly)
             .transpose()?;
-        let mut verifier = HistoryVerifier::new(start).map_err(integrity)?;
-        let mut partial: Option<(
-            CommitRow,
-            synck_vcs::types::Sha256Digest,
-            Vec<CommitEventRow>,
-        )> = None;
-        loop {
-            let request = HistoryRequest {
-                after: verifier.position().clone(),
+        let mut history = RemoteHistory::new(start)?;
+        while let Some((commit, checkpoint, events)) = history.next(remote)? {
+            if let Err(items) = self.install(remote, &commit, events).await? {
+                return Ok(Err(items));
+            }
+            let repo_seq = commit
+                .repo_seq
+                .ok_or_else(|| integrity("unsequenced commit"))?;
+            held.origin_seq = repo_seq;
+            held.remote = Some(Cursor {
+                repository: repository.clone(),
+                repo_seq: repo_seq as u64,
+                checkpoint,
+            });
+        }
+        Ok(Ok(()))
+    }
+
+    /// Copy the server's whole published history into this empty store, as
+    /// the server published it, and the item heads its replay gives. Returns
+    /// the server cursor the copy ends at.
+    async fn copy(&self, remote: &Remote, genesis: Cursor, encrypted: bool) -> Result<Cursor> {
+        let _history = self.storage.open_readonly().map_err(integrity)?;
+        let _objects = self
+            .chunks
+            .as_ref()
+            .map(ChunkStore::open_readonly)
+            .transpose()?;
+        let mut history = RemoteHistory::new(genesis)?;
+        let mut replay = SemanticVerifier::new(encrypted);
+        // Each item's creation time and author: those of its first event's commit.
+        let mut origins: BTreeMap<ItemId, (synck_vcs::types::Timestamp, String)> = BTreeMap::new();
+        while let Some((commit, _, events)) = history.next(remote)? {
+            for event in &events {
+                if let CommitEventRow::Item(event) = event
+                    && event.item_seq == 1
+                {
+                    origins.insert(
+                        event.item_id.clone(),
+                        (commit.created_at, commit.author_id.clone()),
+                    );
+                }
+            }
+            self.copy_commit(remote, commit, events, &mut replay)
+                .await?;
+        }
+        let mut txn = self.storage.begin_txn().await.map_err(integrity)?;
+        for head in replay.replayed_heads() {
+            let (created_at, created_by) = origins
+                .remove(&head.item_id)
+                .ok_or_else(|| integrity(format!("item {} has no first event", head.item_id)))?;
+            txn.put_item(&ItemRow {
+                repo_id: self.repo_id.clone(),
+                item_id: head.item_id,
+                item_type: head.item_type,
+                parent_folder_id: head.parent_folder_id,
+                name: head.name,
+                name_key: head.name_key,
+                record_key: head.record_key,
+                link_folder_id: head.link_folder_id,
+                head_seq: head.head_seq,
+                ref_head_seq: head.ref_head_seq,
+                lifecycle_state: head.lifecycle_state,
+                created_at,
+                created_by,
+                federation_stream_id: head.federation_stream_id,
+            })
+            .await
+            .map_err(integrity)?;
+        }
+        txn.commit().await.map_err(integrity)?;
+        Ok(history.position().clone())
+    }
+}
+
+/// A commit as history pages carry it: its row, its checkpoint and its events.
+type PublishedCommit = (CommitRow, Sha256Digest, Vec<CommitEventRow>);
+
+/// The server's published commits after a cursor, from pages `HistoryVerifier`
+/// accepts, each handed out whole and in order.
+struct RemoteHistory {
+    verifier: HistoryVerifier,
+    complete: VecDeque<PublishedCommit>,
+    partial: Option<PublishedCommit>,
+    more: bool,
+}
+
+impl RemoteHistory {
+    fn new(after: Cursor) -> Result<Self> {
+        Ok(Self {
+            verifier: HistoryVerifier::new(after).map_err(integrity)?,
+            complete: VecDeque::new(),
+            partial: None,
+            more: true,
+        })
+    }
+
+    fn next(&mut self, remote: &Remote) -> Result<Option<PublishedCommit>> {
+        while self.complete.is_empty() && self.more {
+            let page = remote.history(&HistoryRequest {
+                after: self.verifier.position().clone(),
                 limit: MAX_PAGE_RECORDS,
-            };
-            let page = remote.history(&request)?;
-            verifier.push(&page).map_err(integrity)?;
-            let has_more = page.has_more;
+            })?;
+            self.verifier.push(&page).map_err(integrity)?;
+            self.more = page.has_more;
             for fragment in page.fragments {
-                let (commit, _, events) = partial.get_or_insert_with(|| {
+                let (commit, _, events) = self.partial.get_or_insert_with(|| {
                     (
                         fragment.header.commit.clone(),
                         fragment.header.checkpoint.clone(),
@@ -652,24 +856,16 @@ impl Store<'_> {
                 if events.len() < commit.event_count as usize {
                     continue;
                 }
-                let (commit, checkpoint, events) = partial.take().expect("a commit in progress");
-                if let Err(items) = self.install(remote, &commit, events).await? {
-                    return Ok(Err(items));
-                }
-                let repo_seq = commit
-                    .repo_seq
-                    .ok_or_else(|| integrity("unsequenced commit"))?;
-                held.origin_seq = repo_seq;
-                held.remote = Some(Cursor {
-                    repository: repository.clone(),
-                    repo_seq: repo_seq as u64,
-                    checkpoint,
-                });
-            }
-            if !has_more {
-                return Ok(Ok(()));
+                let commit = self.partial.take().expect("a commit in progress");
+                self.complete.push_back(commit);
             }
         }
+        Ok(self.complete.pop_front())
+    }
+
+    /// The last complete commit's cursor.
+    fn position(&self) -> &Cursor {
+        &self.verifier.position().completed
     }
 }
 
@@ -691,6 +887,53 @@ fn write_token(metadata: &Path, token: &str) -> Result<()> {
     file.sync_all().at("sync", &path)
 }
 
+/// The repository at `url` on its sync server, and what the server says of it.
+pub(crate) fn connect(url: &str, token: &str) -> Result<(String, Remote, Capabilities)> {
+    let (url, repo_id) = parse_url(url)?;
+    let remote = Remote::new(&url, token)?;
+    let capabilities = remote.capabilities()?;
+    if capabilities.latest.repository.repo_id != repo_id {
+        return Err(integrity("the server answered for another repository"));
+    }
+    Ok((url, remote, capabilities))
+}
+
+/// Copy the server's whole published history into the new, empty repository
+/// at `root`, whose history already has the server's generation: every commit
+/// at its position with its acceptance time, every object it names as stored,
+/// and the item heads its replay gives. Nothing here needs a key.
+pub(crate) async fn copy_history(
+    remote: &Remote,
+    capabilities: &Capabilities,
+    root: &Path,
+    storage: SqliteStorage,
+    chunks: Option<ChunkStore>,
+) -> Result<()> {
+    let identity = &capabilities.latest.repository;
+    let history = Repo::new(
+        Storage::new(std::sync::Arc::new(storage.clone())),
+        CoreConfig {
+            encrypted: capabilities.encrypted,
+            follows_domains: false,
+        },
+    );
+    let store = Store {
+        root,
+        storage: storage.clone(),
+        core: &history,
+        repo_id: &identity.repo_id,
+        chunks,
+    };
+    let genesis = Cursor::genesis(identity.clone(), capabilities.encrypted).map_err(integrity)?;
+    let head = store.copy(remote, genesis, capabilities.encrypted).await?;
+    // The same generation, positions, acceptance times and commits give the
+    // same chain, so the copy ends at the server's own checkpoint.
+    if storage.history_head(identity).map_err(integrity)? != head {
+        return Err(integrity("the copy's checkpoints are not the server's"));
+    }
+    Ok(())
+}
+
 /// Make `destination` an HTTPS clone of the repository at `url`: its whole
 /// history, verified, and the content its checkout needs. `token` is a read
 /// or write token for that repository.
@@ -702,19 +945,15 @@ pub async fn clone_remote(
     include: &[String],
     hold: bool,
 ) -> Result<Repository> {
-    let (url, repo_id) = parse_url(url)?;
+    parse_url(url)?;
     if author.trim().is_empty() {
         return Err(LocalError::Invalid("an HTTPS clone needs --author".into()));
     }
     let include = crate::checkout::normalize_paths(include)?;
-    let remote = Remote::new(&url, token)?;
-    let capabilities = remote.capabilities()?;
-    if capabilities.latest.repository.repo_id != repo_id {
-        return Err(integrity("the server answered for another repository"));
-    }
+    let (url, remote, capabilities) = connect(url, token)?;
     if capabilities.encrypted {
         return Err(LocalError::Invalid(
-            "encrypted repositories cannot be cloned over HTTPS yet".into(),
+            "an encrypted repository has no working tree here, since this client holds no key; copy it with synck repository import".into(),
         ));
     }
     crate::clone::create_empty_directory(destination)?;

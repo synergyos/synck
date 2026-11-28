@@ -299,8 +299,10 @@ synck pull                           # take in everyone else's commits
 - `UNREACHABLE` means nothing was sent or taken in; `SERVER` carries the
   server's refusal in `status` (for instance `FORBIDDEN` for a commit sent with
   a read token, which stays held).
-- Encrypted repositories cannot be cloned over HTTPS yet. An HTTPS clone cannot
-  be cloned again or served; clone the server URL instead.
+- An encrypted repository has no working tree here: this client holds no key.
+  `clone` refuses it; copy it with `synck repository import URL DIRECTORY`
+  (see [portable repositories](portable-repository.md#copies-from-a-sync-server)).
+  An HTTPS clone cannot be cloned again or served; clone the server URL instead.
 
 ## Alternatives instead of branches
 

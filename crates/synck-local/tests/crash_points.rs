@@ -193,23 +193,14 @@ fn scenario_in(mode: &str, prepare: impl Fn(&Path) -> Vec<String>) {
         );
 
         let context = format!("{args:?} killed at mutation {point}");
-        // Verification never repairs, so it names the recovery it needs.
+        // Acceptance publishes in one transaction, so a kill leaves history
+        // that verifies.
         let fsck = synck(&crashed, &["fsck"], None);
-        if String::from_utf8_lossy(&fsck.stderr).contains("explicit finalize is required") {
-            ok(&crashed, &["repository", "finalize", "."]);
-            let fsck = synck(&crashed, &["fsck"], None);
-            assert!(
-                fsck.status.success(),
-                "{context}: {}",
-                String::from_utf8_lossy(&fsck.stderr)
-            );
-        } else {
-            assert!(
-                fsck.status.success(),
-                "{context}: {}",
-                String::from_utf8_lossy(&fsck.stderr)
-            );
-        }
+        assert!(
+            fsck.status.success(),
+            "{context}: {}",
+            String::from_utf8_lossy(&fsck.stderr)
+        );
         let commits = commit_count(&crashed);
         assert!(
             commits == commits_before || commits == expected_commits,

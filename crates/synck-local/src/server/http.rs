@@ -151,7 +151,7 @@ impl Server {
             request_digest: validated.request_digest.clone(),
             commit_id: accepted.commit_id,
             accepted_at: accepted.accepted_at,
-            published: accepted.published,
+            published: Some(accepted.published),
         };
         if let Some(digest) = self.uploads.submitted(repo_id, &request.operation_id)?
             && let Some(accepted) =
@@ -329,7 +329,7 @@ async fn receipt(
                 request_digest: digest,
                 commit_id: accepted.commit_id,
                 accepted_at: accepted.accepted_at,
-                published: accepted.published,
+                published: Some(accepted.published),
             })
         })
         .await?;

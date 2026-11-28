@@ -23,8 +23,6 @@ fn sync_operation_id(operation_id: &str) -> String {
     )
 }
 
-/// Core sequences in pages of this many commits.
-const SEQUENCE_PAGE: usize = 256;
 /// The working tree recorded for reservations taken through a server: never
 /// a local tree, so a local `pull` does not answer to them.
 const REMOTE_TREE: &str = "sync";
@@ -80,8 +78,8 @@ pub enum Acceptance {
 pub struct Accepted {
     pub commit_id: CommitId,
     pub accepted_at: Timestamp,
-    /// `None` while the commit awaits sequencing.
-    pub published: Option<Cursor>,
+    /// Acceptance publishes, so every accepted commit has its position.
+    pub published: Cursor,
 }
 
 impl ServedRepository {
@@ -328,13 +326,14 @@ impl ServedRepository {
     }
 
     fn receipt(&self, commit: CommitRow) -> Result<Accepted> {
-        let published = match commit.repo_seq {
-            Some(repo_seq) => self
-                .storage
-                .history_cursor(&self.identity()?, repo_seq)
-                .map_err(corrupt)?,
-            None => None,
-        };
+        let repo_seq = commit
+            .repo_seq
+            .ok_or_else(|| corrupt("an accepted commit has no position"))?;
+        let published = self
+            .storage
+            .history_cursor(&self.identity()?, repo_seq)
+            .map_err(corrupt)?
+            .ok_or_else(|| corrupt("an accepted commit has no checkpoint"))?;
         Ok(Accepted {
             commit_id: commit.commit_id,
             accepted_at: commit.created_at,
@@ -342,8 +341,8 @@ impl ServedRepository {
         })
     }
 
-    /// Accept a proposal with every Core check a local commit gets, then
-    /// sequence it. A retry of an accepted operation returns its commit; one
+    /// Accept and publish a proposal with every Core check a local commit
+    /// gets. A retry of an accepted operation returns its commit; one
     /// that names another commit is refused. Waits for the repository lock.
     pub async fn accept(&self, proposal: Proposal) -> Result<Acceptance> {
         let metadata = self.root.join(".synck");
@@ -468,11 +467,6 @@ impl ServedRepository {
                 proposal.commit_id, accepted.commit_id
             )));
         }
-        while core
-            .sequence_repo_activity(self.repo_id.clone(), SEQUENCE_PAGE)
-            .await?
-            == SEQUENCE_PAGE
-        {}
         let commit = core
             .get_commit(self.repo_id.clone(), accepted.commit_id)
             .await?

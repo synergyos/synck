@@ -820,15 +820,6 @@ impl Repository {
     }
 
     pub(crate) async fn recover_current(&self) -> Result<()> {
-        loop {
-            let count = self
-                .repo
-                .sequence_repo_activity(self.config.repo_id.clone(), PAGE_SIZE)
-                .await?;
-            if count < PAGE_SIZE {
-                break;
-            }
-        }
         self.catch_up_projection().await?;
         if self.at_head() {
             self.advance_baseline(self.head_repo_seq()?)?;

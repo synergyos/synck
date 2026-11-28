@@ -84,7 +84,6 @@ async fn accepted_event_keeps_only_metadata_id_and_reads_without_payload() {
     )
     .await
     .unwrap();
-    core.sequence_repo_activity(repo.clone(), 10).await.unwrap();
     let rows = storage
         .list_events_for_item_readonly(&repo, &item, 1, 10)
         .await
