@@ -305,6 +305,7 @@ impl Converter {
             &mut event,
             author,
             &source.sizes,
+            true,
             |event| {
                 let Some(reference) = &event.set_metadata else {
                     return Ok(Patch::None);
@@ -424,6 +425,7 @@ impl Completer {
             event,
             author,
             &sizes,
+            true,
             |event| {
                 Ok(match &event.set_metadata {
                     None => Patch::None,
@@ -502,6 +504,7 @@ impl StreamReader {
             &mut event,
             &source.author,
             &source.sizes,
+            true,
             |_| Ok(metadata.map_or(Patch::None, Patch::Value)),
         )?;
         self.dropped_mailcal += u64::from(translated.dropped_mailcal);
@@ -513,6 +516,38 @@ impl StreamReader {
             Payload::Map(map) => Some(MetadataRef::new(Value::Object(map))?),
         };
         Ok(StreamRead::Item(Box::new(event)))
+    }
+    /// Translate a Personal item whose ciphertext the caller has verified and
+    /// opened. The proposal already holds the target content IDs and lengths.
+    /// The caller seals the returned metadata and hashes the finished envelope.
+    pub fn personal_item(
+        &mut self,
+        event: &mut EventProposal,
+        author: &str,
+        mut metadata: Option<Map<String, Value>>,
+    ) -> Result<(Option<Map<String, Value>>, Option<String>), ConvertError> {
+        let translated = translate(
+            &self.policy,
+            &mut self.items,
+            event,
+            author,
+            &BTreeMap::new(),
+            false,
+            |_| Ok(metadata.take().map_or(Patch::None, Patch::Value)),
+        )?;
+        let metadata = match translated.metadata {
+            Payload::Unchanged => metadata,
+            Payload::Omit => None,
+            Payload::Map(map) => Some(map),
+        };
+        Ok((metadata, translated.upload_intent))
+    }
+}
+
+/// Translate a pre-opened format 7 ref label without changing its target.
+pub fn personal_ref_label(event: &RefEventProposal, map: &mut Map<String, Value>) {
+    if event.event_type.starts_with("FILE_VERSION::") {
+        slim_label(map);
     }
 }
 
@@ -547,6 +582,7 @@ fn translate(
     event: &mut EventProposal,
     author: &str,
     sizes: &BTreeMap<ObjectId, u64>,
+    hub_objects: bool,
     patch: impl FnOnce(&EventProposal) -> Result<Patch, ConvertError>,
 ) -> Result<Translated, ConvertError> {
     let unchanged = Translated {
@@ -583,7 +619,7 @@ fn translate(
     else {
         return Ok(unchanged);
     };
-    if item.item_type == "POST" {
+    if hub_objects && item.item_type == "POST" {
         post_blob_body(event)?;
     }
     let mut patch = match patch(event)? {
@@ -662,11 +698,11 @@ fn translate(
     };
     let mut map = item.metadata.clone();
     let mut dropped_mailcal = false;
-    if item.item_type == "EMAIL" && verb == "CREATE" {
+    if hub_objects && item.item_type == "EMAIL" && verb == "CREATE" {
         email_originals(&item_id, event, &mut map, sizes)?;
-    } else if item.item_type == "POST" {
+    } else if hub_objects && item.item_type == "POST" {
         post_body(&item_id, event, &patch, &mut map, sizes)?;
-    } else if item.item_type == "EMAIL" {
+    } else if hub_objects && item.item_type == "EMAIL" {
         map.remove("mailcal");
         dropped_mailcal = patch.contains_key("mailcal");
     }
@@ -1046,7 +1082,7 @@ fn rewrite(
 
 /// Format 7's commit ID: RFC 8785 JSON over the header, whose events digest
 /// frames each event digest with a family byte.
-fn format7_commit_id(commit: &SourceCommit) -> Result<CommitId, ConvertError> {
+pub fn format7_commit_id(commit: &SourceCommit) -> Result<CommitId, ConvertError> {
     let events_digest: [u8; 32] = if commit.events.is_empty() {
         Sha256::digest(commit.repo_seq.to_be_bytes()).into()
     } else {
