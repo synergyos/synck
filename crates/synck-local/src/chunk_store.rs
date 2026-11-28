@@ -13,11 +13,11 @@ use synck_vcs::types::{ObjectId, RepoId};
 use synck_vcs_sqlite::{keep_wal_on_close, open_connection};
 
 use crate::error::{LocalError, Result};
-use crate::repository::{is_link_or_reparse, sync_file};
+use crate::repository::{is_link_or_reparse, sync_directory, sync_file};
 
 #[cfg(test)]
 thread_local! {
-    static DURABILITY_CHECKPOINTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static DURABILITY_BARRIERS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 pub(crate) const OBJECT_STORE_FILE: &str = "object-store.sqlite3";
@@ -205,7 +205,7 @@ impl ChunkStore {
                 | OpenFlags::SQLITE_OPEN_NOFOLLOW,
         )?;
         // Staging transactions do not flush one by one. Nothing refers to a blob
-        // until `checkpoint` has flushed the whole WAL: `complete_blob` does it for
+        // until `sync_wal` has flushed the whole WAL: `complete_blob` does it for
         // each blob, and a commit does it once before its history transaction.
         connection.execute_batch(
             "PRAGMA foreign_keys = ON;
@@ -539,7 +539,7 @@ impl ChunkStore {
 
     pub(crate) fn complete_blob(&self, digest: &[u8; 32], size: u64) -> Result<()> {
         self.complete_blob_before_batch_checkpoint(digest, size)?;
-        self.checkpoint()
+        self.sync_wal()
     }
 
     pub(crate) fn complete_blob_before_batch_checkpoint(
@@ -898,18 +898,32 @@ impl ChunkStore {
         Ok((removed_objects, removed_bytes))
     }
 
-    pub(crate) fn checkpoint(&self) -> Result<()> {
+    /// Makes every committed staging transaction durable before a history
+    /// transaction refers to its blobs. Staging commits are in the WAL, not
+    /// flushed (`synchronous = NORMAL`), so flushing the WAL file is the whole
+    /// barrier. No checkpoint: a TRUNCATE checkpoint waits for readers and,
+    /// once its busy timeout expires, returns without having synced anything.
+    /// SQLite takes no locks on the WAL file, so syncing it from another
+    /// descriptor releases none. Opening a writable connection first creates
+    /// the WAL of a store last closed by a version that deleted it; the
+    /// directory flush makes such a new WAL's entry durable.
+    pub(crate) fn sync_wal(&self) -> Result<()> {
         #[cfg(test)]
-        DURABILITY_CHECKPOINTS.with(|count| count.set(count.get() + 1));
-        let connection = self.open_writable()?;
-        connection.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")?;
-        drop(connection);
-        sync_file(&self.path)
+        DURABILITY_BARRIERS.with(|count| count.set(count.get() + 1));
+        drop(self.open_writable()?);
+        let mut wal = self.path.clone().into_os_string();
+        wal.push("-wal");
+        sync_file(Path::new(&wal))?;
+        sync_directory(
+            self.path
+                .parent()
+                .ok_or_else(|| LocalError::Invalid("object database has no directory".into()))?,
+        )
     }
 
     #[cfg(test)]
-    pub(crate) fn durability_checkpoint_count(&self) -> usize {
-        DURABILITY_CHECKPOINTS.with(std::cell::Cell::get)
+    pub(crate) fn durability_barrier_count(&self) -> usize {
+        DURABILITY_BARRIERS.with(std::cell::Cell::get)
     }
 
     pub(crate) fn backup_to(&self, destination: &Path) -> Result<()> {
@@ -1555,6 +1569,37 @@ impl<R: Read> StreamingChunker<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sync_wal_does_not_wait_for_a_reader() {
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("objects.sqlite3");
+        let repo_id = RepoId::new();
+        ChunkStore::create(&path, &repo_id).unwrap();
+        let store = ChunkStore::new(path.clone(), &repo_id);
+        let bytes = b"staged while a download reads";
+        let digest = Sha256::digest(bytes).into();
+        store
+            .stage_blob(digest, bytes.len() as u64, Cursor::new(bytes))
+            .unwrap();
+        // A reader pinning a snapshot made a TRUNCATE checkpoint wait for the
+        // whole busy timeout and then return without syncing.
+        let reader = store.open_readonly().unwrap();
+        reader.execute_batch("BEGIN").unwrap();
+        let _: i64 = reader
+            .query_row("SELECT count(*) FROM blobs", [], |row| row.get(0))
+            .unwrap();
+        store
+            .complete_blob_before_batch_checkpoint(&digest, bytes.len() as u64)
+            .unwrap();
+        let started = std::time::Instant::now();
+        store.sync_wal().unwrap();
+        assert!(started.elapsed() < Duration::from_secs(1));
+        let mut wal = path.into_os_string();
+        wal.push("-wal");
+        assert!(fs::metadata(&wal).unwrap().len() > 0);
+        reader.execute_batch("COMMIT").unwrap();
+    }
 
     #[test]
     fn verify_all_checks_each_object_against_its_id() {

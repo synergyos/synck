@@ -675,7 +675,7 @@ impl Store<'_> {
         }
         if downloaded {
             match &self.chunks {
-                Some(chunks) => chunks.checkpoint()?,
+                Some(chunks) => chunks.sync_wal()?,
                 None => crate::repository::sync_directory(&self.metadata().join("objects"))?,
             }
         }

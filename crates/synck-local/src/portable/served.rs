@@ -414,7 +414,7 @@ impl ServedRepository {
         }
         // Uploads lost to a crash before this point answer OBJECTS_MISSING above.
         if self.storage_mode == StorageMode::Chunked {
-            self.object_store().checkpoint()?;
+            self.object_store().sync_wal()?;
         } else {
             crate::repository::sync_directory(&self.root.join(".synck/objects"))?;
         }

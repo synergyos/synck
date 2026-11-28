@@ -59,6 +59,11 @@ pub(crate) fn capture<R: Read>(
         }
         if !store.address_staged_blob(&staging_key, &digest, size)? {
             store.verify_blob(&ObjectId::from_digest(digest), size)?;
+            // Another writer may have completed this blob before its own
+            // batch barrier.
+            if checkpoint {
+                store.sync_wal()?;
+            }
         } else if checkpoint {
             store.complete_blob(&digest, size)?;
         } else {
