@@ -75,7 +75,9 @@ it cannot read, so it refuses the first encrypted object.
   `body_html_blob_id`, a generated RFC 822, `snippet`, `inline_images` and
   `text_repair` are dropped: a reader rebuilds them from `source` with the
   current parser, so the Hub's repaired text comes from the repaired parser. An
-  email with no original is refused. The Hub's `archive_command_id` and
+  email with no original is refused. A CREATE whose map has no `mailcal`
+  takes the one an `EMAIL::SET_METADATA` of the same email in the same commit
+  holds, as the Hub's generic create wrote from 2026-07 to 2026-10. The Hub's `archive_command_id` and
   `origin.upload_intent_id` are dropped, and `archived_at` becomes
   `imported_at`. `mailcal` stays only on `EMAIL::CREATE`; a
   later payload's `mailcal`, as a repair job wrote, is not carried over, and the
