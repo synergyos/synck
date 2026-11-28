@@ -3,6 +3,7 @@ use std::time::{Duration, Instant};
 
 use chrono::{TimeZone, Timelike, Utc};
 use rusqlite::{Connection, params};
+use synck_sync::{Cursor, HistoryRequest, HistoryVerifier};
 use synck_vcs::config::CoreConfig;
 use synck_vcs::errors::{CoreError, StorageError};
 use synck_vcs::repo::Repo;
@@ -395,6 +396,58 @@ async fn owner_create_and_first_ref_are_one_atomic_commit() {
         events.as_slice(),
         [CommitEventRow::Item(_), CommitEventRow::Ref(_)]
     ));
+}
+
+#[tokio::test]
+async fn history_page_resumes_inside_a_commit() {
+    let (_directory, storage) = backend();
+    storage.init_schema().await.unwrap();
+    let repo_id = RepoId::new();
+    let repo = Repo::new(
+        Storage::new(Arc::new(storage.clone())),
+        CoreConfig::default(),
+    );
+    let item_id = ItemId::new();
+    let mut create = create_event("versioned.txt");
+    create.item_id = Some(item_id.clone());
+    repo.append_with_refs(
+        repo_id.clone(),
+        commit(vec![create, create_event("other.txt")]),
+        vec![
+            ref_event(item_id.clone(), 0, "FILE_VERSION::CREATE"),
+            ref_event(item_id, 0, "FILE_VERSION::SET_DESCRIPTION"),
+        ],
+    )
+    .await
+    .unwrap();
+
+    let identity = storage.history_identity(&repo_id).unwrap().unwrap();
+    let head = storage.history_head(&identity).unwrap();
+    let mut verifier = HistoryVerifier::new(Cursor::genesis(identity, false).unwrap()).unwrap();
+    for (limit, expected, has_more) in [
+        (1, &[0][..], true),
+        (2, &[1, 2][..], true),
+        (2, &[3][..], false),
+    ] {
+        let page = storage
+            .history_page(&HistoryRequest {
+                after: verifier.position().clone(),
+                limit,
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(page.fragments.len(), 1);
+        let indexes: Vec<_> = page.fragments[0]
+            .events
+            .iter()
+            .map(CommitEventRow::commit_event_idx)
+            .collect();
+        assert_eq!(indexes, expected);
+        assert_eq!(page.has_more, has_more);
+        verifier.push(&page).unwrap();
+    }
+    assert_eq!(verifier.position().completed, head);
 }
 
 #[tokio::test]

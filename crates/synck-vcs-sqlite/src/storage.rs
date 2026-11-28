@@ -970,34 +970,7 @@ impl StorageBackend for SqliteStorage {
         commit_id: &CommitId,
         limit: usize,
     ) -> Result<Vec<CommitEventRow>, StorageError> {
-        let conn = self.open_readonly()?;
-        collect_rows(
-            &conn,
-            "SELECT event_family, repo_id, owner_item_id, event_seq, event_type, commit_id, \
-                    commit_event_idx, repo_seq, payload, created_at, parent_folder_id, \
-                    (SELECT m.payload FROM vcs_metadata_objects m WHERE m.repo_id=events.repo_id AND m.object_id=synck_metadata_id(events.payload)) \
-             FROM ( \
-                 SELECT 0 AS event_family, e.repo_id, e.item_id AS owner_item_id, \
-                        e.item_seq AS event_seq, e.event_type, c.commit_id, e.commit_event_idx, \
-                        c.repo_seq, e.payload, c.created_at, e.parent_folder_id \
-                 FROM vcs_events e JOIN vcs_commits c \
-                   ON c.repo_id = e.repo_id AND c.commit_pk = e.commit_pk \
-                 WHERE c.repo_id = ?1 AND c.commit_id = ?2 \
-                 UNION ALL \
-                 SELECT 1, r.repo_id, r.owner_item_id, r.ref_seq, r.event_type, c.commit_id, \
-                        r.commit_event_idx, c.repo_seq, r.payload, \
-                        c.created_at, NULL \
-                 FROM vcs_ref_events r JOIN vcs_commits c \
-                   ON c.repo_id = r.repo_id AND c.commit_pk = r.commit_pk \
-                 WHERE c.repo_id = ?1 AND c.commit_id = ?2 \
-             ) AS events ORDER BY commit_event_idx LIMIT ?3",
-            vec![
-                text_value(repo_id.as_str()),
-                Value::Blob(commit_id_to_digest_bytes(commit_id).to_vec()),
-                checked_limit(limit)?.into(),
-            ],
-            commit_event_from_row,
-        )
+        self.list_commit_events_from(repo_id, commit_id, 0, limit)
     }
 
     async fn list_repo_commit_events_readonly(
@@ -1818,6 +1791,41 @@ fn checkpoint_at(
 }
 
 impl SqliteStorage {
+    pub(crate) fn list_commit_events_from(
+        &self,
+        repo_id: &RepoId,
+        commit_id: &CommitId,
+        from_idx: usize,
+        limit: usize,
+    ) -> Result<Vec<CommitEventRow>, StorageError> {
+        let conn = self.open_readonly()?;
+        // Order the UNION directly so SQLite can merge the two index ranges.
+        collect_rows(
+            &conn,
+            "SELECT 0, e.repo_id, e.item_id, e.item_seq, e.event_type, c.commit_id, \
+                    e.commit_event_idx, c.repo_seq, e.payload, c.created_at, e.parent_folder_id, \
+                    (SELECT m.payload FROM vcs_metadata_objects m WHERE m.repo_id=e.repo_id AND m.object_id=synck_metadata_id(e.payload)) \
+             FROM vcs_events e JOIN vcs_commits c \
+               ON c.repo_id = e.repo_id AND c.commit_pk = e.commit_pk \
+             WHERE c.repo_id = ?1 AND c.commit_id = ?2 AND e.commit_event_idx >= ?3 \
+             UNION ALL \
+             SELECT 1, r.repo_id, r.owner_item_id, r.ref_seq, r.event_type, c.commit_id, \
+                    r.commit_event_idx, c.repo_seq, r.payload, c.created_at, NULL, \
+                    (SELECT m.payload FROM vcs_metadata_objects m WHERE m.repo_id=r.repo_id AND m.object_id=synck_metadata_id(r.payload)) \
+             FROM vcs_ref_events r JOIN vcs_commits c \
+               ON c.repo_id = r.repo_id AND c.commit_pk = r.commit_pk \
+             WHERE c.repo_id = ?1 AND c.commit_id = ?2 AND r.commit_event_idx >= ?3 \
+             ORDER BY commit_event_idx LIMIT ?4",
+            vec![
+                text_value(repo_id.as_str()),
+                Value::Blob(commit_id_to_digest_bytes(commit_id).to_vec()),
+                checked_limit(from_idx)?.into(),
+                checked_limit(limit)?.into(),
+            ],
+            commit_event_from_row,
+        )
+    }
+
     /// Verify publication independently from historical-state caches.
     pub fn verify_checkpoints(&self, repo_id: &RepoId) -> Result<(), StorageError> {
         let conn = self.open_readonly()?;

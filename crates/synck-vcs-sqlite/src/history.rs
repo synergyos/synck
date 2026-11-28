@@ -160,14 +160,13 @@ impl SqliteStorage {
             }
             bytes_left -= header_size;
             let want = (total - skip).min(events_left);
-            let mut rows = self
-                .list_commit_events_readonly(repo_id, &header.commit.commit_id, skip + want)
-                .await?;
-            if rows.len() != skip + want {
+            let rows =
+                self.list_commit_events_from(repo_id, &header.commit.commit_id, skip, want)?;
+            if rows.len() != want {
                 return Err(other("published commit is missing events"));
             }
             let mut events = Vec::with_capacity(want);
-            for row in rows.drain(skip..) {
+            for row in rows {
                 let event_size = event_len(&row);
                 if event_size > bytes_left {
                     break;
