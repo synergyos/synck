@@ -298,7 +298,6 @@ impl Converter {
         let mut source_metadata = None;
         let translated = translate(
             &self.policy,
-            true,
             &mut self.items,
             &mut event,
             author,
@@ -412,7 +411,6 @@ impl Completer {
             .collect();
         let translated = translate(
             &self.policy,
-            false,
             &mut self.items,
             event,
             author,
@@ -491,7 +489,6 @@ impl StreamReader {
         let inline = metadata.clone();
         let translated = translate(
             &self.policy,
-            true,
             &mut self.items,
             &mut event,
             &source.author,
@@ -537,7 +534,6 @@ struct Translated {
 /// only for an item-level event.
 fn translate(
     policy: &Policy,
-    history: bool,
     items: &mut HashMap<ItemId, Item>,
     event: &mut EventProposal,
     author: &str,
@@ -591,7 +587,7 @@ fn translate(
     if item.item_type == "FILE"
         && let Some(patch) = &mut patch
     {
-        file_size(&item_id, event, patch, history)?;
+        file_size(&item_id, event, patch)?;
         upload_intent = file_revision(event, &verb, patch, &mut revision)?;
     }
     let title = verb == "SET_TITLE" && item.record;
@@ -746,18 +742,17 @@ fn content_ref(id: ObjectId, sizes: &BTreeMap<ObjectId, u64>) -> Result<ContentR
 }
 
 /// A FILE's format 7 metadata held its size as `content.size`, which its
-/// bytes entry now holds. A content event's must equal the supplied size; the
-/// key leaves every map. A live writer may leave the size to the entry.
+/// bytes entry now holds. Where a content event names one it must equal the
+/// supplied size; the key leaves every map. Empty files and received revisions
+/// named none, and a live writer may leave the size to the entry.
 fn file_size(
     item_id: &ItemId,
     event: &EventProposal,
     patch: &mut Map<String, Value>,
-    history: bool,
 ) -> Result<(), ConvertError> {
-    let content = patch.remove("content");
-    if content.is_none() && !history {
+    let Some(content) = patch.remove("content") else {
         return Ok(());
-    }
+    };
     let Some(size) = event
         .set_content
         .as_ref()
@@ -766,7 +761,7 @@ fn file_size(
     else {
         return Ok(());
     };
-    if content != Some(serde_json::json!({"size": size})) {
+    if content != serde_json::json!({"size": size}) {
         return Err(fail(format!(
             "FILE {item_id} metadata does not hold its stored size {size}"
         )));
@@ -1365,7 +1360,6 @@ mod tests {
     fn a_file_size_must_match_its_stored_object() {
         for (value, sizes, refusal) in [
             (json!({"content": {"size": 2}}), sizes(), "stored size 1"),
-            (json!({"color": "red"}), sizes(), "stored size 1"),
             (
                 json!({"content": {"size": 1}}),
                 BTreeMap::new(),
@@ -1392,6 +1386,16 @@ mod tests {
         let converted = decode_event_proposal(&commit.payloads[0]).unwrap();
         assert!(converted.set_metadata.is_none());
         assert!(commit.metadata.is_empty());
+        // An empty or received FILE named no size; its entry holds it.
+        let create = metadata(json!({"revision_origin": "FEDERATED"}));
+        let commit = converter()
+            .convert(source(
+                1,
+                vec![(event(FILE, "FILE::CREATE", None, &create), Some(&create))],
+            ))
+            .unwrap();
+        let converted = decode_event_proposal(&commit.payloads[0]).unwrap();
+        assert_eq!(converted.set_content.unwrap().size("bytes"), Some(1));
     }
 
     #[test]
