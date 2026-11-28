@@ -239,6 +239,7 @@ impl Converter {
                 commit.commit_id
             )));
         }
+        let lifted = lifted_mailcal(&commit.events)?;
         let mut digest = EventsDigest::default();
         let mut payloads = Vec::with_capacity(commit.events.len());
         let mut metadata = Vec::new();
@@ -246,6 +247,7 @@ impl Converter {
             let payload = match event.kind {
                 Kind::Item => self.item_event(
                     event,
+                    lifted.get(&index),
                     &commit.author_id,
                     (commit.repo_seq, index),
                     &mut metadata,
@@ -285,6 +287,7 @@ impl Converter {
     fn item_event(
         &mut self,
         source: &SourceEvent,
+        lifted: Option<&Value>,
         author: &str,
         (repo_seq, commit_event_idx): (i64, usize),
         written: &mut Vec<Metadata>,
@@ -308,7 +311,13 @@ impl Converter {
                 };
                 source_metadata = readable(&reference.id(), source.metadata.as_deref())?;
                 Ok(match &source_metadata {
-                    Some(metadata) => Patch::Value(object(metadata)?.clone()),
+                    Some(metadata) => {
+                        let mut map = object(metadata)?.clone();
+                        if let Some(mailcal) = lifted {
+                            map.insert("mailcal".into(), mailcal.clone());
+                        }
+                        Patch::Value(map)
+                    }
                     None => Patch::Erased,
                 })
             },
@@ -799,6 +808,65 @@ fn file_revision(
         )));
     }
     Ok(intent)
+}
+
+/// The Hub's generic item create (2026-07 to 2026-10) wrote an email's
+/// `mailcal` in an `EMAIL::SET_METADATA` of the same commit, and its CREATE
+/// named only a title. Such a CREATE takes that `mailcal`, so its originals
+/// sit on the CREATE as for every other email; the later event's copy is
+/// dropped as any later `mailcal` is. Keyed by commit event index.
+fn lifted_mailcal(events: &[SourceEvent]) -> Result<HashMap<usize, Value>, ConvertError> {
+    let mut lifted = HashMap::new();
+    let create = b"\"EMAIL::CREATE\"";
+    if !events.iter().any(|event| {
+        event
+            .payload
+            .windows(create.len())
+            .any(|window| window == create)
+    }) {
+        return Ok(lifted);
+    }
+    // (event type, item, the event's mailcal) of each item event.
+    let mut heads = Vec::with_capacity(events.len());
+    for event in events {
+        if event.kind != Kind::Item {
+            heads.push(None);
+            continue;
+        }
+        let payload: Value = serde_json::from_slice(&event.payload)
+            .map_err(|error| fail(format!("format 7 event: {error}")))?;
+        let text = |key: &str| payload.get(key).and_then(Value::as_str).map(str::to_owned);
+        let mailcal = match text("metadata_id") {
+            Some(id) => {
+                let id = ObjectId::parse(&id).map_err(|error| fail(error.to_string()))?;
+                readable(&id, event.metadata.as_deref())?
+                    .and_then(|metadata| metadata.value().get("mailcal").cloned())
+            }
+            None => None,
+        };
+        heads.push(Some((text("event_type"), text("item_id"), mailcal)));
+    }
+    for (index, head) in heads.iter().enumerate() {
+        let Some((Some(event_type), Some(item), None)) = head else {
+            continue;
+        };
+        if event_type != "EMAIL::CREATE" {
+            continue;
+        }
+        let set = heads[index + 1..]
+            .iter()
+            .flatten()
+            .find_map(|(event_type, other, mailcal)| {
+                (event_type.as_deref() == Some("EMAIL::SET_METADATA")
+                    && other.as_ref() == Some(item))
+                .then_some(mailcal.as_ref())
+                .flatten()
+            });
+        if let Some(mailcal) = set {
+            lifted.insert(index, mailcal.clone());
+        }
+    }
+    Ok(lifted)
 }
 
 /// The Hub kept an email's originals only as references inside `mailcal`: the
@@ -1657,6 +1725,37 @@ mod tests {
             [
                 json!({"mailcal": {"subject": "a", "source": {}}}),
                 json!({}),
+                json!({"title": "T"})
+            ]
+        );
+        assert_eq!(converter.dropped_mailcal, 1);
+    }
+
+    #[test]
+    fn an_email_created_bare_takes_its_mailcal_from_the_same_commit() {
+        let email = "019a2900-0000-7000-8000-000000000a02";
+        let raw = ObjectId::from_digest([3; 32]);
+        let create = metadata(json!({"title": "T"}));
+        let set = metadata(json!({"mailcal": {"v": 1, "subject": "s", "raw_rfc822_blob_id": raw}}));
+        let mut events = vec![
+            (event(email, "EMAIL::CREATE", None, &create), Some(&create)),
+            (
+                event(email, "EMAIL::SET_METADATA", Some(1), &set),
+                Some(&set),
+            ),
+        ];
+        let mut commit = source(1, std::mem::take(&mut events));
+        for event in &mut commit.events {
+            event.sizes.insert(raw.clone(), 9);
+        }
+        let mut converter = converter();
+        let commit = converter.convert(commit).unwrap();
+        let created = decode_event_proposal(&commit.payloads[0]).unwrap();
+        assert_eq!(created.set_content.unwrap().size("source"), Some(9));
+        assert_eq!(
+            maps(&commit, &[&create, &set]),
+            [
+                json!({"title": "T", "mailcal": {"v": 1, "subject": "s"}}),
                 json!({"title": "T"})
             ]
         );
