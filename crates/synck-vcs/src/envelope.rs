@@ -19,6 +19,8 @@ pub struct VerifyCommit {
     pub author_id: String,
     pub committer_id: String,
     pub occurred_at: Option<crate::types::Timestamp>,
+    /// Acceptance time, outside the commit hash.
+    pub created_at: crate::types::Timestamp,
     pub message: Option<String>,
     pub event_count: Option<i32>,
 }
@@ -417,6 +419,7 @@ mod tests {
             repo_seq: Some(1),
             committer_id: author.clone(),
             occurred_at: None,
+            created_at: crate::types::Timestamp::UNIX_EPOCH,
             author_id: author,
             message: None,
             event_count: Some(i32::try_from(events.len()).unwrap()),

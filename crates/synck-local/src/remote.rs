@@ -655,6 +655,7 @@ impl Store<'_> {
                 repo_seq: commit.repo_seq,
                 committer_id: commit.committer_id.clone(),
                 occurred_at: commit.occurred_at,
+                created_at: commit.created_at,
                 author_id: commit.author_id.clone(),
                 message: commit.message.clone(),
                 event_count: Some(commit.event_count),
@@ -769,27 +770,12 @@ impl Store<'_> {
             .transpose()?;
         let mut history = RemoteHistory::new(genesis)?;
         let mut replay = SemanticVerifier::new(encrypted);
-        // Each item's creation time and author: those of its first event's commit.
-        let mut origins: BTreeMap<ItemId, (synck_vcs::types::Timestamp, String)> = BTreeMap::new();
         while let Some((commit, _, events)) = history.next(remote)? {
-            for event in &events {
-                if let CommitEventRow::Item(event) = event
-                    && event.item_seq == 1
-                {
-                    origins.insert(
-                        event.item_id.clone(),
-                        (commit.created_at, commit.author_id.clone()),
-                    );
-                }
-            }
             self.copy_commit(remote, commit, events, &mut replay)
                 .await?;
         }
         let mut txn = self.storage.begin_txn().await.map_err(integrity)?;
         for head in replay.replayed_heads() {
-            let (created_at, created_by) = origins
-                .remove(&head.item_id)
-                .ok_or_else(|| integrity(format!("item {} has no first event", head.item_id)))?;
             txn.put_item(&ItemRow {
                 repo_id: self.repo_id.clone(),
                 item_id: head.item_id,
@@ -802,8 +788,8 @@ impl Store<'_> {
                 head_seq: head.head_seq,
                 ref_head_seq: head.ref_head_seq,
                 lifecycle_state: head.lifecycle_state,
-                created_at,
-                created_by,
+                created_at: head.created_at,
+                created_by: head.created_by,
                 federation_stream_id: head.federation_stream_id,
             })
             .await

@@ -10,8 +10,8 @@ pub use crate::envelope::{VerifyCommit, VerifyEvent, VerifyRefEvent};
 use crate::naming::namespace_key;
 use crate::transition::{ItemState, apply_event as apply_item_event, check_source_revision};
 use crate::types::{
-    EventProposal, ItemId, LifecycleState, canonical_json_bytes, compute_sha256_digest_bytes,
-    sha256_prefixed_hex_from_digest_bytes,
+    EventProposal, ItemId, LifecycleState, Timestamp, canonical_json_bytes,
+    compute_sha256_digest_bytes, sha256_prefixed_hex_from_digest_bytes,
 };
 
 #[derive(Debug)]
@@ -26,6 +26,8 @@ pub struct VerifyItem {
     pub head_seq: i64,
     pub ref_head_seq: i64,
     pub lifecycle_state: LifecycleState,
+    pub created_at: Timestamp,
+    pub created_by: String,
     pub federation_stream_id: Option<String>,
 }
 
@@ -34,6 +36,8 @@ struct ReplayedItem {
     state: ItemState,
     head_seq: i64,
     content: Option<EventContent>,
+    created_at: Timestamp,
+    created_by: String,
 }
 
 pub struct SemanticVerifier {
@@ -131,7 +135,7 @@ impl SemanticVerifier {
                         if proposal.set_link.is_some() {
                             set_links.insert(event.item_id.clone());
                         }
-                        self.replay_event(event, &proposal, &context, &mut replay_findings);
+                        self.replay_event(commit, event, &proposal, &context, &mut replay_findings);
                     }
                     let parent = self
                         .replayed_items
@@ -226,6 +230,8 @@ impl SemanticVerifier {
                 head_seq: replayed.head_seq,
                 ref_head_seq: self.last_ref_seq.get(item_id).copied().unwrap_or(0),
                 lifecycle_state: replayed.state.lifecycle_state,
+                created_at: replayed.created_at,
+                created_by: replayed.created_by.clone(),
                 federation_stream_id: replayed.state.federation_stream_id.clone(),
             })
             .collect()
@@ -265,6 +271,8 @@ impl SemanticVerifier {
                 || item.head_seq != replayed.head_seq
                 || item.ref_head_seq != self.last_ref_seq.get(&item.item_id).copied().unwrap_or(0)
                 || item.lifecycle_state != replayed.state.lifecycle_state
+                || item.created_at != replayed.created_at
+                || item.created_by != replayed.created_by
                 || item.federation_stream_id != replayed.state.federation_stream_id
             {
                 push(format!(
@@ -480,6 +488,7 @@ impl SemanticVerifier {
 
     fn replay_event(
         &mut self,
+        commit: &VerifyCommit,
         event: &VerifyEvent,
         proposal: &EventProposal,
         context: &str,
@@ -503,6 +512,8 @@ impl SemanticVerifier {
                     state,
                     head_seq: 0,
                     content: None,
+                    created_at: commit.created_at,
+                    created_by: commit.author_id.clone(),
                 },
             );
         }
@@ -594,9 +605,10 @@ mod tests {
         }
         let events_digest = digest.finish(Some(repo_seq));
         let author = "author".to_string();
+        let committer = "committer".to_string();
         let bytes = canonical_commit_bytes_for_hash(
             &author,
-            &author,
+            &committer,
             None,
             message,
             envelopes.len(),
@@ -606,8 +618,9 @@ mod tests {
         VerifyCommit {
             commit_id: Some(compute_commit_id(&bytes)),
             repo_seq: Some(repo_seq),
-            committer_id: author.clone(),
+            committer_id: committer,
             occurred_at: None,
+            created_at: Timestamp::from_timestamp(repo_seq, 0).unwrap(),
             author_id: author,
             message: message.map(str::to_string),
             event_count: Some(envelopes.len() as i32),
@@ -662,6 +675,8 @@ mod tests {
             head_seq: 1,
             ref_head_seq: 0,
             lifecycle_state: LifecycleState::Live,
+            created_at: commit.created_at,
+            created_by: commit.author_id.clone(),
             federation_stream_id: None,
         };
         (commit, vec![event], item)
@@ -669,10 +684,22 @@ mod tests {
 
     #[test]
     fn valid_history_and_materialization_pass() {
-        let (commit, events, item) = valid_history();
-        let mut verifier = SemanticVerifier::new(false);
-        assert!(verifier.verify_commit(&commit, &events).is_empty());
-        assert!(verifier.finish(&[item]).is_empty());
+        let (commit, events, mut item) = valid_history();
+        let findings = |item: &VerifyItem| {
+            let mut verifier = SemanticVerifier::new(false);
+            assert!(verifier.verify_commit(&commit, &events).is_empty());
+            verifier.finish(std::slice::from_ref(item))
+        };
+        assert!(findings(&item).is_empty());
+        let mismatch = [format!(
+            "item {}: materialized state does not match event history",
+            item.item_id
+        )];
+        item.created_at = Timestamp::UNIX_EPOCH;
+        assert_eq!(findings(&item), mismatch);
+        item.created_at = commit.created_at;
+        item.created_by.clone_from(&commit.committer_id);
+        assert_eq!(findings(&item), mismatch);
     }
 
     #[test]

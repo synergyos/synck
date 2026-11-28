@@ -119,6 +119,7 @@ fn replay(vector: &serde_json::Value, encrypted: bool) {
                 author_id: author.clone(),
                 committer_id: author,
                 occurred_at: None,
+                created_at: synck_vcs::types::Timestamp::UNIX_EPOCH,
                 message,
                 event_count: Some(position),
             };

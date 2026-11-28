@@ -1951,6 +1951,7 @@ impl PortableRepository {
                         repo_seq: commit.repo_seq,
                         committer_id: commit.committer_id,
                         occurred_at: commit.occurred_at,
+                        created_at: commit.created_at,
                         author_id: commit.author_id,
                         message: commit.message,
                         event_count: Some(commit.event_count),
@@ -2018,6 +2019,8 @@ impl PortableRepository {
                     head_seq: item.head_seq,
                     ref_head_seq: item.ref_head_seq,
                     lifecycle_state: item.lifecycle_state,
+                    created_at: item.created_at,
+                    created_by: item.created_by,
                     federation_stream_id: item.federation_stream_id,
                 });
             }

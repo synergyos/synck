@@ -272,6 +272,7 @@ async fn project_commit_inner<S: StateProjectorStore>(
         repo_seq: commit.repo_seq,
         committer_id: commit.committer_id.clone(),
         occurred_at: commit.occurred_at,
+        created_at: commit.created_at,
         author_id: commit.author_id.clone(),
         message: commit.message.clone(),
         event_count: Some(commit.event_count),
