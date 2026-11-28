@@ -1357,11 +1357,13 @@ def enc_record(value):
         return u8(data[0]) + blob(data)
     if kind == "guard":
         return u8(3) + wire_encode(GUARDED_ITEM, body)
-    assert kind == "subtree_guard", value
-    assert set(body) == {"root_item_id", "require_empty_live_descendants", "descendants"}
+    if kind == "subtree_guard_descendant":
+        return u8(5) + wire_encode(GUARDED_ITEM, body)
+    assert kind == "subtree_guard_start", value
+    assert set(body) == {"root_item_id", "require_empty_live_descendants", "descendant_count"}
     return (u8(4) + uuid_bytes(body["root_item_id"])
             + enc_bool(body["require_empty_live_descendants"])
-            + wire_encode(("list", GUARDED_ITEM), body["descendants"]))
+            + u32(body["descendant_count"]))
 
 
 def dec_record(r):
@@ -1375,10 +1377,12 @@ def dec_record(r):
     if tag == 3:
         return {"kind": "guard", "value": wire_decode(GUARDED_ITEM, r)}
     if tag == 4:
-        return {"kind": "subtree_guard", "value": {
+        return {"kind": "subtree_guard_start", "value": {
             "root_item_id": r.uuid(), "require_empty_live_descendants": r.bool(),
-            "descendants": wire_decode(("list", GUARDED_ITEM), r),
+            "descendant_count": r.uint(4),
         }}
+    if tag == 5:
+        return {"kind": "subtree_guard_descendant", "value": wire_decode(GUARDED_ITEM, r)}
     raise Malformed("unknown record tag")
 
 
@@ -1608,14 +1612,16 @@ def new_sync_wire():
         {"kind": "ref", "value": ref_event},
         {"kind": "guard", "value": {"item_id": first, "head_seq": 3}},
         {"kind": "guard", "value": {"item_id": second, "head_seq": 7}},
-        {"kind": "subtree_guard", "value": {
+        {"kind": "subtree_guard_start", "value": {
             "root_item_id": first, "require_empty_live_descendants": False,
-            "descendants": [{"item_id": second, "head_seq": 7}],
+            "descendant_count": 1,
         }},
+        {"kind": "subtree_guard_descendant", "value": {"item_id": second, "head_seq": 7}},
     ]
     record_bytes = [wire("Record", record) for record in records]
     envelopes = [checked_envelope(item_event), checked_envelope(ref_event)]
-    guards_digest = sha_id(b"".join(sha(data) for data in record_bytes[2:]))
+    subtree = record_bytes[4] + uuid_bytes(second) + u64(7)
+    guards_digest = sha_id(sha(record_bytes[2]) + sha(record_bytes[3]) + sha(subtree))
     commit = header("owner", "device", occurred, "Tidy", envelopes)
     commit_id = sha_id(checked_header(commit))
     request = {
@@ -1624,6 +1630,20 @@ def new_sync_wire():
     }
     request_bytes = wire("SubmitRequest", request)
     request_digest = sha_id(request_bytes)
+
+    descendant_count = 350_000
+    first_descendant = "019a2900-0000-7000-8000-000000001000"
+    first_descendant_bytes = uuid_bytes(first_descendant)
+    subtree_start = u8(4) + uuid_bytes(first) + u8(0) + u32(descendant_count)
+    subtree_digest = hashlib.sha256(subtree_start)
+    start_id = int.from_bytes(first_descendant_bytes, "big")
+    for index in range(descendant_count):
+        subtree_digest.update((start_id + index).to_bytes(16, "big") + u64(index + 1))
+    large_request = {
+        **request, "operation_id": "op:large-guard", "guard_count": 1,
+        "guards_digest": sha_id(subtree_digest.digest()),
+    }
+    large_request_bytes = wire("SubmitRequest", large_request)
 
     seconds, nanos = parse_time(accepted)
     tip_id = "sha256:" + checkpoint(genesis_value, 1, commit_id, seconds, nanos).hex()
@@ -1782,7 +1802,7 @@ def new_sync_wire():
          + uuid_bytes(identity["generation"]), "repository ID is a UUIDv4"),
         ("Cursor", enc("Cursor", published)[:-1], "truncated"),
         ("Record", u8(0) + blob(item_bytes), "record tag 0"),
-        ("Record", u8(5) + blob(item_bytes), "record tag 5"),
+        ("Record", u8(6) + blob(item_bytes), "record tag 6"),
         ("Record", u8(1) + blob(envelope(ref_event)), "tag 1 holds an attached-ref envelope"),
         ("Record", u8(2) + blob(item_bytes), "tag 2 holds an item envelope"),
         ("Record", u8(1) + blob(item_bytes + b"\0"), "envelope with a trailing byte"),
@@ -1792,6 +1812,8 @@ def new_sync_wire():
         ("Record", u8(1) + u32(len(item_bytes) + 1) + item_bytes, "blob runs past the end"),
         ("Record", guard[:-8] + u64(0), "head guard with seq 0"),
         ("Record", u8(4) + uuid_bytes(first) + u8(2) + u32(0), "subtree guard with bool 2"),
+        ("Record", subtree, "obsolete inline subtree descendants"),
+        ("Record", u8(5) + uuid_bytes(second) + u64(0), "subtree descendant with seq 0"),
         ("PageAck", u64(2**63) + ack[8:], "next_offset 2^63"),
         ("PageAck", ack[:16] + u32(10**9), "nanoseconds 10^9"),
         ("SubmitRequest", enc("SubmitRequest", request).replace(
@@ -1851,6 +1873,17 @@ def new_sync_wire():
             "guards_digest": guards_digest,
             "commit_id": commit_id, "request_hex": request_bytes.hex(),
             "request_digest": request_digest,
+        },
+        "large_subtree_guard": {
+            "description": "Add i to the first descendant UUID as a big-endian integer "
+                           "and use head sequence i + 1, for i from 0 through count - 1.",
+            "request_hex": large_request_bytes.hex(),
+            "request_digest": sha_id(large_request_bytes),
+            "event_records_hex": [data.hex() for data in record_bytes[:2]],
+            "start_hex": subtree_start.hex(),
+            "first_descendant_item_id": first_descendant,
+            "descendant_count": descendant_count,
+            "guards_digest": large_request["guards_digest"],
         },
     })
 

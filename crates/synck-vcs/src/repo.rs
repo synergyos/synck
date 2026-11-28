@@ -1311,19 +1311,17 @@ impl Repo {
                     guard.expected_non_tombstoned_descendants.len(),
                 )
                 .await?;
-            actual.sort_unstable_by(|left, right| left.0.cmp(&right.0));
-            let membership_matches = actual.len()
-                == guard.expected_non_tombstoned_descendants.len()
-                && actual
-                    .iter()
-                    .zip(&guard.expected_non_tombstoned_descendants)
-                    .all(|(found, expected)| found.0 == expected.0);
-            if !membership_matches {
-                return Err(CoreError::SubtreeChanged {
-                    repo_id: repo_id.clone(),
-                    root_item_id: guard.root_item_id.clone(),
-                });
+            let expected = &guard.expected_non_tombstoned_descendants;
+            if actual.len() == expected.len() {
+                actual.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+                if &actual == expected {
+                    continue;
+                }
             }
+            return Err(CoreError::SubtreeChanged {
+                repo_id: repo_id.clone(),
+                root_item_id: guard.root_item_id.clone(),
+            });
         }
 
         // Load current item state for all touched items and apply basic invariants.

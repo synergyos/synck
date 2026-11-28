@@ -164,11 +164,10 @@ impl Server {
                 receipt: receipt(accepted),
             });
         }
-        let (validated, records) = self.uploads.staged(&request)?;
         let mut proposal = Proposal {
             repository_head: request.repository_head,
             operation_id: request.operation_id.clone(),
-            commit_id: validated.commit_id,
+            commit_id: validated.commit_id.clone(),
             metadata: request.metadata.clone(),
             events: Vec::new(),
             ref_events: Vec::new(),
@@ -176,14 +175,32 @@ impl Server {
             subtree_guards: Vec::new(),
             lock_tokens,
         };
-        for record in records {
-            match record {
-                ProposalRecord::Item(event) => proposal.events.push(event),
-                ProposalRecord::Ref(event) => proposal.ref_events.push(event),
-                ProposalRecord::Guard(guard) => proposal.guards.push(guard),
-                ProposalRecord::SubtreeGuard(guard) => proposal.subtree_guards.push(guard),
+        self.uploads.staged(&request, |records| {
+            for record in records {
+                match record {
+                    ProposalRecord::Item(event) => proposal.events.push(event),
+                    ProposalRecord::Ref(event) => proposal.ref_events.push(event),
+                    ProposalRecord::Guard(guard) => proposal.guards.push(guard),
+                    ProposalRecord::SubtreeGuardStart {
+                        root_item_id,
+                        require_empty_live_descendants,
+                        ..
+                    } => proposal
+                        .subtree_guards
+                        .push(synck_vcs::types::SubtreeClosureGuard {
+                            root_item_id,
+                            require_empty_live_descendants,
+                            expected_non_tombstoned_descendants: Vec::new(),
+                        }),
+                    ProposalRecord::SubtreeGuardDescendant(head) => proposal
+                        .subtree_guards
+                        .last_mut()
+                        .expect("verified subtree guard start")
+                        .expected_non_tombstoned_descendants
+                        .push((head.item_id, head.head_seq)),
+                }
             }
-        }
+        })?;
         self.uploads
             .submit(repo_id, &request.operation_id, &validated.request_digest)?;
         match Handle::current().block_on(repository.accept(proposal))? {

@@ -19,7 +19,7 @@ synthetic, and an example ID never means the object exists.
 | `records.json` | Replay | List of commit sequences; see below |
 | `file-version.json` | FILE revision labels | `metadata`, `metadata_payload_hex`, `event`, `envelope_hex`, `event_digest`; `with_description` repeats them for a later revision with a description |
 | `sync.json`, `sync-history.json`, `sync-large.json` | The sync protocol | Requests, records, their bytes and digests |
-| `sync-wire.json` | The protocol's binary shapes and guards | `valid`: `type`, `value`, `bytes_hex`; `invalid`: `type`, `bytes_hex`, `reason`; and `guarded` |
+| `sync-wire.json` | The protocol's binary shapes and guards | `valid`: `type`, `value`, `bytes_hex`; `invalid`: `type`, `bytes_hex`, `reason`; `guarded`; and `large_subtree_guard` |
 | `repository/` | A whole repository | See below |
 
 `valid` means the input is accepted by the rule that file tests, which is not always

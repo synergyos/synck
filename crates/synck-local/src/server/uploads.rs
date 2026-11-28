@@ -13,7 +13,7 @@ use chrono::{TimeDelta, Utc};
 use rusqlite::{Connection, OptionalExtension as _, params};
 use synck_sync::{
     PageAck, ProposalPage, ProposalRecord, ProposalVerifier, ProtocolError, RepositoryIdentity,
-    SubmitRequest, ValidatedProposal, Wire as _,
+    SubmitRequest, Wire as _,
 };
 use synck_vcs::codec::Decoder;
 use synck_vcs::types::{RepoId, Sha256Digest, Timestamp};
@@ -188,11 +188,12 @@ impl Uploads {
         Ok(ack)
     }
 
-    /// The staged records of `request`, verified against it now.
+    /// Replay the staged records of `request`, then verify the request.
     pub(crate) fn staged(
         &self,
         request: &SubmitRequest,
-    ) -> Result<(ValidatedProposal, Vec<ProposalRecord>)> {
+        each: impl FnMut(Vec<ProposalRecord>),
+    ) -> Result<()> {
         let now = Utc::now();
         let conn = open_existing(&self.state_root)?;
         let expires_at: i64 = conn
@@ -207,16 +208,16 @@ impl Uploads {
             )
             .optional()?
             .ok_or(ProtocolError::UploadExpired)?;
-        let mut records = Vec::new();
         let verifier = replay(
             &conn,
             &request.repository,
             &request.operation_id,
             timestamp(expires_at)?,
             now,
-            |page| records.extend(page),
+            each,
         )?;
-        Ok((verifier.finish(request, now)?, records))
+        verifier.finish(request, now)?;
+        Ok(())
     }
 
     /// Drop an accepted upload's pages.

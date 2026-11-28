@@ -21,8 +21,8 @@ use synck_vcs::codec::{
 };
 use synck_vcs::types::{
     CommitEventRow, CommitId, CommitRow, EventRow, ItemId, LifecycleState, ObjectId, RefEventRow,
-    RepoId, Sha256Digest, SubtreeClosureGuard, Timestamp, commit_id_from_digest_bytes,
-    commit_id_to_digest_bytes, sha256_digest_from_digest_bytes, sha256_digest_to_digest_bytes,
+    RepoId, Sha256Digest, Timestamp, commit_id_from_digest_bytes, commit_id_to_digest_bytes,
+    sha256_digest_from_digest_bytes, sha256_digest_to_digest_bytes,
 };
 
 type Result<T> = std::result::Result<T, ProtocolError>;
@@ -289,7 +289,8 @@ impl Wire for Capabilities {
 const RECORD_ITEM: u8 = 1;
 const RECORD_REF: u8 = 2;
 const RECORD_HEAD_GUARD: u8 = 3;
-const RECORD_SUBTREE_GUARD: u8 = 4;
+const RECORD_SUBTREE_GUARD_START: u8 = 4;
+const RECORD_SUBTREE_GUARD_DESCENDANT: u8 = 5;
 
 impl Wire for ProposalRecord {
     fn put(&self, out: &mut Vec<u8>) -> Result<()> {
@@ -307,18 +308,21 @@ impl Wire for ProposalRecord {
                 put_item(out, &guard.item_id);
                 Ok(put_seq(out, guard.head_seq)?)
             }
-            Self::SubtreeGuard(guard) => {
-                put_u8(out, RECORD_SUBTREE_GUARD);
-                put_item(out, &guard.root_item_id);
-                put_bool(out, guard.require_empty_live_descendants);
-                put_list(
-                    out,
-                    &guard.expected_non_tombstoned_descendants,
-                    |out, (id, seq)| {
-                        put_item(out, id);
-                        Ok(put_seq(out, *seq)?)
-                    },
-                )
+            Self::SubtreeGuardStart {
+                root_item_id,
+                require_empty_live_descendants,
+                descendant_count,
+            } => {
+                put_u8(out, RECORD_SUBTREE_GUARD_START);
+                put_item(out, root_item_id);
+                put_bool(out, *require_empty_live_descendants);
+                put_u32(out, *descendant_count);
+                Ok(())
+            }
+            Self::SubtreeGuardDescendant(head) => {
+                put_u8(out, RECORD_SUBTREE_GUARD_DESCENDANT);
+                put_item(out, &head.item_id);
+                Ok(put_seq(out, head.head_seq)?)
             }
         }
     }
@@ -330,12 +334,14 @@ impl Wire for ProposalRecord {
                 item_id: get_item(decoder)?,
                 head_seq: decoder.seq()?,
             })),
-            RECORD_SUBTREE_GUARD => Ok(Self::SubtreeGuard(SubtreeClosureGuard {
+            RECORD_SUBTREE_GUARD_START => Ok(Self::SubtreeGuardStart {
                 root_item_id: get_item(decoder)?,
                 require_empty_live_descendants: decoder.bool()?,
-                expected_non_tombstoned_descendants: get_list(decoder, |d| {
-                    Ok((get_item(d)?, d.seq()?))
-                })?,
+                descendant_count: decoder.u32()?,
+            }),
+            RECORD_SUBTREE_GUARD_DESCENDANT => Ok(Self::SubtreeGuardDescendant(ItemHead {
+                item_id: get_item(decoder)?,
+                head_seq: decoder.seq()?,
             })),
             _ => Err(invalid("unknown proposal record tag")),
         }

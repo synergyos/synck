@@ -1,6 +1,6 @@
 use crate::{
     CommitMetadata, MAX_PAGE_RECORDS, ProposalPage, ProposalRecord, ProtocolError,
-    RepositoryIdentity, SubmitRequest, digest_id, invalid, wire,
+    RepositoryIdentity, SubmitRequest, Wire, digest_id, invalid, wire,
 };
 use sha2::{Digest, Sha256};
 use synck_vcs::types::{
@@ -50,7 +50,7 @@ pub fn validate_submit(request: &SubmitRequest) -> Result<ValidatedProposal, Pro
     })
 }
 
-/// Constant-sized streaming summary (apart from one previous guard ID). Pages
+/// Constant-sized streaming summary. Pages
 /// belong in durable staging owned by the authority, not in this verifier. After
 /// restart replay those pages to reconstruct the summary before resuming.
 /// Invalid pages leave the previous summary unchanged.
@@ -67,7 +67,16 @@ pub struct ProposalVerifier {
     refs_started: bool,
     previous_guard: Option<ItemId>,
     previous_subtree: Option<ItemId>,
+    subtree: Option<SubtreeDigest>,
 }
+
+#[derive(Clone)]
+struct SubtreeDigest {
+    remaining: u32,
+    previous_descendant: Option<ItemId>,
+    hasher: Sha256,
+}
+
 impl ProposalVerifier {
     pub fn new(
         repository: RepositoryIdentity,
@@ -91,10 +100,14 @@ impl ProposalVerifier {
             refs_started: false,
             previous_guard: None,
             previous_subtree: None,
+            subtree: None,
         })
     }
     pub fn next_offset(&self) -> u64 {
         self.offset
+    }
+    pub fn event_count(&self) -> u64 {
+        self.events
     }
     fn live(&self, now: Timestamp) -> Result<(), ProtocolError> {
         if now >= self.expires_at {
@@ -114,6 +127,7 @@ impl ProposalVerifier {
             return Err(ProtocolError::Limit("proposal page records"));
         }
         let mut next = self.clone();
+        let mut descendant_bytes = Vec::new();
         for record in &page.records {
             match record {
                 ProposalRecord::Item(event) => {
@@ -142,31 +156,67 @@ impl ProposalVerifier {
                     {
                         return Err(invalid("head guards must be unique, sorted and positive"));
                     }
-                    next.guard(record)?;
+                    next.guard(Sha256::digest(wire::encode(record)?))?;
                     next.previous_guard = Some(guard.item_id.clone());
                 }
-                ProposalRecord::SubtreeGuard(guard) => {
-                    if next
-                        .previous_subtree
-                        .as_ref()
-                        .is_some_and(|id| id >= &guard.root_item_id)
-                        || (guard.require_empty_live_descendants
-                            && !guard.expected_non_tombstoned_descendants.is_empty())
-                        || guard
-                            .expected_non_tombstoned_descendants
-                            .iter()
-                            .any(|(id, seq)| *seq < 1 || id == &guard.root_item_id)
-                        || guard
-                            .expected_non_tombstoned_descendants
-                            .windows(2)
-                            .any(|pair| pair[0].0 >= pair[1].0)
+                ProposalRecord::SubtreeGuardStart {
+                    root_item_id,
+                    require_empty_live_descendants,
+                    descendant_count,
+                } => {
+                    if next.subtree.is_some()
+                        || next
+                            .previous_subtree
+                            .as_ref()
+                            .is_some_and(|id| id >= root_item_id)
                     {
                         return Err(invalid(
-                            "subtree guards must be sorted with exact positive heads",
+                            "subtree guards must be unique, sorted and complete",
                         ));
                     }
-                    next.guard(record)?;
-                    next.previous_subtree = Some(guard.root_item_id.clone());
+                    if *require_empty_live_descendants && *descendant_count != 0 {
+                        return Err(invalid("empty-live subtree guard cannot list descendants"));
+                    }
+                    let mut hasher = Sha256::new();
+                    hasher.update(wire::encode(record)?);
+                    if *descendant_count == 0 {
+                        next.guard(hasher.finalize())?;
+                    } else {
+                        next.subtree = Some(SubtreeDigest {
+                            remaining: *descendant_count,
+                            previous_descendant: None,
+                            hasher,
+                        });
+                    }
+                    next.previous_subtree = Some(root_item_id.clone());
+                }
+                ProposalRecord::SubtreeGuardDescendant(head) => {
+                    let subtree = next
+                        .subtree
+                        .as_mut()
+                        .ok_or_else(|| invalid("descendant without an open subtree guard"))?;
+                    if next.previous_subtree.as_ref() == Some(&head.item_id)
+                        || subtree
+                            .previous_descendant
+                            .as_ref()
+                            .is_some_and(|id| id >= &head.item_id)
+                    {
+                        return Err(invalid(
+                            "subtree descendants must be unique, sorted and exclude the root",
+                        ));
+                    }
+                    descendant_bytes.clear();
+                    record.put(&mut descendant_bytes)?;
+                    // The tag marks a transport record. The logical guard hashes
+                    // the original untagged UUID and sequence pair.
+                    subtree.hasher.update(&descendant_bytes[1..]);
+                    subtree.remaining -= 1;
+                    if subtree.remaining == 0 {
+                        let subtree = next.subtree.take().expect("open subtree guard");
+                        next.guard(subtree.hasher.finalize())?;
+                    } else {
+                        subtree.previous_descendant = Some(head.item_id.clone());
+                    }
                 }
             }
         }
@@ -186,11 +236,8 @@ impl ProposalVerifier {
         self.events_hasher.push(envelope);
         Ok(())
     }
-    /// A guard hashes as its encoded record, tag included, so a subtree guard
-    /// never reads as a head guard.
-    fn guard(&mut self, record: &ProposalRecord) -> Result<(), ProtocolError> {
-        self.guards_hasher
-            .update(Sha256::digest(wire::encode(record)?));
+    fn guard(&mut self, digest: sha2::digest::Output<Sha256>) -> Result<(), ProtocolError> {
+        self.guards_hasher.update(digest);
         self.guards = self
             .guards
             .checked_add(1)
@@ -200,6 +247,9 @@ impl ProposalVerifier {
     /// Build the final request from the exact uploaded stream. Guards bind the
     /// request digest but do not alter canonical commit identity.
     pub fn request(&self, metadata: CommitMetadata) -> Result<SubmitRequest, ProtocolError> {
+        if self.subtree.is_some() {
+            return Err(invalid("incomplete subtree guard"));
+        }
         let request = SubmitRequest {
             repository_head: None,
             repository: self.repository.clone(),

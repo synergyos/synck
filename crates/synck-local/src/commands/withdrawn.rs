@@ -74,7 +74,9 @@ impl WithdrawnSave {
             let references = match record {
                 ProposalRecord::Item(event) => synck_items::references::event_references(event),
                 ProposalRecord::Ref(event) => synck_items::references::ref_event_references(event),
-                ProposalRecord::Guard(_) | ProposalRecord::SubtreeGuard(_) => continue,
+                ProposalRecord::Guard(_)
+                | ProposalRecord::SubtreeGuardStart { .. }
+                | ProposalRecord::SubtreeGuardDescendant(_) => continue,
             }
             .map_err(|error| LocalError::Integrity(error.to_string()))?;
             objects.extend(references.objects);
@@ -464,7 +466,9 @@ mod envelopes {
         match record {
             ProposalRecord::Item(event) => canonical_event_proposal_bytes(event),
             ProposalRecord::Ref(event) => canonical_ref_event_proposal_bytes(event),
-            ProposalRecord::Guard(_) | ProposalRecord::SubtreeGuard(_) => {
+            ProposalRecord::Guard(_)
+            | ProposalRecord::SubtreeGuardStart { .. }
+            | ProposalRecord::SubtreeGuardDescendant(_) => {
                 return Err("a withdrawn save holds no guards".to_string());
             }
         }

@@ -107,7 +107,7 @@ every event and refuses the commit unless its hash is that ID.
 | `Capabilities` | `u16` protocol_version (2), `bool` encrypted, `Cursor` latest, `ServerPolicy` |
 | `ServerPolicy` | `opt u64` max_events_per_commit, `opt u64` max_object_bytes, `opt u64` quota_bytes |
 | `ProposalPage` | `RepositoryIdentity`, `str` operation_id, `u64` offset, `list Record` |
-| `Record` | `u8` tag, then: 1 `envelope` (item); 2 `envelope` (attached ref); 3 `uuid` item_id, `seq` head_seq (head guard); 4 `uuid` root_item_id, `bool` require_empty_live_descendants, `list (uuid, seq)` descendants (subtree guard) |
+| `Record` | `u8` tag, then: 1 `envelope` (item); 2 `envelope` (attached ref); 3 `uuid` item_id, `seq` head_seq (head guard); 4 `uuid` root_item_id, `bool` require_empty_live_descendants, `u32` descendant_count (subtree guard start); 5 `uuid` item_id, `seq` head_seq (subtree guard descendant) |
 | `PageAck` | `u64` next_offset, `time` expires_at |
 | `SubmitRequest` | `RepositoryIdentity`, `str` operation_id, `opt u64` repository_head, `header`, `u64` guard_count, `digest` guards_digest |
 | `SubmitResult` | `u8` status, then: 0 `Receipt`; 1 `list (uuid, u64)` conflicts; 2 `u8` limit, `u64` maximum, `u64` actual |
@@ -173,11 +173,14 @@ encoding. Receivers cap network bytes before decoding.
 A proposal is one ordered record stream across all pages: item envelopes, then
 attached-ref envelopes, then head guards, then subtree guards. A page's
 `operation_id` and `offset` equal its URL's. Head guards are unique, sorted by
-item ID, and assert a pre-commit head. Subtree guards are unique and sorted by
-root ID; each binds the exact sorted non-tombstoned descendants and their heads,
-or requires that the root has no live descendants, in which case it lists none.
-There is no aggregate event, byte or guard-count cap; guards are paged so they
-are no hidden limit on the number of affected items.
+item ID, and assert a pre-commit head. Subtree guard starts are unique and sorted
+by root ID. An exact guard starts with mode false and is immediately followed by
+exactly `descendant_count` records. They list the non-tombstoned descendants and
+their heads in strictly increasing item ID order, excluding the root. Mode true
+requires no live descendants and always carries a zero count. Exact mode with a
+zero count requires no non-tombstoned descendants, including trashed ones.
+Page breaks may occur anywhere between records. Each record advances the page
+offset by one. The page bounds impose no aggregate cap on the proposal.
 
 The client persists the exact envelopes, object bytes, operation ID and commit
 header before reporting a saved pending change. It uploads pages at the next
@@ -186,13 +189,15 @@ same-offset retry returns the original acknowledgement only for identical
 records. Changed contents or gaps are refused, never overwritten. A dropped
 reply does not justify a fresh operation ID. The authority may rebuild
 `ProposalVerifier` by replaying durable pages; it keeps only running digests,
-counts and the previous guard IDs, not the whole proposal.
+counts and the IDs needed to check ordering.
 
 `SubmitRequest` ends the upload. Its `header` is the commit header, so the
 commit ID is SHA-256 of it, and its `event_count` and `events_digest` must match
 the staged envelopes. `guards_digest` is SHA-256 of the concatenated SHA-256
-digests of each guard record's encoded bytes, tag included, in stream order;
-an empty stream hashes empty bytes. `guard_count` counts both guard kinds.
+digests of the logical guards in stream order. An empty stream hashes empty
+bytes. Hash a head guard as its encoded record. Hash a subtree guard as its
+encoded start record followed by each descendant's UUID and sequence bytes
+without tag 5. `guard_count` counts each head or subtree guard once.
 `request_digest` is SHA-256 of the encoded `SubmitRequest`. Page size and
 boundaries change none of these.
 
@@ -459,7 +464,8 @@ uses these routes; see `docs/local-repository.md` ("HTTPS clones").
 vector](vectors/sync-large.json) contains a deterministic event-generation
 recipe and independently computed hashes, a 16 KiB message and a 256-byte
 operation ID. [The wire vector](vectors/sync-wire.json) gives the bytes of one
-value of each shape and bytes a receiver must refuse. [The packed-history
+value of each shape, bytes a receiver must refuse, and a 350,000-descendant
+subtree guard with independently computed hashes. [The packed-history
 vectors](vectors/sync-history.json) specify 128 small commits in one page and a
 page that continues one commit, completes intervening commits, and starts
 another.

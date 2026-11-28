@@ -103,7 +103,9 @@ fn published(request: &SubmitRequest, records: &[ProposalRecord]) -> Published {
                     created_at: now(),
                 }))
             }
-            ProposalRecord::Guard(_) | ProposalRecord::SubtreeGuard(_) => None,
+            ProposalRecord::Guard(_)
+            | ProposalRecord::SubtreeGuardStart { .. }
+            | ProposalRecord::SubtreeGuardDescendant(_) => None,
         })
         .collect();
     let checkpoint = digest(
@@ -844,7 +846,7 @@ fn subtree_guards_bind_exact_closure_without_changing_legacy_commit_identity() {
         )],
         require_empty_live_descendants: false,
     };
-    rec.push(ProposalRecord::SubtreeGuard(guard.clone()));
+    rec.extend(ProposalRecord::subtree_guard(guard).unwrap());
     let state = upload(&initial, &rec, 1);
     let guarded = state.request(initial.metadata.clone()).unwrap();
     state.finish(&guarded, now()).unwrap();
@@ -858,55 +860,138 @@ fn subtree_guards_bind_exact_closure_without_changing_legacy_commit_identity() {
         validate_submit(&initial).unwrap().request_digest
     );
     let mut changed = rec.clone();
-    let ProposalRecord::SubtreeGuard(changed_guard) = changed.last_mut().unwrap() else {
+    let ProposalRecord::SubtreeGuardDescendant(changed_head) = changed.last_mut().unwrap() else {
         unreachable!()
     };
-    changed_guard.expected_non_tombstoned_descendants[0].1 += 1;
+    changed_head.head_seq += 1;
     assert!(
         upload(&initial, &changed, 1)
             .finish(&guarded, now())
             .is_err()
     );
-    for invalid in [
-        SubtreeClosureGuard {
-            require_empty_live_descendants: true,
-            ..guard.clone()
-        },
-        SubtreeClosureGuard {
-            expected_non_tombstoned_descendants: vec![(guard.root_item_id.clone(), 1)],
-            ..guard.clone()
-        },
+}
+
+#[test]
+fn subtree_guard_counts_and_order_survive_page_breaks() {
+    let request = request();
+    let id = |last| ItemId::parse(format!("019a2900-0000-7000-8000-0000000000{last:02x}")).unwrap();
+    let start = |root, descendant_count, require_empty_live_descendants| {
+        ProposalRecord::SubtreeGuardStart {
+            root_item_id: id(root),
+            require_empty_live_descendants,
+            descendant_count,
+        }
+    };
+    let descendant = |item, head_seq| {
+        ProposalRecord::SubtreeGuardDescendant(ItemHead {
+            item_id: id(item),
+            head_seq,
+        })
+    };
+    let head = ProposalRecord::Guard(ItemHead {
+        item_id: id(3),
+        head_seq: 1,
+    });
+    let mut prefix = records();
+    let base = upload(&request, &prefix, MAX_PAGE_RECORDS);
+    prefix.extend([start(3, 2, false), descendant(5, 1)]);
+    let mut partial = upload(&request, &prefix, MAX_PAGE_RECORDS);
+    assert!(partial.request(request.metadata.clone()).is_err());
+    assert!(partial.finish(&request, now()).is_err());
+    let offset = partial.next_offset();
+    let page = |state: &ProposalVerifier, records| ProposalPage {
+        repository: request.repository.clone(),
+        operation_id: request.operation_id.clone(),
+        offset: state.next_offset(),
+        records,
+    };
+    for records in [
+        vec![start(7, 0, true)],
+        vec![head.clone()],
+        vec![descendant(3, 1)], // root
+        vec![descendant(5, 2)], // duplicate across the page break
+        vec![descendant(4, 1)], // descending across the page break
+        vec![descendant(6, 0)],
+        vec![descendant(6, 1), descendant(7, 1)], // too many
     ] {
-        let mut verifier = verifier(&initial);
-        let page = ProposalPage {
-            repository: initial.repository.clone(),
-            operation_id: initial.operation_id.clone(),
-            offset: 0,
-            records: vec![records().remove(0), ProposalRecord::SubtreeGuard(invalid)],
-        };
-        assert!(verifier.push(&page, now()).is_err());
-        assert_eq!(verifier.next_offset(), 0);
+        assert!(partial.push(&page(&partial, records), now()).is_err());
+        assert_eq!(partial.next_offset(), offset);
     }
-    let mut verifier = verifier(&initial);
-    assert!(
-        verifier
-            .push(
-                &ProposalPage {
-                    repository: initial.repository,
-                    operation_id: initial.operation_id,
-                    offset: 0,
-                    records: vec![
-                        ProposalRecord::SubtreeGuard(guard.clone()),
-                        ProposalRecord::Guard(ItemHead {
-                            item_id: guard.root_item_id,
-                            head_seq: 1
-                        })
-                    ]
-                },
-                now()
-            )
-            .is_err()
-    );
+    partial
+        .push(&page(&partial, vec![descendant(6, 1)]), now())
+        .unwrap();
+    let complete = partial.request(request.metadata.clone()).unwrap();
+    assert_eq!(complete.guard_count, request.guard_count + 1);
+    partial.finish(&complete, now()).unwrap();
+    for records in [
+        vec![descendant(6, 1)], // no start
+        vec![start(3, 1, true)],
+        vec![start(3, 0, true), descendant(5, 1)],
+        vec![start(3, 0, true), start(3, 0, false)],
+        vec![start(4, 0, true), start(3, 0, false)],
+        vec![start(3, 0, true), head],
+    ] {
+        assert!(base.clone().push(&page(&base, records), now()).is_err());
+    }
+    let empty = |live| {
+        let mut state = base.clone();
+        state
+            .push(&page(&state, vec![start(3, 0, live)]), now())
+            .unwrap();
+        state
+            .request(request.metadata.clone())
+            .unwrap()
+            .guards_digest
+    };
+    assert_ne!(empty(true), empty(false));
+}
+
+#[test]
+fn large_subtree_guard_matches_independent_digest_across_page_breaks() {
+    let vector: serde_json::Value =
+        serde_json::from_str(include_str!("../../../docs/spec/vectors/sync-wire.json")).unwrap();
+    let large = &vector["large_subtree_guard"];
+    let request: SubmitRequest = decode(&bytes(&large["request_hex"])).unwrap();
+    let start = bytes(&large["start_hex"]);
+    let count = large["descendant_count"].as_u64().unwrap();
+    let first = Uuid::parse_str(large["first_descendant_item_id"].as_str().unwrap())
+        .unwrap()
+        .as_u128();
+    assert!(start.len() + count as usize * 24 > MAX_PAGE_BYTES);
+    for page_size in [MAX_PAGE_RECORDS, MAX_PAGE_RECORDS - 3] {
+        let events = large["event_records_hex"].as_array().unwrap();
+        let mut records = events
+            .iter()
+            .map(|event| decode(&bytes(event)).unwrap())
+            .chain(std::iter::once(decode(&start).unwrap()))
+            .chain((0..count).map(|index| {
+                ProposalRecord::SubtreeGuardDescendant(ItemHead {
+                    item_id: ItemId::parse(Uuid::from_u128(first + u128::from(index)).to_string())
+                        .unwrap(),
+                    head_seq: index as i64 + 1,
+                })
+            }));
+        let mut state = verifier(&request);
+        loop {
+            let page = ProposalPage {
+                repository: request.repository.clone(),
+                operation_id: request.operation_id.clone(),
+                offset: state.next_offset(),
+                records: records.by_ref().take(page_size).collect(),
+            };
+            if page.records.is_empty() {
+                break;
+            }
+            let body = encode(&page).unwrap();
+            assert!(body.len() <= MAX_PAGE_BYTES);
+            state.push(&decode(&body).unwrap(), now()).unwrap();
+        }
+        assert_eq!(state.next_offset(), events.len() as u64 + 1 + count);
+        let validated = state.finish(&request, now()).unwrap();
+        assert_eq!(request.guard_count, 1);
+        assert_eq!(request.guards_digest.as_str(), large["guards_digest"]);
+        assert_eq!(validated.request_digest.as_str(), large["request_digest"]);
+    }
 }
 
 #[test]

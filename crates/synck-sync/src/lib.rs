@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use synck_vcs::types::{
     AuthorId, CommitEventRow, CommitId, CommitRow, EventProposal, ItemId, LifecycleState, ObjectId,
-    RefEventProposal, RepoId, Sha256Digest, Timestamp,
+    RefEventProposal, RepoId, Sha256Digest, SubtreeClosureGuard, Timestamp,
 };
 use uuid::Uuid;
 
@@ -157,8 +157,8 @@ pub struct CommitMetadata {
     pub occurred_at: Option<Timestamp>,
 }
 
-/// Ordinary events, then ref events, then sorted unique head guards. Guards are
-/// paged too: their count is not a hidden cap on the number of affected items.
+/// Item events, ref events, sorted head guards, then sorted subtree guards.
+/// Each subtree start is followed by its descendants, possibly on later pages.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(
     tag = "kind",
@@ -171,8 +171,37 @@ pub enum ProposalRecord {
     Item(EventProposal),
     Ref(RefEventProposal),
     Guard(ItemHead),
-    /// Exact subtree membership, authenticated in the guard stream.
-    SubtreeGuard(synck_vcs::types::SubtreeClosureGuard),
+    SubtreeGuardStart {
+        root_item_id: ItemId,
+        require_empty_live_descendants: bool,
+        descendant_count: u32,
+    },
+    SubtreeGuardDescendant(ItemHead),
+}
+
+impl ProposalRecord {
+    /// Emit a Core guard in stream order, without building a second list of descendants.
+    pub fn subtree_guard(
+        guard: SubtreeClosureGuard,
+    ) -> Result<impl Iterator<Item = Self>, ProtocolError> {
+        let descendant_count = u32::try_from(guard.expected_non_tombstoned_descendants.len())
+            .map_err(|_| invalid("subtree descendant count exceeds u32"))?;
+        let start = Self::SubtreeGuardStart {
+            root_item_id: guard.root_item_id,
+            require_empty_live_descendants: guard.require_empty_live_descendants,
+            descendant_count,
+        };
+        Ok(
+            std::iter::once(start).chain(
+                guard
+                    .expected_non_tombstoned_descendants
+                    .into_iter()
+                    .map(|(item_id, head_seq)| {
+                        Self::SubtreeGuardDescendant(ItemHead { item_id, head_seq })
+                    }),
+            ),
+        )
+    }
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
