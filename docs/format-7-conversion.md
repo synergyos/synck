@@ -31,9 +31,10 @@ it cannot read, so it refuses the first encrypted object.
   below). It reads a present object's length from its store; for an erased
   one only what format 7 metadata recorded can give it, such as a FILE's
   `content.size`. An event naming an object without a size is refused.
-- A FILE's size moves from metadata to its bytes entry. A FILE content event's
-  `content` must be exactly `{"size": n}` with `n` the supplied size, or the
-  event is refused; erased metadata is not checked. `content` leaves every
+- A FILE's size moves from metadata to its bytes entry. A FILE content event
+  whose metadata names `content` must hold exactly `{"size": n}` with `n` the
+  supplied size, or the event is refused. Empty files and received revisions
+  named none; erased metadata is not checked. `content` leaves every
   FILE map, and a FILE event whose map is then empty, while the item's previous
   one was too, carries no metadata.
 - Each commit ID and checkpoint is recomputed. The converter first checks that
