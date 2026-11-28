@@ -596,7 +596,7 @@ fn translate(
     if item.item_type == "FILE"
         && let Some(patch) = &mut patch
     {
-        file_size(&item_id, event, patch)?;
+        file_size(&item_id, patch)?;
         upload_intent = file_revision(event, &verb, patch, &mut revision)?;
     }
     let title = verb == "SET_TITLE" && item.record;
@@ -751,31 +751,20 @@ fn content_ref(id: ObjectId, sizes: &BTreeMap<ObjectId, u64>) -> Result<ContentR
 }
 
 /// A FILE's format 7 metadata held its size as `content.size`, which its
-/// bytes entry now holds. Where a content event names one it must equal the
-/// supplied size; the key leaves every map. Empty files and received revisions
-/// named none, and a live writer may leave the size to the entry.
-fn file_size(
-    item_id: &ItemId,
-    event: &EventProposal,
-    patch: &mut Map<String, Value>,
-) -> Result<(), ConvertError> {
+/// bytes entry now holds: the stored object's length, the only true one, even
+/// where a legacy import recorded another. The key leaves every map; content
+/// metadata other than a size is refused. Empty files and received revisions
+/// named none.
+fn file_size(item_id: &ItemId, patch: &mut Map<String, Value>) -> Result<(), ConvertError> {
     let Some(content) = patch.remove("content") else {
         return Ok(());
     };
-    let Some(size) = event
-        .set_content
-        .as_ref()
-        .filter(|content| content.only("bytes").is_some())
-        .and_then(|content| content.size("bytes"))
-    else {
-        return Ok(());
-    };
-    if content != serde_json::json!({"size": size}) {
-        return Err(fail(format!(
-            "FILE {item_id} metadata does not hold its stored size {size}"
-        )));
+    match content.as_object() {
+        Some(map) if map.len() == 1 && map.get("size").is_some_and(Value::is_u64) => Ok(()),
+        _ => Err(fail(format!(
+            "FILE {item_id} metadata holds content other than its size"
+        ))),
     }
-    Ok(())
 }
 
 /// Format 7 kept a FILE revision's facts in its map, so a CREATE's became item
@@ -1425,9 +1414,13 @@ mod tests {
     }
 
     #[test]
-    fn a_file_size_must_match_its_stored_object() {
+    fn a_file_size_comes_from_its_stored_object() {
         for (value, sizes, refusal) in [
-            (json!({"content": {"size": 2}}), sizes(), "stored size 1"),
+            (
+                json!({"content": {"size": 1, "mime": "text/plain"}}),
+                sizes(),
+                "content other than its size",
+            ),
             (
                 json!({"content": {"size": 1}}),
                 BTreeMap::new(),
@@ -1454,6 +1447,16 @@ mod tests {
         let converted = decode_event_proposal(&commit.payloads[0]).unwrap();
         assert!(converted.set_metadata.is_none());
         assert!(commit.metadata.is_empty());
+        // A legacy import's wrong size gives way to the stored one.
+        let create = metadata(json!({"content": {"size": 2}}));
+        let commit = converter()
+            .convert(source(
+                1,
+                vec![(event(FILE, "FILE::CREATE", None, &create), Some(&create))],
+            ))
+            .unwrap();
+        let converted = decode_event_proposal(&commit.payloads[0]).unwrap();
+        assert_eq!(converted.set_content.unwrap().size("bytes"), Some(1));
         // An empty or received FILE named no size; its entry holds it.
         let create = metadata(json!({"revision_origin": "FEDERATED"}));
         let commit = converter()
