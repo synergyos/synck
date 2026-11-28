@@ -19,11 +19,13 @@ async fn metadata_roundtrips_and_missing_differs_from_corrupt() {
     assert_eq!(copy.payload(), metadata.payload());
     assert_eq!(copy.value(), metadata.value());
     assert_eq!(storage.verify_metadata_objects(&repo).unwrap(), 1);
-    assert!(
+    let missing = ObjectId::from_digest([0; 32]);
+    assert!(storage.get_metadata(&repo, &missing).unwrap().is_none());
+    assert_eq!(
         storage
-            .get_metadata(&repo, &ObjectId::from_digest([0; 32]))
-            .unwrap()
-            .is_none()
+            .missing_metadata(&repo, [missing.clone(), metadata.id(), missing.clone()])
+            .unwrap(),
+        vec![missing.clone(), missing]
     );
     assert!(
         storage
@@ -42,6 +44,7 @@ async fn metadata_roundtrips_and_missing_differs_from_corrupt() {
         )
         .unwrap();
     assert!(storage.get_metadata(&repo, &metadata.id()).is_err());
+    assert!(storage.missing_metadata(&repo, [metadata.id()]).is_err());
     assert!(storage.verify_metadata_objects(&repo).is_err());
     assert!(storage.put_metadata(&repo, &metadata).is_err());
 }
