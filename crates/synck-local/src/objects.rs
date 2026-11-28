@@ -96,7 +96,7 @@ impl Repository {
 
     pub(crate) fn checkpoint_commit_objects(&self) -> Result<()> {
         match self.storage_mode() {
-            StorageMode::Chunked => self.object_store().checkpoint(),
+            StorageMode::Chunked => self.object_store().sync_wal(),
             StorageMode::WholeFile => {
                 crate::repository::sync_directory(&self.store_path().join("objects"))
             }

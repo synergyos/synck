@@ -549,7 +549,7 @@ async fn ordinary_commit_reconciles_once_and_publishes_only_affected_identities(
 }
 
 #[tokio::test]
-async fn commit_checkpoints_changed_chunked_objects_once() {
+async fn commit_syncs_changed_chunked_objects_once() {
     let temporary = tempfile::tempdir().unwrap();
     let root = temporary.path();
     for index in 0..3 {
@@ -559,12 +559,12 @@ async fn commit_checkpoints_changed_chunked_objects_once() {
     let repository = Repository::discover(root).await.unwrap();
     repository.commit("initial").await.unwrap();
 
-    let before = repository.object_store().durability_checkpoint_count();
+    let before = repository.object_store().durability_barrier_count();
     for index in 0..3 {
         fs::write(root.join(format!("document-{index}.bin")), b"after").unwrap();
     }
     repository.commit("edit three files").await.unwrap();
-    let after = repository.object_store().durability_checkpoint_count();
+    let after = repository.object_store().durability_barrier_count();
 
     assert_eq!(after - before, 1);
     assert!(repository.status().await.unwrap().is_empty());

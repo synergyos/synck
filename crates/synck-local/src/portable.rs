@@ -822,7 +822,7 @@ impl PortableRepository {
             }
         }
         store.verify_all()?;
-        store.checkpoint()?;
+        store.sync_wal()?;
         self.config.storage_mode = StorageMode::Chunked;
         if let Err(error) = self.write_config() {
             self.config.storage_mode = StorageMode::WholeFile;
